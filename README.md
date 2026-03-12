@@ -1,0 +1,1 @@
+# MizanPay Partner Web

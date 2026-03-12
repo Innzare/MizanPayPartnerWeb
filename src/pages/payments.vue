@@ -1,0 +1,1776 @@
+<script lang="ts" setup>
+import { usePaymentsStore } from '@/stores/payments'
+import { useDealsStore } from '@/stores/deals'
+import { formatCurrency, formatDate, formatDateShort } from '@/utils/formatters'
+import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
+import type { Payment, Deal } from '@/types'
+import { useRouter } from 'vue-router'
+
+const router = useRouter()
+const paymentsStore = usePaymentsStore()
+const dealsStore = useDealsStore()
+
+const tab = ref(0)
+const search = ref('')
+const viewMode = ref<'table' | 'calendar'>('table')
+
+// Calendar
+const calendarMonth = ref(new Date().getMonth())
+const calendarYear = ref(new Date().getFullYear())
+const selectedCalendarDate = ref<string | null>(null)
+const calendarScale = ref<'month' | 'year'>('month')
+
+const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+const MONTH_NAMES = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
+]
+
+function prevMonth() {
+  if (calendarMonth.value === 0) {
+    calendarMonth.value = 11
+    calendarYear.value--
+  } else {
+    calendarMonth.value--
+  }
+  selectedCalendarDate.value = null
+}
+
+function nextMonth() {
+  if (calendarMonth.value === 11) {
+    calendarMonth.value = 0
+    calendarYear.value++
+  } else {
+    calendarMonth.value++
+  }
+  selectedCalendarDate.value = null
+}
+
+// Map: dateKey (YYYY-MM-DD) -> payments[]
+const paymentsByDate = computed(() => {
+  const map: Record<string, (Payment & { _dealName: string; _clientName: string })[]> = {}
+  paymentsStore.allPaymentsFlat.forEach(p => {
+    const key = p.dueDate.slice(0, 10)
+    if (!map[key]) map[key] = []
+    map[key].push({
+      ...p,
+      _dealName: getDealName(p.dealId),
+      _clientName: getClientName(p.dealId),
+    })
+  })
+  return map
+})
+
+type CalendarDay = {
+  day: number
+  dateKey: string
+  isCurrentMonth: boolean
+  isToday: boolean
+  payments: (Payment & { _dealName: string; _clientName: string })[]
+  totalAmount: number
+  hasOverdue: boolean
+  hasPending: boolean
+  hasPaid: boolean
+}
+
+const calendarDays = computed((): CalendarDay[] => {
+  const year = calendarYear.value
+  const month = calendarMonth.value
+  const firstDay = new Date(year, month, 1)
+  const lastDay = new Date(year, month + 1, 0)
+
+  // Monday-based: 0=Mon ... 6=Sun
+  let startDow = firstDay.getDay() - 1
+  if (startDow < 0) startDow = 6
+
+  const days: CalendarDay[] = []
+  const today = new Date()
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+
+  // Previous month days
+  const prevMonthLast = new Date(year, month, 0).getDate()
+  for (let i = startDow - 1; i >= 0; i--) {
+    const d = prevMonthLast - i
+    const m = month === 0 ? 12 : month
+    const y = month === 0 ? year - 1 : year
+    const key = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+    const ps = paymentsByDate.value[key] || []
+    days.push({
+      day: d, dateKey: key, isCurrentMonth: false, isToday: key === todayKey,
+      payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
+      hasOverdue: ps.some(p => p.status === 'overdue'),
+      hasPending: ps.some(p => p.status === 'pending'),
+      hasPaid: ps.some(p => p.status === 'paid'),
+    })
+  }
+
+  // Current month days
+  for (let d = 1; d <= lastDay.getDate(); d++) {
+    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+    const ps = paymentsByDate.value[key] || []
+    days.push({
+      day: d, dateKey: key, isCurrentMonth: true, isToday: key === todayKey,
+      payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
+      hasOverdue: ps.some(p => p.status === 'overdue'),
+      hasPending: ps.some(p => p.status === 'pending'),
+      hasPaid: ps.some(p => p.status === 'paid'),
+    })
+  }
+
+  // Next month days to fill 6 rows
+  const remaining = 42 - days.length
+  for (let d = 1; d <= remaining; d++) {
+    const m = month === 11 ? 1 : month + 2
+    const y = month === 11 ? year + 1 : year
+    const key = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+    const ps = paymentsByDate.value[key] || []
+    days.push({
+      day: d, dateKey: key, isCurrentMonth: false, isToday: key === todayKey,
+      payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
+      hasOverdue: ps.some(p => p.status === 'overdue'),
+      hasPending: ps.some(p => p.status === 'pending'),
+      hasPaid: ps.some(p => p.status === 'paid'),
+    })
+  }
+
+  return days
+})
+
+const selectedDatePayments = computed(() => {
+  if (!selectedCalendarDate.value) return []
+  return paymentsByDate.value[selectedCalendarDate.value] || []
+})
+
+// Monthly summary for sidebar
+const monthSummary = computed(() => {
+  const year = calendarYear.value
+  const month = calendarMonth.value
+  const prefix = `${year}-${String(month + 1).padStart(2, '0')}`
+  let total = 0, pending = 0, overdue = 0, paid = 0, count = 0
+  paymentsStore.allPaymentsFlat.forEach(p => {
+    if (p.dueDate.startsWith(prefix)) {
+      count++
+      total += p.amount
+      if (p.status === 'pending') pending += p.amount
+      if (p.status === 'overdue') overdue += p.amount
+      if (p.status === 'paid') paid += p.amount
+    }
+  })
+  return { total, pending, overdue, paid, count }
+})
+
+function prevYear() {
+  calendarYear.value--
+  selectedCalendarDate.value = null
+}
+
+function nextYear() {
+  calendarYear.value++
+  selectedCalendarDate.value = null
+}
+
+function goToMonthFromYear(monthIndex: number) {
+  calendarMonth.value = monthIndex
+  calendarScale.value = 'month'
+}
+
+// Yearly calendar: mini-month data
+type YearMonthData = {
+  monthIndex: number
+  name: string
+  days: {
+    day: number
+    dateKey: string
+    isCurrentMonth: boolean
+    hasOverdue: boolean
+    hasPending: boolean
+    hasPaid: boolean
+    isToday: boolean
+    paymentCount: number
+    totalAmount: number
+  }[]
+  totalAmount: number
+  paymentCount: number
+  hasOverdue: boolean
+}
+
+const yearMonths = computed((): YearMonthData[] => {
+  const year = calendarYear.value
+  const today = new Date()
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+
+  return MONTH_NAMES.map((name, monthIndex) => {
+    const firstDay = new Date(year, monthIndex, 1)
+    const lastDay = new Date(year, monthIndex + 1, 0)
+
+    let startDow = firstDay.getDay() - 1
+    if (startDow < 0) startDow = 6
+
+    const days: YearMonthData['days'] = []
+
+    // Previous month padding
+    const prevMonthLast = new Date(year, monthIndex, 0).getDate()
+    for (let i = startDow - 1; i >= 0; i--) {
+      const d = prevMonthLast - i
+      days.push({ day: d, dateKey: '', isCurrentMonth: false, hasOverdue: false, hasPending: false, hasPaid: false, isToday: false, paymentCount: 0, totalAmount: 0 })
+    }
+
+    // Current month days
+    let monthTotal = 0
+    let monthPaymentCount = 0
+    let monthHasOverdue = false
+    for (let d = 1; d <= lastDay.getDate(); d++) {
+      const key = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+      const ps = paymentsByDate.value[key] || []
+      const amt = ps.reduce((s, p) => s + p.amount, 0)
+      const hasOverdue = ps.some(p => p.status === 'overdue')
+      monthTotal += amt
+      monthPaymentCount += ps.length
+      if (hasOverdue) monthHasOverdue = true
+      days.push({
+        day: d, dateKey: key, isCurrentMonth: true,
+        hasOverdue,
+        hasPending: ps.some(p => p.status === 'pending'),
+        hasPaid: ps.some(p => p.status === 'paid'),
+        isToday: key === todayKey,
+        paymentCount: ps.length,
+        totalAmount: amt,
+      })
+    }
+
+    // Fill to 42
+    const remaining = 42 - days.length
+    for (let d = 1; d <= remaining; d++) {
+      days.push({ day: d, dateKey: '', isCurrentMonth: false, hasOverdue: false, hasPending: false, hasPaid: false, isToday: false, paymentCount: 0, totalAmount: 0 })
+    }
+
+    return { monthIndex, name, days, totalAmount: monthTotal, paymentCount: monthPaymentCount, hasOverdue: monthHasOverdue }
+  })
+})
+
+// Year summary
+const yearSummary = computed(() => {
+  const year = calendarYear.value
+  const prefix = `${year}-`
+  let total = 0, pending = 0, overdue = 0, paid = 0, count = 0
+  paymentsStore.allPaymentsFlat.forEach(p => {
+    if (p.dueDate.startsWith(prefix)) {
+      count++
+      total += p.amount
+      if (p.status === 'pending') pending += p.amount
+      if (p.status === 'overdue') overdue += p.amount
+      if (p.status === 'paid') paid += p.amount
+    }
+  })
+  return { total, pending, overdue, paid, count }
+})
+
+function selectYearDay(day: YearMonthData['days'][0]) {
+  if (day.paymentCount > 0 && day.isCurrentMonth) {
+    selectedCalendarDate.value = selectedCalendarDate.value === day.dateKey ? null : day.dateKey
+  }
+}
+
+function selectDay(day: CalendarDay) {
+  if (day.payments.length) {
+    selectedCalendarDate.value = selectedCalendarDate.value === day.dateKey ? null : day.dateKey
+  }
+}
+
+function formatSelectedDate(key: string) {
+  const d = new Date(key)
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+}
+
+// Sorting
+type SortField = 'dueDate' | 'amount' | 'number' | 'deal' | 'client' | 'status'
+const sortField = ref<SortField>('dueDate')
+const sortAsc = ref(true)
+
+function toggleSort(field: SortField) {
+  if (sortField.value === field) {
+    sortAsc.value = !sortAsc.value
+  } else {
+    sortField.value = field
+    sortAsc.value = field === 'dueDate' || field === 'number'
+  }
+}
+
+function sortIcon(field: SortField) {
+  if (sortField.value !== field) return 'mdi-unfold-more-horizontal'
+  return sortAsc.value ? 'mdi-chevron-up' : 'mdi-chevron-down'
+}
+
+// Deal detail dialog
+const selectedDeal = ref<Deal | null>(null)
+const showDealDialog = ref(false)
+
+function openDealFromPayment(payment: Payment) {
+  const deal = dealsStore.getDeal(payment.dealId)
+  if (deal) {
+    selectedDeal.value = deal
+    showDealDialog.value = true
+  }
+}
+
+function goToDeal(deal: Deal) {
+  router.push(`/deals/${deal.id}`)
+}
+
+function getDealProgress(deal: Deal) {
+  return deal.numberOfPayments > 0 ? (deal.paidPayments / deal.numberOfPayments) * 100 : 0
+}
+
+const selectedDealPayments = computed(() => {
+  if (!selectedDeal.value) return []
+  return paymentsStore.getPaymentsForDeal(selectedDeal.value.id)
+})
+
+const selectedDealPaidTotal = computed(() =>
+  selectedDealPayments.value.filter(p => p.status === 'paid').reduce((s, p) => s + p.amount, 0)
+)
+
+// Reschedule dialog
+const rescheduleDialog = ref(false)
+const reschedulePaymentRef = ref<Payment | null>(null)
+const rescheduleDate = ref('')
+const rescheduleReason = ref('')
+
+// Active payments = pending + overdue (no paid in default view)
+const activePayments = computed(() =>
+  paymentsStore.allPaymentsFlat.filter(p => p.status === 'pending' || p.status === 'overdue')
+)
+
+const displayedPayments = computed(() => {
+  let payments: Payment[] = []
+
+  if (tab.value === 0) payments = [...activePayments.value]
+  else if (tab.value === 1) payments = [...paymentsStore.pendingPayments]
+  else if (tab.value === 2) payments = [...paymentsStore.overduePayments]
+  else if (tab.value === 3) payments = [...paymentsStore.paidPayments]
+  else payments = [...paymentsStore.allPaymentsFlat]
+
+  if (search.value) {
+    const s = search.value.toLowerCase()
+    payments = payments.filter((p) => {
+      const deal = dealsStore.getDeal(p.dealId)
+      return deal?.productName.toLowerCase().includes(s) || deal?.clientName.toLowerCase().includes(s)
+    })
+  }
+
+  // Sort
+  const dir = sortAsc.value ? 1 : -1
+  payments.sort((a, b) => {
+    switch (sortField.value) {
+      case 'dueDate':
+        return dir * (new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())
+      case 'amount':
+        return dir * (a.amount - b.amount)
+      case 'number':
+        return dir * (a.number - b.number)
+      case 'deal': {
+        const da = getDealName(a.dealId)
+        const db = getDealName(b.dealId)
+        return dir * da.localeCompare(db, 'ru')
+      }
+      case 'client': {
+        const ca = getClientName(a.dealId)
+        const cb = getClientName(b.dealId)
+        return dir * ca.localeCompare(cb, 'ru')
+      }
+      case 'status': {
+        const order: Record<string, number> = { overdue: 0, pending: 1, paid: 2 }
+        return dir * ((order[a.status] ?? 3) - (order[b.status] ?? 3))
+      }
+      default:
+        return 0
+    }
+  })
+
+  return payments
+})
+
+function getDealName(dealId: string) {
+  return dealsStore.getDeal(dealId)?.productName || dealId
+}
+
+function getClientName(dealId: string) {
+  return dealsStore.getDeal(dealId)?.clientName || ''
+}
+
+function daysUntil(dateStr: string) {
+  const diff = Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86400000)
+  if (diff < 0) return `${Math.abs(diff)} дн. назад`
+  if (diff === 0) return 'Сегодня'
+  if (diff === 1) return 'Завтра'
+  return `через ${diff} дн.`
+}
+
+function handleMarkPaid(e: Event, payment: Payment) {
+  e.stopPropagation()
+  paymentsStore.markAsPaid(payment.id, payment.dealId)
+}
+
+function openReschedule(e: Event, payment: Payment) {
+  e.stopPropagation()
+  reschedulePaymentRef.value = payment
+  const d = new Date(payment.dueDate)
+  d.setDate(d.getDate() + 7)
+  rescheduleDate.value = d.toISOString().slice(0, 10)
+  rescheduleReason.value = ''
+  rescheduleDialog.value = true
+}
+
+const minRescheduleDate = computed(() => {
+  const tomorrow = new Date()
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  return tomorrow.toISOString().slice(0, 10)
+})
+
+function confirmReschedule() {
+  if (!reschedulePaymentRef.value || !rescheduleDate.value) return
+  paymentsStore.reschedulePayment(
+    reschedulePaymentRef.value.id,
+    reschedulePaymentRef.value.dealId,
+    new Date(rescheduleDate.value).toISOString(),
+    rescheduleReason.value || undefined,
+  )
+  rescheduleDialog.value = false
+  reschedulePaymentRef.value = null
+}
+
+const rescheduleReasonOptions = [
+  'Клиент попросил отсрочку',
+  'Задержка зарплаты клиента',
+  'По договорённости сторон',
+  'Другая причина',
+]
+</script>
+
+<template>
+  <div class="at-page">
+    <!-- Summary stats -->
+    <div class="stats-row mb-6">
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
+          <v-icon icon="mdi-cash-multiple" size="20" />
+        </div>
+        <div>
+          <div class="stat-value">{{ activePayments.length }}</div>
+          <div class="stat-label">Текущих платежей</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
+          <v-icon icon="mdi-clock-outline" size="20" />
+        </div>
+        <div>
+          <div class="stat-value">{{ formatCurrency(paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+          <div class="stat-label">Ожидается</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+          <v-icon icon="mdi-alert-circle-outline" size="20" />
+        </div>
+        <div>
+          <div class="stat-value">{{ paymentsStore.overduePayments.length }}</div>
+          <div class="stat-label">Просрочено</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
+          <v-icon icon="mdi-check-circle-outline" size="20" />
+        </div>
+        <div>
+          <div class="stat-value">{{ formatCurrency(paymentsStore.paidPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+          <div class="stat-label">Получено</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- View mode toggle -->
+    <div class="d-flex ga-2 mb-4 align-center">
+      <div class="view-toggle">
+        <button class="view-toggle-btn" :class="{ active: viewMode === 'table' }" @click="viewMode = 'table'">
+          <v-icon icon="mdi-table" size="16" />
+          <span class="d-none d-sm-inline">Таблица</span>
+        </button>
+        <button class="view-toggle-btn" :class="{ active: viewMode === 'calendar' }" @click="viewMode = 'calendar'">
+          <v-icon icon="mdi-calendar-month" size="16" />
+          <span class="d-none d-sm-inline">Календарь</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- CALENDAR VIEW -->
+    <template v-if="viewMode === 'calendar'">
+      <v-row>
+        <v-col :cols="12" :lg="calendarScale === 'month' ? 8 : 12">
+          <v-card rounded="lg" elevation="0" border>
+            <div class="pa-4">
+              <!-- Scale toggle + navigation -->
+              <div class="d-flex align-center justify-space-between mb-4">
+                <div class="d-flex align-center ga-2">
+                  <button class="cal-nav-btn" @click="calendarScale === 'month' ? prevMonth() : prevYear()">
+                    <v-icon icon="mdi-chevron-left" size="20" />
+                  </button>
+                  <div class="cal-month-title" style="cursor: pointer;" @click="calendarScale === 'month' ? calendarScale = 'year' : undefined">
+                    <template v-if="calendarScale === 'month'">{{ MONTH_NAMES[calendarMonth] }} {{ calendarYear }}</template>
+                    <template v-else>{{ calendarYear }}</template>
+                  </div>
+                  <button class="cal-nav-btn" @click="calendarScale === 'month' ? nextMonth() : nextYear()">
+                    <v-icon icon="mdi-chevron-right" size="20" />
+                  </button>
+                </div>
+
+                <div class="cal-scale-toggle">
+                  <button class="cal-scale-btn" :class="{ active: calendarScale === 'month' }" @click="calendarScale = 'month'">
+                    <v-icon icon="mdi-calendar-month" size="16" />
+                    <span class="d-none d-sm-inline">Месяц</span>
+                  </button>
+                  <button class="cal-scale-btn" :class="{ active: calendarScale === 'year' }" @click="calendarScale = 'year'">
+                    <v-icon icon="mdi-calendar-text" size="16" />
+                    <span class="d-none d-sm-inline">Год</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- MONTH SCALE -->
+              <template v-if="calendarScale === 'month'">
+                <!-- Month summary — inline -->
+                <div class="cal-month-stats mb-4">
+                  <div class="cal-month-stat">
+                    <span class="cal-month-stat-dot" style="background: #3b82f6;" />
+                    <span class="cal-month-stat-label">Всего</span>
+                    <span class="cal-month-stat-value">{{ monthSummary.count }} · {{ formatCurrency(monthSummary.total) }}</span>
+                  </div>
+                  <div class="cal-month-stat">
+                    <span class="cal-month-stat-dot" style="background: #f59e0b;" />
+                    <span class="cal-month-stat-label">Ожидается</span>
+                    <span class="cal-month-stat-value">{{ formatCurrency(monthSummary.pending) }}</span>
+                  </div>
+                  <div class="cal-month-stat">
+                    <span class="cal-month-stat-dot" style="background: #ef4444;" />
+                    <span class="cal-month-stat-label">Просрочено</span>
+                    <span class="cal-month-stat-value" :style="{ color: monthSummary.overdue ? '#ef4444' : undefined }">{{ formatCurrency(monthSummary.overdue) }}</span>
+                  </div>
+                  <div class="cal-month-stat">
+                    <span class="cal-month-stat-dot" style="background: #047857;" />
+                    <span class="cal-month-stat-label">Оплачено</span>
+                    <span class="cal-month-stat-value" style="color: #047857;">{{ formatCurrency(monthSummary.paid) }}</span>
+                  </div>
+                </div>
+
+                <!-- Weekday headers -->
+                <div class="cal-grid cal-header">
+                  <div v-for="w in WEEKDAYS" :key="w" class="cal-weekday">{{ w }}</div>
+                </div>
+
+                <!-- Days grid -->
+                <div class="cal-grid">
+                  <div
+                    v-for="(day, idx) in calendarDays"
+                    :key="idx"
+                    class="cal-day"
+                    :class="{
+                      'cal-day--other': !day.isCurrentMonth,
+                      'cal-day--today': day.isToday,
+                      'cal-day--has-payments': day.payments.length > 0,
+                      'cal-day--selected': selectedCalendarDate === day.dateKey,
+                      'cal-day--overdue': day.hasOverdue && day.isCurrentMonth,
+                    }"
+                    @click="selectDay(day)"
+                  >
+                    <span class="cal-day-num">{{ day.day }}</span>
+                    <div v-if="day.payments.length && day.isCurrentMonth" class="cal-day-dots">
+                      <span
+                        v-for="(p, pi) in day.payments.slice(0, 3)"
+                        :key="pi"
+                        class="cal-dot"
+                        :style="{ background: p.status === 'overdue' ? '#ef4444' : p.status === 'paid' ? '#047857' : '#f59e0b' }"
+                      />
+                    </div>
+                    <div v-if="day.payments.length && day.isCurrentMonth" class="cal-day-amount">
+                      {{ day.totalAmount >= 1000 ? Math.round(day.totalAmount / 1000) + 'k' : day.totalAmount }}
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- YEAR SCALE -->
+              <template v-else>
+                <!-- Year summary -->
+                <div class="cal-month-stats mb-4">
+                  <div class="cal-month-stat">
+                    <span class="cal-month-stat-dot" style="background: #3b82f6;" />
+                    <span class="cal-month-stat-label">Всего за год</span>
+                    <span class="cal-month-stat-value">{{ yearSummary.count }} · {{ formatCurrency(yearSummary.total) }}</span>
+                  </div>
+                  <div class="cal-month-stat">
+                    <span class="cal-month-stat-dot" style="background: #f59e0b;" />
+                    <span class="cal-month-stat-label">Ожидается</span>
+                    <span class="cal-month-stat-value">{{ formatCurrency(yearSummary.pending) }}</span>
+                  </div>
+                  <div class="cal-month-stat">
+                    <span class="cal-month-stat-dot" style="background: #ef4444;" />
+                    <span class="cal-month-stat-label">Просрочено</span>
+                    <span class="cal-month-stat-value" :style="{ color: yearSummary.overdue ? '#ef4444' : undefined }">{{ formatCurrency(yearSummary.overdue) }}</span>
+                  </div>
+                  <div class="cal-month-stat">
+                    <span class="cal-month-stat-dot" style="background: #047857;" />
+                    <span class="cal-month-stat-label">Оплачено</span>
+                    <span class="cal-month-stat-value" style="color: #047857;">{{ formatCurrency(yearSummary.paid) }}</span>
+                  </div>
+                </div>
+
+                <!-- 12 mini-months grid -->
+                <div class="year-grid">
+                  <div
+                    v-for="m in yearMonths"
+                    :key="m.monthIndex"
+                    class="year-month-card"
+                    :class="{ 'year-month-card--has-overdue': m.hasOverdue }"
+                  >
+                    <div class="year-month-header" @click="goToMonthFromYear(m.monthIndex)">
+                      <span class="year-month-name">{{ m.name }}</span>
+                      <span v-if="m.paymentCount" class="year-month-badge">
+                        {{ m.paymentCount }}
+                      </span>
+                    </div>
+                    <div v-if="m.totalAmount" class="year-month-total">
+                      {{ formatCurrency(m.totalAmount) }}
+                    </div>
+                    <!-- Mini weekday headers -->
+                    <div class="mini-cal-grid mini-cal-header">
+                      <div v-for="(w, wi) in ['П', 'В', 'С', 'Ч', 'П', 'С', 'В']" :key="wi" class="mini-weekday">{{ w }}</div>
+                    </div>
+                    <!-- Mini days -->
+                    <div class="mini-cal-grid">
+                      <div
+                        v-for="(d, di) in m.days"
+                        :key="di"
+                        class="mini-day"
+                        :class="{
+                          'mini-day--other': !d.isCurrentMonth,
+                          'mini-day--today': d.isToday,
+                          'mini-day--has-payment': d.paymentCount > 0 && d.isCurrentMonth,
+                          'mini-day--overdue': d.hasOverdue && d.isCurrentMonth,
+                          'mini-day--paid': d.hasPaid && !d.hasOverdue && !d.hasPending && d.isCurrentMonth,
+                          'mini-day--pending': d.hasPending && !d.hasOverdue && d.isCurrentMonth,
+                          'mini-day--selected': selectedCalendarDate === d.dateKey,
+                        }"
+                        @click="selectYearDay(d)"
+                      >
+                        {{ d.isCurrentMonth ? d.day : '' }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </v-card>
+        </v-col>
+
+        <!-- Sidebar — month view only -->
+        <v-col v-if="calendarScale === 'month'" cols="12" lg="4">
+          <v-card rounded="lg" elevation="0" border class="position-sticky" style="top: 80px;">
+            <div class="pa-4">
+              <!-- Selected date -->
+              <template v-if="selectedCalendarDate">
+                <div class="d-flex align-center justify-space-between mb-3">
+                  <div>
+                    <div class="text-body-2 font-weight-bold">{{ formatSelectedDate(selectedCalendarDate) }}</div>
+                    <div class="text-caption text-medium-emphasis">
+                      {{ selectedDatePayments.length }} {{ selectedDatePayments.length === 1 ? 'платёж' : 'платежей' }}
+                    </div>
+                  </div>
+                  <button class="dialog-close-sm" @click="selectedCalendarDate = null">
+                    <v-icon icon="mdi-close" size="16" />
+                  </button>
+                </div>
+
+                <div class="cal-payments-list">
+                  <div
+                    v-for="p in selectedDatePayments"
+                    :key="p.id"
+                    class="cal-payment-item"
+                    @click="openDealFromPayment(p)"
+                  >
+                    <div class="d-flex align-center justify-space-between mb-2">
+                      <span class="font-weight-medium" style="font-size: 13px;">{{ p._dealName }}</span>
+                      <div
+                        class="payment-status-chip"
+                        :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                      >
+                        {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                      </div>
+                    </div>
+                    <div class="d-flex align-center justify-space-between">
+                      <span class="text-caption text-medium-emphasis">{{ p._clientName }}</span>
+                      <span class="font-weight-bold" style="font-size: 15px;">{{ formatCurrency(p.amount) }}</span>
+                    </div>
+                    <div class="d-flex ga-1 mt-2" v-if="p.status === 'pending' || p.status === 'overdue'">
+                      <button class="action-btn action-btn--success" style="width: 26px; height: 26px;" @click.stop="handleMarkPaid($event, p)">
+                        <v-icon icon="mdi-check" size="14" />
+                      </button>
+                      <button class="action-btn action-btn--warning" style="width: 26px; height: 26px;" @click.stop="openReschedule($event, p)">
+                        <v-icon icon="mdi-calendar-arrow-right" size="14" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Empty state — no date selected -->
+              <template v-else>
+                <div class="cal-sidebar-empty">
+                  <div class="cal-sidebar-empty-icon">
+                    <v-icon icon="mdi-cursor-default-click" size="28" />
+                  </div>
+                  <div class="cal-sidebar-empty-title">Выберите день</div>
+                  <div class="cal-sidebar-empty-text">Нажмите на выделенный день в календаре, чтобы увидеть платежи</div>
+
+                  <!-- Legend -->
+                  <div class="cal-legend">
+                    <div class="cal-legend-item">
+                      <span class="cal-legend-dot" style="background: #f59e0b;" />
+                      <span>Ожидается</span>
+                    </div>
+                    <div class="cal-legend-item">
+                      <span class="cal-legend-dot" style="background: #ef4444;" />
+                      <span>Просрочено</span>
+                    </div>
+                    <div class="cal-legend-item">
+                      <span class="cal-legend-dot" style="background: #047857;" />
+                      <span>Оплачено</span>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </v-card>
+        </v-col>
+      </v-row>
+
+      <!-- Year view — date detail dialog -->
+      <v-dialog v-if="calendarScale === 'year'" :model-value="!!selectedCalendarDate" @update:model-value="v => { if (!v) selectedCalendarDate = null }" max-width="440">
+        <v-card v-if="selectedCalendarDate" rounded="lg">
+          <div class="pa-5">
+            <div class="d-flex align-center justify-space-between mb-3">
+              <div>
+                <div class="text-body-2 font-weight-bold">{{ formatSelectedDate(selectedCalendarDate) }}</div>
+                <div class="text-caption text-medium-emphasis">
+                  {{ selectedDatePayments.length }} {{ selectedDatePayments.length === 1 ? 'платёж' : 'платежей' }}
+                </div>
+              </div>
+              <button class="dialog-close-sm" @click="selectedCalendarDate = null">
+                <v-icon icon="mdi-close" size="16" />
+              </button>
+            </div>
+
+            <div class="cal-payments-list">
+              <div
+                v-for="p in selectedDatePayments"
+                :key="p.id"
+                class="cal-payment-item"
+                @click="selectedCalendarDate = null; openDealFromPayment(p)"
+              >
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <span class="font-weight-medium" style="font-size: 13px;">{{ p._dealName }}</span>
+                  <div
+                    class="payment-status-chip"
+                    :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                  >
+                    {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                  </div>
+                </div>
+                <div class="d-flex align-center justify-space-between">
+                  <span class="text-caption text-medium-emphasis">{{ p._clientName }}</span>
+                  <span class="font-weight-bold" style="font-size: 15px;">{{ formatCurrency(p.amount) }}</span>
+                </div>
+                <div class="d-flex ga-1 mt-2" v-if="p.status === 'pending' || p.status === 'overdue'">
+                  <button class="action-btn action-btn--success" style="width: 26px; height: 26px;" @click.stop="handleMarkPaid($event, p)">
+                    <v-icon icon="mdi-check" size="14" />
+                  </button>
+                  <button class="action-btn action-btn--warning" style="width: 26px; height: 26px;" @click.stop="openReschedule($event, p)">
+                    <v-icon icon="mdi-calendar-arrow-right" size="14" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </v-card>
+      </v-dialog>
+    </template>
+
+    <!-- TABLE VIEW -->
+    <v-card v-if="viewMode === 'table'" rounded="lg" elevation="0" border>
+      <div class="pa-4">
+        <!-- Tabs + search -->
+        <div class="d-flex flex-wrap ga-2 align-center mb-4">
+          <div class="d-flex ga-2">
+            <button
+              v-for="(f, i) in [
+                { label: 'Текущие', count: activePayments.length },
+                { label: 'Ожидаемые', count: paymentsStore.pendingPayments.length },
+                { label: 'Просроченные', count: paymentsStore.overduePayments.length },
+                { label: 'Оплаченные', count: paymentsStore.paidPayments.length },
+                { label: 'Все', count: paymentsStore.allPaymentsFlat.length },
+              ]"
+              :key="i"
+              class="tab-btn"
+              :class="{ active: tab === i }"
+              @click="tab = i"
+            >
+              {{ f.label }}
+              <span class="tab-count">{{ f.count }}</span>
+            </button>
+          </div>
+
+          <v-spacer class="d-none d-md-block" />
+
+          <div class="filter-input-wrap" style="max-width: 280px; min-width: 160px;">
+            <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
+            <input
+              v-model="search"
+              type="text"
+              placeholder="Поиск по сделке или клиенту..."
+              class="filter-input"
+            />
+          </div>
+        </div>
+
+        <!-- Table -->
+        <v-table v-if="displayedPayments.length" density="comfortable" hover class="payments-table">
+          <thead>
+            <tr>
+              <th class="sortable-th" @click="toggleSort('deal')">
+                Сделка
+                <v-icon :icon="sortIcon('deal')" size="14" class="sort-icon" :class="{ active: sortField === 'deal' }" />
+              </th>
+              <th class="sortable-th" @click="toggleSort('client')">
+                Клиент
+                <v-icon :icon="sortIcon('client')" size="14" class="sort-icon" :class="{ active: sortField === 'client' }" />
+              </th>
+              <th class="sortable-th text-center" @click="toggleSort('number')">
+                №
+                <v-icon :icon="sortIcon('number')" size="14" class="sort-icon" :class="{ active: sortField === 'number' }" />
+              </th>
+              <th class="sortable-th text-right" @click="toggleSort('amount')">
+                Сумма
+                <v-icon :icon="sortIcon('amount')" size="14" class="sort-icon" :class="{ active: sortField === 'amount' }" />
+              </th>
+              <th class="sortable-th" @click="toggleSort('dueDate')">
+                Дата
+                <v-icon :icon="sortIcon('dueDate')" size="14" class="sort-icon" :class="{ active: sortField === 'dueDate' }" />
+              </th>
+              <th>Срок</th>
+              <th class="sortable-th" @click="toggleSort('status')">
+                Статус
+                <v-icon :icon="sortIcon('status')" size="14" class="sort-icon" :class="{ active: sortField === 'status' }" />
+              </th>
+              <th class="text-center">Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in displayedPayments" :key="p.id" class="clickable-row" @click="openDealFromPayment(p)">
+              <td>
+                <span class="font-weight-medium">{{ getDealName(p.dealId) }}</span>
+              </td>
+              <td class="text-medium-emphasis">{{ getClientName(p.dealId) }}</td>
+              <td class="text-center">{{ p.number }}</td>
+              <td class="text-right font-weight-bold text-no-wrap">{{ formatCurrency(p.amount) }}</td>
+              <td>
+                <div>
+                  <span>{{ formatDate(p.dueDate) }}</span>
+                  <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+                    <v-icon icon="mdi-calendar-arrow-right" size="12" />
+                    <span>с {{ formatDate(p.rescheduledFrom) }}</span>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <span :class="{ 'text-error font-weight-medium': p.status === 'overdue' || (p.status === 'pending' && new Date(p.dueDate) < new Date()) }">
+                  {{ p.status === 'paid' ? '—' : daysUntil(p.dueDate) }}
+                </span>
+              </td>
+              <td>
+                <div
+                  class="payment-status-chip"
+                  :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                >
+                  {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                </div>
+              </td>
+              <td class="text-center">
+                <div v-if="p.status === 'pending' || p.status === 'overdue'" class="d-flex align-center justify-center ga-1">
+                  <v-tooltip text="Отметить оплаченным" location="top">
+                    <template #activator="{ props }">
+                      <button v-bind="props" class="action-btn action-btn--success" @click="handleMarkPaid($event, p)">
+                        <v-icon icon="mdi-check" size="16" />
+                      </button>
+                    </template>
+                  </v-tooltip>
+                  <v-tooltip text="Перенести дату" location="top">
+                    <template #activator="{ props }">
+                      <button v-bind="props" class="action-btn action-btn--warning" @click="openReschedule($event, p)">
+                        <v-icon icon="mdi-calendar-arrow-right" size="16" />
+                      </button>
+                    </template>
+                  </v-tooltip>
+                </div>
+                <span v-else class="text-medium-emphasis">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+
+        <div v-else class="text-center pa-12">
+          <v-icon icon="mdi-cash-multiple" size="56" color="grey-lighten-1" class="mb-3" />
+          <p class="text-body-1 font-weight-medium text-medium-emphasis mb-1">Нет платежей</p>
+          <p class="text-body-2 text-medium-emphasis">
+            {{ search ? 'Попробуйте изменить параметры поиска' : 'Платежи появятся после создания сделки' }}
+          </p>
+        </div>
+      </div>
+    </v-card>
+
+    <!-- /TABLE VIEW -->
+
+    <!-- Deal Detail Dialog -->
+    <v-dialog v-model="showDealDialog" max-width="680" scrollable>
+      <v-card v-if="selectedDeal" rounded="lg">
+        <div class="dialog-hero">
+          <v-img :src="selectedDeal.productPhotos[0]" height="180" cover class="dialog-hero-img" />
+          <div class="dialog-hero-overlay" />
+          <button class="dialog-close" @click="showDealDialog = false">
+            <v-icon icon="mdi-close" size="20" />
+          </button>
+          <div class="dialog-hero-content">
+            <div
+              class="dialog-status"
+              :style="{ background: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }"
+            >
+              {{ DEAL_STATUS_CONFIG[selectedDeal.status]?.label }}
+            </div>
+            <div class="dialog-title">{{ selectedDeal.productName }}</div>
+          </div>
+        </div>
+
+        <v-card-text class="pa-5">
+          <div class="d-flex align-center ga-3 mb-5">
+            <div class="dialog-avatar" :style="{ background: '#3b82f6' }">
+              {{ selectedDeal.clientName.charAt(0) }}
+            </div>
+            <div>
+              <div class="font-weight-medium">{{ selectedDeal.clientName }}</div>
+              <div class="text-caption text-medium-emphasis">
+                Рейтинг {{ selectedDeal.clientRating }} · Создано {{ formatDate(selectedDeal.createdAt) }}
+              </div>
+            </div>
+          </div>
+
+          <div class="dialog-finance-grid mb-5">
+            <div class="dialog-finance-item">
+              <div class="dialog-finance-label">Закупочная</div>
+              <div class="dialog-finance-value">{{ formatCurrency(selectedDeal.purchasePrice) }}</div>
+            </div>
+            <div class="dialog-finance-item">
+              <div class="dialog-finance-label">Итого</div>
+              <div class="dialog-finance-value font-weight-bold">{{ formatCurrency(selectedDeal.totalPrice) }}</div>
+            </div>
+            <div class="dialog-finance-item">
+              <div class="dialog-finance-label">Наценка</div>
+              <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ selectedDeal.markupPercent }}%)</div>
+            </div>
+            <div class="dialog-finance-item">
+              <div class="dialog-finance-label">Первый взнос</div>
+              <div class="dialog-finance-value">{{ formatCurrency(selectedDeal.downPayment) }}</div>
+            </div>
+            <div class="dialog-finance-item">
+              <div class="dialog-finance-label">Оплачено</div>
+              <div class="dialog-finance-value" style="color: #047857;">{{ formatCurrency(selectedDealPaidTotal + selectedDeal.downPayment) }}</div>
+            </div>
+            <div class="dialog-finance-item">
+              <div class="dialog-finance-label">Остаток</div>
+              <div class="dialog-finance-value" style="color: #f59e0b;">{{ formatCurrency(selectedDeal.remainingAmount) }}</div>
+            </div>
+          </div>
+
+          <div class="mb-5">
+            <div class="d-flex justify-space-between align-center mb-2">
+              <span class="text-body-2 font-weight-medium">Прогресс платежей</span>
+              <span class="text-caption text-medium-emphasis">{{ selectedDeal.paidPayments }} из {{ selectedDeal.numberOfPayments }}</span>
+            </div>
+            <v-progress-linear
+              :model-value="getDealProgress(selectedDeal)"
+              color="primary"
+              rounded
+              height="8"
+            />
+          </div>
+
+          <button class="detail-link-btn mb-5" @click="showDealDialog = false; goToDeal(selectedDeal!)">
+            <v-icon icon="mdi-open-in-new" size="16" />
+            Открыть полную страницу сделки
+          </button>
+
+          <div v-if="selectedDealPayments.length">
+            <div class="text-body-2 font-weight-bold mb-3">График платежей</div>
+            <div class="schedule-list">
+              <div
+                v-for="p in selectedDealPayments"
+                :key="p.id"
+                class="schedule-item"
+                :class="{ 'schedule-item--paid': p.status === 'paid', 'schedule-item--overdue': p.status === 'overdue' }"
+              >
+                <div class="schedule-num">{{ p.number }}</div>
+                <div class="schedule-info">
+                  <div class="schedule-date">{{ formatDateShort(p.dueDate) }}</div>
+                  <div v-if="p.paidAt" class="schedule-paid-at">Оплачено {{ formatDateShort(p.paidAt) }}</div>
+                  <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+                    <v-icon icon="mdi-calendar-arrow-right" size="11" />
+                    с {{ formatDateShort(p.rescheduledFrom) }}
+                  </div>
+                </div>
+                <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
+                <div
+                  class="schedule-status"
+                  :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                >
+                  {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+
+    <!-- Reschedule Dialog -->
+    <v-dialog v-model="rescheduleDialog" max-width="440">
+      <v-card v-if="reschedulePaymentRef" rounded="lg">
+        <div class="pa-5">
+          <div class="d-flex align-center justify-space-between mb-4">
+            <div class="text-h6 font-weight-bold">Перенос платежа</div>
+            <button class="dialog-close-sm" @click="rescheduleDialog = false">
+              <v-icon icon="mdi-close" size="18" />
+            </button>
+          </div>
+
+          <div class="reschedule-info mb-4">
+            <div class="reschedule-info-row">
+              <span class="reschedule-info-label">Сделка</span>
+              <span class="reschedule-info-value">{{ getDealName(reschedulePaymentRef.dealId) }}</span>
+            </div>
+            <div class="reschedule-info-row">
+              <span class="reschedule-info-label">Платёж №{{ reschedulePaymentRef.number }}</span>
+              <span class="reschedule-info-value font-weight-bold">{{ formatCurrency(reschedulePaymentRef.amount) }}</span>
+            </div>
+            <div class="reschedule-info-row">
+              <span class="reschedule-info-label">Текущая дата</span>
+              <span class="reschedule-info-value" :class="{ 'text-error': reschedulePaymentRef.status === 'overdue' }">
+                {{ formatDate(reschedulePaymentRef.dueDate) }}
+              </span>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="field-label">Новая дата</label>
+            <input
+              v-model="rescheduleDate"
+              type="date"
+              class="field-input"
+              :min="minRescheduleDate"
+            />
+          </div>
+
+          <div class="mb-5">
+            <label class="field-label">Причина переноса</label>
+            <div class="d-flex flex-wrap ga-2 mb-2">
+              <button
+                v-for="r in rescheduleReasonOptions"
+                :key="r"
+                class="reason-chip"
+                :class="{ active: rescheduleReason === r }"
+                @click="rescheduleReason = rescheduleReason === r ? '' : r"
+              >
+                {{ r }}
+              </button>
+            </div>
+            <textarea
+              v-if="rescheduleReason === 'Другая причина'"
+              v-model="rescheduleReason"
+              class="field-input field-textarea"
+              placeholder="Укажите причину..."
+              rows="2"
+            />
+          </div>
+
+          <div class="d-flex ga-2">
+            <button class="btn-secondary flex-grow-1" @click="rescheduleDialog = false">
+              Отмена
+            </button>
+            <button
+              class="btn-primary flex-grow-1"
+              :disabled="!rescheduleDate"
+              @click="confirmReschedule"
+            >
+              <v-icon icon="mdi-calendar-arrow-right" size="16" />
+              Перенести
+            </button>
+          </div>
+        </div>
+      </v-card>
+    </v-dialog>
+  </div>
+</template>
+
+<style scoped>
+/* Stats row */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+@media (max-width: 1024px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .stats-row { grid-template-columns: 1fr; } }
+
+.stat-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-surface), 1);
+}
+.stat-icon {
+  width: 40px; height: 40px; min-width: 40px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+}
+.stat-value {
+  font-size: 18px; font-weight: 700; line-height: 1.2;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.stat-label {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+/* Tab buttons */
+.tab-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 20px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer; transition: all 0.15s; white-space: nowrap;
+}
+.tab-btn:hover { background: rgba(var(--v-theme-primary), 0.08); color: rgb(var(--v-theme-primary)); }
+.tab-btn.active { background: rgba(var(--v-theme-primary), 0.12); color: rgb(var(--v-theme-primary)); font-weight: 600; }
+.tab-count {
+  font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  line-height: 18px; min-width: 20px; text-align: center;
+}
+.tab-btn.active .tab-count {
+  background: rgba(var(--v-theme-primary), 0.15); color: rgb(var(--v-theme-primary));
+}
+
+/* Filter inputs */
+.filter-input-wrap { position: relative; flex: 1; }
+.filter-input-icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: #9ca3af; pointer-events: none;
+}
+.filter-input {
+  width: 100%; height: 40px; padding: 0 16px 0 38px;
+  border: 1px solid #e4e4e7; border-radius: 10px;
+  background: #f4f4f5; font-size: 14px; color: inherit;
+  outline: none; transition: all 0.15s ease;
+}
+.filter-input::placeholder { color: #9ca3af; }
+.filter-input:focus {
+  border-color: #047857; background: #fff;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 8%, transparent);
+}
+
+/* Table */
+.payments-table :deep(td) { font-size: 14px; }
+.payments-table :deep(th) {
+  font-size: 12px !important; text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: rgba(var(--v-theme-on-surface), 0.5) !important;
+}
+
+.sortable-th {
+  cursor: pointer; user-select: none; white-space: nowrap;
+}
+.sortable-th:hover {
+  color: rgba(var(--v-theme-on-surface), 0.8) !important;
+}
+.sort-icon {
+  opacity: 0.3; margin-left: 2px; vertical-align: middle;
+  transition: opacity 0.15s;
+}
+.sort-icon.active {
+  opacity: 1; color: rgb(var(--v-theme-primary));
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+.clickable-row:hover td {
+  background: rgba(var(--v-theme-primary), 0.03);
+}
+
+.payment-status-chip {
+  display: inline-block; font-size: 11px; font-weight: 600;
+  padding: 4px 10px; border-radius: 6px; white-space: nowrap;
+}
+
+.rescheduled-hint {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 11px; color: #f59e0b; margin-top: 1px;
+}
+
+/* Action buttons */
+.action-btn {
+  width: 30px; height: 30px; border-radius: 8px; border: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+}
+.action-btn--success {
+  background: rgba(4, 120, 87, 0.1); color: #047857;
+}
+.action-btn--success:hover {
+  background: rgba(4, 120, 87, 0.2);
+}
+.action-btn--warning {
+  background: rgba(245, 158, 11, 0.1); color: #f59e0b;
+}
+.action-btn--warning:hover {
+  background: rgba(245, 158, 11, 0.2);
+}
+
+/* Deal Dialog */
+.dialog-hero { position: relative; overflow: hidden; }
+.dialog-hero-img { display: block; }
+.dialog-hero-overlay {
+  position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 60%);
+}
+.dialog-close {
+  position: absolute; top: 12px; right: 12px; z-index: 2;
+  width: 32px; height: 32px; border-radius: 8px;
+  background: rgba(0,0,0,0.4); border: none;
+  color: #fff; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s;
+}
+.dialog-close:hover { background: rgba(0,0,0,0.6); }
+.dialog-hero-content {
+  position: absolute; bottom: 16px; left: 20px; right: 20px; z-index: 2;
+}
+.dialog-status {
+  display: inline-block; font-size: 11px; font-weight: 600;
+  padding: 3px 10px; border-radius: 6px; color: #fff; margin-bottom: 6px;
+}
+.dialog-title {
+  font-size: 20px; font-weight: 700; color: #fff; line-height: 1.2;
+}
+.dialog-avatar {
+  width: 36px; height: 36px; min-width: 36px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 600; font-size: 14px;
+}
+
+.dialog-finance-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+}
+@media (max-width: 600px) { .dialog-finance-grid { grid-template-columns: repeat(2, 1fr); } }
+.dialog-finance-item {
+  padding: 12px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.dialog-finance-label {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45); margin-bottom: 2px;
+}
+.dialog-finance-value {
+  font-size: 15px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+/* Detail link */
+.detail-link-btn {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; padding: 10px 16px; border-radius: 10px;
+  border: 1px dashed rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.04);
+  color: rgb(var(--v-theme-primary));
+  font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s;
+  justify-content: center;
+}
+.detail-link-btn:hover {
+  background: rgba(var(--v-theme-primary), 0.1);
+  border-color: rgba(var(--v-theme-primary), 0.5);
+}
+
+/* Schedule */
+.schedule-list { display: flex; flex-direction: column; gap: 4px; }
+.schedule-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; border-radius: 8px;
+  transition: background 0.15s;
+}
+.schedule-item:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.schedule-item--paid { opacity: 0.65; }
+.schedule-item--overdue { background: rgba(239, 68, 68, 0.04); }
+.schedule-num {
+  width: 24px; height: 24px; min-width: 24px;
+  border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.schedule-info { flex: 1; min-width: 0; }
+.schedule-date {
+  font-size: 14px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.schedule-paid-at {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.schedule-amount {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  white-space: nowrap;
+}
+.schedule-status {
+  font-size: 11px; font-weight: 600;
+  padding: 3px 10px; border-radius: 6px; white-space: nowrap;
+}
+
+/* Reschedule Dialog */
+.dialog-close-sm {
+  width: 28px; height: 28px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+}
+.dialog-close-sm:hover {
+  background: rgba(var(--v-theme-on-surface), 0.12);
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+
+.reschedule-info {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border-radius: 10px; padding: 12px 16px;
+}
+.reschedule-info-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 0;
+}
+.reschedule-info-label {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.reschedule-info-value {
+  font-size: 14px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+/* Form fields */
+.field-label {
+  display: block; font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.6); margin-bottom: 6px;
+}
+.field-input {
+  width: 100%; height: 42px; padding: 0 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px; font-size: 14px; color: inherit;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  outline: none; transition: all 0.15s;
+}
+.field-input:focus {
+  border-color: #047857;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 8%, transparent);
+}
+.field-textarea {
+  height: auto; padding: 10px 14px; resize: vertical;
+}
+
+/* Reason chips */
+.reason-chip {
+  padding: 6px 12px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer; transition: all 0.15s;
+}
+.reason-chip:hover {
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
+}
+.reason-chip.active {
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary)); font-weight: 600;
+}
+
+/* Buttons */
+.btn-primary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 42px; padding: 0 20px; border-radius: 10px; border: none;
+  background: #047857; color: #fff;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.btn-primary:hover { background: #065f46; }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-secondary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 42px; padding: 0 20px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.7);
+  font-size: 14px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s;
+}
+.btn-secondary:hover {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+/* View toggle */
+.view-toggle {
+  display: flex; border-radius: 10px; overflow: hidden;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.view-toggle-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border: none; background: transparent;
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  cursor: pointer; transition: all 0.15s;
+}
+.view-toggle-btn:hover {
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.view-toggle-btn.active {
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary)); font-weight: 600;
+}
+
+/* Calendar */
+.cal-nav-btn {
+  width: 34px; height: 34px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+}
+.cal-nav-btn:hover { background: rgba(var(--v-theme-primary), 0.1); color: rgb(var(--v-theme-primary)); }
+
+.cal-month-title {
+  font-size: 16px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  text-transform: capitalize;
+}
+
+/* Month stats inline */
+.cal-month-stats {
+  display: flex; flex-wrap: wrap; gap: 4px 16px;
+  justify-content: space-around;
+  padding: 10px 14px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.cal-month-stat {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px;
+}
+.cal-month-stat-dot {
+  width: 8px; height: 8px; min-width: 8px; border-radius: 50%;
+}
+.cal-month-stat-label {
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.cal-month-stat-value {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+/* Sidebar empty state */
+.cal-sidebar-empty {
+  text-align: center; padding: 24px 8px;
+}
+.cal-sidebar-empty-icon {
+  width: 56px; height: 56px; border-radius: 14px;
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto 14px;
+}
+.cal-sidebar-empty-title {
+  font-size: 15px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  margin-bottom: 6px;
+}
+.cal-sidebar-empty-text {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  line-height: 1.5; margin-bottom: 20px;
+}
+.cal-legend {
+  display: flex; justify-content: center; gap: 16px;
+}
+.cal-legend-item {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.cal-legend-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+}
+
+.cal-grid {
+  display: grid; grid-template-columns: repeat(7, 1fr);
+}
+.cal-header { margin-bottom: 2px; }
+.cal-weekday {
+  text-align: center; font-size: 11px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  padding: 8px 0; text-transform: uppercase;
+}
+
+.cal-day {
+  position: relative;
+  min-height: 80px; padding: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  cursor: default;
+  transition: all 0.15s;
+  display: flex; flex-direction: column;
+}
+.cal-day--other {
+  opacity: 0.3;
+  background: rgba(var(--v-theme-on-surface), 0.01);
+}
+.cal-day--today {
+  border-color: rgb(var(--v-theme-primary));
+}
+.cal-day--today .cal-day-num {
+  background: rgb(var(--v-theme-primary));
+  color: #fff; border-radius: 50%;
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700;
+}
+.cal-day--has-payments {
+  cursor: pointer;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border-color: rgba(var(--v-theme-on-surface), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-on-surface), 0.04);
+}
+.cal-day--has-payments:hover {
+  background: rgba(var(--v-theme-primary), 0.04);
+  border-color: rgba(var(--v-theme-primary), 0.25);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.cal-day--selected {
+  background: rgba(var(--v-theme-primary), 0.06) !important;
+  border-color: rgb(var(--v-theme-primary)) !important;
+  box-shadow: 0 0 0 2px rgba(var(--v-theme-primary), 0.15), 0 2px 8px rgba(0, 0, 0, 0.06) !important;
+}
+.cal-day--overdue {
+  background: rgba(239, 68, 68, 0.03);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.cal-day--overdue:hover {
+  background: rgba(239, 68, 68, 0.06);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.cal-day-num {
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  line-height: 1;
+}
+.cal-day--has-payments .cal-day-num {
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+.cal-day-dots {
+  display: flex; gap: 3px; margin-top: 6px;
+}
+.cal-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+}
+
+.cal-day-amount {
+  font-size: 11px; font-weight: 700; margin-top: auto;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.cal-day--has-payments .cal-day-amount {
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+
+/* Calendar sidebar */
+.cal-payments-list {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.cal-payment-item {
+  padding: 12px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  cursor: pointer; transition: all 0.15s;
+}
+.cal-payment-item:hover {
+  background: rgba(var(--v-theme-primary), 0.06);
+}
+
+/* Calendar scale toggle */
+.cal-scale-toggle {
+  display: flex; border-radius: 8px; overflow: hidden;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.cal-scale-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 12px; border: none; background: transparent;
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  cursor: pointer; transition: all 0.15s;
+}
+.cal-scale-btn:hover {
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.cal-scale-btn.active {
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary)); font-weight: 600;
+}
+
+/* Year grid — 12 mini months */
+.year-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+@media (max-width: 1280px) { .year-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 960px) { .year-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .year-grid { grid-template-columns: 1fr; } }
+
+.year-month-card {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  transition: all 0.15s;
+}
+.year-month-card:hover {
+  border-color: rgba(var(--v-theme-on-surface), 0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+.year-month-card--has-overdue {
+  border-color: rgba(239, 68, 68, 0.15);
+}
+
+.year-month-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 4px; cursor: pointer; padding: 2px 0;
+}
+.year-month-header:hover .year-month-name {
+  color: rgb(var(--v-theme-primary));
+}
+.year-month-name {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  transition: color 0.15s;
+}
+.year-month-badge {
+  font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary));
+}
+.year-month-total {
+  font-size: 11px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-bottom: 6px;
+}
+
+/* Mini calendar grid */
+.mini-cal-grid {
+  display: grid; grid-template-columns: repeat(7, 1fr);
+}
+.mini-cal-header { margin-bottom: 1px; }
+.mini-weekday {
+  text-align: center; font-size: 9px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.3);
+  padding: 2px 0;
+}
+
+.mini-day {
+  text-align: center;
+  font-size: 10px; line-height: 1;
+  padding: 3px 1px;
+  border-radius: 4px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  cursor: default;
+  transition: all 0.1s;
+}
+.mini-day--other {
+  visibility: hidden;
+}
+.mini-day--today {
+  font-weight: 700;
+  color: rgb(var(--v-theme-primary));
+  box-shadow: inset 0 0 0 1px rgb(var(--v-theme-primary));
+}
+.mini-day--has-payment {
+  cursor: pointer;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.mini-day--pending {
+  background: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+}
+.mini-day--overdue {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+.mini-day--paid {
+  background: rgba(4, 120, 87, 0.12);
+  color: #047857;
+}
+.mini-day--has-payment:hover {
+  transform: scale(1.3);
+  z-index: 1;
+}
+.mini-day--selected {
+  background: rgb(var(--v-theme-primary)) !important;
+  color: #fff !important;
+  font-weight: 700;
+}
+
+/* Dark mode */
+:global(.dark) .cal-summary-card { background: #1e1e2e; border-color: #2e2e42; }
+:global(.dark) .stat-card { background: #1e1e2e; border-color: #2e2e42; }
+:global(.dark) .view-toggle { background: #252538; border-color: #2e2e42; }
+:global(.dark) .view-toggle-btn.active { background: rgba(4, 120, 87, 0.15); }
+:global(.dark) .cal-scale-toggle { background: #252538; border-color: #2e2e42; }
+:global(.dark) .cal-scale-btn.active { background: rgba(4, 120, 87, 0.15); }
+:global(.dark) .year-month-card { background: #1e1e2e; border-color: #2e2e42; }
+:global(.dark) .mini-day--pending { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+:global(.dark) .mini-day--overdue { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+:global(.dark) .mini-day--paid { background: rgba(4, 120, 87, 0.2); color: #34d399; }
+:global(.dark) .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+:global(.dark) .filter-input:focus {
+  border-color: #047857; background: #1e1e2e;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
+}
+:global(.dark) .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+:global(.dark) .field-input:focus {
+  border-color: #047857;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
+}
+</style>
