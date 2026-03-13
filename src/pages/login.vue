@@ -42,84 +42,302 @@ const handleLogin = async () => {
 
 <template>
   <v-main class="login-page">
-    <v-container class="fill-height" fluid>
-      <v-row align="center" justify="center">
-        <v-col cols="12" sm="8" md="5" lg="4" xl="3">
-          <v-card flat rounded="xl" class="pa-8">
-            <div class="text-center mb-6">
-              <v-img :src="logo" width="48" height="48" class="mx-auto mb-3" />
-              <h1 class="text-h5 font-weight-bold">MizanPay Partner</h1>
-              <p class="text-body-2 text-medium-emphasis mt-1">
-                Войдите в панель управления
-              </p>
-            </div>
+    <!-- Left panel — showcase -->
+    <div class="login-brand d-none d-md-flex">
+      <div class="brand-bg" />
 
-            <v-alert
-              v-if="error"
-              type="error"
-              variant="tonal"
-              density="compact"
-              class="mb-4"
-              closable
-              @click:close="error = ''"
-            >
-              {{ error }}
-            </v-alert>
+      <div class="brand-content">
+        <!-- Header -->
+        <div class="d-flex align-center ga-2">
+          <span class="brand-logo">Mizan<span class="brand-logo-accent">Pay</span></span>
+          <span class="brand-badge">Partner</span>
+        </div>
 
-            <form @submit.prevent="handleLogin">
-              <v-text-field
-                v-model="email"
-                label="Email"
-                type="email"
-                variant="outlined"
-                density="comfortable"
-                prepend-inner-icon="mdi-email-outline"
-                class="mb-2"
-                hide-details="auto"
-              />
-
-              <v-text-field
-                v-model="password"
-                label="Пароль"
-                :type="showPassword ? 'text' : 'password'"
-                variant="outlined"
-                density="comfortable"
-                prepend-inner-icon="mdi-lock-outline"
-                :append-inner-icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'"
-                class="mb-4"
-                hide-details="auto"
-                @click:append-inner="showPassword = !showPassword"
-              />
-
-              <v-btn
-                type="submit"
-                color="primary"
-                size="large"
-                block
-                rounded="lg"
-                :loading="isLoading"
-              >
-                Войти
-              </v-btn>
-            </form>
-          </v-card>
-
-          <p class="text-center text-caption text-medium-emphasis mt-6">
-            &copy; {{ new Date().getFullYear() }} MizanPay. Все права защищены.
+        <!-- Center — text -->
+        <div class="brand-text-area">
+          <h1 class="brand-title mb-4">
+            Панель<br />инвестора
+          </h1>
+          <p class="brand-subtitle">
+            Управляйте портфелем сделок, отслеживайте платежи
+            и контролируйте прибыль — всё в одном месте.
           </p>
-        </v-col>
-      </v-row>
-    </v-container>
+        </div>
+
+        <!-- Bottom features -->
+        <div class="brand-features">
+          <div class="brand-feature">
+            <div class="feature-icon">
+              <v-icon icon="mdi-chart-line" size="18" color="white" />
+            </div>
+            <div>
+              <div class="feature-title">Аналитика</div>
+              <div class="feature-desc">ROI, прибыль, прогнозы</div>
+            </div>
+          </div>
+          <div class="brand-feature">
+            <div class="feature-icon">
+              <v-icon icon="mdi-briefcase-outline" size="18" color="white" />
+            </div>
+            <div>
+              <div class="feature-title">Портфель</div>
+              <div class="feature-desc">Все сделки в одном месте</div>
+            </div>
+          </div>
+          <div class="brand-feature">
+            <div class="feature-icon">
+              <v-icon icon="mdi-bell-ring-outline" size="18" color="white" />
+            </div>
+            <div>
+              <div class="feature-title">Уведомления</div>
+              <div class="feature-desc">Платежи и заявки</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right panel — form -->
+    <div class="login-form-panel">
+      <div class="login-form-wrapper">
+        <!-- Mobile logo -->
+        <div class="d-md-none text-center mb-8">
+          <div class="d-flex align-center justify-center ga-2 mb-2">
+            <v-img :src="logo" width="36" height="36" />
+            <span class="text-h6 font-weight-bold" style="color: #0c1a12">
+              Mizan<span style="color: #047857">Pay</span>
+            </span>
+          </div>
+          <p class="text-body-2" style="color: #5f7a6b">Панель инвестора</p>
+        </div>
+
+        <div class="mb-8">
+          <h2 class="login-title mb-2">Вход в аккаунт</h2>
+          <p class="login-subtitle">Введите данные для входа в панель управления</p>
+        </div>
+
+        <v-alert
+          v-if="error"
+          type="error"
+          variant="tonal"
+          density="compact"
+          class="mb-5"
+          closable
+          @click:close="error = ''"
+        >
+          {{ error }}
+        </v-alert>
+
+        <form @submit.prevent="handleLogin">
+          <div class="mb-5">
+            <label class="field-label">Email</label>
+            <v-text-field
+              v-model="email"
+              type="email"
+              variant="outlined"
+              density="comfortable"
+              placeholder="name@example.com"
+              prepend-inner-icon="mdi-email-outline"
+              hide-details="auto"
+              rounded="lg"
+            />
+          </div>
+
+          <div class="mb-6">
+            <label class="field-label">Пароль</label>
+            <v-text-field
+              v-model="password"
+              :type="showPassword ? 'text' : 'password'"
+              variant="outlined"
+              density="comfortable"
+              placeholder="Введите пароль"
+              prepend-inner-icon="mdi-lock-outline"
+              :append-inner-icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'"
+              hide-details="auto"
+              rounded="lg"
+              @click:append-inner="showPassword = !showPassword"
+            />
+          </div>
+
+          <v-btn
+            type="submit"
+            color="primary"
+            size="x-large"
+            block
+            rounded="lg"
+            :loading="isLoading"
+            class="login-btn mb-4"
+          >
+            Войти
+          </v-btn>
+        </form>
+
+        <p class="text-center text-caption mt-10" style="color: #94a3b8">
+          &copy; {{ new Date().getFullYear() }} MizanPay. Все права защищены.
+        </p>
+      </div>
+    </div>
   </v-main>
 </template>
 
 <style scoped>
 .login-page {
   min-height: 100vh;
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  display: flex;
 }
 
-.fill-height {
+/* ===== Left brand panel ===== */
+.login-brand {
+  width: 42%;
   min-height: 100vh;
+  position: relative;
+  background: #064e3b;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.brand-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(16, 185, 129, 0.15) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 80%, rgba(52, 211, 153, 0.1) 0%, transparent 50%);
+}
+
+.brand-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 32px 40px;
+  position: relative;
+  z-index: 1;
+}
+
+.brand-logo {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.01em;
+}
+
+.brand-logo-accent {
+  color: #34d399;
+}
+
+.brand-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 100px;
+}
+
+/* Text area */
+.brand-text-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.brand-title {
+  font-size: 3rem;
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+}
+
+.brand-subtitle {
+  font-size: 1.05rem;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.6;
+  max-width: 380px;
+}
+
+/* Features */
+.brand-features {
+  display: flex;
+  gap: 16px;
+}
+
+.brand-feature {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  flex: 1;
+}
+
+.feature-icon {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.feature-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.feature-desc {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 1px;
+}
+
+/* ===== Right form panel ===== */
+.login-form-panel {
+  flex: 1;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: #fafdfb;
+}
+
+.login-form-wrapper {
+  width: 100%;
+  max-width: 400px;
+}
+
+.login-title {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: #0c1a12;
+  letter-spacing: -0.02em;
+}
+
+.login-subtitle {
+  font-size: 0.9rem;
+  color: #5f7a6b;
+}
+
+.field-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #1a2e23;
+  margin-bottom: 6px;
+}
+
+.login-btn {
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 0.95rem;
 }
 </style>
