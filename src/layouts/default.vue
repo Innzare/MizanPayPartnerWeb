@@ -23,6 +23,8 @@ const collapsed = ref(false);
 const sidebarWidth = computed(() => (collapsed.value ? 72 : 260));
 
 onMounted(() => {
+  notificationsStore.fetchNotifications()
+
   const onResize = () => {
     const wasDesktop = !isMobile.value;
     isMobile.value = window.innerWidth < DRAWER_BREAKPOINT;
@@ -118,6 +120,7 @@ const isActive = (path: string) => {
 const confirmLogout = async () => {
   logoutDialog.value = false;
   await authStore.logout();
+  router.push('/login');
 };
 </script>
 

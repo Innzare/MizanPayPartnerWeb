@@ -26,10 +26,13 @@ async function tryRefreshToken(): Promise<boolean> {
   }
 }
 
+let isRefreshing = false;
+
 async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  skipAuthRedirect = false,
 ): Promise<T> {
   const token = getToken();
 
@@ -42,10 +45,15 @@ async function request<T>(
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
 
-  if (response.status === 401) {
-    const refreshed = await tryRefreshToken();
-    if (refreshed) {
-      return request<T>(method, path, body);
+  const isAuthPath = path.startsWith('/auth/');
+  if (response.status === 401 && !skipAuthRedirect && !isAuthPath) {
+    if (!isRefreshing) {
+      isRefreshing = true;
+      const refreshed = await tryRefreshToken();
+      isRefreshing = false;
+      if (refreshed) {
+        return request<T>(method, path, body, skipAuthRedirect);
+      }
     }
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
@@ -68,4 +76,6 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   delete: <T>(path: string) => request<T>('DELETE', path),
+  // Silent version — won't redirect on 401, just throws
+  getSilent: <T>(path: string) => request<T>('GET', path, undefined, true),
 };

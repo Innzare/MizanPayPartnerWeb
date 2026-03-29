@@ -7,6 +7,10 @@ import { useRouter } from 'vue-router'
 const productsStore = useProductsStore()
 const router = useRouter()
 
+onMounted(() => {
+  productsStore.fetchProducts()
+})
+
 const tab = ref(0)
 const search = ref('')
 const categoryFilter = ref<string | null>(null)

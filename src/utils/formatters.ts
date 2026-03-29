@@ -14,6 +14,9 @@ export function formatCurrencyShort(amount: number): string {
 }
 
 export function formatPercent(value: number): string {
+  if (value === 0) return '0%';
+  if (value < 0.01) return value.toFixed(4).replace(/0+$/, '') + '%';
+  if (value < 1) return value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + '%';
   return value.toFixed(1).replace('.0', '') + '%';
 }
 

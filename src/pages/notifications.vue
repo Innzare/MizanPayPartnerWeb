@@ -4,6 +4,10 @@ import { timeAgo } from '@/utils/formatters'
 
 const store = useNotificationsStore()
 
+onMounted(() => {
+  store.fetchNotifications()
+})
+
 const filter = ref<'all' | 'unread'>('all')
 
 const displayedNotifications = computed(() => {

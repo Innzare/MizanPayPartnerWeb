@@ -2,6 +2,7 @@
 import { useProductsStore } from '@/stores/products'
 import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatDate } from '@/utils/formatters'
+import { userName } from '@/types'
 import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter, useRoute } from 'vue-router'
@@ -11,7 +12,18 @@ const route = useRoute()
 const productsStore = useProductsStore()
 const dealsStore = useDealsStore()
 
-const product = computed(() => productsStore.getProduct(route.params.id as string))
+const productId = computed(() => route.params.id as string)
+const product = computed(() => productsStore.getProduct(productId.value))
+
+onMounted(async () => {
+  if (!product.value) {
+    try {
+      await productsStore.fetchProduct(productId.value)
+    } catch {
+      // product stays null, "not found" state shown
+    }
+  }
+})
 
 const categoryIcon = computed(() =>
   CATEGORIES.find(c => c.id === product.value?.category)?.icon || 'mdi-tag'
@@ -28,8 +40,8 @@ const relatedDeals = computed(() => {
 
 const dealStats = computed(() => {
   const deals = relatedDeals.value
-  const active = deals.filter(d => d.status === 'active' || d.status === 'in_progress').length
-  const completed = deals.filter(d => d.status === 'completed').length
+  const active = deals.filter(d => d.status === 'ACTIVE' || d.status === 'IN_PROGRESS').length
+  const completed = deals.filter(d => d.status === 'COMPLETED').length
   const revenue = deals.reduce((s, d) => s + d.markup, 0)
   return { total: deals.length, active, completed, revenue }
 })
@@ -73,15 +85,15 @@ function openEdit() {
   editDialog.value = true
 }
 
-function saveEdit() {
+async function saveEdit() {
   if (!product.value) return
-  productsStore.updateProduct(product.value.id, editForm.value)
+  await productsStore.updateProduct(product.value.id, editForm.value)
   editDialog.value = false
 }
 
-function deleteProduct() {
+async function deleteProduct() {
   if (!product.value) return
-  // In real app — API call, for now just go back
+  await productsStore.deleteProduct(product.value.id)
   router.push('/products')
 }
 </script>
@@ -190,10 +202,10 @@ function deleteProduct() {
               >
                 <div class="d-flex align-center ga-3">
                   <div class="deal-avatar" :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.color || '#6b7280' }">
-                    {{ deal.clientName.charAt(0) }}
+                    {{ userName(deal.client).charAt(0) }}
                   </div>
                   <div class="flex-grow-1 min-width-0">
-                    <div class="deal-client">{{ deal.clientName }}</div>
+                    <div class="deal-client">{{ userName(deal.client) }}</div>
                     <div class="deal-info">
                       {{ deal.paidPayments }}/{{ deal.numberOfPayments }} платежей
                     </div>

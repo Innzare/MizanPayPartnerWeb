@@ -4,13 +4,18 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import type { Deal } from '@/types'
+import { type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
 const clientsStore = useClientsStore()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
+
+onMounted(() => {
+  dealsStore.fetchDeals()
+  paymentsStore.fetchPayments()
+})
 
 const search = ref('')
 const expandedClients = ref<string[]>([])
@@ -92,7 +97,7 @@ const selectedDealPayments = computed(() => {
 })
 
 const selectedDealPaidTotal = computed(() =>
-  selectedDealPayments.value.filter(p => p.status === 'paid').reduce((s, p) => s + p.amount, 0)
+  selectedDealPayments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
 )
 </script>
 
@@ -333,12 +338,12 @@ const selectedDealPaidTotal = computed(() =>
           <!-- Client & Date row -->
           <div class="d-flex align-center ga-3 mb-5">
             <div class="dialog-avatar" :style="{ background: '#3b82f6' }">
-              {{ selectedDeal.clientName.charAt(0) }}
+              {{ userName(selectedDeal.client).charAt(0) }}
             </div>
             <div>
-              <div class="font-weight-medium">{{ selectedDeal.clientName }}</div>
+              <div class="font-weight-medium">{{ userName(selectedDeal.client) }}</div>
               <div class="text-caption text-medium-emphasis">
-                Рейтинг {{ selectedDeal.clientRating }} · Создано {{ formatDate(selectedDeal.createdAt) }}
+                Рейтинг {{ selectedDeal.client?.rating ?? 0 }} · Создано {{ formatDate(selectedDeal.createdAt) }}
               </div>
             </div>
           </div>
@@ -358,12 +363,8 @@ const selectedDealPaidTotal = computed(() =>
               <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ selectedDeal.markupPercent }}%)</div>
             </div>
             <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Первый взнос</div>
-              <div class="dialog-finance-value">{{ formatCurrency(selectedDeal.downPayment) }}</div>
-            </div>
-            <div class="dialog-finance-item">
               <div class="dialog-finance-label">Оплачено</div>
-              <div class="dialog-finance-value" style="color: #047857;">{{ formatCurrency(selectedDealPaidTotal + selectedDeal.downPayment) }}</div>
+              <div class="dialog-finance-value" style="color: #047857;">{{ formatCurrency(selectedDealPaidTotal) }}</div>
             </div>
             <div class="dialog-finance-item">
               <div class="dialog-finance-label">Остаток</div>
@@ -399,7 +400,7 @@ const selectedDealPaidTotal = computed(() =>
                 v-for="p in selectedDealPayments"
                 :key="p.id"
                 class="schedule-item"
-                :class="{ 'schedule-item--paid': p.status === 'paid', 'schedule-item--overdue': p.status === 'overdue' }"
+                :class="{ 'schedule-item--paid': p.status === 'PAID', 'schedule-item--overdue': p.status === 'OVERDUE' }"
               >
                 <div class="schedule-num">{{ p.number }}</div>
                 <div class="schedule-info">

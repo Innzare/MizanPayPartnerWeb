@@ -1,22 +1,29 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Deal, CreateDealInput } from '@/types'
-import { MOCK_DEALS } from '@/constants/mock/deals'
+import { api } from '@/api/client'
+import type { Deal } from '@/types'
+
+interface DealAnalytics {
+  totalDeals: number
+  activeDeals: number
+  completedDeals: number
+  revenue: number
+  avgRating: number
+}
 
 export const useDealsStore = defineStore('deals', () => {
-  const deals = ref<Deal[]>([...MOCK_DEALS])
+  const deals = ref<Deal[]>([])
   const isLoading = ref(false)
+  const error = ref<string | null>(null)
 
-  const investorDeals = computed(() =>
-    deals.value.filter((d) => d.investorId === 'investor-1')
-  )
+  const investorDeals = computed(() => deals.value)
 
   const activeDeals = computed(() =>
-    investorDeals.value.filter((d) => d.status === 'active' || d.status === 'contract_signed')
+    deals.value.filter((d) => d.status === 'ACTIVE')
   )
 
   const completedDeals = computed(() =>
-    investorDeals.value.filter((d) => d.status === 'completed')
+    deals.value.filter((d) => d.status === 'COMPLETED')
   )
 
   const totalInvested = computed(() =>
@@ -38,7 +45,7 @@ export const useDealsStore = defineStore('deals', () => {
   const monthlyIncome = computed(() => {
     return activeDeals.value.reduce((sum, d) => {
       if (d.numberOfPayments > 0) {
-        return sum + (d.totalPrice - d.downPayment) / d.numberOfPayments
+        return sum + d.totalPrice / d.numberOfPayments
       }
       return sum
     }, 0)
@@ -49,40 +56,66 @@ export const useDealsStore = defineStore('deals', () => {
     return (totalProfit.value / totalInvested.value) * 100
   })
 
-  function getDeal(id: string) {
+  async function fetchDeals(params?: { status?: string }) {
+    isLoading.value = true
+    error.value = null
+    try {
+      let query = '?role=investor'
+      if (params?.status) query += `&status=${params.status}`
+      deals.value = await api.get<Deal[]>(`/deals${query}`)
+    } catch (e: any) {
+      error.value = e.message || 'Ошибка загрузки сделок'
+      console.error('Failed to fetch deals:', e)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  function getDeal(id: string): Deal | undefined {
     return deals.value.find((d) => d.id === id)
   }
 
-  function createDeal(input: CreateDealInput) {
-    const newDeal: Deal = {
-      id: 'deal-' + Date.now(),
-      ...input,
-      clientName: 'Новый клиент',
-      clientRating: 4.0,
-      investorId: 'investor-1',
-      investorName: 'Мухаммад Хаджиев',
-      investorRating: 4.8,
-      remainingAmount: input.totalPrice - input.downPayment,
-      paidPayments: 0,
-      status: 'created',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+  async function fetchDeal(id: string): Promise<Deal | null> {
+    try {
+      const deal = await api.get<Deal>(`/deals/${id}`)
+      const index = deals.value.findIndex((d) => d.id === id)
+      if (index >= 0) {
+        deals.value[index] = deal
+      } else {
+        deals.value.push(deal)
+      }
+      return deal
+    } catch (e: any) {
+      console.error('Failed to fetch deal:', e)
+      return null
     }
-    deals.value.unshift(newDeal)
-    return newDeal
   }
 
-  function updateDealStatus(id: string, status: Deal['status']) {
-    const deal = deals.value.find((d) => d.id === id)
-    if (deal) {
-      deal.status = status
-      deal.updatedAt = new Date().toISOString()
+  async function updateDealStatus(id: string, status: Deal['status']) {
+    try {
+      const updated = await api.patch<Deal>(`/deals/${id}/status`, { status })
+      const index = deals.value.findIndex((d) => d.id === id)
+      if (index >= 0) {
+        deals.value[index] = updated
+      }
+    } catch (e: any) {
+      console.error('Failed to update deal status:', e)
+      throw e
+    }
+  }
+
+  async function fetchAnalytics(): Promise<DealAnalytics | null> {
+    try {
+      return await api.get<DealAnalytics>('/deals/analytics')
+    } catch (e: any) {
+      console.error('Failed to fetch analytics:', e)
+      return null
     }
   }
 
   return {
-    deals, isLoading, investorDeals, activeDeals, completedDeals,
+    deals, isLoading, error, investorDeals, activeDeals, completedDeals,
     totalInvested, totalRevenue, totalProfit, totalRemaining, monthlyIncome, roi,
-    getDeal, createDeal, updateDealStatus,
+    fetchDeals, getDeal, fetchDeal, updateDealStatus, fetchAnalytics,
   }
 })

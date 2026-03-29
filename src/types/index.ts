@@ -1,15 +1,16 @@
 // User
-export type UserRole = 'client' | 'investor' | 'both'
-export type VerificationLevel = 0 | 1 | 2 | 3
-export type SubscriptionPlan = 'free' | 'pro' | 'business'
+export type UserRole = 'CLIENT' | 'INVESTOR' | 'BOTH'
+export type VerificationLevel = 'NONE' | 'BASIC' | 'VERIFIED' | 'FULL'
+export type SubscriptionPlan = 'FREE' | 'PRO' | 'BUSINESS'
 
 export interface User {
   id: string
+  email?: string
   phone: string
   firstName: string
   lastName: string
   patronymic?: string
-  city: string
+  city?: string
   role: UserRole
   avatar?: string
   rating: number
@@ -27,15 +28,15 @@ export interface User {
 
 // Category
 export type Category =
-  | 'electronics'
-  | 'appliances'
-  | 'furniture'
-  | 'auto'
-  | 'clothing'
-  | 'construction'
-  | 'medical'
-  | 'education'
-  | 'other'
+  | 'ELECTRONICS'
+  | 'APPLIANCES'
+  | 'FURNITURE'
+  | 'AUTO'
+  | 'CLOTHING'
+  | 'CONSTRUCTION'
+  | 'MEDICAL'
+  | 'EDUCATION'
+  | 'OTHER'
 
 export interface CategoryItem {
   id: Category
@@ -45,46 +46,21 @@ export interface CategoryItem {
 
 // Deal
 export type DealStatus =
-  | 'created'
-  | 'pending_approval'
-  | 'approved'
-  | 'goods_purchased'
-  | 'goods_delivered'
-  | 'contract_signed'
-  | 'active'
-  | 'completed'
-  | 'disputed'
-  | 'cancelled'
+  | 'ACTIVE'
+  | 'COMPLETED'
+  | 'DISPUTED'
+  | 'CANCELLED'
 
-export type PaymentInterval = 'weekly' | 'biweekly' | 'monthly'
-export type PaymentType = 'equal' | 'decreasing' | 'custom'
-
-export interface CreateDealInput {
-  requestId?: string
-  clientId: string
-  productName: string
-  productPhotos: string[]
-  productUrl?: string
-  purchasePrice: number
-  markup: number
-  markupPercent: number
-  totalPrice: number
-  downPayment: number
-  numberOfPayments: number
-  paymentInterval: PaymentInterval
-  paymentType: PaymentType
-  firstPaymentDate: string
-}
+export type PaymentInterval = 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
+export type PaymentType = 'EQUAL' | 'DECREASING' | 'CUSTOM'
 
 export interface Deal {
   id: string
   requestId?: string
   clientId: string
-  clientName: string
-  clientRating: number
   investorId: string
-  investorName: string
-  investorRating: number
+  client?: Partial<User>
+  investor?: Partial<User>
   productName: string
   productPhotos: string[]
   productUrl?: string
@@ -92,26 +68,22 @@ export interface Deal {
   markup: number
   markupPercent: number
   totalPrice: number
-  downPayment: number
   remainingAmount: number
   numberOfPayments: number
   paidPayments: number
   paymentInterval: PaymentInterval
   paymentType: PaymentType
-  firstPaymentDate: string
-  purchaseReceiptPhoto?: string
-  deliveryPhoto?: string
-  contractPdf?: string
+  firstPaymentDate?: string
   status: DealStatus
   createdAt: string
-  signedAt?: string
   completedAt?: string
   updatedAt: string
+  payments?: Payment[]
 }
 
 // Payment
-export type PaymentStatus = 'pending' | 'paid' | 'overdue'
-export type PaymentMethod = 'transfer' | 'card' | 'cash' | 'auto'
+export type PaymentStatus = 'PENDING' | 'PAID' | 'OVERDUE'
+export type PaymentMethod = 'TRANSFER' | 'CARD' | 'CASH' | 'AUTO'
 
 export interface Payment {
   id: string
@@ -131,7 +103,7 @@ export interface Payment {
 }
 
 // Request
-export type RequestStatus = 'moderation' | 'active' | 'accepted' | 'in_progress' | 'completed' | 'cancelled'
+export type RequestStatus = 'MODERATION' | 'ACTIVE' | 'OFFER_SENT' | 'COMPLETED' | 'CANCELLED'
 
 export interface CreateRequestInput {
   title: string
@@ -140,8 +112,6 @@ export interface CreateRequestInput {
   productUrl?: string
   photos: string[]
   price: number
-  desiredTermMonths: number
-  downPayment?: number
   city: string
   comment?: string
 }
@@ -149,21 +119,22 @@ export interface CreateRequestInput {
 export interface Request {
   id: string
   clientId: string
-  clientName: string
-  clientRating: number
-  clientCompletedDeals: number
+  client?: Partial<User>
   title: string
   description?: string
   category: Category
   productUrl?: string
   photos: string[]
   price: number
-  desiredTermMonths: number
-  downPayment?: number
   city: string
   comment?: string
   status: RequestStatus
-  acceptedBy?: string
+  acceptedById?: string
+  acceptedBy?: Partial<User>
+
+  // Offer tiers
+  offerTiers?: { termMonths: number; markupPercent: number }[]
+
   createdAt: string
   updatedAt: string
 }
@@ -172,8 +143,7 @@ export interface Request {
 export interface Product {
   id: string
   investorId: string
-  investorName: string
-  investorRating: number
+  investor?: Partial<User>
   title: string
   description?: string
   category: Category
@@ -185,6 +155,7 @@ export interface Product {
   city: string
   isAvailable: boolean
   createdAt: string
+  updatedAt?: string
 }
 
 // Calculator
@@ -250,11 +221,8 @@ export interface PortfolioCalculatorResult {
   riskLevel: 'low' | 'medium' | 'high'
 }
 
-// Common
-export interface PaginatedResponse<T> {
-  items: T[]
-  total: number
-  page: number
-  limit: number
-  totalPages: number
+// Helpers
+export function userName(u?: Partial<User> | null): string {
+  if (!u) return '—'
+  return `${u.firstName || ''} ${u.lastName || ''}`.trim() || '—'
 }

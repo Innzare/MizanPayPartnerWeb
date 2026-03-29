@@ -1,7 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { User } from '@/types'
-import { MOCK_INVESTOR } from '@/constants/mock/users'
+import { api } from '@/api/client'
+
+interface AuthResponse {
+  user: User
+  accessToken: string
+  refreshToken: string
+}
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
@@ -16,18 +22,17 @@ export const useAuthStore = defineStore('auth', () => {
     return `${user.value.firstName} ${user.value.lastName}`
   })
 
-  async function login(_email: string, _password: string) {
+  async function login(email: string, password: string) {
     isLoading.value = true
     error.value = null
     try {
-      // Mock login - accept any credentials
-      await new Promise((resolve) => setTimeout(resolve, 500))
-      user.value = { ...MOCK_INVESTOR }
-      accessToken.value = 'mock-access-token-' + Date.now()
-      refreshToken.value = 'mock-refresh-token-' + Date.now()
-      localStorage.setItem('access_token', accessToken.value)
-      localStorage.setItem('refresh_token', refreshToken.value)
-      localStorage.setItem('user', JSON.stringify(user.value))
+      const data = await api.post<AuthResponse>('/auth/login', { email, password })
+      user.value = data.user
+      accessToken.value = data.accessToken
+      refreshToken.value = data.refreshToken
+      localStorage.setItem('access_token', data.accessToken)
+      localStorage.setItem('refresh_token', data.refreshToken)
+      localStorage.setItem('user', JSON.stringify(data.user))
     } catch (e: any) {
       error.value = e.message || 'Ошибка входа'
       throw e
@@ -37,22 +42,44 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout() {
-    user.value = null
-    accessToken.value = null
-    refreshToken.value = null
-    localStorage.removeItem('access_token')
-    localStorage.removeItem('refresh_token')
-    localStorage.removeItem('user')
+    try {
+      if (refreshToken.value) {
+        await api.post('/auth/logout', { refreshToken: refreshToken.value })
+      }
+    } catch {
+      // Ignore logout errors — clear local state regardless
+    } finally {
+      user.value = null
+      accessToken.value = null
+      refreshToken.value = null
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('refresh_token')
+      localStorage.removeItem('user')
+    }
   }
 
   async function checkAuth() {
     const savedToken = localStorage.getItem('access_token')
-    const savedUser = localStorage.getItem('user')
-    if (!savedToken || !savedUser) return
+    if (!savedToken) return
+
     accessToken.value = savedToken
     refreshToken.value = localStorage.getItem('refresh_token')
+
+    // Load cached user immediately for faster UI
+    const savedUser = localStorage.getItem('user')
+    if (savedUser) {
+      try {
+        user.value = JSON.parse(savedUser)
+      } catch {
+        // ignore parse errors
+      }
+    }
+
+    // Validate with backend
     try {
-      user.value = JSON.parse(savedUser)
+      const profile = await api.getSilent<User>('/auth/profile')
+      user.value = profile
+      localStorage.setItem('user', JSON.stringify(profile))
     } catch {
       await logout()
     }
@@ -62,19 +89,19 @@ export const useAuthStore = defineStore('auth', () => {
     if (!user.value) return
     isLoading.value = true
     try {
-      await new Promise((resolve) => setTimeout(resolve, 400))
-      Object.assign(user.value, updates, { updatedAt: new Date().toISOString() })
-      localStorage.setItem('user', JSON.stringify(user.value))
+      const updated = await api.patch<User>('/users/me', updates)
+      user.value = updated
+      localStorage.setItem('user', JSON.stringify(updated))
     } finally {
       isLoading.value = false
     }
   }
 
   async function changePassword(_currentPassword: string, _newPassword: string) {
+    // TODO: implement when backend endpoint is available
     isLoading.value = true
     try {
       await new Promise((resolve) => setTimeout(resolve, 500))
-      // Mock: always succeeds
     } finally {
       isLoading.value = false
     }

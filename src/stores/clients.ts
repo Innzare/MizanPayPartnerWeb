@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed } from 'vue'
 import type { User } from '@/types'
-import { MOCK_CLIENTS } from '@/constants/mock/users'
 import { useDealsStore } from './deals'
 import { usePaymentsStore } from './payments'
 
@@ -20,11 +19,18 @@ export const useClientsStore = defineStore('clients', () => {
   const dealsStore = useDealsStore()
   const paymentsStore = usePaymentsStore()
 
+  // Compute unique clients from deals data (no dedicated clients API endpoint)
   const clientsInfo = computed<ClientInfo[]>(() => {
-    return MOCK_CLIENTS.map((client) => {
-      const clientDeals = dealsStore.investorDeals.filter((d) => d.clientId === client.id)
+    const clientIds = new Set(dealsStore.investorDeals.map((d) => d.clientId))
+    const results: ClientInfo[] = []
+
+    for (const clientId of clientIds) {
+      const clientDeals = dealsStore.investorDeals.filter((d) => d.clientId === clientId)
+      if (clientDeals.length === 0) continue
+
+      const firstDeal = clientDeals[0]!
       const activeDealCount = clientDeals.filter(
-        (d) => d.status === 'active' || d.status === 'contract_signed'
+        (d) => d.status === 'ACTIVE'
       ).length
 
       const totalVolume = clientDeals.reduce((sum, d) => sum + d.totalPrice, 0)
@@ -37,7 +43,7 @@ export const useClientsStore = defineStore('clients', () => {
       for (const deal of clientDeals) {
         const dealPayments = paymentsStore.getPaymentsForDeal(deal.id)
         for (const p of dealPayments) {
-          if (p.status === 'paid') {
+          if (p.status === 'PAID') {
             totalPaid++
             if (p.paidAt && new Date(p.paidAt) <= new Date(p.dueDate)) {
               onTimePaid++
@@ -60,8 +66,29 @@ export const useClientsStore = defineStore('clients', () => {
         }
       }
 
-      return {
-        user: client,
+      // Build a User object from deal's nested client data
+      const client = firstDeal.client
+      const user: User = {
+        id: clientId,
+        email: '',
+        phone: client?.phone || '',
+        firstName: client?.firstName || '',
+        lastName: client?.lastName || '',
+        city: client?.city || '',
+        role: 'CLIENT',
+        avatar: client?.avatar,
+        rating: client?.rating ?? 0,
+        completedDeals: client?.completedDeals ?? 0,
+        activeDeals: activeDealCount,
+        verificationLevel: 'NONE',
+        isBlocked: false,
+        subscriptionPlan: 'FREE',
+        createdAt: firstDeal.createdAt,
+        updatedAt: firstDeal.updatedAt,
+      }
+
+      results.push({
+        user,
         dealCount: clientDeals.length,
         activeDealCount,
         totalVolume,
@@ -69,8 +96,10 @@ export const useClientsStore = defineStore('clients', () => {
         remaining,
         onTimeRate,
         nextPaymentDate,
-      }
-    }).filter((c) => c.dealCount > 0)
+      })
+    }
+
+    return results.filter((c) => c.dealCount > 0)
   })
 
   return { clientsInfo }

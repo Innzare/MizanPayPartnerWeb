@@ -4,6 +4,7 @@ import { usePaymentsStore } from '@/stores/payments'
 import { useRequestsStore } from '@/stores/requests'
 import { useNotificationsStore } from '@/stores/notifications'
 import { formatCurrency, formatCurrencyShort, formatPercent, formatDateShort } from '@/utils/formatters'
+import { userName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
 import { Bar, Line } from 'vue-chartjs'
@@ -55,7 +56,7 @@ const revenueChartData = computed(() => {
     months[key] = 0
   }
 
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'paid' && p.paidAt).forEach(p => {
+  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID' && p.paidAt).forEach(p => {
     const d = new Date(p.paidAt!)
     const key = d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
     if (key in months) months[key] += p.amount
@@ -86,7 +87,7 @@ const forecastChartData = computed(() => {
     months[key] = 0
   }
 
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'pending' || p.status === 'overdue').forEach(p => {
+  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
     const d = new Date(p.dueDate)
     const key = d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
     if (key in months) months[key] += p.amount
@@ -174,6 +175,13 @@ const lineOptions = {
     }
   }
 }
+
+onMounted(() => {
+  dealsStore.fetchDeals()
+  paymentsStore.fetchPayments()
+  requestsStore.fetchRequests()
+  notificationsStore.fetchNotifications()
+})
 
 const AVATAR_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
 function getInitial(name?: string) { return name ? name.charAt(0).toUpperCase() : '?' }
@@ -425,12 +433,12 @@ function getAvatarColor(name?: string) {
               :key="item.payment.id"
               class="payment-row"
             >
-              <div class="payment-avatar" :style="{ background: getAvatarColor(item.deal?.clientName) }">
-                {{ getInitial(item.deal?.clientName) }}
+              <div class="payment-avatar" :style="{ background: getAvatarColor(userName(item.deal?.client)) }">
+                {{ getInitial(userName(item.deal?.client)) }}
               </div>
               <div class="payment-info">
                 <div class="payment-product">{{ item.deal?.productName || 'Товар' }}</div>
-                <div class="payment-meta">{{ item.deal?.clientName || 'Клиент' }} · {{ formatDateShort(item.payment.dueDate) }}</div>
+                <div class="payment-meta">{{ userName(item.deal?.client) }} · {{ formatDateShort(item.payment.dueDate) }}</div>
               </div>
               <div class="payment-right">
                 <div class="payment-amount">{{ formatCurrency(item.payment.amount) }}</div>
@@ -475,7 +483,7 @@ function getAvatarColor(name?: string) {
               </v-avatar>
               <div class="deal-info">
                 <div class="deal-product">{{ deal.productName }}</div>
-                <div class="deal-meta">{{ deal.clientName }}</div>
+                <div class="deal-meta">{{ userName(deal.client) }}</div>
               </div>
               <div class="deal-progress-col">
                 <div class="deal-progress-label">{{ deal.paidPayments }} / {{ deal.numberOfPayments }}</div>

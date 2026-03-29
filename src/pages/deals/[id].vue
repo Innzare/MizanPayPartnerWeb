@@ -2,9 +2,11 @@
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { useClientsStore } from '@/stores/clients'
-import { formatCurrency, formatDate, formatDateShort, formatMonths, formatPhone, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { MOCK_CLIENTS } from '@/constants/mock/users'
+import { userName, type Deal } from '@/types'
+import { useAuthStore } from '@/stores/auth'
+import { generateContract } from '@/utils/contractPdf'
 import { useRoute, useRouter } from 'vue-router'
 import { Line } from 'vue-chartjs'
 import {
@@ -19,15 +21,21 @@ const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const clientsStore = useClientsStore()
 
+const authStore = useAuthStore()
 const dealId = computed(() => route.params.id as string)
+
+onMounted(async () => {
+  await Promise.all([
+    dealsStore.fetchDeal(dealId.value),
+    paymentsStore.fetchPaymentsForDeal(dealId.value),
+  ])
+})
+
 const deal = computed(() => dealsStore.getDeal(dealId.value))
 const payments = computed(() => paymentsStore.getPaymentsForDeal(dealId.value))
 
-// Client info
-const client = computed(() => {
-  if (!deal.value) return null
-  return MOCK_CLIENTS.find(c => c.id === deal.value!.clientId) || null
-})
+// Client info from deal's nested client object
+const client = computed(() => deal.value?.client || null)
 
 const clientInfo = computed(() => {
   if (!deal.value) return null
@@ -36,9 +44,9 @@ const clientInfo = computed(() => {
 
 // Financial calculations
 const paidTotal = computed(() =>
-  payments.value.filter(p => p.status === 'paid').reduce((s, p) => s + p.amount, 0)
+  payments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
 )
-const totalPaid = computed(() => paidTotal.value + (deal.value?.downPayment || 0))
+const totalPaid = computed(() => paidTotal.value)
 const progress = computed(() =>
   deal.value && deal.value.numberOfPayments > 0
     ? (deal.value.paidPayments / deal.value.numberOfPayments) * 100 : 0
@@ -57,7 +65,7 @@ const paymentChartData = computed(() => {
       backgroundColor: 'rgba(4, 120, 87, 0.06)',
       borderWidth: 2.5,
       pointBackgroundColor: payments.value.map(p =>
-        p.status === 'paid' ? '#047857' : p.status === 'overdue' ? '#ef4444' : '#f59e0b'
+        p.status === 'PAID' ? '#047857' : p.status === 'OVERDUE' ? '#ef4444' : '#f59e0b'
       ),
       pointBorderColor: '#fff',
       pointBorderWidth: 2,
@@ -95,7 +103,7 @@ const chartOptions = {
 
 // Next payment
 const nextPayment = computed(() =>
-  payments.value.find(p => p.status === 'pending' || p.status === 'overdue')
+  payments.value.find(p => p.status === 'PENDING' || p.status === 'OVERDUE')
 )
 
 // Reschedule dialog
@@ -142,15 +150,46 @@ function markPaid(p: typeof payments.value[0]) {
   paymentsStore.markAsPaid(p.id, p.dealId)
 }
 
+// Status progression for investor — only ACTIVE deals can transition
+const STATUS_ACTIONS: Record<string, { nextStatus: Deal['status']; label: string; icon: string; color: string }> = {
+  ACTIVE: { nextStatus: 'COMPLETED', label: 'Завершить сделку', icon: 'mdi-check-decagram', color: '#047857' },
+}
+
+const statusAction = computed(() => deal.value ? STATUS_ACTIONS[deal.value.status] : null)
+const statusDialog = ref(false)
+const statusUpdating = ref(false)
+
+function openStatusDialog() {
+  statusDialog.value = true
+}
+
+async function confirmStatusChange() {
+  if (!deal.value || !statusAction.value) return
+  statusUpdating.value = true
+  try {
+    await dealsStore.updateDealStatus(deal.value.id, statusAction.value.nextStatus)
+    statusDialog.value = false
+  } catch (e: any) {
+    console.error('Status update failed:', e)
+  } finally {
+    statusUpdating.value = false
+  }
+}
+
+function downloadContract() {
+  console.log('downloadContract called', { deal: !!deal.value, user: !!authStore.user })
+  if (!deal.value) return
+  const investor = authStore.user || {} as Partial<import('@/types').User>
+  generateContract(deal.value, payments.value, investor)
+}
+
 // Deal timeline events
 const timeline = computed(() => {
   if (!deal.value) return []
   const events = [
     { date: deal.value.createdAt, label: 'Сделка создана', icon: 'mdi-plus-circle', color: '#64748b' },
   ]
-  if (deal.value.signedAt) events.push({ date: deal.value.signedAt, label: 'Договор подписан', icon: 'mdi-file-sign', color: '#3b82f6' })
-
-  payments.value.filter(p => p.status === 'paid' && p.paidAt).forEach(p => {
+  payments.value.filter(p => p.status === 'PAID' && p.paidAt).forEach(p => {
     events.push({ date: p.paidAt!, label: `Платёж #${p.number} — ${formatCurrency(p.amount)}`, icon: 'mdi-check-circle', color: '#047857' })
   })
 
@@ -182,11 +221,26 @@ const timeline = computed(() => {
           </div>
           <h1 class="detail-hero-title">{{ deal.productName }}</h1>
           <div class="detail-hero-meta">
-            <v-icon icon="mdi-account" size="16" /> {{ deal.clientName }}
+            <v-icon icon="mdi-account" size="16" /> {{ userName(deal.client) }}
             <span class="mx-2">·</span>
             Создано {{ formatDate(deal.createdAt) }}
           </div>
         </div>
+      </div>
+
+      <!-- Status action banner -->
+      <div v-if="statusAction" class="status-action-banner mb-6" :style="{ borderColor: statusAction.color + '40' }">
+        <div class="status-action-info">
+          <v-icon :icon="statusAction.icon" size="22" :color="statusAction.color" />
+          <div>
+            <div class="status-action-title">Следующий шаг</div>
+            <div class="status-action-label">{{ statusAction.label }}</div>
+          </div>
+        </div>
+        <button class="status-action-btn" :style="{ background: statusAction.color }" @click="openStatusDialog">
+          {{ statusAction.label }}
+          <v-icon icon="mdi-arrow-right" size="16" />
+        </button>
       </div>
 
       <v-row>
@@ -204,11 +258,7 @@ const timeline = computed(() => {
             </div>
             <div class="finance-card">
               <div class="finance-label">Наценка</div>
-              <div class="finance-value" style="color: #047857;">+{{ formatCurrency(deal.markup) }} ({{ deal.markupPercent }}%)</div>
-            </div>
-            <div class="finance-card">
-              <div class="finance-label">Первоначальный взнос</div>
-              <div class="finance-value">{{ formatCurrency(deal.downPayment) }}</div>
+              <div class="finance-value" style="color: #047857;">+{{ formatCurrency(deal.markup) }} ({{ formatPercent(deal.markupPercent) }})</div>
             </div>
             <div class="finance-card">
               <div class="finance-label">Оплачено</div>
@@ -278,7 +328,7 @@ const timeline = computed(() => {
                 <tr
                   v-for="p in payments"
                   :key="p.id"
-                  :class="{ 'row-paid': p.status === 'paid', 'row-overdue': p.status === 'overdue' }"
+                  :class="{ 'row-paid': p.status === 'PAID', 'row-overdue': p.status === 'OVERDUE' }"
                 >
                   <td class="font-weight-medium">{{ p.number }}</td>
                   <td>
@@ -300,7 +350,7 @@ const timeline = computed(() => {
                     </div>
                   </td>
                   <td class="text-center">
-                    <div v-if="p.status !== 'paid'" class="d-flex align-center justify-center ga-1">
+                    <div v-if="p.status !== 'PAID'" class="d-flex align-center justify-center ga-1">
                       <button class="action-btn action-btn--success" title="Отметить оплаченным" @click="markPaid(p)">
                         <v-icon icon="mdi-check" size="16" />
                       </button>
@@ -323,10 +373,10 @@ const timeline = computed(() => {
             <div class="section-title mb-4">Клиент</div>
 
             <div class="d-flex align-center ga-3 mb-4">
-              <div class="client-avatar">{{ client.firstName.charAt(0) }}{{ client.lastName.charAt(0) }}</div>
+              <div class="client-avatar">{{ (client.firstName || '')[0] || '' }}{{ (client.lastName || '')[0] || '' }}</div>
               <div>
-                <div class="font-weight-bold">{{ client.firstName }} {{ client.lastName }}</div>
-                <div class="text-caption text-medium-emphasis">{{ client.city }}</div>
+                <div class="font-weight-bold">{{ userName(client) }}</div>
+                <div class="text-caption text-medium-emphasis">{{ client.city || '' }}</div>
               </div>
             </div>
 
@@ -335,28 +385,21 @@ const timeline = computed(() => {
                 <v-icon icon="mdi-star" size="16" color="warning" />
                 <div>
                   <div class="client-info-label">Рейтинг</div>
-                  <div class="client-info-value">{{ client.rating }}</div>
+                  <div class="client-info-value">{{ client.rating ?? 0 }}</div>
                 </div>
               </div>
               <div class="client-info-item">
                 <v-icon icon="mdi-check-decagram" size="16" color="primary" />
                 <div>
                   <div class="client-info-label">Завершено</div>
-                  <div class="client-info-value">{{ client.completedDeals }} сделок</div>
+                  <div class="client-info-value">{{ client.completedDeals ?? 0 }} сделок</div>
                 </div>
               </div>
-              <div class="client-info-item">
+              <div v-if="client.phone" class="client-info-item">
                 <v-icon icon="mdi-phone" size="16" color="info" />
                 <div>
                   <div class="client-info-label">Телефон</div>
                   <div class="client-info-value">{{ formatPhone(client.phone) }}</div>
-                </div>
-              </div>
-              <div class="client-info-item">
-                <v-icon icon="mdi-shield-check" size="16" :color="client.verificationLevel >= 2 ? 'success' : 'grey'" />
-                <div>
-                  <div class="client-info-label">Верификация</div>
-                  <div class="client-info-value">Уровень {{ client.verificationLevel }}</div>
                 </div>
               </div>
             </div>
@@ -374,6 +417,25 @@ const timeline = computed(() => {
             </div>
           </v-card>
 
+          <!-- Contract download -->
+          <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
+            <div class="d-flex align-center justify-space-between">
+              <div class="d-flex align-center ga-3">
+                <div class="contract-icon">
+                  <v-icon icon="mdi-file-document-outline" size="22" color="#3b82f6" />
+                </div>
+                <div>
+                  <div class="font-weight-bold" style="font-size: 14px;">Договор мурабаха</div>
+                  <div class="text-caption text-medium-emphasis">PDF с условиями и графиком</div>
+                </div>
+              </div>
+              <button class="contract-download-btn" @click="downloadContract">
+                <v-icon icon="mdi-download" size="18" />
+                Скачать
+              </button>
+            </div>
+          </v-card>
+
           <!-- Deal info card -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="section-title mb-4">Условия сделки</div>
@@ -381,19 +443,15 @@ const timeline = computed(() => {
             <div class="deal-detail-list">
               <div class="deal-detail-row">
                 <span class="deal-detail-label">Интервал</span>
-                <span class="deal-detail-val">{{ deal.paymentInterval === 'monthly' ? 'Ежемесячно' : deal.paymentInterval === 'biweekly' ? 'Раз в 2 недели' : 'Еженедельно' }}</span>
+                <span class="deal-detail-val">{{ deal.paymentInterval === 'MONTHLY' ? 'Ежемесячно' : deal.paymentInterval === 'BIWEEKLY' ? 'Раз в 2 недели' : 'Еженедельно' }}</span>
               </div>
               <div class="deal-detail-row">
                 <span class="deal-detail-label">Тип платежей</span>
-                <span class="deal-detail-val">{{ deal.paymentType === 'equal' ? 'Равные' : deal.paymentType === 'decreasing' ? 'Убывающие' : 'Произвольные' }}</span>
+                <span class="deal-detail-val">{{ deal.paymentType === 'EQUAL' ? 'Равные' : deal.paymentType === 'DECREASING' ? 'Убывающие' : 'Произвольные' }}</span>
               </div>
               <div class="deal-detail-row">
                 <span class="deal-detail-label">Первый платёж</span>
                 <span class="deal-detail-val">{{ formatDate(deal.firstPaymentDate) }}</span>
-              </div>
-              <div v-if="deal.signedAt" class="deal-detail-row">
-                <span class="deal-detail-label">Договор подписан</span>
-                <span class="deal-detail-val">{{ formatDate(deal.signedAt) }}</span>
               </div>
               <div v-if="deal.completedAt" class="deal-detail-row">
                 <span class="deal-detail-label">Завершена</span>
@@ -476,6 +534,32 @@ const timeline = computed(() => {
             <button class="btn-secondary flex-grow-1" @click="rescheduleDialog = false">Отмена</button>
             <button class="btn-primary flex-grow-1" :disabled="!rescheduleDate" @click="confirmReschedule">
               Перенести
+            </button>
+          </div>
+        </v-card>
+      </v-dialog>
+
+      <!-- Status change dialog -->
+      <v-dialog v-model="statusDialog" max-width="420">
+        <v-card rounded="lg" class="pa-6 text-center">
+          <div v-if="statusAction" class="status-dialog-icon mb-4" :style="{ background: statusAction.color + '18' }">
+            <v-icon :icon="statusAction.icon" size="28" :color="statusAction.color" />
+          </div>
+          <h3 class="text-h6 font-weight-bold mb-2">Подтвердите действие</h3>
+          <p class="text-body-2 text-medium-emphasis mb-6">
+            {{ statusAction?.label }}? Статус сделки изменится на
+            <strong>{{ statusAction ? DEAL_STATUS_CONFIG[statusAction.nextStatus]?.label : '' }}</strong>.
+          </p>
+          <div class="d-flex ga-3">
+            <button class="btn-secondary flex-grow-1" @click="statusDialog = false">Отмена</button>
+            <button
+              class="btn-primary flex-grow-1"
+              :style="statusAction ? { background: statusAction.color } : {}"
+              :disabled="statusUpdating"
+              @click="confirmStatusChange"
+            >
+              <v-progress-circular v-if="statusUpdating" indeterminate size="16" width="2" color="white" class="mr-2" />
+              Подтвердить
             </button>
           </div>
         </v-card>
@@ -727,7 +811,62 @@ const timeline = computed(() => {
 }
 .btn-secondary:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
 
+/* Contract download */
+.contract-icon {
+  width: 40px; height: 40px; border-radius: 10px;
+  background: rgba(59, 130, 246, 0.08);
+  display: flex; align-items: center; justify-content: center;
+}
+.contract-download-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 8px; border: none;
+  background: #3b82f6; color: #fff;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.contract-download-btn:hover { background: #2563eb; }
+
+/* Status action banner */
+.status-action-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-radius: 12px;
+  border: 1px solid; gap: 16px;
+  background: rgba(var(--v-theme-surface), 1);
+}
+.status-action-info {
+  display: flex; align-items: center; gap: 12px;
+}
+.status-action-title {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.status-action-label {
+  font-size: 15px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.status-action-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 20px; border-radius: 10px; border: none;
+  color: #fff; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s; white-space: nowrap;
+}
+.status-action-btn:hover { opacity: 0.9; }
+
+/* Status dialog */
+.status-dialog-icon {
+  width: 56px; height: 56px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto;
+}
+
+@media (max-width: 600px) {
+  .status-action-banner { flex-direction: column; align-items: stretch; }
+  .status-action-btn { justify-content: center; }
+}
+
 /* Dark mode */
+:global(.dark) .status-action-banner {
+  background: #1e1e2e;
+}
 :global(.dark) .finance-card {
   background: #1e1e2e; border-color: #2e2e42;
 }

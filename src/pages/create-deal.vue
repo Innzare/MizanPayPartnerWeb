@@ -30,9 +30,8 @@ const city = ref('')
 // Step 2: Terms
 const purchasePrice = ref<number | null>(null)
 const markupPercent = ref(15)
-const downPayment = ref<number | null>(null)
 const termMonths = ref(6)
-const paymentType = ref<PaymentType>('equal')
+const paymentType = ref<PaymentType>('EQUAL')
 
 const markupOptions = [10, 15, 20, 25]
 const termOptions = [3, 4, 6, 9, 12, 18, 24]
@@ -40,8 +39,7 @@ const termOptions = [3, 4, 6, 9, 12, 18, 24]
 // Computed deal preview
 const markup = computed(() => (purchasePrice.value || 0) * markupPercent.value / 100)
 const totalPrice = computed(() => (purchasePrice.value || 0) + markup.value)
-const remaining = computed(() => totalPrice.value - (downPayment.value || 0))
-const monthlyPayment = computed(() => termMonths.value > 0 ? remaining.value / termMonths.value : 0)
+const monthlyPayment = computed(() => termMonths.value > 0 ? totalPrice.value / termMonths.value : 0)
 
 // Step 3: Client
 const selectedClientId = ref('')
@@ -80,32 +78,32 @@ function canProceed() {
   return true
 }
 
-function submitDeal() {
-  const deal = dealsStore.createDeal({
-    clientId: selectedClientId.value,
-    productName: productName.value,
-    productPhotos: ['https://picsum.photos/id/200/400/400'],
-    purchasePrice: purchasePrice.value || 0,
-    markup: Math.round(markup.value),
-    markupPercent: markupPercent.value,
-    totalPrice: Math.round(totalPrice.value),
-    downPayment: downPayment.value || 0,
-    numberOfPayments: termMonths.value,
-    paymentInterval: 'monthly',
-    paymentType: paymentType.value,
-    firstPaymentDate: new Date(Date.now() + 30 * 86400000).toISOString(),
-  })
+async function submitDeal() {
+  // TODO: Direct deal creation is no longer supported — deals are created through request offers.
+  // This page should be replaced with a redirect to the requests page.
+  try {
+    const deal = await dealsStore.createDeal({
+      clientId: selectedClientId.value,
+      productName: productName.value,
+      productPhotos: ['https://picsum.photos/id/200/400/400'],
+      purchasePrice: purchasePrice.value || 0,
+      markup: Math.round(markup.value),
+      markupPercent: markupPercent.value,
+      totalPrice: Math.round(totalPrice.value),
+      numberOfPayments: termMonths.value,
+      paymentInterval: 'MONTHLY',
+      paymentType: paymentType.value,
+      firstPaymentDate: new Date(Date.now() + 30 * 86400000).toISOString(),
+    })
 
-  const generator = paymentType.value === 'equal' ? generateEqualSchedule : generateDecreasingSchedule
-  const schedule = generator(deal.id, Math.round(remaining.value), termMonths.value, deal.firstPaymentDate)
-  paymentsStore.addPayments(deal.id, schedule)
+    const generator = paymentType.value === 'EQUAL' ? generateEqualSchedule : generateDecreasingSchedule
+    const schedule = generator(deal.id, Math.round(totalPrice.value), termMonths.value, deal.firstPaymentDate)
+    paymentsStore.addPayments(deal.id, schedule)
 
-  if (selectedClient.value) {
-    deal.clientName = `${selectedClient.value.firstName} ${selectedClient.value.lastName}`
-    deal.clientRating = selectedClient.value.rating
+    router.push('/deals')
+  } catch {
+    // error is set in the store
   }
-
-  router.push('/deals')
 }
 
 function getCategoryIcon(catId: string) {
@@ -247,19 +245,6 @@ function getCategoryLabel(catId: string) {
               </div>
 
               <div class="form-field full-width">
-                <label class="field-label">Первоначальный взнос</label>
-                <div class="input-with-suffix">
-                  <input
-                    v-model.number="downPayment"
-                    type="number"
-                    class="field-input"
-                    placeholder="0"
-                  />
-                  <span class="input-suffix">₽</span>
-                </div>
-              </div>
-
-              <div class="form-field full-width">
                 <label class="field-label">Срок рассрочки</label>
                 <div class="chip-group">
                   <button
@@ -279,8 +264,8 @@ function getCategoryLabel(catId: string) {
                 <div class="chip-group">
                   <button
                     class="chip-option chip-option--wide"
-                    :class="{ active: paymentType === 'equal' }"
-                    @click="paymentType = 'equal'"
+                    :class="{ active: paymentType === 'EQUAL' }"
+                    @click="paymentType = 'EQUAL'"
                   >
                     <v-icon icon="mdi-equal" size="16" />
                     Равные
@@ -288,7 +273,7 @@ function getCategoryLabel(catId: string) {
                   <button
                     class="chip-option chip-option--wide"
                     :class="{ active: paymentType === 'decreasing' }"
-                    @click="paymentType = 'decreasing'"
+                    @click="paymentType = 'DECREASING'"
                   >
                     <v-icon icon="mdi-trending-down" size="16" />
                     Убывающие
@@ -320,17 +305,13 @@ function getCategoryLabel(catId: string) {
               <span>Итоговая цена</span>
               <span>{{ formatCurrency(totalPrice) }}</span>
             </div>
-            <div class="preview-row">
-              <span>Первоначальный взнос</span>
-              <span class="preview-value">−{{ formatCurrency(downPayment || 0) }}</span>
-            </div>
             <div class="preview-divider" />
             <div class="preview-row preview-row--highlight">
               <span>Ежемесячный платёж</span>
               <span>{{ formatCurrency(monthlyPayment) }}</span>
             </div>
             <div class="preview-footer">
-              <span>{{ termMonths }} платежей · {{ paymentType === 'equal' ? 'Равные' : 'Убывающие' }}</span>
+              <span>{{ termMonths }} платежей · {{ paymentType === 'EQUAL' ? 'Равные' : 'Убывающие' }}</span>
             </div>
           </div>
         </v-col>
@@ -457,17 +438,13 @@ function getCategoryLabel(catId: string) {
               <span class="review-label">Итоговая цена</span>
               <span class="review-value">{{ formatCurrency(totalPrice) }}</span>
             </div>
-            <div class="review-row">
-              <span class="review-label">Первый взнос</span>
-              <span class="review-value">{{ formatCurrency(downPayment || 0) }}</span>
-            </div>
             <div class="review-row review-row--bold">
               <span class="review-label">Ежемесячный платёж</span>
               <span class="review-value" style="color: #047857;">{{ formatCurrency(monthlyPayment) }}</span>
             </div>
             <div class="review-row">
               <span class="review-label">Срок / Тип</span>
-              <span class="review-value">{{ termMonths }} мес · {{ paymentType === 'equal' ? 'Равные' : 'Убывающие' }}</span>
+              <span class="review-value">{{ termMonths }} мес · {{ paymentType === 'EQUAL' ? 'Равные' : 'Убывающие' }}</span>
             </div>
           </div>
         </v-card>

@@ -3,12 +3,17 @@ import { usePaymentsStore } from '@/stores/payments'
 import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatDate, formatDateShort } from '@/utils/formatters'
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
-import type { Payment, Deal } from '@/types'
+import { type Payment, type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
 const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
+
+onMounted(() => {
+  paymentsStore.fetchPayments()
+  dealsStore.fetchDeals()
+})
 
 const tab = ref(0)
 const search = ref('')
@@ -98,9 +103,9 @@ const calendarDays = computed((): CalendarDay[] => {
     days.push({
       day: d, dateKey: key, isCurrentMonth: false, isToday: key === todayKey,
       payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
-      hasOverdue: ps.some(p => p.status === 'overdue'),
-      hasPending: ps.some(p => p.status === 'pending'),
-      hasPaid: ps.some(p => p.status === 'paid'),
+      hasOverdue: ps.some(p => p.status === 'OVERDUE'),
+      hasPending: ps.some(p => p.status === 'PENDING'),
+      hasPaid: ps.some(p => p.status === 'PAID'),
     })
   }
 
@@ -111,9 +116,9 @@ const calendarDays = computed((): CalendarDay[] => {
     days.push({
       day: d, dateKey: key, isCurrentMonth: true, isToday: key === todayKey,
       payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
-      hasOverdue: ps.some(p => p.status === 'overdue'),
-      hasPending: ps.some(p => p.status === 'pending'),
-      hasPaid: ps.some(p => p.status === 'paid'),
+      hasOverdue: ps.some(p => p.status === 'OVERDUE'),
+      hasPending: ps.some(p => p.status === 'PENDING'),
+      hasPaid: ps.some(p => p.status === 'PAID'),
     })
   }
 
@@ -127,9 +132,9 @@ const calendarDays = computed((): CalendarDay[] => {
     days.push({
       day: d, dateKey: key, isCurrentMonth: false, isToday: key === todayKey,
       payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
-      hasOverdue: ps.some(p => p.status === 'overdue'),
-      hasPending: ps.some(p => p.status === 'pending'),
-      hasPaid: ps.some(p => p.status === 'paid'),
+      hasOverdue: ps.some(p => p.status === 'OVERDUE'),
+      hasPending: ps.some(p => p.status === 'PENDING'),
+      hasPaid: ps.some(p => p.status === 'PAID'),
     })
   }
 
@@ -151,9 +156,9 @@ const monthSummary = computed(() => {
     if (p.dueDate.startsWith(prefix)) {
       count++
       total += p.amount
-      if (p.status === 'pending') pending += p.amount
-      if (p.status === 'overdue') overdue += p.amount
-      if (p.status === 'paid') paid += p.amount
+      if (p.status === 'PENDING') pending += p.amount
+      if (p.status === 'OVERDUE') overdue += p.amount
+      if (p.status === 'PAID') paid += p.amount
     }
   })
   return { total, pending, overdue, paid, count }
@@ -223,15 +228,15 @@ const yearMonths = computed((): YearMonthData[] => {
       const key = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
       const ps = paymentsByDate.value[key] || []
       const amt = ps.reduce((s, p) => s + p.amount, 0)
-      const hasOverdue = ps.some(p => p.status === 'overdue')
+      const hasOverdue = ps.some(p => p.status === 'OVERDUE')
       monthTotal += amt
       monthPaymentCount += ps.length
       if (hasOverdue) monthHasOverdue = true
       days.push({
         day: d, dateKey: key, isCurrentMonth: true,
         hasOverdue,
-        hasPending: ps.some(p => p.status === 'pending'),
-        hasPaid: ps.some(p => p.status === 'paid'),
+        hasPending: ps.some(p => p.status === 'PENDING'),
+        hasPaid: ps.some(p => p.status === 'PAID'),
         isToday: key === todayKey,
         paymentCount: ps.length,
         totalAmount: amt,
@@ -257,9 +262,9 @@ const yearSummary = computed(() => {
     if (p.dueDate.startsWith(prefix)) {
       count++
       total += p.amount
-      if (p.status === 'pending') pending += p.amount
-      if (p.status === 'overdue') overdue += p.amount
-      if (p.status === 'paid') paid += p.amount
+      if (p.status === 'PENDING') pending += p.amount
+      if (p.status === 'OVERDUE') overdue += p.amount
+      if (p.status === 'PAID') paid += p.amount
     }
   })
   return { total, pending, overdue, paid, count }
@@ -327,7 +332,7 @@ const selectedDealPayments = computed(() => {
 })
 
 const selectedDealPaidTotal = computed(() =>
-  selectedDealPayments.value.filter(p => p.status === 'paid').reduce((s, p) => s + p.amount, 0)
+  selectedDealPayments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
 )
 
 // Reschedule dialog
@@ -338,7 +343,7 @@ const rescheduleReason = ref('')
 
 // Active payments = pending + overdue (no paid in default view)
 const activePayments = computed(() =>
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'pending' || p.status === 'overdue')
+  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
 )
 
 const displayedPayments = computed(() => {
@@ -354,7 +359,7 @@ const displayedPayments = computed(() => {
     const s = search.value.toLowerCase()
     payments = payments.filter((p) => {
       const deal = dealsStore.getDeal(p.dealId)
-      return deal?.productName.toLowerCase().includes(s) || deal?.clientName.toLowerCase().includes(s)
+      return deal?.productName.toLowerCase().includes(s) || userName(deal?.client).toLowerCase().includes(s)
     })
   }
 
@@ -379,7 +384,7 @@ const displayedPayments = computed(() => {
         return dir * ca.localeCompare(cb, 'ru')
       }
       case 'status': {
-        const order: Record<string, number> = { overdue: 0, pending: 1, paid: 2 }
+        const order: Record<string, number> = { OVERDUE: 0, PENDING: 1, PAID: 2 }
         return dir * ((order[a.status] ?? 3) - (order[b.status] ?? 3))
       }
       default:
@@ -395,7 +400,7 @@ function getDealName(dealId: string) {
 }
 
 function getClientName(dealId: string) {
-  return dealsStore.getDeal(dealId)?.clientName || ''
+  return userName(dealsStore.getDeal(dealId)?.client)
 }
 
 function daysUntil(dateStr: string) {
@@ -588,7 +593,7 @@ const rescheduleReasonOptions = [
                         v-for="(p, pi) in day.payments.slice(0, 3)"
                         :key="pi"
                         class="cal-dot"
-                        :style="{ background: p.status === 'overdue' ? '#ef4444' : p.status === 'paid' ? '#047857' : '#f59e0b' }"
+                        :style="{ background: p.status === 'OVERDUE' ? '#ef4444' : p.status === 'PAID' ? '#047857' : '#f59e0b' }"
                       />
                     </div>
                     <div v-if="day.payments.length && day.isCurrentMonth" class="cal-day-amount">
@@ -710,7 +715,7 @@ const rescheduleReasonOptions = [
                       <span class="text-caption text-medium-emphasis">{{ p._clientName }}</span>
                       <span class="font-weight-bold" style="font-size: 15px;">{{ formatCurrency(p.amount) }}</span>
                     </div>
-                    <div class="d-flex ga-1 mt-2" v-if="p.status === 'pending' || p.status === 'overdue'">
+                    <div class="d-flex ga-1 mt-2" v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
                       <button class="action-btn action-btn--success" style="width: 26px; height: 26px;" @click.stop="handleMarkPaid($event, p)">
                         <v-icon icon="mdi-check" size="14" />
                       </button>
@@ -789,7 +794,7 @@ const rescheduleReasonOptions = [
                   <span class="text-caption text-medium-emphasis">{{ p._clientName }}</span>
                   <span class="font-weight-bold" style="font-size: 15px;">{{ formatCurrency(p.amount) }}</span>
                 </div>
-                <div class="d-flex ga-1 mt-2" v-if="p.status === 'pending' || p.status === 'overdue'">
+                <div class="d-flex ga-1 mt-2" v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
                   <button class="action-btn action-btn--success" style="width: 26px; height: 26px;" @click.stop="handleMarkPaid($event, p)">
                     <v-icon icon="mdi-check" size="14" />
                   </button>
@@ -891,8 +896,8 @@ const rescheduleReasonOptions = [
                 </div>
               </td>
               <td>
-                <span :class="{ 'text-error font-weight-medium': p.status === 'overdue' || (p.status === 'pending' && new Date(p.dueDate) < new Date()) }">
-                  {{ p.status === 'paid' ? '—' : daysUntil(p.dueDate) }}
+                <span :class="{ 'text-error font-weight-medium': p.status === 'OVERDUE' || (p.status === 'PENDING' && new Date(p.dueDate) < new Date()) }">
+                  {{ p.status === 'PAID' ? '—' : daysUntil(p.dueDate) }}
                 </span>
               </td>
               <td>
@@ -904,7 +909,7 @@ const rescheduleReasonOptions = [
                 </div>
               </td>
               <td class="text-center">
-                <div v-if="p.status === 'pending' || p.status === 'overdue'" class="d-flex align-center justify-center ga-1">
+                <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
                   <v-tooltip text="Отметить оплаченным" location="top">
                     <template #activator="{ props }">
                       <button v-bind="props" class="action-btn action-btn--success" @click="handleMarkPaid($event, p)">
@@ -961,12 +966,12 @@ const rescheduleReasonOptions = [
         <v-card-text class="pa-5">
           <div class="d-flex align-center ga-3 mb-5">
             <div class="dialog-avatar" :style="{ background: '#3b82f6' }">
-              {{ selectedDeal.clientName.charAt(0) }}
+              {{ userName(selectedDeal.client).charAt(0) }}
             </div>
             <div>
-              <div class="font-weight-medium">{{ selectedDeal.clientName }}</div>
+              <div class="font-weight-medium">{{ userName(selectedDeal.client) }}</div>
               <div class="text-caption text-medium-emphasis">
-                Рейтинг {{ selectedDeal.clientRating }} · Создано {{ formatDate(selectedDeal.createdAt) }}
+                Рейтинг {{ selectedDeal.client?.rating ?? 0 }} · Создано {{ formatDate(selectedDeal.createdAt) }}
               </div>
             </div>
           </div>
@@ -985,12 +990,8 @@ const rescheduleReasonOptions = [
               <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ selectedDeal.markupPercent }}%)</div>
             </div>
             <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Первый взнос</div>
-              <div class="dialog-finance-value">{{ formatCurrency(selectedDeal.downPayment) }}</div>
-            </div>
-            <div class="dialog-finance-item">
               <div class="dialog-finance-label">Оплачено</div>
-              <div class="dialog-finance-value" style="color: #047857;">{{ formatCurrency(selectedDealPaidTotal + selectedDeal.downPayment) }}</div>
+              <div class="dialog-finance-value" style="color: #047857;">{{ formatCurrency(selectedDealPaidTotal) }}</div>
             </div>
             <div class="dialog-finance-item">
               <div class="dialog-finance-label">Остаток</div>
@@ -1023,7 +1024,7 @@ const rescheduleReasonOptions = [
                 v-for="p in selectedDealPayments"
                 :key="p.id"
                 class="schedule-item"
-                :class="{ 'schedule-item--paid': p.status === 'paid', 'schedule-item--overdue': p.status === 'overdue' }"
+                :class="{ 'schedule-item--paid': p.status === 'PAID', 'schedule-item--overdue': p.status === 'OVERDUE' }"
               >
                 <div class="schedule-num">{{ p.number }}</div>
                 <div class="schedule-info">
@@ -1070,7 +1071,7 @@ const rescheduleReasonOptions = [
             </div>
             <div class="reschedule-info-row">
               <span class="reschedule-info-label">Текущая дата</span>
-              <span class="reschedule-info-value" :class="{ 'text-error': reschedulePaymentRef.status === 'overdue' }">
+              <span class="reschedule-info-value" :class="{ 'text-error': reschedulePaymentRef.status === 'OVERDUE' }">
                 {{ formatDate(reschedulePaymentRef.dueDate) }}
               </span>
             </div>

@@ -16,9 +16,9 @@ router.beforeEach(async (to, from, next) => {
   const isPublicRoute = publicRoutes.some(r => to.path.startsWith(r));
 
   if (!authStore.isAuthenticated) {
-    const isAuthenticated = await authStore.checkAuth();
+    await authStore.checkAuth();
 
-    if (!isAuthenticated && !isPublicRoute) {
+    if (!authStore.isAuthenticated && !isPublicRoute) {
       return next({
         path: "/login",
         query: { redirect: to.fullPath },

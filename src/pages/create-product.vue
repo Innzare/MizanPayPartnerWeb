@@ -92,23 +92,23 @@ function canProceed() {
   return true
 }
 
-function submitProduct() {
-  productsStore.createProduct({
-    investorId: 'investor-1',
-    investorName: 'Мухаммад Хаджиев',
-    investorRating: 4.8,
-    title: title.value,
-    description: description.value || undefined,
-    category: category.value as any,
-    photos: displayPhotoUrl.value ? [displayPhotoUrl.value] : [],
-    price: price.value || 0,
-    minTermMonths: minTermMonths.value,
-    maxTermMonths: maxTermMonths.value,
-    minDownPaymentPercent: minDownPaymentPercent.value,
-    city: city.value,
-    isAvailable: true,
-  })
-  router.push('/products')
+async function submitProduct() {
+  try {
+    await productsStore.createProduct({
+      title: title.value,
+      description: description.value || undefined,
+      category: category.value,
+      photos: displayPhotoUrl.value ? [displayPhotoUrl.value] : undefined,
+      price: price.value || 0,
+      minTermMonths: minTermMonths.value,
+      maxTermMonths: maxTermMonths.value,
+      minDownPaymentPercent: minDownPaymentPercent.value,
+      city: city.value,
+    })
+    router.push('/products')
+  } catch {
+    // error is set in the store
+  }
 }
 
 function getCategoryLabel(catId: string) {

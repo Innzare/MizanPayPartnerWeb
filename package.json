@@ -5,8 +5,9 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "vite",
-    "build": "run-p type-check \"build-only {@}\" --",
+    "build": "vite build",
     "preview": "vite preview",
+    "start": "npx serve dist -s -l 3000",
     "build-only": "vite build",
     "type-check": "vue-tsc --build --force",
     "lint": "eslint . --fix"
@@ -15,6 +16,7 @@
     "@fontsource/roboto": "5.2.7",
     "@mdi/font": "7.4.47",
     "chart.js": "^4.5.1",
+    "pdfmake": "^0.2.18",
     "pinia": "^3.0.3",
     "vue": "^3.5.21",
     "vue-chartjs": "^5.3.3",
