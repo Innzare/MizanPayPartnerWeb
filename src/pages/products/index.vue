@@ -4,13 +4,23 @@ import { formatCurrency, formatDate } from '@/utils/formatters'
 import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const { isDark } = useIsDark()
+const toast = useToast()
 const productsStore = useProductsStore()
 const router = useRouter()
 
-onMounted(() => {
-  productsStore.fetchProducts()
+const pageLoading = ref(true)
+
+onMounted(async () => {
+  try {
+    await productsStore.fetchProducts()
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки товаров')
+  } finally {
+    pageLoading.value = false
+  }
 })
 
 const tab = ref(0)
@@ -60,9 +70,13 @@ const stats = computed(() => {
   }
 })
 
-function toggleAvailability(e: Event, productId: string) {
+async function toggleAvailability(e: Event, productId: string) {
   e.stopPropagation()
-  productsStore.toggleAvailability(productId)
+  try {
+    await productsStore.toggleAvailability(productId)
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка изменения видимости')
+  }
 }
 
 function openProduct(productId: string) {
@@ -72,6 +86,11 @@ function openProduct(productId: string) {
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
+    <div v-if="pageLoading" class="d-flex justify-center align-center" style="min-height: 400px;">
+      <v-progress-circular indeterminate color="primary" size="40" />
+    </div>
+
+    <template v-else>
     <!-- Stats -->
     <div class="stats-row mb-6">
       <div class="stat-card">
@@ -248,6 +267,7 @@ function openProduct(productId: string) {
     <button class="fab d-sm-none" @click="router.push('/create-product')">
       <v-icon icon="mdi-plus" size="24" />
     </button>
+    </template>
   </div>
 </template>
 

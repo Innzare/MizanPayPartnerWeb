@@ -7,6 +7,7 @@ import logoText from "@/assets/images/logo-text.svg";
 import logoTextDark from "@/assets/images/logo-text-dark.svg";
 import { useAuthStore } from "@/stores/auth";
 import { useNotificationsStore } from "@/stores/notifications";
+import GlobalToast from "@/components/GlobalToast.vue";
 
 const authStore = useAuthStore();
 const notificationsStore = useNotificationsStore();
@@ -426,6 +427,7 @@ const confirmLogout = async () => {
         </div>
       </v-dialog>
     </v-app>
+    <GlobalToast />
   </v-responsive>
 </template>
 

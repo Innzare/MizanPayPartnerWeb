@@ -8,6 +8,7 @@ import { userName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 import { Bar, Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -19,6 +20,7 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineEleme
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
+const toast = useToast()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const requestsStore = useRequestsStore()
@@ -178,11 +180,21 @@ const lineOptions = {
   }
 }
 
-onMounted(() => {
-  dealsStore.fetchDeals()
-  paymentsStore.fetchPayments()
-  requestsStore.fetchRequests()
-  notificationsStore.fetchNotifications()
+const pageLoading = ref(true)
+
+onMounted(async () => {
+  try {
+    await Promise.all([
+      dealsStore.fetchDeals(),
+      paymentsStore.fetchPayments(),
+      requestsStore.fetchRequests(),
+      notificationsStore.fetchNotifications(),
+    ])
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки данных')
+  } finally {
+    pageLoading.value = false
+  }
 })
 
 const AVATAR_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
@@ -195,6 +207,12 @@ function getAvatarColor(name?: string) {
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
+    <!-- Page loader -->
+    <div v-if="pageLoading" class="d-flex justify-center align-center" style="min-height: 400px;">
+      <v-progress-circular indeterminate color="primary" size="40" />
+    </div>
+
+    <template v-else>
     <!-- Hero Card -->
     <div class="hero-card mb-6">
       <div class="hero-main">
@@ -513,6 +531,7 @@ function getAvatarColor(name?: string) {
         </v-card>
       </v-col>
     </v-row>
+    </template>
   </div>
 </template>
 

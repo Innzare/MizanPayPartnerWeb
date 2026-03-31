@@ -6,15 +6,27 @@ import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
+const toast = useToast()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 
-onMounted(() => {
-  dealsStore.fetchDeals()
-  paymentsStore.fetchPayments()
+const pageLoading = ref(true)
+
+onMounted(async () => {
+  try {
+    await Promise.all([
+      dealsStore.fetchDeals(),
+      paymentsStore.fetchPayments(),
+    ])
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки сделок')
+  } finally {
+    pageLoading.value = false
+  }
 })
 
 const tab = ref(0)
@@ -104,6 +116,12 @@ const selectedDealPaidTotal = computed(() =>
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
+    <!-- Page loader -->
+    <div v-if="pageLoading" class="d-flex justify-center align-center" style="min-height: 400px;">
+      <v-progress-circular indeterminate color="primary" size="40" />
+    </div>
+
+    <template v-else>
     <!-- Summary Cards -->
     <div class="stats-row mb-6">
       <div class="stat-card">
@@ -428,6 +446,7 @@ const selectedDealPaidTotal = computed(() =>
         </v-card-text>
       </v-card>
     </v-dialog>
+    </template>
   </div>
 </template>
 

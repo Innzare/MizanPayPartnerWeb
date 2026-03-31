@@ -7,23 +7,28 @@ import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter, useRoute } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
+const toast = useToast()
 const route = useRoute()
 const productsStore = useProductsStore()
 const dealsStore = useDealsStore()
 
 const productId = computed(() => route.params.id as string)
 const product = computed(() => productsStore.getProduct(productId.value))
+const pageLoading = ref(true)
 
 onMounted(async () => {
-  if (!product.value) {
-    try {
+  try {
+    if (!product.value) {
       await productsStore.fetchProduct(productId.value)
-    } catch {
-      // product stays null, "not found" state shown
     }
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки товара')
+  } finally {
+    pageLoading.value = false
   }
 })
 
@@ -89,19 +94,33 @@ function openEdit() {
 
 async function saveEdit() {
   if (!product.value) return
-  await productsStore.updateProduct(product.value.id, editForm.value)
-  editDialog.value = false
+  try {
+    await productsStore.updateProduct(product.value.id, editForm.value)
+    toast.success('Товар обновлён')
+    editDialog.value = false
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка обновления товара')
+  }
 }
 
 async function deleteProduct() {
   if (!product.value) return
-  await productsStore.deleteProduct(product.value.id)
-  router.push('/products')
+  try {
+    await productsStore.deleteProduct(product.value.id)
+    toast.success('Товар удалён')
+    router.push('/products')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка удаления товара')
+  }
 }
 </script>
 
 <template>
-  <div class="at-page" v-if="product" :class="{ dark: isDark }">
+  <div v-if="pageLoading" class="at-page d-flex justify-center align-center" style="min-height: 400px;">
+    <v-progress-circular indeterminate color="primary" size="40" />
+  </div>
+
+  <div class="at-page" v-else-if="product" :class="{ dark: isDark }">
     <!-- Back + Actions -->
     <div class="d-flex align-center justify-space-between mb-5">
       <button class="back-btn" @click="router.push('/products')">

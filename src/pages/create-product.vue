@@ -5,8 +5,10 @@ import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const { isDark } = useIsDark()
+const toast = useToast()
 const productsStore = useProductsStore()
 const router = useRouter()
 
@@ -107,9 +109,10 @@ async function submitProduct() {
       minDownPaymentPercent: minDownPaymentPercent.value,
       city: city.value,
     })
+    toast.success('Товар создан')
     router.push('/products')
-  } catch {
-    // error is set in the store
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка создания товара')
   }
 }
 

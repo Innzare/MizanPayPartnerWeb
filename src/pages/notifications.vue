@@ -2,12 +2,22 @@
 import { useNotificationsStore, type NotificationType } from '@/stores/notifications'
 import { timeAgo } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const { isDark } = useIsDark()
+const toast = useToast()
 const store = useNotificationsStore()
 
-onMounted(() => {
-  store.fetchNotifications()
+const pageLoading = ref(true)
+
+onMounted(async () => {
+  try {
+    await store.fetchNotifications()
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки уведомлений')
+  } finally {
+    pageLoading.value = false
+  }
 })
 
 const filter = ref<'all' | 'unread'>('all')
@@ -64,7 +74,11 @@ const groupedNotifications = computed(() => {
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
-    <v-card rounded="lg" elevation="0" border>
+    <div v-if="pageLoading" class="d-flex justify-center align-center" style="min-height: 400px;">
+      <v-progress-circular indeterminate color="primary" size="40" />
+    </div>
+
+    <v-card v-else rounded="lg" elevation="0" border>
       <!-- Header -->
       <div class="d-flex align-center justify-space-between pa-4 pb-0">
         <div class="d-flex align-center ga-3">

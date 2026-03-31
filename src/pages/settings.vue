@@ -4,8 +4,10 @@ import { formatPhone, formatDate } from '@/utils/formatters'
 import { CITIES } from '@/constants/cities'
 
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const { isDark } = useIsDark()
+const toast = useToast()
 const authStore = useAuthStore()
 
 // Tabs
@@ -56,8 +58,9 @@ async function saveProfile() {
       city: editForm.value.city,
     })
     isEditing.value = false
-    profileSaved.value = true
-    setTimeout(() => { profileSaved.value = false }, 3000)
+    toast.success('Профиль сохранён')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка сохранения профиля')
   } finally {
     profileSaving.value = false
   }
@@ -100,10 +103,9 @@ async function changePassword() {
   try {
     await authStore.changePassword(passwordForm.value.current, passwordForm.value.new)
     passwordForm.value = { current: '', new: '', confirm: '' }
-    passwordSaved.value = true
-    setTimeout(() => { passwordSaved.value = false }, 3000)
-  } catch {
-    passwordError.value = 'Неверный текущий пароль'
+    toast.success('Пароль изменён')
+  } catch (e: any) {
+    toast.error(e.message || 'Неверный текущий пароль')
   } finally {
     passwordSaving.value = false
   }

@@ -9,8 +9,10 @@ import { MOCK_CLIENTS } from '@/constants/mock/users'
 import { useRouter } from 'vue-router'
 import type { PaymentType } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const { isDark } = useIsDark()
+const toast = useToast()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const router = useRouter()
@@ -102,9 +104,10 @@ async function submitDeal() {
     const schedule = generator(deal.id, Math.round(totalPrice.value), termMonths.value, deal.firstPaymentDate)
     paymentsStore.addPayments(deal.id, schedule)
 
+    toast.success('Сделка создана')
     router.push('/deals')
-  } catch {
-    // error is set in the store
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка создания сделки')
   }
 }
 

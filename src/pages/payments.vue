@@ -6,15 +6,27 @@ import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
+const toast = useToast()
 const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
 
-onMounted(() => {
-  paymentsStore.fetchPayments()
-  dealsStore.fetchDeals()
+const pageLoading = ref(true)
+
+onMounted(async () => {
+  try {
+    await Promise.all([
+      paymentsStore.fetchPayments(),
+      dealsStore.fetchDeals(),
+    ])
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки платежей')
+  } finally {
+    pageLoading.value = false
+  }
 })
 
 const tab = ref(0)
@@ -413,9 +425,14 @@ function daysUntil(dateStr: string) {
   return `через ${diff} дн.`
 }
 
-function handleMarkPaid(e: Event, payment: Payment) {
+async function handleMarkPaid(e: Event, payment: Payment) {
   e.stopPropagation()
-  paymentsStore.markAsPaid(payment.id, payment.dealId)
+  try {
+    await paymentsStore.markAsPaid(payment.id, payment.dealId)
+    toast.success('Платёж отмечен как оплаченный')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка при отметке оплаты')
+  }
 }
 
 function openReschedule(e: Event, payment: Payment) {
@@ -434,16 +451,21 @@ const minRescheduleDate = computed(() => {
   return tomorrow.toISOString().slice(0, 10)
 })
 
-function confirmReschedule() {
+async function confirmReschedule() {
   if (!reschedulePaymentRef.value || !rescheduleDate.value) return
-  paymentsStore.reschedulePayment(
-    reschedulePaymentRef.value.id,
-    reschedulePaymentRef.value.dealId,
-    new Date(rescheduleDate.value).toISOString(),
-    rescheduleReason.value || undefined,
-  )
-  rescheduleDialog.value = false
-  reschedulePaymentRef.value = null
+  try {
+    await paymentsStore.reschedulePayment(
+      reschedulePaymentRef.value.id,
+      reschedulePaymentRef.value.dealId,
+      new Date(rescheduleDate.value).toISOString(),
+      rescheduleReason.value || undefined,
+    )
+    toast.success('Платёж перенесён')
+    rescheduleDialog.value = false
+    reschedulePaymentRef.value = null
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка при переносе платежа')
+  }
 }
 
 const rescheduleReasonOptions = [
@@ -456,6 +478,12 @@ const rescheduleReasonOptions = [
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
+    <!-- Page loader -->
+    <div v-if="pageLoading" class="d-flex justify-center align-center" style="min-height: 400px;">
+      <v-progress-circular indeterminate color="primary" size="40" />
+    </div>
+
+    <template v-else>
     <!-- Summary stats -->
     <div class="stats-row mb-6">
       <div class="stat-card">
@@ -1127,6 +1155,7 @@ const rescheduleReasonOptions = [
         </div>
       </v-card>
     </v-dialog>
+    </template>
   </div>
 </template>
 

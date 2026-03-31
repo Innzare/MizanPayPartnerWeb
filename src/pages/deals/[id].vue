@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/auth'
 import { generateContract } from '@/utils/contractPdf'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler
@@ -24,13 +25,22 @@ const clientsStore = useClientsStore()
 
 const authStore = useAuthStore()
 const { isDark, statusStyle } = useIsDark()
+const toast = useToast()
 const dealId = computed(() => route.params.id as string)
 
+const pageLoading = ref(true)
+
 onMounted(async () => {
-  await Promise.all([
-    dealsStore.fetchDeal(dealId.value),
-    paymentsStore.fetchPaymentsForDeal(dealId.value),
-  ])
+  try {
+    await Promise.all([
+      dealsStore.fetchDeal(dealId.value),
+      paymentsStore.fetchPaymentsForDeal(dealId.value),
+    ])
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки сделки')
+  } finally {
+    pageLoading.value = false
+  }
 })
 
 const deal = computed(() => dealsStore.getDeal(dealId.value))
@@ -136,20 +146,30 @@ function openReschedule(p: typeof payments.value[0]) {
   rescheduleDialog.value = true
 }
 
-function confirmReschedule() {
+async function confirmReschedule() {
   if (!rescheduleTarget.value || !rescheduleDate.value) return
-  paymentsStore.reschedulePayment(
-    rescheduleTarget.value.id,
-    rescheduleTarget.value.dealId,
-    new Date(rescheduleDate.value).toISOString(),
-    rescheduleReason.value || undefined,
-  )
-  rescheduleDialog.value = false
-  rescheduleTarget.value = null
+  try {
+    await paymentsStore.reschedulePayment(
+      rescheduleTarget.value.id,
+      rescheduleTarget.value.dealId,
+      new Date(rescheduleDate.value).toISOString(),
+      rescheduleReason.value || undefined,
+    )
+    toast.success('Платёж перенесён')
+    rescheduleDialog.value = false
+    rescheduleTarget.value = null
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка при переносе платежа')
+  }
 }
 
-function markPaid(p: typeof payments.value[0]) {
-  paymentsStore.markAsPaid(p.id, p.dealId)
+async function markPaid(p: typeof payments.value[0]) {
+  try {
+    await paymentsStore.markAsPaid(p.id, p.dealId)
+    toast.success('Платёж отмечен как оплаченный')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка при отметке оплаты')
+  }
 }
 
 // Status progression for investor — only ACTIVE deals can transition
@@ -170,9 +190,10 @@ async function confirmStatusChange() {
   statusUpdating.value = true
   try {
     await dealsStore.updateDealStatus(deal.value.id, statusAction.value.nextStatus)
+    toast.success('Статус сделки обновлён')
     statusDialog.value = false
   } catch (e: any) {
-    console.error('Status update failed:', e)
+    toast.error(e.message || 'Ошибка обновления статуса')
   } finally {
     statusUpdating.value = false
   }
@@ -209,7 +230,12 @@ const timeline = computed(() => {
       Назад к портфелю
     </button>
 
-    <div v-if="deal">
+    <!-- Page loader -->
+    <div v-if="pageLoading" class="d-flex justify-center align-center" style="min-height: 300px;">
+      <v-progress-circular indeterminate color="primary" size="40" />
+    </div>
+
+    <div v-else-if="deal">
       <!-- Hero -->
       <div class="detail-hero mb-6">
         <v-img :src="deal.productPhotos[0]" height="220" cover class="detail-hero-img" />

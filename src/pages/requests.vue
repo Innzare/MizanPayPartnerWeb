@@ -5,12 +5,22 @@ import { CATEGORIES, getCategoryLabel } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { type Request, userName } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
+import { useToast } from '@/composables/useToast'
 
 const { isDark } = useIsDark()
+const toast = useToast()
 const requestsStore = useRequestsStore()
 
-onMounted(() => {
-  requestsStore.fetchRequests()
+const pageLoading = ref(true)
+
+onMounted(async () => {
+  try {
+    await requestsStore.fetchRequests()
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки заявок')
+  } finally {
+    pageLoading.value = false
+  }
 })
 
 const activeTab = ref<'requests' | 'offers'>('requests')
@@ -176,11 +186,12 @@ async function confirmSendOffer() {
     await requestsStore.sendOffer(selectedRequest.value.id, {
       tiers: enabledTiers.value.map((t) => ({ termMonths: t.termMonths, markupPercent: t.markupPercent })),
     })
+    toast.success('Предложение отправлено клиенту')
     acceptDialog.value = false
     selectedRequest.value = null
     requestsStore.fetchRequests()
   } catch (e: any) {
-    console.error('Failed to send offer:', e)
+    toast.error(e.message || 'Ошибка отправки предложения')
   } finally {
     isSendingOffer.value = false
   }
@@ -230,6 +241,11 @@ const investorTimelineSteps = computed(() => {
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
+    <div v-if="pageLoading" class="d-flex justify-center align-center" style="min-height: 400px;">
+      <v-progress-circular indeterminate color="primary" size="40" />
+    </div>
+
+    <template v-else>
     <!-- Stats row -->
     <v-row class="mb-1">
       <v-col cols="6" sm="3">
@@ -860,6 +876,7 @@ const investorTimelineSteps = computed(() => {
         </div>
       </v-card>
     </v-dialog>
+    </template>
   </div>
 </template>
 
