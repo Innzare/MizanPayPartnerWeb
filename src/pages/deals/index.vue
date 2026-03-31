@@ -5,8 +5,10 @@ import { formatCurrency, formatDate, formatDateShort, formatPercent, timeAgo } f
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
+import { useIsDark } from '@/composables/useIsDark'
 
 const router = useRouter()
+const { isDark, statusStyle } = useIsDark()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 
@@ -101,7 +103,7 @@ const selectedDealPaidTotal = computed(() =>
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Summary Cards -->
     <div class="stats-row mb-6">
       <div class="stat-card">
@@ -206,7 +208,7 @@ const selectedDealPaidTotal = computed(() =>
                 <v-img :src="deal.productPhotos[0]" height="140" cover />
                 <div
                   class="deal-card-status"
-                  :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.bgLight, color: DEAL_STATUS_CONFIG[deal.status]?.color }"
+                  :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
                 >
                   {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
                 </div>
@@ -288,7 +290,7 @@ const selectedDealPaidTotal = computed(() =>
               <td>
                 <div
                   class="deal-status-chip"
-                  :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.bgLight, color: DEAL_STATUS_CONFIG[deal.status]?.color }"
+                  :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
                 >
                   {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
                 </div>
@@ -416,7 +418,7 @@ const selectedDealPaidTotal = computed(() =>
                 <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
                 <div
                   class="schedule-status"
-                  :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                  :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
                 >
                   {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
                 </div>
@@ -719,26 +721,30 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 /* Dark mode */
-:global(.dark) .stat-card {
+.dark .stat-card {
   background: #1e1e2e; border-color: #2e2e42;
 }
-:global(.dark) .deal-card {
+.dark .deal-card {
   background: #1e1e2e; border-color: #2e2e42;
 }
-:global(.dark) .filter-input {
+.dark .filter-input {
   background: #252538; border-color: #2e2e42; color: #e4e4e7;
 }
-:global(.dark) .filter-input:focus {
+.dark .filter-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-:global(.dark) :deep(.filter-select .v-field) {
+.dark :deep(.filter-select .v-field) {
   background: #252538 !important; border-color: #2e2e42; color: #e4e4e7;
 }
-:global(.dark) :deep(.filter-select .v-field--focused) {
+.dark :deep(.filter-select .v-field--focused) {
   border-color: #047857 !important; background: #1e1e2e !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent) !important;
 }
-:global(.dark) .view-toggle { background: #252538; border-color: #2e2e42; }
-:global(.dark) .view-toggle-btn.active { background: #2e2e42; box-shadow: none; }
+.dark .view-toggle { background: #252538; border-color: #2e2e42; }
+.dark .view-toggle-btn.active { background: #2e2e42; box-shadow: none; }
+.dark .filter-input::placeholder { color: #71717a; }
+.dark :deep(.filter-select .v-field .v-field__prepend-inner),
+.dark :deep(.filter-select .v-field .v-field__append-inner) { color: #71717a; }
+.dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
 </style>

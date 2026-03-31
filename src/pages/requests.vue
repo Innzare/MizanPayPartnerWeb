@@ -4,6 +4,9 @@ import { formatCurrency, formatMonths, timeAgo, formatDate } from '@/utils/forma
 import { CATEGORIES, getCategoryLabel } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { type Request, userName } from '@/types'
+import { useIsDark } from '@/composables/useIsDark'
+
+const { isDark } = useIsDark()
 const requestsStore = useRequestsStore()
 
 onMounted(() => {
@@ -226,7 +229,7 @@ const investorTimelineSteps = computed(() => {
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Stats row -->
     <v-row class="mb-1">
       <v-col cols="6" sm="3">
@@ -256,31 +259,29 @@ const investorTimelineSteps = computed(() => {
     </v-row>
 
     <!-- Tabs -->
-    <div class="d-flex ga-2 mb-3">
-      <v-btn
-        :variant="activeTab === 'requests' ? 'flat' : 'tonal'"
-        :color="activeTab === 'requests' ? 'primary' : undefined"
-        size="small"
-        prepend-icon="mdi-file-document-outline"
+    <div class="d-flex align-center ga-2 mb-3">
+      <button
+        class="req-tab-btn"
+        :class="{ active: activeTab === 'requests' }"
         @click="activeTab = 'requests'"
       >
+        <v-icon icon="mdi-file-document-outline" size="16" />
         Активные заявки
-        <v-chip v-if="requestsStore.activeRequests.length" size="x-small" class="ml-1" :color="activeTab === 'requests' ? 'white' : undefined">
+        <span v-if="requestsStore.activeRequests.length" class="req-tab-count" :class="{ accent: activeTab === 'requests' }">
           {{ requestsStore.activeRequests.length }}
-        </v-chip>
-      </v-btn>
-      <v-btn
-        :variant="activeTab === 'offers' ? 'flat' : 'tonal'"
-        :color="activeTab === 'offers' ? 'primary' : undefined"
-        size="small"
-        prepend-icon="mdi-send-check"
+        </span>
+      </button>
+      <button
+        class="req-tab-btn"
+        :class="{ active: activeTab === 'offers' }"
         @click="activeTab = 'offers'"
       >
+        <v-icon icon="mdi-send-check" size="16" />
         Мои предложения
-        <v-chip v-if="requestsStore.myOffers.length" size="x-small" class="ml-1" :color="activeTab === 'offers' ? 'white' : undefined">
+        <span v-if="requestsStore.myOffers.length" class="req-tab-count" :class="{ accent: activeTab === 'offers' }">
           {{ requestsStore.myOffers.length }}
-        </v-chip>
-      </v-btn>
+        </span>
+      </button>
     </div>
 
     <!-- My Offers section -->
@@ -863,6 +864,52 @@ const investorTimelineSteps = computed(() => {
 </template>
 
 <style scoped>
+/* Tab buttons */
+.req-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.req-tab-btn:hover {
+  background: rgba(var(--v-theme-primary), 0.06);
+  border-color: rgba(var(--v-theme-primary), 0.15);
+  color: rgb(var(--v-theme-primary));
+}
+
+.req-tab-btn.active {
+  background: rgba(var(--v-theme-primary), 0.1);
+  border-color: rgba(var(--v-theme-primary), 0.2);
+  color: rgb(var(--v-theme-primary));
+  font-weight: 600;
+}
+
+.req-tab-count {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 7px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  line-height: 20px;
+  min-width: 22px;
+  text-align: center;
+}
+
+.req-tab-btn.active .req-tab-count {
+  background: rgba(var(--v-theme-primary), 0.15);
+  color: rgb(var(--v-theme-primary));
+}
+
 /* Search input matching header style */
 .filter-input-wrap {
   position: relative;
@@ -1270,46 +1317,61 @@ const investorTimelineSteps = computed(() => {
 }
 
 /* Dark mode overrides */
-:global(.dark) .filter-input {
+.dark .filter-input {
   background: #252538;
   border-color: #2e2e42;
   color: #e4e4e7;
 }
 
-:global(.dark) .filter-input::placeholder {
+.dark .filter-input::placeholder {
   color: #71717a;
 }
 
-:global(.dark) .filter-input:focus {
+.dark .filter-input:focus {
   border-color: #047857;
   background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 
-:global(.dark) :deep(.filter-select .v-field) {
+.dark :deep(.filter-select .v-field) {
   background: #252538 !important;
   border-color: #2e2e42;
   color: #e4e4e7;
 }
 
-:global(.dark) :deep(.filter-select .v-field .v-field__prepend-inner),
-:global(.dark) :deep(.filter-select .v-field .v-field__append-inner) {
+.dark :deep(.filter-select .v-field .v-field__prepend-inner),
+.dark :deep(.filter-select .v-field .v-field__append-inner) {
   color: #71717a;
 }
 
-:global(.dark) :deep(.filter-select .v-field--focused) {
+.dark :deep(.filter-select .v-field--focused) {
   border-color: #047857 !important;
   background: #1e1e2e !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent) !important;
 }
 
-:global(.dark) .view-toggle {
+.dark .view-toggle {
   background: #252538;
   border-color: #2e2e42;
 }
 
-:global(.dark) .view-toggle-btn.active {
+.dark .view-toggle-btn.active {
   background: #2e2e42;
   box-shadow: none;
+}
+
+.dark .req-tab-btn {
+  background: #1e1e2e;
+  border-color: #2e2e42;
+}
+
+.dark .req-tab-btn:hover {
+  background: rgba(4, 120, 87, 0.1);
+  border-color: rgba(4, 120, 87, 0.2);
+}
+
+.dark .req-tab-btn.active {
+  background: rgba(4, 120, 87, 0.12);
+  border-color: rgba(4, 120, 87, 0.25);
 }
 </style>

@@ -5,8 +5,10 @@ import { formatCurrency, formatDate, formatDateShort } from '@/utils/formatters'
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
+import { useIsDark } from '@/composables/useIsDark'
 
 const router = useRouter()
+const { isDark, statusStyle } = useIsDark()
 const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
 
@@ -453,7 +455,7 @@ const rescheduleReasonOptions = [
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Summary stats -->
     <div class="stats-row mb-6">
       <div class="stat-card">
@@ -706,7 +708,7 @@ const rescheduleReasonOptions = [
                       <span class="font-weight-medium" style="font-size: 13px;">{{ p._dealName }}</span>
                       <div
                         class="payment-status-chip"
-                        :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                        :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
                       >
                         {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
                       </div>
@@ -785,7 +787,7 @@ const rescheduleReasonOptions = [
                   <span class="font-weight-medium" style="font-size: 13px;">{{ p._dealName }}</span>
                   <div
                     class="payment-status-chip"
-                    :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                    :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
                   >
                     {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
                   </div>
@@ -903,7 +905,7 @@ const rescheduleReasonOptions = [
               <td>
                 <div
                   class="payment-status-chip"
-                  :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                  :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
                 >
                   {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
                 </div>
@@ -1038,7 +1040,7 @@ const rescheduleReasonOptions = [
                 <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
                 <div
                   class="schedule-status"
-                  :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                  :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
                 >
                   {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
                 </div>
@@ -1442,7 +1444,7 @@ const rescheduleReasonOptions = [
 .view-toggle {
   display: flex; border-radius: 10px; overflow: hidden;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  background: rgba(var(--v-theme-on-surface), 0.03);
+  background: #fff;
 }
 .view-toggle-btn {
   display: flex; align-items: center; gap: 6px;
@@ -1754,24 +1756,31 @@ const rescheduleReasonOptions = [
 }
 
 /* Dark mode */
-:global(.dark) .cal-summary-card { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .stat-card { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .view-toggle { background: #252538; border-color: #2e2e42; }
-:global(.dark) .view-toggle-btn.active { background: rgba(4, 120, 87, 0.15); }
-:global(.dark) .cal-scale-toggle { background: #252538; border-color: #2e2e42; }
-:global(.dark) .cal-scale-btn.active { background: rgba(4, 120, 87, 0.15); }
-:global(.dark) .year-month-card { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .mini-day--pending { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
-:global(.dark) .mini-day--overdue { background: rgba(239, 68, 68, 0.2); color: #f87171; }
-:global(.dark) .mini-day--paid { background: rgba(4, 120, 87, 0.2); color: #34d399; }
-:global(.dark) .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-:global(.dark) .filter-input:focus {
+.dark .cal-summary-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .stat-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .view-toggle { background: #252538; border-color: #2e2e42; }
+.dark .view-toggle-btn.active { background: rgba(4, 120, 87, 0.15); }
+.dark .cal-scale-toggle { background: #252538; border-color: #2e2e42; }
+.dark .cal-scale-btn.active { background: rgba(4, 120, 87, 0.15); }
+.dark .year-month-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .mini-day--pending { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+.dark .mini-day--overdue { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+.dark .mini-day--paid { background: rgba(4, 120, 87, 0.2); color: #34d399; }
+.dark .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .filter-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-:global(.dark) .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-:global(.dark) .field-input:focus {
-  border-color: #047857;
+.dark .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .field-input:focus {
+  border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
+.dark .filter-input::placeholder { color: #71717a; }
+.dark .cal-day { border-color: #2e2e42; }
+.dark .cal-day--has-payments { border-color: #3e3e52; background: rgba(255, 255, 255, 0.02); }
+.dark .cal-payment-item { background: rgba(255, 255, 255, 0.04); }
+.dark .cal-month-stats { background: #1e1e2e; border-color: #2e2e42; }
+.dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
+.dark .reschedule-info { background: #1e1e2e; border-color: #2e2e42; }
 </style>

@@ -26,7 +26,7 @@ export const useAuthStore = defineStore('auth', () => {
     isLoading.value = true
     error.value = null
     try {
-      const data = await api.post<AuthResponse>('/auth/login', { email, password })
+      const data = await api.post<AuthResponse>('/auth/investor/login', { email, password })
       user.value = data.user
       accessToken.value = data.accessToken
       refreshToken.value = data.refreshToken
@@ -44,7 +44,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function logout() {
     try {
       if (refreshToken.value) {
-        await api.post('/auth/logout', { refreshToken: refreshToken.value })
+        await api.post('/auth/investor/logout', { refreshToken: refreshToken.value })
       }
     } catch {
       // Ignore logout errors — clear local state regardless
@@ -77,7 +77,7 @@ export const useAuthStore = defineStore('auth', () => {
 
     // Validate with backend
     try {
-      const profile = await api.getSilent<User>('/auth/profile')
+      const profile = await api.getSilent<User>('/auth/investor/profile')
       user.value = profile
       localStorage.setItem('user', JSON.stringify(profile))
     } catch {
@@ -97,11 +97,10 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function changePassword(_currentPassword: string, _newPassword: string) {
-    // TODO: implement when backend endpoint is available
+  async function changePassword(currentPassword: string, newPassword: string) {
     isLoading.value = true
     try {
-      await new Promise((resolve) => setTimeout(resolve, 500))
+      await api.patch('/auth/investor/password', { currentPassword, newPassword })
     } finally {
       isLoading.value = false
     }

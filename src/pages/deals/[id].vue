@@ -8,6 +8,7 @@ import { userName, type Deal } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import { generateContract } from '@/utils/contractPdf'
 import { useRoute, useRouter } from 'vue-router'
+import { useIsDark } from '@/composables/useIsDark'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler
@@ -22,6 +23,7 @@ const paymentsStore = usePaymentsStore()
 const clientsStore = useClientsStore()
 
 const authStore = useAuthStore()
+const { isDark, statusStyle } = useIsDark()
 const dealId = computed(() => route.params.id as string)
 
 onMounted(async () => {
@@ -200,7 +202,7 @@ const timeline = computed(() => {
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Back button -->
     <button class="back-btn mb-4" @click="router.push('/deals')">
       <v-icon icon="mdi-arrow-left" size="18" />
@@ -344,7 +346,7 @@ const timeline = computed(() => {
                   <td>
                     <div
                       class="pay-status"
-                      :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                      :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
                     >
                       {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
                     </div>
@@ -864,21 +866,26 @@ const timeline = computed(() => {
 }
 
 /* Dark mode */
-:global(.dark) .status-action-banner {
+.dark .status-action-banner {
   background: #1e1e2e;
 }
-:global(.dark) .finance-card {
+.dark .finance-card {
   background: #1e1e2e; border-color: #2e2e42;
 }
-:global(.dark) .reschedule-info {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.08);
+.dark .field-input {
+  background: #252538;
+  border-color: #2e2e42;
+  color: #e4e4e7;
 }
-:global(.dark) .field-input {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.85);
+.dark .field-input:focus {
+  border-color: #047857; background: #1e1e2e;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
+.dark .reschedule-info {
+  background: #1e1e2e;
+  border-color: #2e2e42;
+}
+.dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
 
 @media (max-width: 960px) {
   .detail-hero-title { font-size: 22px; }

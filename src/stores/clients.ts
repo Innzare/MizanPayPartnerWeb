@@ -75,7 +75,6 @@ export const useClientsStore = defineStore('clients', () => {
         firstName: client?.firstName || '',
         lastName: client?.lastName || '',
         city: client?.city || '',
-        role: 'CLIENT',
         avatar: client?.avatar,
         rating: client?.rating ?? 0,
         completedDeals: client?.completedDeals ?? 0,

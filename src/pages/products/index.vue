@@ -3,7 +3,9 @@ import { useProductsStore } from '@/stores/products'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
 import { useRouter } from 'vue-router'
+import { useIsDark } from '@/composables/useIsDark'
 
+const { isDark } = useIsDark()
 const productsStore = useProductsStore()
 const router = useRouter()
 
@@ -69,7 +71,7 @@ function openProduct(productId: string) {
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Stats -->
     <div class="stats-row mb-6">
       <div class="stat-card">
@@ -489,11 +491,15 @@ function openProduct(productId: string) {
 .fab:hover { background: #065f46; transform: scale(1.05); }
 
 /* Dark mode */
-:global(.dark) .stat-card { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .product-card { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-:global(.dark) .filter-input:focus {
+.dark .stat-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .product-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .filter-input::placeholder { color: #71717a; }
+.dark .filter-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
+}
+.dark .product-card:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
 }
 </style>

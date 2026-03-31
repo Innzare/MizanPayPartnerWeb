@@ -1,7 +1,9 @@
 <script lang="ts" setup>
 import { useNotificationsStore, type NotificationType } from '@/stores/notifications'
 import { timeAgo } from '@/utils/formatters'
+import { useIsDark } from '@/composables/useIsDark'
 
+const { isDark } = useIsDark()
 const store = useNotificationsStore()
 
 onMounted(() => {
@@ -18,11 +20,19 @@ const displayedNotifications = computed(() => {
 })
 
 const typeConfig: Record<NotificationType, { icon: string; color: string }> = {
-  payment: { icon: 'mdi-cash-check', color: '#047857' },
-  deal: { icon: 'mdi-handshake', color: '#3b82f6' },
-  request: { icon: 'mdi-file-document-plus-outline', color: '#8b5cf6' },
-  system: { icon: 'mdi-information-outline', color: '#64748b' },
+  PAYMENT_DUE: { icon: 'mdi-cash-clock', color: '#f59e0b' },
+  PAYMENT_RECEIVED: { icon: 'mdi-cash-check', color: '#047857' },
+  PAYMENT_OVERDUE: { icon: 'mdi-cash-remove', color: '#ef4444' },
+  DEAL_CREATED: { icon: 'mdi-handshake', color: '#3b82f6' },
+  DEAL_STATUS: { icon: 'mdi-handshake-outline', color: '#6366f1' },
+  REQUEST_NEW: { icon: 'mdi-file-document-plus-outline', color: '#8b5cf6' },
+  REQUEST_ACCEPTED: { icon: 'mdi-file-check-outline', color: '#047857' },
+  REQUEST_REJECTED: { icon: 'mdi-file-remove-outline', color: '#ef4444' },
+  SYSTEM: { icon: 'mdi-information-outline', color: '#64748b' },
 }
+
+const fallbackConfig = { icon: 'mdi-bell-outline', color: '#64748b' }
+const getTypeConfig = (type: string) => typeConfig[type as NotificationType] ?? fallbackConfig
 
 // Group by date
 const groupedNotifications = computed(() => {
@@ -53,7 +63,7 @@ const groupedNotifications = computed(() => {
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <v-card rounded="lg" elevation="0" border>
       <!-- Header -->
       <div class="d-flex align-center justify-space-between pa-4 pb-0">
@@ -113,8 +123,8 @@ const groupedNotifications = computed(() => {
             :class="{ 'ntf-item--unread': !n.isRead }"
             @click="store.markAsRead(n.id)"
           >
-            <div class="ntf-icon" :style="{ background: typeConfig[n.type].color + '14', color: typeConfig[n.type].color }">
-              <v-icon :icon="typeConfig[n.type].icon" size="20" />
+            <div class="ntf-icon" :style="{ background: getTypeConfig(n.type).color + '14', color: getTypeConfig(n.type).color }">
+              <v-icon :icon="getTypeConfig(n.type).icon" size="20" />
             </div>
 
             <div class="ntf-content">

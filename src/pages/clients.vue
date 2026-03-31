@@ -6,8 +6,10 @@ import { formatCurrency, formatDate, formatDateShort, formatPhone, timeAgo } fro
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
+import { useIsDark } from '@/composables/useIsDark'
 
 const router = useRouter()
+const { isDark, statusStyle } = useIsDark()
 const clientsStore = useClientsStore()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
@@ -102,7 +104,7 @@ const selectedDealPaidTotal = computed(() =>
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- KPI Cards -->
     <div class="stats-row mb-6">
       <div class="stat-card">
@@ -290,7 +292,7 @@ const selectedDealPaidTotal = computed(() =>
                     </div>
                     <div
                       class="deal-status-chip"
-                      :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.bgLight, color: DEAL_STATUS_CONFIG[deal.status]?.color }"
+                      :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
                     >
                       {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
                     </div>
@@ -410,7 +412,7 @@ const selectedDealPaidTotal = computed(() =>
                 <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
                 <div
                   class="schedule-status"
-                  :style="{ background: PAYMENT_STATUS_CONFIG[p.status]?.bgLight, color: PAYMENT_STATUS_CONFIG[p.status]?.color }"
+                  :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
                 >
                   {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
                 </div>
@@ -780,20 +782,26 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 /* Dark mode */
-:global(.dark) .stat-card {
+.dark .stat-card {
   background: #1e1e2e; border-color: #2e2e42;
 }
-:global(.dark) .client-card {
+.dark .client-card {
   background: #1e1e2e; border-color: #2e2e42;
 }
-:global(.dark) .client-card--expanded {
+.dark .client-card--expanded {
   border-color: rgba(4, 120, 87, 0.3);
 }
-:global(.dark) .filter-input {
+.dark .filter-input {
   background: #252538; border-color: #2e2e42; color: #e4e4e7;
 }
-:global(.dark) .filter-input:focus {
+.dark .filter-input::placeholder { color: #71717a; }
+.dark .filter-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
+}
+.dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
+.dark .next-payment {
+  background: rgba(4, 120, 87, 0.08);
+  border-color: rgba(4, 120, 87, 0.18);
 }
 </style>

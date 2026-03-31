@@ -9,6 +9,7 @@
 <script lang="ts" setup>
 import { useAuthStore } from "@/stores/auth";
 import logo from "@/assets/images/logo.svg";
+import logoText from "@/assets/images/logo-text.svg";
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -48,8 +49,9 @@ const handleLogin = async () => {
 
       <div class="brand-content">
         <!-- Header -->
-        <div class="d-flex align-center ga-2">
-          <span class="brand-logo">Mizan<span class="brand-logo-accent">Pay</span></span>
+        <div class="d-flex align-center ga-3">
+          <img :src="logo" alt="MizanPay" style="height: 36px; width: auto;" />
+          <img :src="logoText" alt="MizanPay" style="height: 24px; width: auto; filter: brightness(0) invert(1);" />
           <span class="brand-badge">Partner</span>
         </div>
 
@@ -104,9 +106,7 @@ const handleLogin = async () => {
         <div class="d-md-none text-center mb-8">
           <div class="d-flex align-center justify-center ga-2 mb-2">
             <v-img :src="logo" width="36" height="36" />
-            <span class="text-h6 font-weight-bold" style="color: #0c1a12">
-              Mizan<span style="color: #047857">Pay</span>
-            </span>
+            <img :src="logoText" alt="MizanPay" style="height: 22px; width: auto;" />
           </div>
           <p class="text-body-2" style="color: #5f7a6b">Панель инвестора</p>
         </div>

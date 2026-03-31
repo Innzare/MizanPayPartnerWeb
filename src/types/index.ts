@@ -1,17 +1,15 @@
-// User
-export type UserRole = 'CLIENT' | 'INVESTOR' | 'BOTH'
+// Investor (authenticated user in partner web)
 export type VerificationLevel = 'NONE' | 'BASIC' | 'VERIFIED' | 'FULL'
 export type SubscriptionPlan = 'FREE' | 'PRO' | 'BUSINESS'
 
 export interface User {
   id: string
-  email?: string
-  phone: string
+  email: string
+  phone?: string
   firstName: string
   lastName: string
   patronymic?: string
   city?: string
-  role: UserRole
   avatar?: string
   rating: number
   completedDeals: number

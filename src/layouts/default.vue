@@ -2,6 +2,9 @@
 import { useRoute, useRouter } from "vue-router";
 import { useTheme } from "vuetify";
 import logo from "@/assets/images/logo.svg";
+import logoDark from "@/assets/images/logo-dark.svg";
+import logoText from "@/assets/images/logo-text.svg";
+import logoTextDark from "@/assets/images/logo-text-dark.svg";
 import { useAuthStore } from "@/stores/auth";
 import { useNotificationsStore } from "@/stores/notifications";
 
@@ -47,13 +50,13 @@ const applyDarkClass = (dark: boolean) => {
 };
 
 if (isDark.value) {
-  theme.global.name.value = "dark";
+  theme.change("dark");
   applyDarkClass(true);
 }
 
 const toggleTheme = () => {
   isDark.value = !isDark.value;
-  theme.global.name.value = isDark.value ? "dark" : "light";
+  theme.change(isDark.value ? "dark" : "light");
   localStorage.setItem("theme", isDark.value ? "dark" : "light");
   applyDarkClass(isDark.value);
 };
@@ -146,13 +149,13 @@ const confirmLogout = async () => {
             }"
           >
             <v-img
-              :src="logo"
+              :src="isDark ? logoDark : logo"
               :width="36"
               :height="36"
               class="lyt-sidebar-logo-img"
             />
             <div class="lyt-sidebar-brand">
-              <span class="lyt-sidebar-brand-name">MizanPay</span>
+              <img :src="isDark ? logoTextDark : logoText" alt="MizanPay" class="lyt-sidebar-logo-text" />
               <span class="lyt-sidebar-brand-label">Partner</span>
             </div>
           </div>
@@ -528,21 +531,27 @@ const confirmLogout = async () => {
     opacity 0.2s ease,
     width 0.25s ease;
   white-space: nowrap;
+  position: relative;
 }
 
-.lyt-sidebar-brand-name {
-  font-size: 20px;
-  font-weight: 700;
-  color: #1a1a2e;
-  letter-spacing: -0.3px;
+.lyt-sidebar-logo-text {
+  height: 28px;
+  width: auto;
 }
 
 .lyt-sidebar-brand-label {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 9px;
+  font-weight: 700;
   color: #047857;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.8px;
+  position: absolute;
+  bottom: -18px;
+  right: -36px;
+  background: color-mix(in srgb, #047857 10%, #fff);
+  border: 1px solid color-mix(in srgb, #047857 25%, transparent);
+  border-radius: 6px;
+  padding: 1px 8px;
 }
 
 .lyt-nav-section {
@@ -1053,6 +1062,12 @@ const confirmLogout = async () => {
   border-bottom-color: #2e2e42;
 }
 
+.dark .lyt-sidebar-brand-label {
+  color: #34d399;
+  background: color-mix(in srgb, #059669 12%, #1e1e2e);
+  border-color: color-mix(in srgb, #059669 25%, transparent);
+}
+
 .dark .lyt-sidebar-brand-name {
   color: #e4e4e7;
 }
@@ -1072,12 +1087,12 @@ const confirmLogout = async () => {
 
 .dark .lyt-nav-item--active {
   background: color-mix(in srgb, #047857 15%, transparent);
-  color: #ff4081;
+  color: #059669;
 }
 
 .dark .lyt-nav-item--active:hover {
   background: color-mix(in srgb, #047857 20%, transparent);
-  color: #ff4081;
+  color: #059669;
 }
 
 .dark .lyt-theme-btn,

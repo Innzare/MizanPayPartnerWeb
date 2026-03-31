@@ -7,6 +7,7 @@ import { formatCurrency, formatCurrencyShort, formatPercent, formatDateShort } f
 import { userName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
+import { useIsDark } from '@/composables/useIsDark'
 import { Bar, Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -17,6 +18,7 @@ import {
 ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend, Filler)
 
 const router = useRouter()
+const { isDark, statusStyle } = useIsDark()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const requestsStore = useRequestsStore()
@@ -192,7 +194,7 @@ function getAvatarColor(name?: string) {
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Hero Card -->
     <div class="hero-card mb-6">
       <div class="hero-main">
@@ -498,7 +500,7 @@ function getAvatarColor(name?: string) {
               <div class="deal-amount">{{ formatCurrency(deal.remainingAmount) }}</div>
               <div
                 class="deal-status-badge"
-                :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.bgLight, color: DEAL_STATUS_CONFIG[deal.status]?.color }"
+                :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
               >
                 {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
               </div>
@@ -877,13 +879,19 @@ function getAvatarColor(name?: string) {
 }
 
 /* Dark mode */
-:global(.dark) .hero-card {
+.dark .hero-card {
   background: linear-gradient(135deg, #047857 0%, #064e3b 50%, #022c22 100%);
 }
 
-:global(.dark) .kpi-card {
+.dark .kpi-card {
   background: #1e1e2e;
   border-color: #2e2e42;
+}
+.dark .payment-badge--ok {
+  background: rgba(4, 120, 87, 0.15); color: #34d399;
+}
+.dark .payment-badge--overdue {
+  background: rgba(239, 68, 68, 0.15); color: #f87171;
 }
 
 @media (max-width: 960px) {

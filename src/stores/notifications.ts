@@ -2,7 +2,16 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
 
-export type NotificationType = 'deal' | 'payment' | 'request' | 'system'
+export type NotificationType =
+  | 'PAYMENT_DUE'
+  | 'PAYMENT_RECEIVED'
+  | 'PAYMENT_OVERDUE'
+  | 'DEAL_CREATED'
+  | 'DEAL_STATUS'
+  | 'REQUEST_NEW'
+  | 'REQUEST_ACCEPTED'
+  | 'REQUEST_REJECTED'
+  | 'SYSTEM'
 
 export interface Notification {
   id: string

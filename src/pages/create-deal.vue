@@ -8,7 +8,9 @@ import { CITIES } from '@/constants/cities'
 import { MOCK_CLIENTS } from '@/constants/mock/users'
 import { useRouter } from 'vue-router'
 import type { PaymentType } from '@/types'
+import { useIsDark } from '@/composables/useIsDark'
 
+const { isDark } = useIsDark()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const router = useRouter()
@@ -116,7 +118,7 @@ function getCategoryLabel(catId: string) {
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Custom stepper header -->
     <div class="stepper-header">
       <div
@@ -813,18 +815,18 @@ function getCategoryLabel(catId: string) {
 .btn-secondary:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
 
 /* Dark mode */
-:global(.dark) .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-:global(.dark) .field-input:focus {
+.dark .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .field-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-:global(.dark) .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-:global(.dark) .filter-input:focus {
+.dark .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .filter-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-:global(.dark) .preview-card { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); border-color: rgba(4, 120, 87, 0.2); }
-:global(.dark) .client-card { background: #1e1e2e; }
-:global(.dark) .client-card.active { background: rgba(4, 120, 87, 0.08); }
-:global(.dark) .category-option { background: #252538; }
+.dark .preview-card { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); border-color: rgba(4, 120, 87, 0.2); }
+.dark .client-card { background: #1e1e2e; }
+.dark .client-card.active { background: rgba(4, 120, 87, 0.08); }
+.dark .category-option { background: #252538; }
 </style>

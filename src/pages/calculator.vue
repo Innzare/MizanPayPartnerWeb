@@ -2,7 +2,9 @@
 import { calculateBasic } from '@/utils/calculator'
 import { formatCurrency, formatPercent } from '@/utils/formatters'
 import type { BasicCalculatorInputs, CalculatorResult } from '@/types'
+import { useIsDark } from '@/composables/useIsDark'
 
+const { isDark } = useIsDark()
 const inputs = ref<BasicCalculatorInputs>({
   purchasePrice: 100000,
   markupType: 'percent',
@@ -37,7 +39,7 @@ function reset() {
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Page header -->
     <div class="page-header">
       <div class="page-header-left">
@@ -480,35 +482,39 @@ function reset() {
 }
 
 /* Dark mode */
-:global(.dark) .field-input {
+.dark .field-input {
   background: #252538; border-color: #2e2e42; color: #e4e4e7;
 }
-:global(.dark) .field-input:focus {
+.dark .field-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-:global(.dark) .toggle-btn.active {
+.dark .toggle-btn.active {
   background: #252538; color: #e4e4e7;
   box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
-:global(.dark) .chip-option { background: #252538; }
-:global(.dark) .chip-option.active {
+.dark .chip-option { background: #252538; }
+.dark .chip-option.active {
   background: rgba(4, 120, 87, 0.15); color: #34d399;
 }
-:global(.dark) .payment-type-btn {
+.dark .payment-type-btn {
   background: #1e1e2e; border-color: #2e2e42;
 }
-:global(.dark) .payment-type-btn.active {
+.dark .payment-type-btn.active {
   background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.25);
 }
-:global(.dark) .results-card {
+.dark .results-card {
   background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.03) 100%);
   border-color: rgba(4, 120, 87, 0.2);
 }
-:global(.dark) .result-row--highlight { background: rgba(0,0,0,0.15); }
-:global(.dark) .result-profit-item { background: rgba(0,0,0,0.15); }
-:global(.dark) .result-divider { background: rgba(255,255,255,0.06); }
-:global(.dark) .markup-type-toggle { background: #1e1e2e; }
+.dark .result-row--highlight { background: rgba(0,0,0,0.15); }
+.dark .result-profit-item { background: rgba(0,0,0,0.15); }
+.dark .result-divider { background: rgba(255,255,255,0.06); }
+.dark .markup-type-toggle { background: #1e1e2e; }
+.dark .info-banner {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.2);
+}
 
 @media (max-width: 500px) {
   .payment-type-options { grid-template-columns: 1fr; }

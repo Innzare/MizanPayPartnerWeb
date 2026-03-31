@@ -4,7 +4,9 @@ import { formatCurrency } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter } from 'vue-router'
+import { useIsDark } from '@/composables/useIsDark'
 
+const { isDark } = useIsDark()
 const productsStore = useProductsStore()
 const router = useRouter()
 
@@ -121,7 +123,7 @@ function getCategoryIcon(catId: string) {
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Custom stepper header -->
     <div class="stepper-header">
       <div
@@ -916,16 +918,16 @@ function getCategoryIcon(catId: string) {
 .btn-secondary:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
 
 /* Dark mode */
-:global(.dark) .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-:global(.dark) .field-input:focus {
+.dark .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .field-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-:global(.dark) .preview-card { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); border-color: rgba(4, 120, 87, 0.2); }
-:global(.dark) .category-option { background: #252538; }
-:global(.dark) .photo-preview-placeholder { background: #1e1e2e; color: #3e3e52; }
-:global(.dark) .upload-zone { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .upload-zone:hover { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.3); }
-:global(.dark) .upload-zone--has-file { background: #252538; border-color: #2e2e42; }
-:global(.dark) .photo-preview-card { border-color: #2e2e42; }
+.dark .preview-card { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); border-color: rgba(4, 120, 87, 0.2); }
+.dark .category-option { background: #252538; }
+.dark .photo-preview-placeholder { background: #1e1e2e; color: #3e3e52; }
+.dark .upload-zone { background: #1e1e2e; border-color: #2e2e42; }
+.dark .upload-zone:hover { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.3); }
+.dark .upload-zone--has-file { background: #252538; border-color: #2e2e42; }
+.dark .photo-preview-card { border-color: #2e2e42; }
 </style>

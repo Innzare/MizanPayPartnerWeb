@@ -3,6 +3,9 @@ import { useAuthStore } from '@/stores/auth'
 import { formatPhone, formatDate } from '@/utils/formatters'
 import { CITIES } from '@/constants/cities'
 
+import { useIsDark } from '@/composables/useIsDark'
+
+const { isDark } = useIsDark()
 const authStore = useAuthStore()
 
 // Tabs
@@ -207,7 +210,7 @@ const plans = [
 </script>
 
 <template>
-  <div class="at-page">
+  <div class="at-page" :class="{ dark: isDark }">
     <!-- Page header -->
     <div class="page-header">
       <div class="page-header-left">
@@ -1056,34 +1059,52 @@ const plans = [
 .plans-comparison-note .v-icon { color: rgba(var(--v-theme-on-surface), 0.35); flex-shrink: 0; }
 
 /* Dark mode */
-:global(.dark) .settings-tab.active {
+.dark .settings-tab.active {
   background: #252538; color: #e4e4e7;
   box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
-:global(.dark) .field-input {
+.dark .field-input {
   background: #252538; border-color: #2e2e42; color: #e4e4e7;
 }
-:global(.dark) .field-input:focus {
+.dark .field-input:focus {
   border-color: #047857; background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-:global(.dark) .profile-card-visual {
+.dark .profile-card-visual {
   background: linear-gradient(135deg, rgba(4, 120, 87, 0.12) 0%, rgba(4, 120, 87, 0.04) 100%);
   border-color: rgba(4, 120, 87, 0.2);
 }
-:global(.dark) .stat-item { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .plan-card { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .plan-card:hover { border-color: #3e3e52; box-shadow: 0 4px 16px rgba(0,0,0,0.2); }
-:global(.dark) .plan-card--active { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.25); }
-:global(.dark) .plan-response-price { background: #252538; }
-:global(.dark) .plan-response-price--free { background: rgba(4, 120, 87, 0.1); }
-:global(.dark) .plan-divider { background: #2e2e42; }
-:global(.dark) .plans-comparison-note { background: #1a1a2e; border-color: #2e2e42; }
-:global(.dark) .verification-step { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .verification-step.done { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.2); }
-:global(.dark) .current-plan-banner {
+.dark .stat-item { background: #1e1e2e; border-color: #2e2e42; }
+.dark .plan-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .plan-card:hover { border-color: #3e3e52; box-shadow: 0 4px 16px rgba(0,0,0,0.2); }
+.dark .plan-card--active { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.25); }
+.dark .plan-response-price { background: #252538; }
+.dark .plan-response-price--free { background: rgba(4, 120, 87, 0.1); }
+.dark .plan-divider { background: #2e2e42; }
+.dark .plans-comparison-note { background: #1a1a2e; border-color: #2e2e42; }
+.dark .verification-step { background: #1e1e2e; border-color: #2e2e42; }
+.dark .verification-step.done { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.2); }
+.dark .current-plan-banner {
   background: linear-gradient(135deg, rgba(4, 120, 87, 0.12) 0%, rgba(4, 120, 87, 0.04) 100%);
   border-color: rgba(4, 120, 87, 0.2);
 }
-:global(.dark) .settings-tabs { background: #1a1a2e; border-color: #2e2e42; }
+.dark .settings-tabs { background: #1a1a2e; border-color: #2e2e42; }
+.dark .info-banner {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.2);
+}
+.dark .info-banner--success {
+  background: rgba(4, 120, 87, 0.1);
+  border-color: rgba(4, 120, 87, 0.2);
+}
+.dark .info-banner--error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.dark .role-badge {
+  background: rgba(4, 120, 87, 0.15); color: #34d399;
+}
+.dark .profile-card-role {
+  background: rgba(4, 120, 87, 0.15); color: #34d399;
+}
 </style>

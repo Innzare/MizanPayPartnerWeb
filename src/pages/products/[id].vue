@@ -6,8 +6,10 @@ import { userName } from '@/types'
 import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter, useRoute } from 'vue-router'
+import { useIsDark } from '@/composables/useIsDark'
 
 const router = useRouter()
+const { isDark, statusStyle } = useIsDark()
 const route = useRoute()
 const productsStore = useProductsStore()
 const dealsStore = useDealsStore()
@@ -99,7 +101,7 @@ async function deleteProduct() {
 </script>
 
 <template>
-  <div class="at-page" v-if="product">
+  <div class="at-page" v-if="product" :class="{ dark: isDark }">
     <!-- Back + Actions -->
     <div class="d-flex align-center justify-space-between mb-5">
       <button class="back-btn" @click="router.push('/products')">
@@ -214,7 +216,7 @@ async function deleteProduct() {
                     <div class="deal-amount">{{ formatCurrency(deal.totalPrice) }}</div>
                     <div
                       class="deal-status"
-                      :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.bgLight, color: DEAL_STATUS_CONFIG[deal.status]?.color }"
+                      :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
                     >
                       {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
                     </div>
@@ -630,12 +632,12 @@ async function deleteProduct() {
 }
 
 /* Dark mode */
-:global(.dark) .installment-card { background: #1e1e2e; border-color: #2e2e42; }
-:global(.dark) .installment-card--featured { background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.2); }
-:global(.dark) .deal-item { background: rgba(255,255,255,0.02); border-color: #2e2e42; }
-:global(.dark) .deal-stats-mini { background: rgba(255,255,255,0.03); }
-:global(.dark) .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-:global(.dark) .field-input:focus {
+.dark .installment-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .installment-card--featured { background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.2); }
+.dark .deal-item { background: rgba(255,255,255,0.02); border-color: #2e2e42; }
+.dark .deal-stats-mini { background: rgba(255,255,255,0.03); }
+.dark .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .field-input:focus {
   border-color: #047857;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
