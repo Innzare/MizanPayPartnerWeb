@@ -192,13 +192,18 @@ const selectedDealPaidTotal = computed(() =>
           >
             <!-- Client Header -->
             <div class="client-header" @click="toggleClient(client.user.id)">
-              <div class="client-avatar" :style="{ background: getAvatarColor(client.user.firstName) }">
+              <div
+                class="client-avatar"
+                :style="{ background: getAvatarColor(client.user.firstName) }"
+                @click.stop="router.push(`/users/${client.user.id}`)"
+                style="cursor: pointer;"
+              >
                 {{ client.user.firstName[0] }}{{ client.user.lastName[0] }}
               </div>
 
               <div class="client-main">
                 <div class="client-name-row">
-                  <span class="client-name">{{ client.user.firstName }} {{ client.user.lastName }}</span>
+                  <span class="client-name client-name--link" @click.stop="router.push(`/users/${client.user.id}`)">{{ client.user.firstName }} {{ client.user.lastName }}</span>
                   <div
                     class="score-badge"
                     :style="{ background: getScoreBg(client.onTimeRate), color: getScoreColor(client.onTimeRate) }"
@@ -355,16 +360,21 @@ const selectedDealPaidTotal = computed(() =>
 
         <v-card-text class="pa-5">
           <!-- Client & Date row -->
-          <div class="d-flex align-center ga-3 mb-5">
+          <div
+            class="d-flex align-center ga-3 mb-5"
+            style="cursor: pointer;"
+            @click="showDialog = false; router.push(`/users/${selectedDeal.clientId}`)"
+          >
             <div class="dialog-avatar" :style="{ background: '#3b82f6' }">
               {{ userName(selectedDeal.client).charAt(0) }}
             </div>
-            <div>
+            <div class="flex-grow-1">
               <div class="font-weight-medium">{{ userName(selectedDeal.client) }}</div>
               <div class="text-caption text-medium-emphasis">
                 Рейтинг {{ selectedDeal.client?.rating ?? 0 }} · Создано {{ formatDate(selectedDeal.createdAt) }}
               </div>
             </div>
+            <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
           </div>
 
           <!-- Financial grid -->
@@ -538,6 +548,13 @@ const selectedDealPaidTotal = computed(() =>
 .client-name {
   font-size: 15px; font-weight: 600;
   color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.client-name--link {
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.client-name--link:hover {
+  color: rgb(var(--v-theme-primary));
 }
 .score-badge {
   font-size: 11px; font-weight: 700;

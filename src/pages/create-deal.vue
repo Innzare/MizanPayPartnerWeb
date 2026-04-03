@@ -1,20 +1,17 @@
 <script lang="ts" setup>
 import { useDealsStore } from '@/stores/deals'
-import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency } from '@/utils/formatters'
-import { generateEqualSchedule, generateDecreasingSchedule } from '@/utils/schedule-generator'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
-import { MOCK_CLIENTS } from '@/constants/mock/users'
 import { useRouter } from 'vue-router'
 import type { PaymentType } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { api } from '@/api/client'
 
 const { isDark } = useIsDark()
 const toast = useToast()
 const dealsStore = useDealsStore()
-const paymentsStore = usePaymentsStore()
 const router = useRouter()
 
 const step = ref(1)
@@ -30,50 +27,93 @@ const productName = ref('')
 const productDescription = ref('')
 const category = ref('')
 const city = ref('')
+const photoFiles = ref<File[]>([])
+const photoPreviewUrls = ref<string[]>([])
+const fileInput = ref<HTMLInputElement | null>(null)
+
+function onPhotoSelect(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (input.files) {
+    const remaining = 8 - photoFiles.value.length
+    const files = Array.from(input.files).filter(f => f.type.startsWith('image/')).slice(0, remaining)
+    for (const file of files) {
+      photoFiles.value.push(file)
+      photoPreviewUrls.value.push(URL.createObjectURL(file))
+    }
+  }
+  if (fileInput.value) fileInput.value.value = ''
+}
+
+function removePhoto(index: number) {
+  const url = photoPreviewUrls.value[index]
+  if (url) URL.revokeObjectURL(url)
+  photoFiles.value.splice(index, 1)
+  photoPreviewUrls.value.splice(index, 1)
+}
 
 // Step 2: Terms
 const purchasePrice = ref<number | null>(null)
 const markupPercent = ref(15)
+const downPayment = ref<number | null>(null)
 const termMonths = ref(6)
 const paymentType = ref<PaymentType>('EQUAL')
+const paymentInterval = ref('MONTHLY')
+const dealDate = ref(new Date().toISOString().slice(0, 10))
 
 const markupOptions = [10, 15, 20, 25]
 const termOptions = [3, 4, 6, 9, 12, 18, 24]
 
 // Computed deal preview
-const markup = computed(() => (purchasePrice.value || 0) * markupPercent.value / 100)
+const markup = computed(() => Math.round((purchasePrice.value || 0) * markupPercent.value / 100))
 const totalPrice = computed(() => (purchasePrice.value || 0) + markup.value)
-const monthlyPayment = computed(() => termMonths.value > 0 ? totalPrice.value / termMonths.value : 0)
+const downPaymentAmount = computed(() => downPayment.value || 0)
+const remainingAmount = computed(() => totalPrice.value - downPaymentAmount.value)
+const monthlyPayment = computed(() => termMonths.value > 0 ? remainingAmount.value / termMonths.value : 0)
 
-// Step 3: Client
-const selectedClientId = ref('')
-const clientSearch = ref('')
-
-const selectedClient = computed(() =>
-  MOCK_CLIENTS.find(c => c.id === selectedClientId.value)
-)
-
-const filteredClients = computed(() => {
-  if (!clientSearch.value) return MOCK_CLIENTS
-  const s = clientSearch.value.toLowerCase()
-  return MOCK_CLIENTS.filter(c =>
-    `${c.firstName} ${c.lastName}`.toLowerCase().includes(s) ||
-    c.city.toLowerCase().includes(s)
-  )
+const firstPaymentDate = computed(() => {
+  const d = new Date(dealDate.value)
+  if (paymentInterval.value === 'WEEKLY') d.setDate(d.getDate() + 7)
+  else if (paymentInterval.value === 'BIWEEKLY') d.setDate(d.getDate() + 14)
+  else d.setMonth(d.getMonth() + 1)
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
 })
 
+// Step 3: Client
+const clientMode = ref<'external' | 'search'>('external')
+const externalName = ref('')
+const externalPhone = ref('')
+const clientSearch = ref('')
+const searchResults = ref<Array<{ id: string; firstName: string; lastName: string; city: string; rating: number }>>([])
+const selectedClientId = ref('')
+const searching = ref(false)
+
+async function searchClients() {
+  if (!clientSearch.value || clientSearch.value.length < 2) {
+    searchResults.value = []
+    return
+  }
+  searching.value = true
+  try {
+    searchResults.value = await api.get<typeof searchResults.value>(`/users/search?q=${encodeURIComponent(clientSearch.value)}&limit=10`)
+  } catch {
+    searchResults.value = []
+  } finally {
+    searching.value = false
+  }
+}
+
+const selectedClient = computed(() => searchResults.value.find(c => c.id === selectedClientId.value))
+
 // Validation
-const step1Valid = computed(() => !!productName.value && !!category.value && !!city.value)
+const step1Valid = computed(() => !!productName.value)
 const step2Valid = computed(() => (purchasePrice.value ?? 0) > 0 && termMonths.value > 0)
-const step3Valid = computed(() => !!selectedClientId.value)
+const step3Valid = computed(() => {
+  if (clientMode.value === 'external') return !!externalName.value && !!externalPhone.value
+  return !!selectedClientId.value
+})
 
-function nextStep() {
-  if (step.value < 4) step.value++
-}
-
-function prevStep() {
-  if (step.value > 1) step.value--
-}
+function nextStep() { if (step.value < 4) step.value++ }
+function prevStep() { if (step.value > 1) step.value-- }
 
 function canProceed() {
   if (step.value === 1) return step1Valid.value
@@ -82,42 +122,49 @@ function canProceed() {
   return true
 }
 
-async function submitDeal() {
-  // TODO: Direct deal creation is no longer supported — deals are created through request offers.
-  // This page should be replaced with a redirect to the requests page.
-  try {
-    const deal = await dealsStore.createDeal({
-      clientId: selectedClientId.value,
-      productName: productName.value,
-      productPhotos: ['https://picsum.photos/id/200/400/400'],
-      purchasePrice: purchasePrice.value || 0,
-      markup: Math.round(markup.value),
-      markupPercent: markupPercent.value,
-      totalPrice: Math.round(totalPrice.value),
-      numberOfPayments: termMonths.value,
-      paymentInterval: 'MONTHLY',
-      paymentType: paymentType.value,
-      firstPaymentDate: new Date(Date.now() + 30 * 86400000).toISOString(),
-    })
+const submitting = ref(false)
 
-    const generator = paymentType.value === 'EQUAL' ? generateEqualSchedule : generateDecreasingSchedule
-    const schedule = generator(deal.id, Math.round(totalPrice.value), termMonths.value, deal.firstPaymentDate)
-    paymentsStore.addPayments(deal.id, schedule)
+async function submitDeal() {
+  try {
+    submitting.value = true
+
+    // Upload photos
+    let photoUrls: string[] = []
+    if (photoFiles.value.length > 0) {
+      photoUrls = await api.uploadMultiple(photoFiles.value, 'deals')
+    }
+
+    await dealsStore.createDirectDeal({
+      ...(clientMode.value === 'search' && selectedClientId.value
+        ? { clientId: selectedClientId.value }
+        : { externalClientName: externalName.value, externalClientPhone: externalPhone.value }
+      ),
+      productName: productName.value,
+      productPhotos: photoUrls.length ? photoUrls : undefined,
+      purchasePrice: purchasePrice.value || 0,
+      markupPercent: markupPercent.value,
+      downPayment: downPaymentAmount.value || undefined,
+      numberOfPayments: termMonths.value,
+      paymentInterval: paymentInterval.value,
+      paymentType: paymentType.value,
+      dealDate: dealDate.value,
+    })
 
     toast.success('Сделка создана')
     router.push('/deals')
   } catch (e: any) {
     toast.error(e.message || 'Ошибка создания сделки')
+  } finally {
+    submitting.value = false
   }
 }
 
-function getCategoryIcon(catId: string) {
-  return CATEGORIES.find(c => c.id === catId)?.icon || 'mdi-tag'
-}
-
-function getCategoryLabel(catId: string) {
-  return CATEGORIES.find(c => c.id === catId)?.label || catId
-}
+// Debounced search
+let searchTimeout: ReturnType<typeof setTimeout> | null = null
+watch(clientSearch, () => {
+  if (searchTimeout) clearTimeout(searchTimeout)
+  searchTimeout = setTimeout(searchClients, 400)
+})
 </script>
 
 <template>
@@ -201,6 +248,28 @@ function getCategoryLabel(catId: string) {
               <option v-for="c in CITIES" :key="c" :value="c">{{ c }}</option>
             </select>
           </div>
+
+          <!-- Photos -->
+          <div class="form-field full-width">
+            <label class="field-label">Фото товара <span class="text-medium-emphasis">({{ photoFiles.length }}/8)</span></label>
+            <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onPhotoSelect" />
+            <div
+              v-if="photoFiles.length < 8"
+              class="photo-drop-zone"
+              @click="fileInput?.click()"
+            >
+              <v-icon icon="mdi-camera-plus-outline" size="24" />
+              <span>Добавить фото</span>
+            </div>
+            <div v-if="photoFiles.length" class="photo-grid mt-3">
+              <div v-for="(_, idx) in photoFiles" :key="idx" class="photo-grid-item">
+                <img :src="photoPreviewUrls[idx]" class="photo-grid-img" />
+                <button class="photo-remove-btn" @click.stop="removePhoto(idx)">
+                  <v-icon icon="mdi-close" size="14" />
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </v-card>
     </div>
@@ -224,12 +293,7 @@ function getCategoryLabel(catId: string) {
               <div class="form-field full-width">
                 <label class="field-label">Закупочная цена <span class="required">*</span></label>
                 <div class="input-with-suffix">
-                  <input
-                    v-model.number="purchasePrice"
-                    type="number"
-                    class="field-input"
-                    placeholder="0"
-                  />
+                  <input v-model.number="purchasePrice" type="number" class="field-input" placeholder="0" />
                   <span class="input-suffix">₽</span>
                 </div>
               </div>
@@ -238,14 +302,18 @@ function getCategoryLabel(catId: string) {
                 <label class="field-label">Наценка</label>
                 <div class="chip-group">
                   <button
-                    v-for="opt in markupOptions"
-                    :key="opt"
-                    class="chip-option"
-                    :class="{ active: markupPercent === opt }"
+                    v-for="opt in markupOptions" :key="opt"
+                    class="chip-option" :class="{ active: markupPercent === opt }"
                     @click="markupPercent = opt"
-                  >
-                    {{ opt }}%
-                  </button>
+                  >{{ opt }}%</button>
+                </div>
+              </div>
+
+              <div class="form-field full-width">
+                <label class="field-label">Первоначальный взнос</label>
+                <div class="input-with-suffix">
+                  <input v-model.number="downPayment" type="number" class="field-input" placeholder="0" />
+                  <span class="input-suffix">₽</span>
                 </div>
               </div>
 
@@ -253,37 +321,28 @@ function getCategoryLabel(catId: string) {
                 <label class="field-label">Срок рассрочки</label>
                 <div class="chip-group">
                   <button
-                    v-for="opt in termOptions"
-                    :key="opt"
-                    class="chip-option"
-                    :class="{ active: termMonths === opt }"
+                    v-for="opt in termOptions" :key="opt"
+                    class="chip-option" :class="{ active: termMonths === opt }"
                     @click="termMonths = opt"
-                  >
-                    {{ opt }} мес
-                  </button>
+                  >{{ opt }} мес</button>
                 </div>
               </div>
 
               <div class="form-field full-width">
                 <label class="field-label">Тип платежей</label>
                 <div class="chip-group">
-                  <button
-                    class="chip-option chip-option--wide"
-                    :class="{ active: paymentType === 'EQUAL' }"
-                    @click="paymentType = 'EQUAL'"
-                  >
-                    <v-icon icon="mdi-equal" size="16" />
-                    Равные
+                  <button class="chip-option chip-option--wide" :class="{ active: paymentType === 'EQUAL' }" @click="paymentType = 'EQUAL'">
+                    <v-icon icon="mdi-equal" size="16" /> Равные
                   </button>
-                  <button
-                    class="chip-option chip-option--wide"
-                    :class="{ active: paymentType === 'decreasing' }"
-                    @click="paymentType = 'DECREASING'"
-                  >
-                    <v-icon icon="mdi-trending-down" size="16" />
-                    Убывающие
+                  <button class="chip-option chip-option--wide" :class="{ active: paymentType === 'DECREASING' }" @click="paymentType = 'DECREASING'">
+                    <v-icon icon="mdi-trending-down" size="16" /> Убывающие
                   </button>
                 </div>
+              </div>
+
+              <div class="form-field full-width">
+                <label class="field-label">Дата заключения сделки</label>
+                <input v-model="dealDate" type="date" class="field-input" />
               </div>
             </div>
           </v-card>
@@ -296,7 +355,6 @@ function getCategoryLabel(catId: string) {
               <v-icon icon="mdi-calculator" size="18" />
               <span>Расчёт сделки</span>
             </div>
-
             <div class="preview-row">
               <span>Закупочная цена</span>
               <span class="preview-value">{{ formatCurrency(purchasePrice || 0) }}</span>
@@ -310,13 +368,24 @@ function getCategoryLabel(catId: string) {
               <span>Итоговая цена</span>
               <span>{{ formatCurrency(totalPrice) }}</span>
             </div>
+            <div v-if="downPaymentAmount > 0" class="preview-row">
+              <span>Первоначальный взнос</span>
+              <span class="preview-value">-{{ formatCurrency(downPaymentAmount) }}</span>
+            </div>
+            <div v-if="downPaymentAmount > 0" class="preview-row">
+              <span>Остаток к выплате</span>
+              <span class="preview-value">{{ formatCurrency(remainingAmount) }}</span>
+            </div>
             <div class="preview-divider" />
             <div class="preview-row preview-row--highlight">
               <span>Ежемесячный платёж</span>
-              <span>{{ formatCurrency(monthlyPayment) }}</span>
+              <span>~{{ formatCurrency(monthlyPayment) }}</span>
             </div>
             <div class="preview-footer">
-              <span>{{ termMonths }} платежей · {{ paymentType === 'EQUAL' ? 'Равные' : 'Убывающие' }}</span>
+              {{ termMonths }} платежей · {{ paymentType === 'EQUAL' ? 'Равные' : 'Убывающие' }}
+            </div>
+            <div class="preview-footer" style="margin-top: 4px;">
+              Первый платёж: {{ firstPaymentDate }}
             </div>
           </div>
         </v-col>
@@ -330,25 +399,58 @@ function getCategoryLabel(catId: string) {
           <v-icon icon="mdi-account" size="22" />
         </div>
         <div>
-          <div class="step-title">Выбор клиента</div>
-          <div class="step-subtitle">Выберите клиента для оформления сделки</div>
+          <div class="step-title">Клиент</div>
+          <div class="step-subtitle">Укажите данные клиента или найдите в системе</div>
         </div>
       </div>
 
-      <v-card rounded="lg" elevation="0" border class="pa-5">
+      <!-- Toggle -->
+      <div class="chip-group mb-5">
+        <button class="chip-option chip-option--wide" :class="{ active: clientMode === 'external' }" @click="clientMode = 'external'">
+          <v-icon icon="mdi-account-plus" size="16" /> Ввести вручную
+        </button>
+        <button class="chip-option chip-option--wide" :class="{ active: clientMode === 'search' }" @click="clientMode = 'search'">
+          <v-icon icon="mdi-account-search" size="16" /> Найти в системе
+        </button>
+      </div>
+
+      <!-- External client -->
+      <v-card v-if="clientMode === 'external'" rounded="lg" elevation="0" border class="pa-5">
+        <div class="form-grid">
+          <div class="form-field full-width">
+            <label class="field-label">ФИО клиента <span class="required">*</span></label>
+            <input v-model="externalName" type="text" class="field-input" placeholder="Иванов Иван Иванович" />
+          </div>
+          <div class="form-field full-width">
+            <label class="field-label">Телефон <span class="required">*</span></label>
+            <input v-model="externalPhone" type="tel" class="field-input" placeholder="+7 (999) 123-45-67" />
+          </div>
+        </div>
+        <div class="info-banner mt-4">
+          <v-icon icon="mdi-information-outline" size="18" />
+          <span>Клиент не зарегистрирован на платформе. Вы сможете отправлять напоминания через WhatsApp/Telegram.</span>
+        </div>
+      </v-card>
+
+      <!-- Search client -->
+      <v-card v-else rounded="lg" elevation="0" border class="pa-5">
         <div class="filter-input-wrap mb-4">
           <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
           <input
             v-model="clientSearch"
             type="text"
             class="filter-input"
-            placeholder="Поиск по имени или городу..."
+            placeholder="Поиск по имени или телефону..."
           />
         </div>
 
-        <div class="client-grid">
+        <div v-if="searching" class="text-center pa-6">
+          <v-progress-circular indeterminate size="32" color="primary" />
+        </div>
+
+        <div v-else-if="searchResults.length" class="client-grid">
           <div
-            v-for="client in filteredClients"
+            v-for="client in searchResults"
             :key="client.id"
             class="client-card"
             :class="{ active: selectedClientId === client.id }"
@@ -360,7 +462,7 @@ function getCategoryLabel(catId: string) {
             <div class="client-info">
               <div class="client-name">{{ client.firstName }} {{ client.lastName }}</div>
               <div class="client-meta">
-                <span><v-icon icon="mdi-map-marker" size="12" /> {{ client.city }}</span>
+                <span v-if="client.city"><v-icon icon="mdi-map-marker" size="12" /> {{ client.city }}</span>
                 <span><v-icon icon="mdi-star" size="12" /> {{ client.rating }}</span>
               </div>
             </div>
@@ -370,14 +472,13 @@ function getCategoryLabel(catId: string) {
           </div>
         </div>
 
-        <div v-if="!filteredClients.length" class="text-center pa-8">
+        <div v-else-if="clientSearch.length >= 2" class="text-center pa-8">
           <v-icon icon="mdi-account-search" size="40" color="grey-lighten-1" class="mb-2" />
           <div class="text-body-2 text-medium-emphasis">Клиенты не найдены</div>
         </div>
 
-        <div class="info-banner mt-4">
-          <v-icon icon="mdi-information-outline" size="18" />
-          <span>Клиент получит уведомление и договор мурабахи для подписания.</span>
+        <div v-else class="text-center pa-8">
+          <div class="text-body-2 text-medium-emphasis">Введите минимум 2 символа для поиска</div>
         </div>
       </v-card>
     </div>
@@ -394,89 +495,102 @@ function getCategoryLabel(catId: string) {
         </div>
       </div>
 
-      <div class="review-grid">
-        <!-- Product -->
-        <v-card rounded="lg" elevation="0" border class="pa-5">
-          <div class="review-section-header">
-            <v-icon icon="mdi-package-variant-closed" size="18" />
-            <span>Товар</span>
-          </div>
-          <div class="review-rows">
-            <div class="review-row">
-              <span class="review-label">Название</span>
-              <span class="review-value">{{ productName }}</span>
-            </div>
-            <div class="review-row">
-              <span class="review-label">Категория</span>
-              <span class="review-value">
-                <v-icon :icon="getCategoryIcon(category)" size="14" class="mr-1" />
-                {{ getCategoryLabel(category) }}
-              </span>
-            </div>
-            <div class="review-row">
-              <span class="review-label">Город</span>
-              <span class="review-value">{{ city }}</span>
-            </div>
-            <div v-if="productDescription" class="review-row">
-              <span class="review-label">Описание</span>
-              <span class="review-value">{{ productDescription }}</span>
-            </div>
-          </div>
-        </v-card>
-
-        <!-- Terms -->
-        <v-card rounded="lg" elevation="0" border class="pa-5">
-          <div class="review-section-header">
-            <v-icon icon="mdi-calculator-variant" size="18" />
-            <span>Условия</span>
-          </div>
-          <div class="review-rows">
-            <div class="review-row">
-              <span class="review-label">Закупочная цена</span>
-              <span class="review-value">{{ formatCurrency(purchasePrice || 0) }}</span>
-            </div>
-            <div class="review-row">
-              <span class="review-label">Наценка</span>
-              <span class="review-value" style="color: #047857;">+{{ formatCurrency(markup) }} ({{ markupPercent }}%)</span>
-            </div>
-            <div class="review-row review-row--bold">
-              <span class="review-label">Итоговая цена</span>
-              <span class="review-value">{{ formatCurrency(totalPrice) }}</span>
-            </div>
-            <div class="review-row review-row--bold">
-              <span class="review-label">Ежемесячный платёж</span>
-              <span class="review-value" style="color: #047857;">{{ formatCurrency(monthlyPayment) }}</span>
-            </div>
-            <div class="review-row">
-              <span class="review-label">Срок / Тип</span>
-              <span class="review-value">{{ termMonths }} мес · {{ paymentType === 'EQUAL' ? 'Равные' : 'Убывающие' }}</span>
-            </div>
-          </div>
-        </v-card>
-
-        <!-- Client -->
-        <v-card rounded="lg" elevation="0" border class="pa-5">
-          <div class="review-section-header">
-            <v-icon icon="mdi-account" size="18" />
-            <span>Клиент</span>
-          </div>
-          <div v-if="selectedClient" class="review-client">
-            <div class="client-avatar" style="background: #047857;">
-              {{ selectedClient.firstName.charAt(0) }}{{ selectedClient.lastName.charAt(0) }}
+      <!-- Hero card — main deal summary -->
+      <div class="review-hero">
+        <div class="review-hero__header">
+          <div class="review-hero__product">
+            <div class="review-hero__product-icon">
+              <v-icon icon="mdi-package-variant-closed" size="24" />
             </div>
             <div>
-              <div class="font-weight-medium">{{ selectedClient.firstName }} {{ selectedClient.lastName }}</div>
-              <div class="text-caption text-medium-emphasis">
-                {{ selectedClient.city }} · Рейтинг {{ selectedClient.rating }}
+              <div class="review-hero__product-name">{{ productName }}</div>
+              <div class="review-hero__product-meta">
+                {{ new Date(dealDate).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }) }}
+                <span v-if="photoFiles.length"> · {{ photoFiles.length }} фото</span>
               </div>
             </div>
           </div>
-        </v-card>
+        </div>
+
+        <!-- Photo strip -->
+        <div v-if="photoPreviewUrls.length" class="review-hero__photos">
+          <img v-for="(url, i) in photoPreviewUrls.slice(0, 4)" :key="i" :src="url" class="review-hero__photo" />
+          <div v-if="photoPreviewUrls.length > 4" class="review-hero__photo-more">
+            +{{ photoPreviewUrls.length - 4 }}
+          </div>
+        </div>
+
+        <!-- Financial breakdown -->
+        <div class="review-hero__finance">
+          <div class="review-hero__finance-row">
+            <span>Закупочная цена</span>
+            <span>{{ formatCurrency(purchasePrice || 0) }}</span>
+          </div>
+          <div class="review-hero__finance-row review-hero__finance-row--accent">
+            <span>Наценка {{ markupPercent }}%</span>
+            <span>+{{ formatCurrency(markup) }}</span>
+          </div>
+          <div v-if="downPaymentAmount > 0" class="review-hero__finance-row">
+            <span>Первоначальный взнос</span>
+            <span>-{{ formatCurrency(downPaymentAmount) }}</span>
+          </div>
+          <div class="review-hero__finance-divider" />
+          <div class="review-hero__finance-row review-hero__finance-row--total">
+            <span>Итоговая цена</span>
+            <span>{{ formatCurrency(totalPrice) }}</span>
+          </div>
+        </div>
+
+        <!-- Big payment highlight -->
+        <div class="review-hero__payment">
+          <div class="review-hero__payment-amount">~{{ formatCurrency(monthlyPayment) }}</div>
+          <div class="review-hero__payment-label">
+            ежемесячный платёж · {{ termMonths }} мес · {{ paymentType === 'EQUAL' ? 'равные' : 'убывающие' }}
+          </div>
+          <div class="review-hero__payment-date">
+            <v-icon icon="mdi-calendar-clock" size="14" />
+            Первый платёж: {{ firstPaymentDate }}
+          </div>
+        </div>
       </div>
 
-      <div class="info-banner info-banner--success mt-4">
-        <v-icon icon="mdi-file-document-check-outline" size="18" />
-        <span>Договор будет сформирован автоматически и отправлен клиенту для подписания.</span>
+      <!-- Client card -->
+      <div class="review-client-card">
+        <div class="review-client-card__icon">
+          <div class="review-client-card__avatar" :style="{ background: clientMode === 'external' ? '#6366f1' : '#047857' }">
+            <template v-if="clientMode === 'external'">{{ externalName.charAt(0).toUpperCase() }}</template>
+            <template v-else-if="selectedClient">{{ selectedClient.firstName.charAt(0) }}{{ selectedClient.lastName.charAt(0) }}</template>
+          </div>
+        </div>
+        <div class="review-client-card__info">
+          <div class="review-client-card__name">
+            <template v-if="clientMode === 'external'">{{ externalName }}</template>
+            <template v-else-if="selectedClient">{{ selectedClient.firstName }} {{ selectedClient.lastName }}</template>
+          </div>
+          <div class="review-client-card__meta">
+            <template v-if="clientMode === 'external'">
+              <v-icon icon="mdi-phone" size="12" /> {{ externalPhone }}
+              <span class="review-client-card__badge review-client-card__badge--external">Внешний клиент</span>
+            </template>
+            <template v-else-if="selectedClient">
+              <v-icon icon="mdi-map-marker" size="12" /> {{ selectedClient.city }}
+              <v-icon icon="mdi-star" size="12" class="ml-2" /> {{ selectedClient.rating }}
+              <span class="review-client-card__badge review-client-card__badge--platform">На платформе</span>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- Confirm banner -->
+      <div class="review-confirm-banner">
+        <v-icon icon="mdi-shield-check-outline" size="20" />
+        <div>
+          <div class="review-confirm-banner__title">Всё готово к созданию</div>
+          <div class="review-confirm-banner__text">
+            После создания будет сформирован график из {{ termMonths }} платежей.
+            Вы сможете отслеживать оплаты и отправлять напоминания клиенту.
+          </div>
+        </div>
       </div>
     </div>
 
@@ -491,9 +605,10 @@ function getCategoryLabel(catId: string) {
         Далее
         <v-icon icon="mdi-arrow-right" size="18" />
       </button>
-      <button v-else class="btn-primary btn-primary--success" @click="submitDeal">
-        <v-icon icon="mdi-check" size="18" />
-        Создать сделку
+      <button v-else class="btn-primary btn-primary--success" :disabled="submitting" @click="submitDeal">
+        <v-progress-circular v-if="submitting" indeterminate size="16" width="2" color="white" class="mr-1" />
+        <v-icon v-else icon="mdi-check" size="18" />
+        {{ submitting ? 'Создание...' : 'Создать сделку' }}
       </button>
     </div>
   </div>
@@ -503,8 +618,10 @@ function getCategoryLabel(catId: string) {
 /* Stepper header */
 .stepper-header {
   display: flex; align-items: center;
-  padding: 16px 0; margin-bottom: 24px;
+  padding: 16px 20px; margin-bottom: 24px;
   gap: 0;
+  background: #fff; border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 .stepper-step {
   display: flex; align-items: center; gap: 8px;
@@ -569,9 +686,7 @@ function getCategoryLabel(catId: string) {
 }
 
 /* Form */
-.form-grid {
-  display: flex; flex-direction: column; gap: 20px;
-}
+.form-grid { display: flex; flex-direction: column; gap: 20px; }
 .form-field { display: flex; flex-direction: column; gap: 6px; }
 .field-label {
   font-size: 13px; font-weight: 500;
@@ -586,11 +701,6 @@ function getCategoryLabel(catId: string) {
   outline: none; transition: all 0.15s;
 }
 .field-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.3); }
-.field-input:focus {
-  border-color: #047857;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 8%, transparent);
-}
-.field-textarea { height: auto; padding: 12px 14px; resize: vertical; }
 .field-select {
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M3 5l3 3 3-3'/%3E%3C/svg%3E");
@@ -598,17 +708,6 @@ function getCategoryLabel(catId: string) {
   background-position: right 14px center;
   padding-right: 36px;
 }
-
-.input-with-suffix { position: relative; }
-.input-suffix {
-  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-  font-size: 14px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  pointer-events: none;
-}
-.input-with-suffix .field-input { padding-right: 36px; }
-
-/* Category grid */
 .category-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;
 }
@@ -628,6 +727,44 @@ function getCategoryLabel(catId: string) {
   background: rgba(var(--v-theme-primary), 0.1);
   color: rgb(var(--v-theme-primary)); font-weight: 600;
   box-shadow: inset 0 0 0 2px rgba(var(--v-theme-primary), 0.3);
+}
+.field-input:focus {
+  border-color: #047857;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 8%, transparent);
+}
+.field-textarea { height: auto; padding: 12px 14px; resize: vertical; }
+
+.input-with-suffix { position: relative; }
+.input-suffix {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  pointer-events: none;
+}
+.input-with-suffix .field-input { padding-right: 36px; }
+
+/* Photos */
+.photo-drop-zone {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  padding: 24px; border-radius: 12px; cursor: pointer;
+  border: 2px dashed rgba(var(--v-theme-on-surface), 0.12);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  font-size: 13px; font-weight: 500;
+  transition: all 0.15s;
+}
+.photo-drop-zone:hover {
+  border-color: #047857; color: #047857;
+  background: rgba(4, 120, 87, 0.04);
+}
+.photo-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.photo-grid-item { position: relative; width: 80px; height: 80px; }
+.photo-grid-img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; }
+.photo-remove-btn {
+  position: absolute; top: -6px; right: -6px;
+  width: 22px; height: 22px; border-radius: 50%; border: none;
+  background: #ef4444; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
 }
 
 /* Chip group */
@@ -761,12 +898,8 @@ function getCategoryLabel(catId: string) {
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
 }
 .review-rows { display: flex; flex-direction: column; gap: 10px; }
-.review-row {
-  display: flex; justify-content: space-between; align-items: center;
-}
-.review-label {
-  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45);
-}
+.review-row { display: flex; justify-content: space-between; align-items: center; }
+.review-label { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45); }
 .review-value {
   font-size: 14px; font-weight: 600;
   color: rgba(var(--v-theme-on-surface), 0.85);
@@ -774,9 +907,7 @@ function getCategoryLabel(catId: string) {
 }
 .review-row--bold .review-label { font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.65); }
 .review-row--bold .review-value { font-size: 15px; }
-.review-client {
-  display: flex; align-items: center; gap: 14px;
-}
+.review-client { display: flex; align-items: center; gap: 14px; }
 
 /* Info banner */
 .info-banner {
@@ -785,11 +916,6 @@ function getCategoryLabel(catId: string) {
   background: rgba(59, 130, 246, 0.06);
   color: #3b82f6; font-size: 13px;
   border: 1px solid rgba(59, 130, 246, 0.12);
-}
-.info-banner--success {
-  background: rgba(4, 120, 87, 0.06);
-  color: #047857;
-  border-color: rgba(4, 120, 87, 0.12);
 }
 
 /* Actions */
@@ -831,5 +957,154 @@ function getCategoryLabel(catId: string) {
 .dark .preview-card { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); border-color: rgba(4, 120, 87, 0.2); }
 .dark .client-card { background: #1e1e2e; }
 .dark .client-card.active { background: rgba(4, 120, 87, 0.08); }
-.dark .category-option { background: #252538; }
+.dark .photo-drop-zone { border-color: #2e2e42; }
+
+/* ─── Review Hero ─── */
+.review-hero {
+  border-radius: 16px; overflow: hidden;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: #fff;
+  margin-bottom: 16px;
+}
+.review-hero__header {
+  padding: 20px 24px 16px;
+}
+.review-hero__product {
+  display: flex; align-items: center; gap: 14px;
+}
+.review-hero__product-icon {
+  width: 48px; height: 48px; border-radius: 14px;
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.review-hero__product-name {
+  font-size: 17px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.review-hero__product-meta {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 2px;
+}
+
+/* Photos strip */
+.review-hero__photos {
+  display: flex; gap: 6px; padding: 0 24px 16px; overflow-x: auto;
+}
+.review-hero__photo {
+  width: 72px; height: 72px; border-radius: 10px; object-fit: cover;
+  flex-shrink: 0;
+}
+.review-hero__photo-more {
+  width: 72px; height: 72px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+/* Finance breakdown */
+.review-hero__finance {
+  padding: 16px 24px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.review-hero__finance-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 0; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.review-hero__finance-row span:last-child {
+  font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.review-hero__finance-row--accent span:last-child { color: #047857; }
+.review-hero__finance-row--total {
+  font-size: 15px; font-weight: 700; padding: 6px 0;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.review-hero__finance-row--total span:last-child { color: #047857; font-size: 16px; }
+.review-hero__finance-divider {
+  height: 1px; margin: 6px 0;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
+/* Big payment block */
+.review-hero__payment {
+  padding: 20px 24px; text-align: center;
+  background: linear-gradient(135deg, rgba(4, 120, 87, 0.06) 0%, rgba(4, 120, 87, 0.02) 100%);
+}
+.review-hero__payment-amount {
+  font-size: 28px; font-weight: 800; color: #047857;
+  letter-spacing: -0.5px;
+}
+.review-hero__payment-label {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 4px;
+}
+.review-hero__payment-date {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 10px; padding: 5px 12px; border-radius: 8px;
+  background: rgba(4, 120, 87, 0.08);
+  font-size: 12px; font-weight: 600; color: #047857;
+}
+
+/* Client card */
+.review-client-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 18px 20px; border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: #fff;
+  margin-bottom: 16px;
+}
+.review-client-card__avatar {
+  width: 44px; height: 44px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 700; color: #fff;
+}
+.review-client-card__name {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.review-client-card__meta {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 3px;
+}
+.review-client-card__badge {
+  padding: 2px 8px; border-radius: 6px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.3px; margin-left: 6px;
+}
+.review-client-card__badge--external {
+  background: rgba(99, 102, 241, 0.1); color: #6366f1;
+}
+.review-client-card__badge--platform {
+  background: rgba(4, 120, 87, 0.1); color: #047857;
+}
+
+/* Confirm banner */
+.review-confirm-banner {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 16px 18px; border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(4, 120, 87, 0.15);
+  color: #047857;
+}
+.review-confirm-banner__title {
+  font-size: 14px; font-weight: 700;
+}
+.review-confirm-banner__text {
+  font-size: 12px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-top: 2px;
+}
+
+/* Dark overrides for review */
+.dark .stepper-header { background: #1e1e2e; border-color: #2e2e42; }
+.dark .review-hero { background: #1e1e2e; border-color: #2e2e42; }
+.dark .review-hero__finance { border-color: #2e2e42; }
+.dark .review-hero__payment { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); }
+.dark .review-client-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .review-confirm-banner { background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.2); }
 </style>

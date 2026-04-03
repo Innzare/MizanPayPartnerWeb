@@ -10,6 +10,7 @@ import { generateContract } from '@/utils/contractPdf'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { api } from '@/api/client'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler
@@ -163,12 +164,85 @@ async function confirmReschedule() {
   }
 }
 
-async function markPaid(p: typeof payments.value[0]) {
+// Mark as paid dialog
+const markPaidDialog = ref(false)
+const markPaidTarget = ref<typeof payments.value[0] | null>(null)
+const markPaidProofFile = ref<File | null>(null)
+const markPaidProofPreview = ref('')
+const markPaidUploading = ref(false)
+const proofInputRef = ref<HTMLInputElement | null>(null)
+
+// Proof screenshot enlarge
+const proofEnlargeDialog = ref(false)
+const proofEnlargeUrl = ref('')
+
+function openMarkPaid(p: typeof payments.value[0]) {
+  markPaidTarget.value = p
+  markPaidProofFile.value = null
+  markPaidProofPreview.value = ''
+  markPaidDialog.value = true
+}
+
+function onProofFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  if (markPaidProofPreview.value) URL.revokeObjectURL(markPaidProofPreview.value)
+  markPaidProofFile.value = file
+  markPaidProofPreview.value = URL.createObjectURL(file)
+  input.value = ''
+}
+
+function removeProofFile() {
+  if (markPaidProofPreview.value) URL.revokeObjectURL(markPaidProofPreview.value)
+  markPaidProofFile.value = null
+  markPaidProofPreview.value = ''
+}
+
+function openProofEnlarge(url: string) {
+  proofEnlargeUrl.value = url
+  proofEnlargeDialog.value = true
+}
+
+async function confirmMarkPaid() {
+  if (!markPaidTarget.value) return
+  markPaidUploading.value = true
   try {
-    await paymentsStore.markAsPaid(p.id, p.dealId)
+    let proofScreenshot: string | undefined
+    if (markPaidProofFile.value) {
+      proofScreenshot = await api.upload(markPaidProofFile.value, `proofs/${markPaidTarget.value.dealId}`)
+    }
+    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, { proofScreenshot })
     toast.success('Платёж отмечен как оплаченный')
+    markPaidDialog.value = false
+    markPaidTarget.value = null
   } catch (e: any) {
     toast.error(e.message || 'Ошибка при отметке оплаты')
+  } finally {
+    markPaidUploading.value = false
+  }
+}
+
+// Reminder via messenger
+function sendReminder(messenger: 'whatsapp' | 'telegram', payment?: typeof payments.value[0]) {
+  const phone = client.value?.phone?.replace(/\D/g, '')
+  if (!phone || !deal.value) return
+
+  const p = payment || payments.value.find(p => p.status === 'PENDING' || p.status === 'OVERDUE')
+  const amount = p ? formatCurrency(p.amount) : ''
+  const date = p ? formatDateShort(p.dueDate) : ''
+  const product = deal.value.productName
+
+  const text = p
+    ? `Здравствуйте! Напоминаю о платеже ${amount} по "${product}" (срок: ${date}). Пожалуйста, не забудьте оплатить вовремя.`
+    : `Здравствуйте! Напоминаю о предстоящем платеже по "${product}".`
+
+  const encoded = encodeURIComponent(text)
+
+  if (messenger === 'whatsapp') {
+    window.open(`https://wa.me/${phone}?text=${encoded}`, '_blank')
+  } else {
+    window.open(`https://t.me/${phone}?text=${encoded}`, '_blank')
   }
 }
 
@@ -368,7 +442,17 @@ const timeline = computed(() => {
                   </td>
                   <td class="text-end font-weight-bold text-no-wrap">{{ formatCurrency(p.amount) }}</td>
                   <td class="text-end text-medium-emphasis text-no-wrap">{{ formatCurrency(p.remainingAfter) }}</td>
-                  <td class="text-medium-emphasis">{{ p.paidAt ? formatDate(p.paidAt) : '—' }}</td>
+                  <td class="text-medium-emphasis">
+                    <div>{{ p.paidAt ? formatDate(p.paidAt) : '—' }}</div>
+                    <div v-if="p.proofScreenshot" class="mt-1">
+                      <img
+                        :src="p.proofScreenshot"
+                        class="proof-thumbnail"
+                        title="Скриншот оплаты"
+                        @click="openProofEnlarge(p.proofScreenshot!)"
+                      />
+                    </div>
+                  </td>
                   <td>
                     <div
                       class="pay-status"
@@ -379,11 +463,14 @@ const timeline = computed(() => {
                   </td>
                   <td class="text-center">
                     <div v-if="p.status !== 'PAID'" class="d-flex align-center justify-center ga-1">
-                      <button class="action-btn action-btn--success" title="Отметить оплаченным" @click="markPaid(p)">
+                      <button class="action-btn action-btn--success" title="Отметить оплаченным" @click="openMarkPaid(p)">
                         <v-icon icon="mdi-check" size="16" />
                       </button>
                       <button class="action-btn action-btn--warning" title="Перенести дату" @click="openReschedule(p)">
                         <v-icon icon="mdi-calendar-clock" size="16" />
+                      </button>
+                      <button v-if="client?.phone" class="action-btn action-btn--wa" title="Напомнить в WhatsApp" @click="sendReminder('whatsapp', p)">
+                        <v-icon icon="mdi-whatsapp" size="16" />
                       </button>
                     </div>
                     <span v-else class="text-medium-emphasis">—</span>
@@ -400,12 +487,17 @@ const timeline = computed(() => {
           <v-card v-if="client" rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="section-title mb-4">Клиент</div>
 
-            <div class="d-flex align-center ga-3 mb-4">
+            <div
+              class="d-flex align-center ga-3 mb-4"
+              style="cursor: pointer;"
+              @click="router.push(`/users/${deal.clientId}`)"
+            >
               <div class="client-avatar">{{ (client.firstName || '')[0] || '' }}{{ (client.lastName || '')[0] || '' }}</div>
-              <div>
+              <div class="flex-grow-1">
                 <div class="font-weight-bold">{{ userName(client) }}</div>
                 <div class="text-caption text-medium-emphasis">{{ client.city || '' }}</div>
               </div>
+              <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
             </div>
 
             <div class="client-info-grid">
@@ -442,6 +534,18 @@ const timeline = computed(() => {
                 />
                 <span class="text-caption font-weight-bold">{{ clientInfo.onTimeRate }}%</span>
               </div>
+            </div>
+
+            <!-- Reminder buttons -->
+            <div v-if="client.phone && deal?.status === 'ACTIVE'" class="d-flex ga-2 mt-4">
+              <button class="reminder-btn reminder-btn--wa" @click="sendReminder('whatsapp')">
+                <v-icon icon="mdi-whatsapp" size="16" />
+                Напомнить
+              </button>
+              <button class="reminder-btn reminder-btn--tg" @click="sendReminder('telegram')">
+                <v-icon icon="mdi-send" size="16" />
+                Напомнить
+              </button>
             </div>
           </v-card>
 
@@ -590,6 +694,70 @@ const timeline = computed(() => {
               Подтвердить
             </button>
           </div>
+        </v-card>
+      </v-dialog>
+
+      <!-- Mark as paid dialog -->
+      <v-dialog v-model="markPaidDialog" max-width="480">
+        <v-card rounded="lg" class="pa-6">
+          <button class="dialog-close-sm" @click="markPaidDialog = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+
+          <div class="text-h6 font-weight-bold mb-1">Отметить оплату</div>
+          <div class="text-caption text-medium-emphasis mb-5">Подтвердите получение платежа</div>
+
+          <div v-if="markPaidTarget" class="reschedule-info mb-5">
+            <div class="d-flex justify-space-between mb-1">
+              <span class="text-caption text-medium-emphasis">Платёж #{{ markPaidTarget.number }}</span>
+              <span class="font-weight-bold">{{ formatCurrency(markPaidTarget.amount) }}</span>
+            </div>
+            <div class="d-flex justify-space-between">
+              <span class="text-caption text-medium-emphasis">Дата</span>
+              <span>{{ formatDate(markPaidTarget.dueDate) }}</span>
+            </div>
+          </div>
+
+          <!-- Proof screenshot upload -->
+          <div class="mb-5">
+            <label class="field-label">Скриншот оплаты (необязательно)</label>
+            <div v-if="markPaidProofPreview" class="proof-preview-wrap">
+              <img :src="markPaidProofPreview" class="proof-preview-img" />
+              <button class="proof-preview-remove" @click="removeProofFile">
+                <v-icon icon="mdi-close" size="14" />
+              </button>
+            </div>
+            <button v-else class="proof-upload-btn" @click="proofInputRef?.click()">
+              <v-icon icon="mdi-camera-plus-outline" size="20" />
+              <span>Прикрепить скриншот</span>
+            </button>
+            <input
+              ref="proofInputRef"
+              type="file"
+              accept="image/*"
+              style="display: none;"
+              @change="onProofFileSelected"
+            />
+          </div>
+
+          <div class="d-flex ga-3">
+            <button class="btn-secondary flex-grow-1" @click="markPaidDialog = false">Отмена</button>
+            <button class="btn-primary flex-grow-1" :disabled="markPaidUploading" @click="confirmMarkPaid">
+              <v-progress-circular v-if="markPaidUploading" indeterminate size="16" width="2" color="white" class="mr-1" />
+              <v-icon v-else icon="mdi-check" size="16" />
+              {{ markPaidUploading ? 'Загрузка...' : 'Подтвердить оплату' }}
+            </button>
+          </div>
+        </v-card>
+      </v-dialog>
+
+      <!-- Proof enlarge dialog -->
+      <v-dialog v-model="proofEnlargeDialog" max-width="600">
+        <v-card rounded="lg" class="pa-2">
+          <button class="dialog-close-sm" style="position: absolute; top: 8px; right: 8px; z-index: 1;" @click="proofEnlargeDialog = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+          <img :src="proofEnlargeUrl" style="width: 100%; border-radius: 12px; display: block;" />
         </v-card>
       </v-dialog>
     </div>
@@ -769,6 +937,34 @@ const timeline = computed(() => {
 .action-btn--warning:hover {
   background: rgba(245, 158, 11, 0.18);
 }
+.action-btn--wa {
+  background: rgba(37, 211, 102, 0.08); color: #25D366;
+}
+.action-btn--wa:hover {
+  background: rgba(37, 211, 102, 0.18);
+}
+
+/* Reminder buttons */
+.reminder-btn {
+  flex: 1;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px; border-radius: 10px;
+  font-size: 13px; font-weight: 600;
+  border: none; cursor: pointer;
+  transition: all 0.15s;
+}
+.reminder-btn--wa {
+  background: rgba(37, 211, 102, 0.08); color: #25D366;
+}
+.reminder-btn--wa:hover {
+  background: rgba(37, 211, 102, 0.15);
+}
+.reminder-btn--tg {
+  background: rgba(34, 158, 217, 0.08); color: #229ED9;
+}
+.reminder-btn--tg:hover {
+  background: rgba(34, 158, 217, 0.15);
+}
 
 /* Rescheduled hint */
 .rescheduled-hint {
@@ -912,6 +1108,51 @@ const timeline = computed(() => {
   border-color: #2e2e42;
 }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
+
+/* Proof screenshot */
+.proof-thumbnail {
+  width: 36px; height: 36px; border-radius: 6px;
+  object-fit: cover; cursor: pointer;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  transition: all 0.15s;
+}
+.proof-thumbnail:hover {
+  border-color: rgba(4, 120, 87, 0.3);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.proof-upload-btn {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 14px; border-radius: 10px;
+  border: 2px dashed rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s;
+  justify-content: center;
+}
+.proof-upload-btn:hover {
+  border-color: rgba(4, 120, 87, 0.3);
+  color: #047857;
+  background: rgba(4, 120, 87, 0.04);
+}
+.proof-preview-wrap {
+  position: relative; display: inline-block;
+}
+.proof-preview-img {
+  max-width: 100%; max-height: 160px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  display: block;
+}
+.proof-preview-remove {
+  position: absolute; top: 6px; right: 6px;
+  width: 24px; height: 24px; border-radius: 6px; border: none;
+  background: rgba(0, 0, 0, 0.6); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+}
+.proof-preview-remove:hover {
+  background: rgba(239, 68, 68, 0.9);
+}
 
 @media (max-width: 960px) {
   .detail-hero-title { font-size: 22px; }

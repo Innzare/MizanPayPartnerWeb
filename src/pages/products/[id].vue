@@ -8,6 +8,7 @@ import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter, useRoute } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { api } from '@/api/client'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
@@ -78,6 +79,13 @@ const editForm = ref({
   minDownPaymentPercent: 0,
 })
 
+// Photo management in edit dialog
+const existingPhotos = ref<string[]>([])
+const newPhotoFiles = ref<File[]>([])
+const newPhotoPreviews = ref<string[]>([])
+const photoUploading = ref(false)
+const photoInputRef = ref<HTMLInputElement | null>(null)
+
 function openEdit() {
   if (!product.value) return
   editForm.value = {
@@ -89,17 +97,55 @@ function openEdit() {
     maxTermMonths: product.value.maxTermMonths,
     minDownPaymentPercent: product.value.minDownPaymentPercent,
   }
+  existingPhotos.value = [...(product.value.photos || [])]
+  newPhotoFiles.value = []
+  newPhotoPreviews.value = []
   editDialog.value = true
+}
+
+function removeExistingPhoto(index: number) {
+  existingPhotos.value.splice(index, 1)
+}
+
+function removeNewPhoto(index: number) {
+  const preview = newPhotoPreviews.value[index]
+  if (preview) URL.revokeObjectURL(preview)
+  newPhotoFiles.value.splice(index, 1)
+  newPhotoPreviews.value.splice(index, 1)
+}
+
+function onPhotoFilesSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length) return
+  for (const file of Array.from(input.files)) {
+    newPhotoFiles.value.push(file)
+    newPhotoPreviews.value.push(URL.createObjectURL(file))
+  }
+  input.value = ''
 }
 
 async function saveEdit() {
   if (!product.value) return
+  photoUploading.value = true
   try {
-    await productsStore.updateProduct(product.value.id, editForm.value)
+    let uploadedUrls: string[] = []
+    if (newPhotoFiles.value.length) {
+      const firstFile = newPhotoFiles.value[0]
+      if (newPhotoFiles.value.length === 1 && firstFile) {
+        const url = await api.upload(firstFile, `products/${product.value.id}`)
+        uploadedUrls = [url]
+      } else {
+        uploadedUrls = await api.uploadMultiple([...newPhotoFiles.value], `products/${product.value.id}`)
+      }
+    }
+    const photos = [...existingPhotos.value, ...uploadedUrls]
+    await productsStore.updateProduct(product.value.id, { ...editForm.value, photos })
     toast.success('Товар обновлён')
     editDialog.value = false
   } catch (e: any) {
     toast.error(e.message || 'Ошибка обновления товара')
+  } finally {
+    photoUploading.value = false
   }
 }
 
@@ -373,11 +419,46 @@ async function deleteProduct() {
             </div>
           </div>
 
+          <!-- Photo management -->
+          <div class="mb-3">
+            <label class="field-label">Фотографии</label>
+            <div class="photo-grid">
+              <!-- Existing photos -->
+              <div v-for="(url, i) in existingPhotos" :key="'existing-' + i" class="photo-thumb">
+                <v-img :src="url" height="80" cover class="photo-thumb-img" />
+                <button class="photo-remove-btn" @click="removeExistingPhoto(i)" title="Удалить">
+                  <v-icon icon="mdi-close" size="14" />
+                </button>
+              </div>
+              <!-- New photo previews -->
+              <div v-for="(preview, i) in newPhotoPreviews" :key="'new-' + i" class="photo-thumb photo-thumb--new">
+                <v-img :src="preview" height="80" cover class="photo-thumb-img" />
+                <button class="photo-remove-btn" @click="removeNewPhoto(i)" title="Удалить">
+                  <v-icon icon="mdi-close" size="14" />
+                </button>
+              </div>
+              <!-- Add button -->
+              <button class="photo-add-btn" @click="photoInputRef?.click()">
+                <v-icon icon="mdi-plus" size="22" />
+                <span>Добавить</span>
+              </button>
+            </div>
+            <input
+              ref="photoInputRef"
+              type="file"
+              accept="image/*"
+              multiple
+              style="display: none;"
+              @change="onPhotoFilesSelected"
+            />
+          </div>
+
           <div class="d-flex ga-2 mt-5">
             <button class="btn-secondary flex-grow-1" @click="editDialog = false">Отмена</button>
-            <button class="btn-primary flex-grow-1" @click="saveEdit">
-              <v-icon icon="mdi-check" size="16" />
-              Сохранить
+            <button class="btn-primary flex-grow-1" :disabled="photoUploading" @click="saveEdit">
+              <v-progress-circular v-if="photoUploading" indeterminate size="16" width="2" color="white" class="mr-1" />
+              <v-icon v-else icon="mdi-check" size="16" />
+              {{ photoUploading ? 'Загрузка...' : 'Сохранить' }}
             </button>
           </div>
         </div>
@@ -648,6 +729,49 @@ async function deleteProduct() {
 }
 .btn-secondary:hover {
   background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+/* Photo grid */
+.photo-grid {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.photo-thumb {
+  position: relative; width: 80px; height: 80px; border-radius: 10px;
+  overflow: hidden; border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.photo-thumb--new {
+  border-color: rgba(4, 120, 87, 0.3);
+}
+.photo-thumb-img {
+  border-radius: 10px;
+}
+.photo-remove-btn {
+  position: absolute; top: 4px; right: 4px;
+  width: 22px; height: 22px; border-radius: 6px; border: none;
+  background: rgba(0, 0, 0, 0.6); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+  opacity: 0;
+}
+.photo-thumb:hover .photo-remove-btn {
+  opacity: 1;
+}
+.photo-remove-btn:hover {
+  background: rgba(239, 68, 68, 0.9);
+}
+.photo-add-btn {
+  width: 80px; height: 80px; border-radius: 10px;
+  border: 2px dashed rgba(var(--v-theme-on-surface), 0.15);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  font-size: 11px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s;
+}
+.photo-add-btn:hover {
+  border-color: rgba(4, 120, 87, 0.3);
+  color: #047857;
+  background: rgba(4, 120, 87, 0.04);
 }
 
 /* Dark mode */

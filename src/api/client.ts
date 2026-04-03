@@ -71,6 +71,40 @@ async function request<T>(
   return response.json();
 }
 
+async function uploadRequest<T>(path: string, formData: FormData): Promise<T> {
+  const token = getToken();
+
+  const response = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+  });
+
+  if (response.status === 401) {
+    if (!isRefreshing) {
+      isRefreshing = true;
+      const refreshed = await tryRefreshToken();
+      isRefreshing = false;
+      if (refreshed) return uploadRequest<T>(path, formData);
+    }
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    localStorage.removeItem('user');
+    window.location.href = '/login';
+    throw new Error('Сессия истекла');
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Ошибка сервера' }));
+    const message = Array.isArray(error.message) ? error.message[0] : error.message;
+    throw new Error(message || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
@@ -78,4 +112,25 @@ export const api = {
   delete: <T>(path: string) => request<T>('DELETE', path),
   // Silent version — won't redirect on 401, just throws
   getSilent: <T>(path: string) => request<T>('GET', path, undefined, true),
+  upload: async (file: File, folder: string): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const result = await uploadRequest<{ url: string }>(
+      `/upload?folder=${encodeURIComponent(folder)}`,
+      formData,
+    );
+    return result.url;
+  },
+  uploadMultiple: async (files: File[], folder: string): Promise<string[]> => {
+    const formData = new FormData();
+    files.forEach((f) => formData.append('files', f));
+    const result = await uploadRequest<{ urls: string[] }>(
+      `/upload/multiple?folder=${encodeURIComponent(folder)}`,
+      formData,
+    );
+    return result.urls;
+  },
+  deleteFile: async (url: string): Promise<void> => {
+    await request<void>('DELETE', `/upload?url=${encodeURIComponent(url)}`);
+  },
 };

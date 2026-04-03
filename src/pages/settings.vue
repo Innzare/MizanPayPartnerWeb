@@ -5,6 +5,7 @@ import { CITIES } from '@/constants/cities'
 
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { api } from '@/api/client'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -40,23 +41,31 @@ function startEditing() {
     phone: authStore.user.phone,
     city: authStore.user.city,
   }
+  removeAvatarFile()
   isEditing.value = true
 }
 
 function cancelEditing() {
+  removeAvatarFile()
   isEditing.value = false
 }
 
 async function saveProfile() {
   profileSaving.value = true
   try {
+    let avatarUrl: string | undefined
+    if (avatarFile.value) {
+      avatarUrl = await api.upload(avatarFile.value, 'avatars')
+    }
     await authStore.updateProfile({
       firstName: editForm.value.firstName,
       lastName: editForm.value.lastName,
       patronymic: editForm.value.patronymic || undefined,
       phone: editForm.value.phone,
       city: editForm.value.city,
-    })
+      ...(avatarUrl ? { avatar: avatarUrl } : {}),
+    } as any)
+    removeAvatarFile()
     isEditing.value = false
     toast.success('Профиль сохранён')
   } catch (e: any) {
@@ -64,6 +73,27 @@ async function saveProfile() {
   } finally {
     profileSaving.value = false
   }
+}
+
+// Avatar upload
+const avatarFile = ref<File | null>(null)
+const avatarPreview = ref('')
+const avatarInputRef = ref<HTMLInputElement | null>(null)
+
+function onAvatarSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  if (avatarPreview.value) URL.revokeObjectURL(avatarPreview.value)
+  avatarFile.value = file
+  avatarPreview.value = URL.createObjectURL(file)
+  input.value = ''
+}
+
+function removeAvatarFile() {
+  if (avatarPreview.value) URL.revokeObjectURL(avatarPreview.value)
+  avatarFile.value = null
+  avatarPreview.value = ''
 }
 
 const profileFormValid = computed(() =>
@@ -347,9 +377,32 @@ const plans = [
         <!-- Profile card + stats -->
         <v-col cols="12" lg="5">
           <div class="profile-card-visual">
-            <div class="profile-avatar">
-              {{ authStore.user?.firstName?.[0] }}{{ authStore.user?.lastName?.[0] }}
+            <div class="profile-avatar-wrap">
+              <div v-if="avatarPreview || authStore.user?.avatar" class="profile-avatar profile-avatar--img">
+                <img :src="avatarPreview || authStore.user?.avatar" class="profile-avatar-img" />
+              </div>
+              <div v-else class="profile-avatar">
+                {{ authStore.user?.firstName?.[0] }}{{ authStore.user?.lastName?.[0] }}
+              </div>
+              <button v-if="isEditing" class="avatar-edit-btn" @click="avatarInputRef?.click()" title="Изменить фото">
+                <v-icon icon="mdi-camera" size="14" />
+              </button>
+              <button
+                v-if="isEditing && (avatarPreview || authStore.user?.avatar)"
+                class="avatar-remove-btn"
+                @click="removeAvatarFile"
+                title="Удалить фото"
+              >
+                <v-icon icon="mdi-close" size="12" />
+              </button>
             </div>
+            <input
+              ref="avatarInputRef"
+              type="file"
+              accept="image/*"
+              style="display: none;"
+              @change="onAvatarSelected"
+            />
             <div class="profile-card-name">{{ authStore.userName }}</div>
             <div class="profile-card-phone">{{ formatPhone(authStore.user?.phone || '') }}</div>
             <div class="profile-card-role">
@@ -783,14 +836,39 @@ const plans = [
   background: linear-gradient(135deg, rgba(4, 120, 87, 0.08) 0%, rgba(4, 120, 87, 0.03) 100%);
   border: 1px solid rgba(4, 120, 87, 0.12);
 }
+.profile-avatar-wrap {
+  position: relative; margin-bottom: 12px;
+}
 .profile-avatar {
   width: 72px; height: 72px; border-radius: 18px;
   background: linear-gradient(135deg, #047857, #059669);
   color: #fff; font-size: 24px; font-weight: 700;
   display: flex; align-items: center; justify-content: center;
-  margin-bottom: 12px;
   box-shadow: 0 4px 12px rgba(4, 120, 87, 0.25);
+  overflow: hidden;
 }
+.profile-avatar--img {
+  background: none; box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+}
+.profile-avatar-img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.avatar-edit-btn {
+  position: absolute; bottom: -4px; right: -4px;
+  width: 28px; height: 28px; border-radius: 8px; border: 2px solid #fff;
+  background: #047857; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+}
+.avatar-edit-btn:hover { background: #065f46; }
+.avatar-remove-btn {
+  position: absolute; top: -4px; right: -4px;
+  width: 20px; height: 20px; border-radius: 6px; border: 2px solid #fff;
+  background: #ef4444; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+}
+.avatar-remove-btn:hover { background: #dc2626; }
 .profile-card-name {
   font-size: 17px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.85);

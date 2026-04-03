@@ -9,14 +9,14 @@ import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
-import { Bar, Line } from 'vue-chartjs'
+import { Bar, Line, Doughnut } from 'vue-chartjs'
 import {
   Chart as ChartJS,
   CategoryScale, LinearScale, BarElement, PointElement, LineElement,
-  Tooltip, Legend, Filler
+  ArcElement, Tooltip, Legend, Filler
 } from 'chart.js'
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend, Filler)
+ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, ArcElement, Tooltip, Legend, Filler)
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
@@ -63,7 +63,7 @@ const revenueChartData = computed(() => {
   paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID' && p.paidAt).forEach(p => {
     const d = new Date(p.paidAt!)
     const key = d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
-    if (key in months) months[key] += p.amount
+    if (key in months) months[key] = (months[key] ?? 0) + p.amount
   })
 
   return {
@@ -94,7 +94,7 @@ const forecastChartData = computed(() => {
   paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
     const d = new Date(p.dueDate)
     const key = d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
-    if (key in months) months[key] += p.amount
+    if (key in months) months[key] = (months[key] ?? 0) + p.amount
   })
 
   return {
@@ -197,6 +197,44 @@ onMounted(async () => {
   }
 })
 
+// Deal status distribution (doughnut)
+const statusDistribution = computed(() => {
+  const active = dealsStore.activeDeals.length
+  const completed = dealsStore.completedDeals.length
+  const disputed = dealsStore.deals.filter(d => d.status === 'DISPUTED').length
+  const cancelled = dealsStore.deals.filter(d => d.status === 'CANCELLED').length
+  return {
+    labels: ['Активные', 'Завершённые', 'Спорные', 'Отменённые'],
+    datasets: [{
+      data: [active, completed, disputed, cancelled],
+      backgroundColor: ['#047857', '#3b82f6', '#f59e0b', '#ef4444'],
+      borderWidth: 0,
+      hoverOffset: 4,
+    }]
+  }
+})
+
+const doughnutOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  cutout: '70%',
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      backgroundColor: '#1a1a2e',
+      titleColor: '#fff',
+      bodyColor: '#fff',
+      padding: 10,
+      cornerRadius: 8,
+    },
+  },
+}
+
+// Overdue amount
+const overdueAmount = computed(() =>
+  paymentsStore.overduePayments.reduce((s, p) => s + p.amount, 0)
+)
+
 const AVATAR_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
 function getInitial(name?: string) { return name ? name.charAt(0).toUpperCase() : '?' }
 function getAvatarColor(name?: string) {
@@ -213,161 +251,115 @@ function getAvatarColor(name?: string) {
     </div>
 
     <template v-else>
-    <!-- Hero Card -->
-    <div class="hero-card mb-6">
-      <div class="hero-main">
-        <div class="hero-label">Ожидается к получению</div>
-        <div class="hero-amount">{{ formatCurrency(dealsStore.totalRemaining) }}</div>
+    <!-- Hero + Quick Actions -->
+    <div class="hero-row mb-6">
+      <div class="qa-sidebar">
+        <button class="qa-mini" @click="router.push('/create-deal')" title="Новая сделка">
+          <v-icon icon="mdi-handshake" size="20" style="color: #047857;" />
+        </button>
+        <button class="qa-mini" @click="router.push('/create-product')" title="Добавить товар">
+          <v-icon icon="mdi-package-variant-plus" size="20" style="color: #3b82f6;" />
+        </button>
+        <button class="qa-mini" @click="router.push('/requests')" title="Заявки" style="position: relative;">
+          <v-icon icon="mdi-file-document-outline" size="20" style="color: #8b5cf6;" />
+          <div v-if="requestsStore.activeRequests.length" class="qa-badge">{{ requestsStore.activeRequests.length }}</div>
+        </button>
+        <button class="qa-mini" @click="router.push('/calculator')" title="Калькулятор">
+          <v-icon icon="mdi-calculator" size="20" style="color: #f59e0b;" />
+        </button>
+        <button class="qa-mini" @click="router.push('/notifications')" title="Уведомления" style="position: relative;">
+          <v-icon icon="mdi-bell-outline" size="20" style="color: #ef4444;" />
+          <div v-if="notificationsStore.unreadCount" class="qa-badge">{{ notificationsStore.unreadCount }}</div>
+        </button>
       </div>
-      <div class="hero-metrics">
-        <div class="hero-metric">
-          <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalRevenue) }}</span>
-          <span class="hero-metric-label">Оборот</span>
+
+      <div class="hero-card">
+        <div class="hero-main">
+          <div class="hero-label">Ожидается к получению</div>
+          <div class="hero-amount">{{ formatCurrency(dealsStore.totalRemaining) }}</div>
         </div>
-        <div class="hero-metric-divider" />
-        <div class="hero-metric">
-          <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalProfit) }}</span>
-          <span class="hero-metric-label">Прибыль</span>
+        <div class="hero-metrics">
+          <div class="hero-metric">
+            <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalRevenue) }}</span>
+            <span class="hero-metric-label">Оборот</span>
+          </div>
+          <div class="hero-metric-divider" />
+          <div class="hero-metric">
+            <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalProfit) }}</span>
+            <span class="hero-metric-label">Прибыль</span>
+          </div>
+          <div class="hero-metric-divider" />
+          <div class="hero-metric">
+            <span class="hero-metric-value">{{ formatPercent(dealsStore.roi) }}</span>
+            <span class="hero-metric-label">ROI</span>
+          </div>
         </div>
-        <div class="hero-metric-divider" />
-        <div class="hero-metric">
-          <span class="hero-metric-value">{{ formatPercent(dealsStore.roi) }}</span>
-          <span class="hero-metric-label">ROI</span>
+      </div>
+
+    </div>
+
+    <!-- KPI Cards (horizontal) -->
+    <div class="kpi-row mb-6">
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
+          <v-icon icon="mdi-cash-multiple" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value">{{ formatCurrencyShort(dealsStore.totalInvested) }}</div>
+          <div class="kpi-label">Инвестировано</div>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
+          <v-icon icon="mdi-calendar-month" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value">{{ formatCurrencyShort(dealsStore.monthlyIncome) }}</div>
+          <div class="kpi-label">Доход / мес</div>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap" style="background: rgba(14, 165, 233, 0.1); color: #0ea5e9;">
+          <v-icon icon="mdi-briefcase-check" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value">{{ dealsStore.activeDeals.length }}</div>
+          <div class="kpi-label">Активных</div>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap" style="background: rgba(22, 163, 74, 0.1); color: #16a34a;">
+          <v-icon icon="mdi-check-circle" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value">{{ dealsStore.completedDeals.length }}</div>
+          <div class="kpi-label">Завершённых</div>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap" :style="{ background: paymentHealth >= 90 ? 'rgba(4, 120, 87, 0.1)' : 'rgba(245, 158, 11, 0.1)', color: paymentHealth >= 90 ? '#047857' : '#f59e0b' }">
+          <v-icon icon="mdi-heart-pulse" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value">{{ paymentHealth }}%</div>
+          <div class="kpi-label">Своевременность</div>
+        </div>
+      </div>
+
+      <div class="kpi-card" v-if="overdueAmount > 0">
+        <div class="kpi-icon-wrap" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+          <v-icon icon="mdi-alert-circle" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value" style="color: #ef4444;">{{ formatCurrencyShort(overdueAmount) }}</div>
+          <div class="kpi-label">Просрочено</div>
         </div>
       </div>
     </div>
-
-    <!-- Quick Actions + KPI Cards Row -->
-    <v-row class="mb-6">
-      <!-- Quick Actions -->
-      <v-col cols="12" lg="6">
-        <v-card rounded="lg" elevation="0" border class="pa-5 h-100">
-          <div class="chart-title mb-4">Быстрые действия</div>
-
-          <div class="quick-actions">
-            <button class="qa-btn" @click="router.push('/create-deal')">
-              <div class="qa-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
-                <v-icon icon="mdi-handshake" size="20" />
-              </div>
-              <div class="qa-text">
-                <div class="qa-title">Новая сделка</div>
-                <div class="qa-desc">Создать договор</div>
-              </div>
-              <v-icon icon="mdi-chevron-right" size="18" color="grey" />
-            </button>
-
-            <button class="qa-btn" @click="router.push('/create-product')">
-              <div class="qa-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
-                <v-icon icon="mdi-package-variant-plus" size="20" />
-              </div>
-              <div class="qa-text">
-                <div class="qa-title">Добавить товар</div>
-                <div class="qa-desc">В каталог</div>
-              </div>
-              <v-icon icon="mdi-chevron-right" size="18" color="grey" />
-            </button>
-
-            <button class="qa-btn" @click="router.push('/requests')">
-              <div class="qa-icon" style="background: rgba(139, 92, 246, 0.1); color: #8b5cf6;">
-                <v-icon icon="mdi-file-document-outline" size="20" />
-              </div>
-              <div class="qa-text">
-                <div class="qa-title">Заявки</div>
-                <div class="qa-desc">{{ requestsStore.activeRequests.length }} активных</div>
-              </div>
-              <v-icon icon="mdi-chevron-right" size="18" color="grey" />
-            </button>
-
-            <button class="qa-btn" @click="router.push('/calculator')">
-              <div class="qa-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
-                <v-icon icon="mdi-calculator" size="20" />
-              </div>
-              <div class="qa-text">
-                <div class="qa-title">Калькулятор</div>
-                <div class="qa-desc">Расчёт условий</div>
-              </div>
-              <v-icon icon="mdi-chevron-right" size="18" color="grey" />
-            </button>
-
-            <button class="qa-btn" @click="router.push('/notifications')">
-              <div class="qa-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
-                <v-icon icon="mdi-bell-outline" size="20" />
-              </div>
-              <div class="qa-text">
-                <div class="qa-title">Уведомления</div>
-                <div class="qa-desc">{{ notificationsStore.unreadCount }} непрочитанных</div>
-              </div>
-              <v-icon icon="mdi-chevron-right" size="18" color="grey" />
-            </button>
-          </div>
-        </v-card>
-      </v-col>
-
-      <!-- KPI Cards -->
-      <v-col cols="12" lg="6">
-        <div class="kpi-grid-2x3">
-          <div class="kpi-card">
-            <div class="kpi-icon-wrap" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
-              <v-icon icon="mdi-cash-multiple" size="20" />
-            </div>
-            <div class="kpi-info">
-              <div class="kpi-value">{{ formatCurrencyShort(dealsStore.totalInvested) }}</div>
-              <div class="kpi-label">Инвестировано</div>
-            </div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-icon-wrap" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
-              <v-icon icon="mdi-calendar-month" size="20" />
-            </div>
-            <div class="kpi-info">
-              <div class="kpi-value">{{ formatCurrencyShort(dealsStore.monthlyIncome) }}</div>
-              <div class="kpi-label">Доход / мес</div>
-            </div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-icon-wrap" style="background: rgba(14, 165, 233, 0.1); color: #0ea5e9;">
-              <v-icon icon="mdi-briefcase-check" size="20" />
-            </div>
-            <div class="kpi-info">
-              <div class="kpi-value">{{ dealsStore.activeDeals.length }}</div>
-              <div class="kpi-label">Активных сделок</div>
-            </div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-icon-wrap" style="background: rgba(22, 163, 74, 0.1); color: #16a34a;">
-              <v-icon icon="mdi-check-circle" size="20" />
-            </div>
-            <div class="kpi-info">
-              <div class="kpi-value">{{ dealsStore.completedDeals.length }}</div>
-              <div class="kpi-label">Завершённых</div>
-            </div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-icon-wrap" :style="{ background: paymentHealth >= 90 ? 'rgba(4, 120, 87, 0.1)' : 'rgba(245, 158, 11, 0.1)', color: paymentHealth >= 90 ? '#047857' : '#f59e0b' }">
-              <v-icon icon="mdi-heart-pulse" size="20" />
-            </div>
-            <div class="kpi-info">
-              <div class="kpi-value">{{ paymentHealth }}%</div>
-              <div class="kpi-label">Своевременность</div>
-            </div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-icon-wrap" :style="{ background: requestsStore.activeRequests.length > 0 ? 'rgba(139, 92, 246, 0.1)' : 'rgba(148, 163, 184, 0.1)', color: requestsStore.activeRequests.length > 0 ? '#8b5cf6' : '#94a3b8' }">
-              <v-icon icon="mdi-file-document-outline" size="20" />
-            </div>
-            <div class="kpi-info">
-              <div class="kpi-value">{{ requestsStore.activeRequests.length }}</div>
-              <div class="kpi-label">Новых заявок</div>
-            </div>
-          </div>
-        </div>
-      </v-col>
-    </v-row>
 
     <!-- Charts Row: Revenue + Forecast side by side -->
     <v-row class="mb-2">
@@ -426,6 +418,80 @@ function getAvatarColor(name?: string) {
 
           <div style="height: 180px;">
             <Line :data="forecastChartData" :options="lineOptions" />
+          </div>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <!-- Deal Status Distribution -->
+    <v-row class="mb-2">
+      <v-col cols="12" lg="4">
+        <v-card rounded="lg" elevation="0" border class="pa-5 h-100">
+          <div class="chart-title mb-1">Статус сделок</div>
+          <div class="chart-subtitle mb-4">Распределение по статусам</div>
+          <div class="d-flex align-center" style="gap: 24px;">
+            <div style="width: 140px; height: 140px; flex-shrink: 0;">
+              <Doughnut :data="statusDistribution" :options="doughnutOptions" />
+            </div>
+            <div class="status-legend">
+              <div class="status-legend-item">
+                <div class="status-dot" style="background: #047857;" />
+                <span>Активные</span>
+                <span class="status-legend-count">{{ dealsStore.activeDeals.length }}</span>
+              </div>
+              <div class="status-legend-item">
+                <div class="status-dot" style="background: #3b82f6;" />
+                <span>Завершённые</span>
+                <span class="status-legend-count">{{ dealsStore.completedDeals.length }}</span>
+              </div>
+              <div class="status-legend-item">
+                <div class="status-dot" style="background: #f59e0b;" />
+                <span>Спорные</span>
+                <span class="status-legend-count">{{ dealsStore.deals.filter(d => d.status === 'DISPUTED').length }}</span>
+              </div>
+              <div class="status-legend-item">
+                <div class="status-dot" style="background: #ef4444;" />
+                <span>Отменённые</span>
+                <span class="status-legend-count">{{ dealsStore.deals.filter(d => d.status === 'CANCELLED').length }}</span>
+              </div>
+            </div>
+          </div>
+        </v-card>
+      </v-col>
+
+      <v-col cols="12" lg="8">
+        <v-card rounded="lg" elevation="0" border class="pa-5 h-100">
+          <div class="d-flex align-center justify-space-between mb-4">
+            <div>
+              <div class="chart-title">Сводка по платежам</div>
+              <div class="chart-subtitle">Текущее состояние</div>
+            </div>
+          </div>
+          <div class="payment-summary-grid">
+            <div class="payment-summary-card">
+              <div class="payment-summary-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
+                <v-icon icon="mdi-check-circle" size="22" />
+              </div>
+              <div class="payment-summary-value">{{ paymentsStore.paidPayments.length }}</div>
+              <div class="payment-summary-label">Оплаченных</div>
+              <div class="payment-summary-amount" style="color: #047857;">{{ formatCurrencyShort(paymentsStore.paidPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+            </div>
+            <div class="payment-summary-card">
+              <div class="payment-summary-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
+                <v-icon icon="mdi-clock-outline" size="22" />
+              </div>
+              <div class="payment-summary-value">{{ paymentsStore.pendingPayments.length }}</div>
+              <div class="payment-summary-label">Ожидаемых</div>
+              <div class="payment-summary-amount" style="color: #3b82f6;">{{ formatCurrencyShort(paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+            </div>
+            <div class="payment-summary-card">
+              <div class="payment-summary-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+                <v-icon icon="mdi-alert-circle" size="22" />
+              </div>
+              <div class="payment-summary-value">{{ paymentsStore.overduePayments.length }}</div>
+              <div class="payment-summary-label">Просроченных</div>
+              <div class="payment-summary-amount" style="color: #ef4444;">{{ formatCurrencyShort(overdueAmount) }}</div>
+            </div>
           </div>
         </v-card>
       </v-col>
@@ -536,12 +602,51 @@ function getAvatarColor(name?: string) {
 </template>
 
 <style scoped>
-/* Hero Card */
+/* Hero Row */
+.hero-row {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
 .hero-card {
+  flex: 1;
   background: linear-gradient(135deg, #047857 0%, #065f46 50%, #064e3b 100%);
   border-radius: 16px;
   padding: 28px 32px;
   color: #fff;
+}
+
+/* Quick Actions Sidebar */
+.qa-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qa-mini {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-surface), 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.qa-mini:hover {
+  border-color: rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.04);
+  transform: scale(1.05);
+}
+
+@media (max-width: 960px) {
+  .hero-row { flex-direction: column; }
+  .qa-sidebar { flex-direction: row; justify-content: center; }
 }
 
 .hero-main {
@@ -597,17 +702,12 @@ function getAvatarColor(name?: string) {
   background: rgba(255, 255, 255, 0.15);
 }
 
-/* KPI Grid 2x3 */
-.kpi-grid-2x3 {
-  display: grid;
-  grid-template-columns: 1fr;
+/* KPI Row (horizontal) */
+.kpi-row {
+  display: flex;
   gap: 12px;
-  height: 100%;
-  align-content: center;
-}
-
-@media (max-width: 960px) {
-  .kpi-grid-2x3 { grid-template-columns: repeat(2, 1fr); }
+  overflow-x: auto;
+  padding-bottom: 4px;
 }
 
 .h-100 { height: 100%; }
@@ -616,10 +716,12 @@ function getAvatarColor(name?: string) {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px;
+  padding: 14px 18px;
   border-radius: 12px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   background: rgba(var(--v-theme-surface), 1);
+  flex: 1;
+  min-width: 150px;
 }
 
 .kpi-icon-wrap {
@@ -846,55 +948,95 @@ function getAvatarColor(name?: string) {
   flex-shrink: 0;
 }
 
-/* Quick Actions */
-.quick-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
+/* (quick actions styles moved to .qa-sidebar / .qa-mini above) */
 
-.qa-btn {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  border-radius: 10px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  transition: background 0.15s;
-  text-align: left;
-  width: 100%;
-}
-
-.qa-btn:hover {
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-
-.qa-icon {
-  width: 40px;
-  height: 40px;
-  min-width: 40px;
-  border-radius: 10px;
+.qa-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0 4px;
 }
 
-.qa-text {
-  flex: 1;
-  min-width: 0;
+/* Status legend */
+.status-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.qa-title {
-  font-size: 14px;
-  font-weight: 500;
+.status-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-legend-count {
+  margin-left: auto;
+  font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
 
-.qa-desc {
+/* Payment summary grid */
+.payment-summary-grid {
+  display: flex;
+  gap: 16px;
+}
+
+.payment-summary-card {
+  flex: 1;
+  text-align: center;
+  padding: 16px 12px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.payment-summary-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 10px;
+}
+
+.payment-summary-value {
+  font-size: 24px;
+  font-weight: 800;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  line-height: 1;
+}
+
+.payment-summary-label {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 4px;
+}
+
+.payment-summary-amount {
+  font-size: 14px;
+  font-weight: 700;
+  margin-top: 8px;
 }
 
 /* Dark mode */
@@ -903,6 +1045,14 @@ function getAvatarColor(name?: string) {
 }
 
 .dark .kpi-card {
+  background: #1e1e2e;
+  border-color: #2e2e42;
+}
+.dark .qa-mini {
+  background: #1e1e2e;
+  border-color: #2e2e42;
+}
+.dark .payment-summary-card {
   background: #1e1e2e;
   border-color: #2e2e42;
 }

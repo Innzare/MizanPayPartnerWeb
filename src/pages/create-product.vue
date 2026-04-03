@@ -6,6 +6,7 @@ import { CITIES } from '@/constants/cities'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { api } from '@/api/client'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -24,42 +25,42 @@ const title = ref('')
 const description = ref('')
 const category = ref('')
 const city = ref('')
-const photoUrl = ref('')
-const photoFile = ref<File | null>(null)
-const photoPreviewUrl = ref('')
+const photoFiles = ref<File[]>([])
+const photoPreviewUrls = ref<string[]>([])
 const isDragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
-const hasPhoto = computed(() => !!photoPreviewUrl.value || !!photoUrl.value)
-const displayPhotoUrl = computed(() => photoPreviewUrl.value || photoUrl.value)
+const hasPhotos = computed(() => photoFiles.value.length > 0)
 
 function handleFileSelect(event: Event) {
   const input = event.target as HTMLInputElement
-  if (input.files?.[0]) {
-    setPhotoFile(input.files[0])
+  if (input.files) {
+    addFiles(Array.from(input.files))
   }
+  if (fileInput.value) fileInput.value.value = ''
 }
 
 function handleDrop(event: DragEvent) {
   isDragging.value = false
-  const file = event.dataTransfer?.files?.[0]
-  if (file && file.type.startsWith('image/')) {
-    setPhotoFile(file)
+  const files = event.dataTransfer?.files
+  if (files) {
+    addFiles(Array.from(files).filter(f => f.type.startsWith('image/')))
   }
 }
 
-function setPhotoFile(file: File) {
-  photoFile.value = file
-  if (photoPreviewUrl.value) URL.revokeObjectURL(photoPreviewUrl.value)
-  photoPreviewUrl.value = URL.createObjectURL(file)
-  photoUrl.value = ''
+function addFiles(files: File[]) {
+  const remaining = 8 - photoFiles.value.length
+  const toAdd = files.slice(0, remaining)
+  for (const file of toAdd) {
+    photoFiles.value.push(file)
+    photoPreviewUrls.value.push(URL.createObjectURL(file))
+  }
 }
 
-function removePhoto() {
-  photoFile.value = null
-  if (photoPreviewUrl.value) URL.revokeObjectURL(photoPreviewUrl.value)
-  photoPreviewUrl.value = ''
-  if (fileInput.value) fileInput.value.value = ''
+function removePhoto(index: number) {
+  URL.revokeObjectURL(photoPreviewUrls.value[index])
+  photoFiles.value.splice(index, 1)
+  photoPreviewUrls.value.splice(index, 1)
 }
 
 // Step 2: Terms
@@ -96,13 +97,20 @@ function canProceed() {
   return true
 }
 
+const submitting = ref(false)
+
 async function submitProduct() {
   try {
+    submitting.value = true
+    let urls: string[] = []
+    if (photoFiles.value.length > 0) {
+      urls = await api.uploadMultiple(photoFiles.value, 'products')
+    }
     await productsStore.createProduct({
       title: title.value,
       description: description.value || undefined,
       category: category.value,
-      photos: displayPhotoUrl.value ? [displayPhotoUrl.value] : undefined,
+      photos: urls.length ? urls : undefined,
       price: price.value || 0,
       minTermMonths: minTermMonths.value,
       maxTermMonths: maxTermMonths.value,
@@ -113,6 +121,8 @@ async function submitProduct() {
     router.push('/products')
   } catch (e: any) {
     toast.error(e.message || 'Ошибка создания товара')
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -210,53 +220,37 @@ function getCategoryIcon(catId: string) {
               </div>
 
               <div class="form-field">
-                <label class="field-label">Фото товара</label>
+                <label class="field-label">Фото товара <span class="text-medium-emphasis">({{ photoFiles.length }}/8)</span></label>
                 <div
                   class="upload-zone"
-                  :class="{ 'upload-zone--drag': isDragging, 'upload-zone--has-file': photoFile }"
+                  :class="{ 'upload-zone--drag': isDragging }"
                   @dragenter.prevent="isDragging = true"
                   @dragover.prevent="isDragging = true"
                   @dragleave.prevent="isDragging = false"
                   @drop.prevent="handleDrop"
-                  @click="!photoFile && fileInput?.click()"
+                  @click="photoFiles.length < 8 && fileInput?.click()"
                 >
                   <input
                     ref="fileInput"
                     type="file"
                     accept="image/*"
+                    multiple
                     style="display: none"
                     @change="handleFileSelect"
                   />
-                  <template v-if="photoFile">
-                    <div class="upload-file-info">
-                      <v-img :src="photoPreviewUrl" width="48" height="48" cover class="upload-thumb" />
-                      <div class="upload-file-details">
-                        <span class="upload-file-name">{{ photoFile.name }}</span>
-                        <span class="upload-file-size">{{ (photoFile.size / 1024).toFixed(0) }} КБ</span>
-                      </div>
-                      <button class="upload-remove" @click.stop="removePhoto" title="Удалить">
-                        <v-icon icon="mdi-close" size="16" />
-                      </button>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <v-icon icon="mdi-cloud-upload-outline" size="28" class="upload-icon" />
-                    <span class="upload-text">Перетащите фото сюда или нажмите для выбора</span>
-                    <span class="upload-hint">JPG, PNG, WebP · до 5 МБ</span>
-                  </template>
+                  <v-icon icon="mdi-cloud-upload-outline" size="28" class="upload-icon" />
+                  <span class="upload-text">Перетащите фото сюда или нажмите для выбора</span>
+                  <span class="upload-hint">JPG, PNG, WebP · до 5 МБ · максимум 8 фото</span>
                 </div>
-                <div class="upload-or">
-                  <span class="upload-or-line" />
-                  <span class="upload-or-text">или</span>
-                  <span class="upload-or-line" />
+                <div v-if="photoFiles.length" class="photo-grid mt-3">
+                  <div v-for="(file, idx) in photoFiles" :key="idx" class="photo-grid-item">
+                    <v-img :src="photoPreviewUrls[idx]" height="80" cover class="photo-grid-img" />
+                    <button class="photo-grid-remove" @click.stop="removePhoto(idx)" title="Удалить">
+                      <v-icon icon="mdi-close" size="14" />
+                    </button>
+                    <div class="photo-grid-name">{{ file.name }}</div>
+                  </div>
                 </div>
-                <input
-                  v-model="photoUrl"
-                  type="text"
-                  class="field-input"
-                  placeholder="Вставьте URL фото: https://..."
-                  :disabled="!!photoFile"
-                />
               </div>
             </div>
           </v-card>
@@ -266,8 +260,8 @@ function getCategoryIcon(catId: string) {
         <v-col cols="12" lg="5">
           <div class="photo-preview-card">
             <v-img
-              v-if="hasPhoto"
-              :src="displayPhotoUrl"
+              v-if="hasPhotos"
+              :src="photoPreviewUrls[0]"
               height="240"
               cover
               class="photo-preview-img"
@@ -506,13 +500,11 @@ function getCategoryIcon(catId: string) {
             <v-icon icon="mdi-image" size="18" />
             <span>Фото</span>
           </div>
-          <v-img
-            v-if="hasPhoto"
-            :src="displayPhotoUrl"
-            height="180"
-            cover
-            rounded="lg"
-          />
+          <div v-if="hasPhotos" class="photo-grid">
+            <div v-for="(url, idx) in photoPreviewUrls" :key="idx" class="photo-grid-item">
+              <v-img :src="url" height="80" cover class="photo-grid-img" />
+            </div>
+          </div>
           <div v-else class="photo-preview-placeholder photo-preview-placeholder--sm">
             <v-icon icon="mdi-image-outline" size="36" />
             <span>Нет фото</span>

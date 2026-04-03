@@ -113,9 +113,38 @@ export const useDealsStore = defineStore('deals', () => {
     }
   }
 
+  async function createDirectDeal(data: {
+    clientId?: string
+    externalClientName?: string
+    externalClientPhone?: string
+    productName: string
+    productPhotos?: string[]
+    productUrl?: string
+    purchasePrice: number
+    markupPercent: number
+    downPayment?: number
+    numberOfPayments: number
+    paymentInterval?: string
+    paymentType?: string
+    dealDate?: string
+  }) {
+    isLoading.value = true
+    error.value = null
+    try {
+      const deal = await api.post<Deal>('/deals/direct', data)
+      deals.value.unshift(deal)
+      return deal
+    } catch (e: any) {
+      error.value = e.message || 'Не удалось создать сделку'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     deals, isLoading, error, investorDeals, activeDeals, completedDeals,
     totalInvested, totalRevenue, totalProfit, totalRemaining, monthlyIncome, roi,
-    fetchDeals, getDeal, fetchDeal, updateDealStatus, fetchAnalytics,
+    fetchDeals, getDeal, fetchDeal, updateDealStatus, fetchAnalytics, createDirectDeal,
   }
 })

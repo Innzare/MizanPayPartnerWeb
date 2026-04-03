@@ -85,11 +85,11 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function updateProfile(updates: Partial<Pick<User, 'firstName' | 'lastName' | 'patronymic' | 'phone' | 'city'>>) {
+  async function updateProfile(updates: Partial<Pick<User, 'firstName' | 'lastName' | 'patronymic' | 'phone' | 'city'>> & { avatar?: string }) {
     if (!user.value) return
     isLoading.value = true
     try {
-      const updated = await api.patch<User>('/users/me', updates)
+      const updated = await api.patch<User>('/auth/investor/profile', updates)
       user.value = updated
       localStorage.setItem('user', JSON.stringify(updated))
     } finally {
