@@ -1,10 +1,14 @@
 <script lang="ts" setup>
 import { api } from '@/api/client'
 import { useDealsStore } from '@/stores/deals'
-import { formatCurrency, formatPhone } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatPhone } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import type { Deal } from '@/types'
+import { Bar } from 'vue-chartjs'
+import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend } from 'chart.js'
+
+ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -123,6 +127,96 @@ const summaryStats = computed(() => {
     count: all.length,
   }
 })
+
+// ── Chart data ──
+
+const CHART_COLORS = ['#6366f1', '#8b5cf6', '#a78bfa', '#c4b5fd', '#7c3aed', '#4f46e5']
+
+const capitalChartData = computed(() => {
+  const items = coInvestors.value.filter((ci) => ci.capital > 0)
+  return {
+    labels: items.map((ci) => ci.name.split(' ')[0] || ci.name),
+    datasets: [{
+      label: 'Капитал',
+      data: items.map((ci) => ci.capital),
+      backgroundColor: items.map((_, i) => CHART_COLORS[i % CHART_COLORS.length] + '40'),
+      borderColor: items.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]),
+      borderWidth: 2,
+      borderRadius: 8,
+    }],
+  }
+})
+
+const profitChartData = computed(() => {
+  const items = coInvestors.value.filter((ci) => ci.stats.coInvestorShare > 0 || ci.stats.myShare > 0)
+  return {
+    labels: items.map((ci) => ci.name.split(' ')[0] || ci.name),
+    datasets: [
+      {
+        label: 'Доля партнёра',
+        data: items.map((ci) => ci.stats.coInvestorShare),
+        backgroundColor: '#6366f1' + '60',
+        borderColor: '#6366f1',
+        borderWidth: 2,
+        borderRadius: 8,
+      },
+      {
+        label: 'Моя доля',
+        data: items.map((ci) => ci.stats.myShare),
+        backgroundColor: '#047857' + '40',
+        borderColor: '#047857',
+        borderWidth: 2,
+        borderRadius: 8,
+      },
+    ],
+  }
+})
+
+const barOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      backgroundColor: '#1a1a2e',
+      titleColor: '#fff',
+      bodyColor: '#fff',
+      padding: 12,
+      cornerRadius: 8,
+      callbacks: {
+        label: (ctx: any) => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      grid: { display: false },
+      ticks: { color: '#9ca3af', font: { size: 12 } },
+      border: { display: false },
+    },
+    y: {
+      grid: { color: 'rgba(0,0,0,0.04)' },
+      ticks: {
+        color: '#9ca3af',
+        font: { size: 12 },
+        callback: (v: any) => formatCurrencyShort(v),
+      },
+      border: { display: false },
+    },
+  },
+}
+
+const profitBarOptions = {
+  ...barOptions,
+  plugins: {
+    ...barOptions.plugins,
+    legend: {
+      display: true,
+      position: 'top' as const,
+      labels: { usePointStyle: true, pointStyle: 'circle', padding: 16, font: { size: 12 } },
+    },
+  },
+}
 
 const availableDeals = computed(() => {
   if (!linkingCoInvestorId.value) return []
@@ -333,6 +427,37 @@ function pluralDeals(n: number) {
           </div>
         </div>
       </div>
+
+      <!-- Charts -->
+      <v-row v-if="coInvestors.length > 0" class="mb-5">
+        <v-col cols="12" lg="6">
+          <v-card rounded="lg" elevation="0" border class="pa-5">
+            <div class="d-flex align-center justify-space-between mb-4">
+              <div>
+                <div class="chart-title">Капитал по партнёрам</div>
+                <div class="chart-subtitle">Вложенные средства</div>
+              </div>
+              <div class="chart-total">{{ formatCurrency(summaryStats.totalCapital) }}</div>
+            </div>
+            <div style="height: 240px;">
+              <Bar :data="capitalChartData" :options="barOptions" />
+            </div>
+          </v-card>
+        </v-col>
+        <v-col cols="12" lg="6">
+          <v-card rounded="lg" elevation="0" border class="pa-5">
+            <div class="d-flex align-center justify-space-between mb-4">
+              <div>
+                <div class="chart-title">Доходность по партнёрам</div>
+                <div class="chart-subtitle">Распределение прибыли</div>
+              </div>
+            </div>
+            <div style="height: 240px;">
+              <Bar :data="profitChartData" :options="profitBarOptions" />
+            </div>
+          </v-card>
+        </v-col>
+      </v-row>
 
       <!-- Main Card -->
       <v-card rounded="lg" elevation="0" border>
@@ -1239,5 +1364,19 @@ function pluralDeals(n: number) {
 }
 .dark .ci-dialog-actions {
   border-top-color: #2e2e42;
+}
+
+/* Charts */
+.chart-title {
+  font-size: 16px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.chart-subtitle {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.chart-total {
+  font-size: 20px; font-weight: 700;
+  color: #6366f1;
 }
 </style>
