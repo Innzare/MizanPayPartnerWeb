@@ -67,14 +67,16 @@ function nextMonth() {
 
 // Map: dateKey (YYYY-MM-DD) -> payments[]
 const paymentsByDate = computed(() => {
-  const map: Record<string, (Payment & { _dealName: string; _clientName: string })[]> = {}
+  const map: Record<string, (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]> = {}
   paymentsStore.allPaymentsFlat.forEach(p => {
     const key = p.dueDate.slice(0, 10)
     if (!map[key]) map[key] = []
+    const deal = dealsStore.getDeal(p.dealId)
     map[key].push({
       ...p,
       _dealName: getDealName(p.dealId),
       _clientName: getClientName(p.dealId),
+      _isExternal: !deal?.client && !!deal?.externalClientName,
     })
   })
   return map
@@ -85,7 +87,7 @@ type CalendarDay = {
   dateKey: string
   isCurrentMonth: boolean
   isToday: boolean
-  payments: (Payment & { _dealName: string; _clientName: string })[]
+  payments: (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]
   totalAmount: number
   hasOverdue: boolean
   hasPending: boolean
@@ -373,7 +375,8 @@ const displayedPayments = computed(() => {
     const s = search.value.toLowerCase()
     payments = payments.filter((p) => {
       const deal = dealsStore.getDeal(p.dealId)
-      return deal?.productName.toLowerCase().includes(s) || userName(deal?.client).toLowerCase().includes(s)
+      const clientName = deal?.client ? userName(deal.client) : deal?.externalClientName || ''
+      return deal?.productName.toLowerCase().includes(s) || clientName.toLowerCase().includes(s)
     })
   }
 
@@ -414,7 +417,10 @@ function getDealName(dealId: string) {
 }
 
 function getClientName(dealId: string) {
-  return userName(dealsStore.getDeal(dealId)?.client)
+  const deal = dealsStore.getDeal(dealId)
+  if (!deal) return '—'
+  if (deal.client) return userName(deal.client)
+  return deal.externalClientName || '—'
 }
 
 function daysUntil(dateStr: string) {
@@ -742,7 +748,7 @@ const rescheduleReasonOptions = [
                       </div>
                     </div>
                     <div class="d-flex align-center justify-space-between">
-                      <span class="text-caption text-medium-emphasis">{{ p._clientName }}</span>
+                      <span class="text-caption text-medium-emphasis">{{ p._clientName }} <span v-if="p._isExternal" class="external-badge">Внешний</span></span>
                       <span class="font-weight-bold" style="font-size: 15px;">{{ formatCurrency(p.amount) }}</span>
                     </div>
                     <div class="d-flex ga-1 mt-2" v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
@@ -821,7 +827,7 @@ const rescheduleReasonOptions = [
                   </div>
                 </div>
                 <div class="d-flex align-center justify-space-between">
-                  <span class="text-caption text-medium-emphasis">{{ p._clientName }}</span>
+                  <span class="text-caption text-medium-emphasis">{{ p._clientName }} <span v-if="p._isExternal" class="external-badge">Внешний</span></span>
                   <span class="font-weight-bold" style="font-size: 15px;">{{ formatCurrency(p.amount) }}</span>
                 </div>
                 <div class="d-flex ga-1 mt-2" v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
@@ -913,7 +919,10 @@ const rescheduleReasonOptions = [
               <td>
                 <span class="font-weight-medium">{{ getDealName(p.dealId) }}</span>
               </td>
-              <td class="text-medium-emphasis">{{ getClientName(p.dealId) }}</td>
+              <td class="text-medium-emphasis">
+                {{ getClientName(p.dealId) }}
+                <span v-if="!dealsStore.getDeal(p.dealId)?.client && dealsStore.getDeal(p.dealId)?.externalClientName" class="external-badge">Внешний</span>
+              </td>
               <td class="text-center">{{ p.number }}</td>
               <td class="text-right font-weight-bold text-no-wrap">{{ formatCurrency(p.amount) }}</td>
               <td>
@@ -995,11 +1004,11 @@ const rescheduleReasonOptions = [
 
         <v-card-text class="pa-5">
           <div class="d-flex align-center ga-3 mb-5">
-            <div class="dialog-avatar" :style="{ background: '#3b82f6' }">
-              {{ userName(selectedDeal.client).charAt(0) }}
+            <div class="dialog-avatar" :style="{ background: selectedDeal.client ? '#3b82f6' : '#6366f1' }">
+              {{ (selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.externalClientName || '?').charAt(0) }}
             </div>
             <div>
-              <div class="font-weight-medium">{{ userName(selectedDeal.client) }}</div>
+              <div class="font-weight-medium">{{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.externalClientName || '—' }}</div>
               <div class="text-caption text-medium-emphasis">
                 Рейтинг {{ selectedDeal.client?.rating ?? 0 }} · Создано {{ formatDate(selectedDeal.createdAt) }}
               </div>
@@ -1812,4 +1821,10 @@ const rescheduleReasonOptions = [
 .dark .cal-month-stats { background: #1e1e2e; border-color: #2e2e42; }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
 .dark .reschedule-info { background: #1e1e2e; border-color: #2e2e42; }
+.external-badge {
+  display: inline-flex; padding: 2px 6px; border-radius: 5px;
+  background: rgba(99, 102, 241, 0.1); color: #6366f1;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  margin-left: 4px; vertical-align: middle;
+}
 </style>

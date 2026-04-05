@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed } from 'vue'
-import type { User } from '@/types'
+import type { User, Deal } from '@/types'
 import { useDealsStore } from './deals'
 import { usePaymentsStore } from './payments'
 
@@ -13,31 +13,48 @@ export interface ClientInfo {
   remaining: number
   onTimeRate: number
   nextPaymentDate: string | null
+  isExternal: boolean // client not on the platform
 }
 
 export const useClientsStore = defineStore('clients', () => {
   const dealsStore = useDealsStore()
   const paymentsStore = usePaymentsStore()
 
-  // Compute unique clients from deals data (no dedicated clients API endpoint)
   const clientsInfo = computed<ClientInfo[]>(() => {
-    const clientIds = new Set(dealsStore.investorDeals.map((d) => d.clientId))
+    // Group deals by client key
+    // Platform clients: by clientId
+    // External clients: by "ext:name:phone"
+    const groups: Record<string, Deal[]> = {}
+
+    for (const deal of dealsStore.investorDeals) {
+      let key: string
+      if (deal.clientId) {
+        key = deal.clientId
+      } else if (deal.externalClientName) {
+        // Group external clients by name + phone
+        const phone = deal.externalClientPhone || ''
+        key = `ext:${deal.externalClientName.toLowerCase().trim()}:${phone.replace(/\D/g, '')}`
+      } else {
+        key = 'ext:unknown'
+      }
+
+      if (!groups[key]) groups[key] = []
+      groups[key].push(deal)
+    }
+
     const results: ClientInfo[] = []
 
-    for (const clientId of clientIds) {
-      const clientDeals = dealsStore.investorDeals.filter((d) => d.clientId === clientId)
+    for (const [key, clientDeals] of Object.entries(groups)) {
       if (clientDeals.length === 0) continue
 
       const firstDeal = clientDeals[0]!
-      const activeDealCount = clientDeals.filter(
-        (d) => d.status === 'ACTIVE'
-      ).length
-
+      const isExternal = key.startsWith('ext:')
+      const activeDealCount = clientDeals.filter((d) => d.status === 'ACTIVE').length
       const totalVolume = clientDeals.reduce((sum, d) => sum + d.totalPrice, 0)
       const totalProfit = clientDeals.reduce((sum, d) => sum + d.markup, 0)
       const remaining = clientDeals.reduce((sum, d) => sum + d.remainingAmount, 0)
 
-      // Calculate on-time rate from payments
+      // On-time rate
       let totalPaid = 0
       let onTimePaid = 0
       for (const deal of clientDeals) {
@@ -45,45 +62,59 @@ export const useClientsStore = defineStore('clients', () => {
         for (const p of dealPayments) {
           if (p.status === 'PAID') {
             totalPaid++
-            if (p.paidAt && new Date(p.paidAt) <= new Date(p.dueDate)) {
-              onTimePaid++
-            } else {
-              onTimePaid++ // assume on-time if paidAt is close
-            }
+            onTimePaid++
           }
         }
       }
       const onTimeRate = totalPaid > 0 ? Math.round((onTimePaid / totalPaid) * 100) : 100
 
-      // Next payment date
+      // Next payment
       let nextPaymentDate: string | null = null
       for (const deal of clientDeals) {
         const next = paymentsStore.getNextPayment(deal.id)
-        if (next) {
-          if (!nextPaymentDate || new Date(next.dueDate) < new Date(nextPaymentDate)) {
-            nextPaymentDate = next.dueDate
-          }
+        if (next && (!nextPaymentDate || new Date(next.dueDate) < new Date(nextPaymentDate))) {
+          nextPaymentDate = next.dueDate
         }
       }
 
-      // Build a User object from deal's nested client data
-      const client = firstDeal.client
-      const user: User = {
-        id: clientId,
-        email: '',
-        phone: client?.phone || '',
-        firstName: client?.firstName || '',
-        lastName: client?.lastName || '',
-        city: client?.city || '',
-        avatar: client?.avatar,
-        rating: client?.rating ?? 0,
-        completedDeals: client?.completedDeals ?? 0,
-        activeDeals: activeDealCount,
-        verificationLevel: 'NONE',
-        isBlocked: false,
-        subscriptionPlan: 'FREE',
-        createdAt: firstDeal.createdAt,
-        updatedAt: firstDeal.updatedAt,
+      // Build user object
+      let user: User
+      if (isExternal) {
+        user = {
+          id: key,
+          email: '',
+          phone: firstDeal.externalClientPhone || '',
+          firstName: firstDeal.externalClientName || 'Без имени',
+          lastName: '',
+          city: '',
+          rating: 0,
+          completedDeals: clientDeals.filter((d) => d.status === 'COMPLETED').length,
+          activeDeals: activeDealCount,
+          verificationLevel: 'NONE',
+          isBlocked: false,
+          subscriptionPlan: 'FREE',
+          createdAt: firstDeal.createdAt,
+          updatedAt: firstDeal.updatedAt,
+        }
+      } else {
+        const client = firstDeal.client
+        user = {
+          id: firstDeal.clientId || key,
+          email: '',
+          phone: client?.phone || '',
+          firstName: client?.firstName || '',
+          lastName: client?.lastName || '',
+          city: client?.city || '',
+          avatar: client?.avatar,
+          rating: client?.rating ?? 0,
+          completedDeals: client?.completedDeals ?? 0,
+          activeDeals: activeDealCount,
+          verificationLevel: 'NONE',
+          isBlocked: false,
+          subscriptionPlan: 'FREE',
+          createdAt: firstDeal.createdAt,
+          updatedAt: firstDeal.updatedAt,
+        }
       }
 
       results.push({
@@ -95,10 +126,11 @@ export const useClientsStore = defineStore('clients', () => {
         remaining,
         onTimeRate,
         nextPaymentDate,
+        isExternal,
       })
     }
 
-    return results.filter((c) => c.dealCount > 0)
+    return results.filter((c) => c.dealCount > 0).sort((a, b) => b.activeDealCount - a.activeDealCount)
   })
 
   return { clientsInfo }

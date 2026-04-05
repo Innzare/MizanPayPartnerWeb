@@ -71,8 +71,17 @@ function isExpanded(clientId: string) {
   return expandedClients.value.includes(clientId)
 }
 
-function getClientDeals(clientId: string) {
-  return dealsStore.investorDeals.filter((d) => d.clientId === clientId)
+function getClientDeals(clientKey: string) {
+  if (clientKey.startsWith('ext:')) {
+    // External client — match by name + phone
+    return dealsStore.investorDeals.filter((d) => {
+      if (d.clientId) return false
+      const name = (d.externalClientName || '').toLowerCase().trim()
+      const phone = (d.externalClientPhone || '').replace(/\D/g, '')
+      return `ext:${name}:${phone}` === clientKey
+    })
+  }
+  return dealsStore.investorDeals.filter((d) => d.clientId === clientKey)
 }
 
 function getScoreColor(rate: number) {
@@ -194,16 +203,20 @@ const selectedDealPaidTotal = computed(() =>
             <div class="client-header" @click="toggleClient(client.user.id)">
               <div
                 class="client-avatar"
-                :style="{ background: getAvatarColor(client.user.firstName) }"
-                @click.stop="router.push(`/users/${client.user.id}`)"
-                style="cursor: pointer;"
+                :style="{ background: client.isExternal ? '#6366f1' : getAvatarColor(client.user.firstName), cursor: client.isExternal ? 'default' : 'pointer' }"
+                @click.stop="!client.isExternal && router.push(`/users/${client.user.id}`)"
               >
-                {{ client.user.firstName[0] }}{{ client.user.lastName[0] }}
+                {{ (client.user.firstName || '?')[0] }}{{ (client.user.lastName || '')[0] }}
               </div>
 
               <div class="client-main">
                 <div class="client-name-row">
-                  <span class="client-name client-name--link" @click.stop="router.push(`/users/${client.user.id}`)">{{ client.user.firstName }} {{ client.user.lastName }}</span>
+                  <span
+                    class="client-name"
+                    :class="{ 'client-name--link': !client.isExternal }"
+                    @click.stop="!client.isExternal && router.push(`/users/${client.user.id}`)"
+                  >{{ client.user.firstName }} {{ client.user.lastName }}</span>
+                  <span v-if="client.isExternal" class="external-badge">Внешний</span>
                   <div
                     class="score-badge"
                     :style="{ background: getScoreBg(client.onTimeRate), color: getScoreColor(client.onTimeRate) }"
@@ -295,8 +308,9 @@ const selectedDealPaidTotal = computed(() =>
                     class="deal-item"
                     @click.stop="openDeal(deal)"
                   >
-                    <v-avatar size="40" rounded="lg" class="deal-photo">
-                      <v-img :src="deal.productPhotos?.[0]" cover />
+                    <v-avatar size="40" rounded="lg" class="deal-photo" :color="deal.productPhotos?.[0] ? undefined : 'grey-lighten-3'">
+                      <v-img v-if="deal.productPhotos?.[0]" :src="deal.productPhotos[0]" cover />
+                      <v-icon v-else icon="mdi-package-variant-closed" size="20" color="grey" />
                     </v-avatar>
                     <div class="deal-info">
                       <div class="deal-product">{{ deal.productName }}</div>
@@ -555,6 +569,12 @@ const selectedDealPaidTotal = computed(() =>
 }
 .client-name--link:hover {
   color: rgb(var(--v-theme-primary));
+}
+.external-badge {
+  display: inline-flex; padding: 2px 8px; border-radius: 6px;
+  background: rgba(99, 102, 241, 0.1); color: #6366f1;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  margin-left: 6px;
 }
 .score-badge {
   font-size: 11px; font-weight: 700;

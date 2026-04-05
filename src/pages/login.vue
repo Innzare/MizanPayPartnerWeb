@@ -82,7 +82,7 @@ const handleLogin = async () => {
               <v-icon icon="mdi-briefcase-outline" size="18" color="white" />
             </div>
             <div>
-              <div class="feature-title">Портфель</div>
+              <div class="feature-title">Сделки</div>
               <div class="feature-desc">Все сделки в одном месте</div>
             </div>
           </div>

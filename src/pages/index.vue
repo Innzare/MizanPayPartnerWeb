@@ -254,21 +254,26 @@ function getAvatarColor(name?: string) {
     <!-- Hero + Quick Actions -->
     <div class="hero-row mb-6">
       <div class="qa-sidebar">
-        <button class="qa-mini" @click="router.push('/create-deal')" title="Новая сделка">
-          <v-icon icon="mdi-handshake" size="20" style="color: #047857;" />
+        <button class="qa-mini" @click="router.push('/create-deal')">
+          <v-icon icon="mdi-handshake" size="18" style="color: #047857;" />
+          <span>Сделка</span>
         </button>
-        <button class="qa-mini" @click="router.push('/create-product')" title="Добавить товар">
-          <v-icon icon="mdi-package-variant-plus" size="20" style="color: #3b82f6;" />
+        <button class="qa-mini" @click="router.push('/create-product')">
+          <v-icon icon="mdi-package-variant-plus" size="18" style="color: #3b82f6;" />
+          <span>Товар</span>
         </button>
-        <button class="qa-mini" @click="router.push('/requests')" title="Заявки" style="position: relative;">
-          <v-icon icon="mdi-file-document-outline" size="20" style="color: #8b5cf6;" />
+        <button class="qa-mini" @click="router.push('/requests')" style="position: relative;">
+          <v-icon icon="mdi-file-document-outline" size="18" style="color: #8b5cf6;" />
+          <span>Заявки</span>
           <div v-if="requestsStore.activeRequests.length" class="qa-badge">{{ requestsStore.activeRequests.length }}</div>
         </button>
-        <button class="qa-mini" @click="router.push('/calculator')" title="Калькулятор">
-          <v-icon icon="mdi-calculator" size="20" style="color: #f59e0b;" />
+        <button class="qa-mini" @click="router.push('/calculator')">
+          <v-icon icon="mdi-calculator" size="18" style="color: #f59e0b;" />
+          <span>Расчёт</span>
         </button>
-        <button class="qa-mini" @click="router.push('/notifications')" title="Уведомления" style="position: relative;">
-          <v-icon icon="mdi-bell-outline" size="20" style="color: #ef4444;" />
+        <button class="qa-mini" @click="router.push('/notifications')" style="position: relative;">
+          <v-icon icon="mdi-bell-outline" size="18" style="color: #ef4444;" />
+          <span>Уведомл.</span>
           <div v-if="notificationsStore.unreadCount" class="qa-badge">{{ notificationsStore.unreadCount }}</div>
         </button>
       </div>
@@ -277,11 +282,15 @@ function getAvatarColor(name?: string) {
         <div class="hero-main">
           <div class="hero-label">Ожидается к получению</div>
           <div class="hero-amount">{{ formatCurrency(dealsStore.totalRemaining) }}</div>
+          <div class="hero-sub">
+            из {{ formatCurrency(dealsStore.totalRevenue) }} общего оборота
+          </div>
         </div>
+
         <div class="hero-metrics">
           <div class="hero-metric">
-            <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalRevenue) }}</span>
-            <span class="hero-metric-label">Оборот</span>
+            <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalInvested) }}</span>
+            <span class="hero-metric-label">Инвестировано</span>
           </div>
           <div class="hero-metric-divider" />
           <div class="hero-metric">
@@ -293,12 +302,28 @@ function getAvatarColor(name?: string) {
             <span class="hero-metric-value">{{ formatPercent(dealsStore.roi) }}</span>
             <span class="hero-metric-label">ROI</span>
           </div>
+          <div class="hero-metric-divider" />
+          <div class="hero-metric">
+            <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.monthlyIncome) }}</span>
+            <span class="hero-metric-label">Доход / мес</span>
+          </div>
+        </div>
+
+        <div class="hero-progress">
+          <div class="hero-progress-header">
+            <span>Получено {{ formatCurrencyShort(dealsStore.totalRevenue - dealsStore.totalRemaining) }}</span>
+            <span>{{ dealsStore.totalRevenue > 0 ? Math.round(((dealsStore.totalRevenue - dealsStore.totalRemaining) / dealsStore.totalRevenue) * 100) : 0 }}%</span>
+          </div>
+          <div class="hero-progress-bar">
+            <div class="hero-progress-fill" :style="{ width: dealsStore.totalRevenue > 0 ? ((dealsStore.totalRevenue - dealsStore.totalRemaining) / dealsStore.totalRevenue * 100) + '%' : '0%' }" />
+          </div>
         </div>
       </div>
 
     </div>
 
     <!-- KPI Cards (horizontal) -->
+    <div class="dash-section-title">Ключевые показатели</div>
     <div class="kpi-row mb-6">
       <div class="kpi-card">
         <div class="kpi-icon-wrap" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
@@ -362,6 +387,7 @@ function getAvatarColor(name?: string) {
     </div>
 
     <!-- Charts Row: Revenue + Forecast side by side -->
+    <div class="dash-section-title">Финансы</div>
     <v-row class="mb-2">
       <!-- Revenue Chart -->
       <v-col cols="12" lg="6">
@@ -424,6 +450,7 @@ function getAvatarColor(name?: string) {
     </v-row>
 
     <!-- Deal Status Distribution -->
+    <div class="dash-section-title">Обзор портфеля</div>
     <v-row class="mb-2">
       <v-col cols="12" lg="4">
         <v-card rounded="lg" elevation="0" border class="pa-5 h-100">
@@ -498,6 +525,7 @@ function getAvatarColor(name?: string) {
     </v-row>
 
     <!-- Upcoming Payments + Active Deals side by side -->
+    <div class="dash-section-title">Активность</div>
     <v-row>
       <!-- Upcoming Payments -->
       <v-col cols="12" lg="6">
@@ -602,6 +630,17 @@ function getAvatarColor(name?: string) {
 </template>
 
 <style scoped>
+/* Section titles */
+.dash-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  margin-bottom: 12px;
+  padding-left: 2px;
+}
+
 /* Hero Row */
 .hero-row {
   display: flex;
@@ -625,23 +664,35 @@ function getAvatarColor(name?: string) {
 }
 
 .qa-mini {
-  width: 48px;
-  height: 48px;
+  width: 72px;
+  padding: 10px 4px;
   border-radius: 14px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   background: rgba(var(--v-theme-surface), 1);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   cursor: pointer;
   transition: all 0.15s;
   position: relative;
 }
 
+.qa-mini span {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  white-space: nowrap;
+}
+
 .qa-mini:hover {
   border-color: rgba(var(--v-theme-primary), 0.3);
   background: rgba(var(--v-theme-primary), 0.04);
-  transform: scale(1.05);
+}
+
+.qa-mini:hover span {
+  color: rgb(var(--v-theme-primary));
 }
 
 @media (max-width: 960px) {
@@ -696,10 +747,44 @@ function getAvatarColor(name?: string) {
   opacity: 0.6;
 }
 
+.hero-sub {
+  font-size: 13px;
+  opacity: 0.55;
+  margin-top: 4px;
+}
+
 .hero-metric-divider {
   width: 1px;
   height: 32px;
   background: rgba(255, 255, 255, 0.15);
+}
+
+.hero-progress {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.hero-progress-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  opacity: 0.65;
+  margin-bottom: 8px;
+}
+
+.hero-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.hero-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: #34d399;
+  transition: width 0.6s ease;
 }
 
 /* KPI Row (horizontal) */

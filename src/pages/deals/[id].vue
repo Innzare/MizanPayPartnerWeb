@@ -55,6 +55,64 @@ const clientInfo = computed(() => {
   return clientsStore.clientsInfo.find(c => c.user.id === deal.value!.clientId) || null
 })
 
+// Contract photos
+const contractInputRef = ref<HTMLInputElement | null>(null)
+const contractUploading = ref(false)
+
+async function onContractFilesSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.files?.length || !deal.value) return
+  contractUploading.value = true
+  try {
+    const files = Array.from(input.files).filter(f => f.type.startsWith('image/'))
+    const newUrls = await api.uploadMultiple(files, `contracts/${deal.value.id}`)
+    const existing = deal.value.contractPhotos || []
+    await api.patch(`/deals/${deal.value.id}/contract`, { contractPhotos: [...existing, ...newUrls] })
+    await dealsStore.fetchDeal(dealId.value)
+    toast.success('Фото договора загружены')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка загрузки')
+  } finally {
+    contractUploading.value = false
+    if (contractInputRef.value) contractInputRef.value.value = ''
+  }
+}
+
+async function removeContractPhoto(index: number) {
+  if (!deal.value) return
+  const updated = (deal.value.contractPhotos || []).filter((_: string, i: number) => i !== index)
+  try {
+    await api.patch(`/deals/${deal.value.id}/contract`, { contractPhotos: updated })
+    await dealsStore.fetchDeal(dealId.value)
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка удаления')
+  }
+}
+
+const contractEnlargeUrl = ref('')
+const contractEnlargeDialog = ref(false)
+
+// Delete deal
+const deleting = ref(false)
+
+function confirmDeleteDeal() {
+  if (!confirm('Удалить сделку и все платежи? Это действие необратимо.')) return
+  deleteDeal()
+}
+
+async function deleteDeal() {
+  deleting.value = true
+  try {
+    await api.delete(`/deals/${dealId.value}`)
+    toast.success('Сделка удалена')
+    router.push('/deals')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось удалить сделку')
+  } finally {
+    deleting.value = false
+  }
+}
+
 // Financial calculations
 const paidTotal = computed(() =>
   payments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
@@ -225,7 +283,7 @@ async function confirmMarkPaid() {
 
 // Reminder via messenger
 function sendReminder(messenger: 'whatsapp' | 'telegram', payment?: typeof payments.value[0]) {
-  const phone = client.value?.phone?.replace(/\D/g, '')
+  const phone = (client.value?.phone || deal.value?.externalClientPhone || '')?.replace(/\D/g, '')
   if (!phone || !deal.value) return
 
   const p = payment || payments.value.find(p => p.status === 'PENDING' || p.status === 'OVERDUE')
@@ -484,14 +542,11 @@ const timeline = computed(() => {
         <!-- Right column -->
         <v-col cols="12" lg="4">
           <!-- Client card -->
-          <v-card v-if="client" rounded="lg" elevation="0" border class="pa-5 mb-6">
+          <v-card v-if="client || deal.externalClientName" rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="section-title mb-4">Клиент</div>
 
-            <div
-              class="d-flex align-center ga-3 mb-4"
-              style="cursor: pointer;"
-              @click="router.push(`/users/${deal.clientId}`)"
-            >
+            <!-- Platform client -->
+            <div v-if="client" class="d-flex align-center ga-3 mb-4" style="cursor: pointer;" @click="router.push(`/users/${deal.clientId}`)">
               <div class="client-avatar">{{ (client.firstName || '')[0] || '' }}{{ (client.lastName || '')[0] || '' }}</div>
               <div class="flex-grow-1">
                 <div class="font-weight-bold">{{ userName(client) }}</div>
@@ -500,7 +555,19 @@ const timeline = computed(() => {
               <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
             </div>
 
-            <div class="client-info-grid">
+            <!-- External client -->
+            <div v-else-if="deal.externalClientName" class="d-flex align-center ga-3 mb-4">
+              <div class="client-avatar" style="background: #6366f1;">{{ deal.externalClientName[0] }}</div>
+              <div class="flex-grow-1">
+                <div class="font-weight-bold">{{ deal.externalClientName }}</div>
+                <div class="text-caption text-medium-emphasis d-flex align-center ga-2">
+                  <span v-if="deal.externalClientPhone">{{ deal.externalClientPhone }}</span>
+                  <span class="external-client-badge">Внешний клиент</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="client" class="client-info-grid">
               <div class="client-info-item">
                 <v-icon icon="mdi-star" size="16" color="warning" />
                 <div>
@@ -537,7 +604,7 @@ const timeline = computed(() => {
             </div>
 
             <!-- Reminder buttons -->
-            <div v-if="client.phone && deal?.status === 'ACTIVE'" class="d-flex ga-2 mt-4">
+            <div v-if="(client?.phone || deal?.externalClientPhone) && deal?.status === 'ACTIVE'" class="d-flex ga-2 mt-4">
               <button class="reminder-btn reminder-btn--wa" @click="sendReminder('whatsapp')">
                 <v-icon icon="mdi-whatsapp" size="16" />
                 Напомнить
@@ -568,11 +635,57 @@ const timeline = computed(() => {
             </div>
           </v-card>
 
+          <!-- Contract photos -->
+          <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
+            <div class="d-flex align-center justify-space-between mb-4">
+              <div class="section-title">Фото договора</div>
+              <button class="btn-sm btn-sm--outline" @click="contractInputRef?.click()" :disabled="contractUploading">
+                <v-icon :icon="contractUploading ? 'mdi-loading' : 'mdi-plus'" size="16" :class="{ 'mdi-spin': contractUploading }" />
+                {{ contractUploading ? 'Загрузка...' : 'Добавить' }}
+              </button>
+            </div>
+            <input ref="contractInputRef" type="file" accept="image/*" multiple hidden @change="onContractFilesSelected" />
+
+            <div v-if="deal?.contractPhotos?.length" class="contract-photo-grid">
+              <div v-for="(url, i) in deal.contractPhotos" :key="i" class="contract-photo-item">
+                <img
+                  :src="url"
+                  class="contract-photo-img"
+                  @click="contractEnlargeUrl = url; contractEnlargeDialog = true"
+                />
+                <button class="contract-photo-remove" @click="removeContractPhoto(i)">
+                  <v-icon icon="mdi-close" size="14" />
+                </button>
+              </div>
+            </div>
+
+            <div v-else class="text-center pa-6 text-medium-emphasis text-body-2">
+              <v-icon icon="mdi-file-document-outline" size="32" class="mb-2" style="opacity: 0.3;" />
+              <div>Нет фото договора</div>
+            </div>
+          </v-card>
+
+          <!-- Contract enlarge dialog -->
+          <v-dialog v-model="contractEnlargeDialog" max-width="800">
+            <v-card rounded="lg">
+              <img :src="contractEnlargeUrl" style="width: 100%; height: auto; display: block;" />
+              <v-card-actions>
+                <v-spacer />
+                <v-btn variant="text" @click="contractEnlargeDialog = false">Закрыть</v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-dialog>
+
           <!-- Deal info card -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="section-title mb-4">Условия сделки</div>
 
             <div class="deal-detail-list">
+              <div class="deal-detail-row">
+                <span class="deal-detail-label">Первоначальный взнос</span>
+                <span v-if="deal.downPayment" class="deal-detail-val" style="color: #047857; font-weight: 700;">{{ formatCurrency(deal.downPayment) }}</span>
+                <span v-else class="deal-detail-val" style="opacity: 0.4;">Без взноса</span>
+              </div>
               <div class="deal-detail-row">
                 <span class="deal-detail-label">Интервал</span>
                 <span class="deal-detail-val">{{ deal.paymentInterval === 'MONTHLY' ? 'Ежемесячно' : deal.paymentInterval === 'BIWEEKLY' ? 'Раз в 2 недели' : 'Еженедельно' }}</span>
@@ -613,6 +726,29 @@ const timeline = computed(() => {
           </v-card>
         </v-col>
       </v-row>
+
+      <!-- Delete deal -->
+      <div class="delete-deal-bar" :class="{ 'delete-deal-bar--hover': !deleting }">
+        <div class="d-flex align-center ga-3">
+          <div class="delete-deal-icon">
+            <v-icon icon="mdi-delete-outline" size="18" />
+          </div>
+          <div>
+            <div class="delete-deal-title">Удалить сделку</div>
+            <div class="delete-deal-desc">Сделка и все платежи будут удалены</div>
+          </div>
+        </div>
+        <button
+          class="delete-deal-btn"
+          :class="{ 'delete-deal-btn--loading': deleting }"
+          :disabled="deleting"
+          @click="confirmDeleteDeal"
+        >
+          <v-progress-circular v-if="deleting" indeterminate size="16" width="2" color="white" />
+          <v-icon v-else icon="mdi-delete-outline" size="16" />
+          <span>{{ deleting ? 'Удаление...' : 'Удалить' }}</span>
+        </button>
+      </div>
 
       <!-- Reschedule dialog -->
       <v-dialog v-model="rescheduleDialog" max-width="480" content-class="reschedule-dialog">
@@ -864,6 +1000,11 @@ const timeline = computed(() => {
   display: flex; align-items: center; justify-content: center;
   font-weight: 700; font-size: 15px;
 }
+.external-client-badge {
+  display: inline-flex; padding: 2px 8px; border-radius: 6px;
+  background: rgba(99, 102, 241, 0.1); color: #6366f1;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+}
 .client-info-grid {
   display: flex; flex-direction: column; gap: 12px;
 }
@@ -1049,6 +1190,124 @@ const timeline = computed(() => {
   cursor: pointer; transition: all 0.15s;
 }
 .contract-download-btn:hover { background: #2563eb; }
+
+/* Delete deal */
+.delete-deal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  margin-top: 24px;
+  border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  transition: all 0.2s;
+}
+
+.delete-deal-bar--hover:hover {
+  border-color: rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.02);
+}
+
+.delete-deal-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.delete-deal-bar--hover:hover .delete-deal-icon {
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+}
+
+.delete-deal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  transition: color 0.2s;
+}
+
+.delete-deal-bar--hover:hover .delete-deal-title {
+  color: #ef4444;
+}
+
+.delete-deal-desc {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.3);
+}
+
+.delete-deal-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.delete-deal-btn:hover {
+  background: #ef4444;
+  color: #fff;
+}
+
+.delete-deal-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.delete-deal-btn--loading {
+  background: #ef4444;
+  color: #fff;
+}
+
+.dark .delete-deal-bar {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border-color: #2e2e42;
+}
+
+/* Contract photos */
+.contract-photo-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.contract-photo-item { position: relative; width: 100px; height: 100px; }
+.contract-photo-img {
+  width: 100%; height: 100%; object-fit: cover; border-radius: 10px;
+  cursor: pointer; transition: opacity 0.15s;
+}
+.contract-photo-img:hover { opacity: 0.85; }
+.contract-photo-remove {
+  position: absolute; top: -6px; right: -6px;
+  width: 22px; height: 22px; border-radius: 50%; border: none;
+  background: #ef4444; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: 0; transition: opacity 0.15s;
+}
+.contract-photo-item:hover .contract-photo-remove { opacity: 1; }
+.btn-sm--outline {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 14px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent;
+  font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer; transition: all 0.15s;
+}
+.btn-sm--outline:hover {
+  border-color: rgba(var(--v-theme-primary), 0.3);
+  color: rgb(var(--v-theme-primary));
+}
+.btn-sm--outline:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Status action banner */
 .status-action-banner {

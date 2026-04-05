@@ -30,6 +30,9 @@ const city = ref('')
 const photoFiles = ref<File[]>([])
 const photoPreviewUrls = ref<string[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
+const contractFiles = ref<File[]>([])
+const contractPreviewUrls = ref<string[]>([])
+const contractInput = ref<HTMLInputElement | null>(null)
 
 function onPhotoSelect(event: Event) {
   const input = event.target as HTMLInputElement
@@ -51,6 +54,26 @@ function removePhoto(index: number) {
   photoPreviewUrls.value.splice(index, 1)
 }
 
+function onContractSelect(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (input.files) {
+    const remaining = 10 - contractFiles.value.length
+    const files = Array.from(input.files).filter(f => f.type.startsWith('image/')).slice(0, remaining)
+    for (const file of files) {
+      contractFiles.value.push(file)
+      contractPreviewUrls.value.push(URL.createObjectURL(file))
+    }
+  }
+  if (contractInput.value) contractInput.value.value = ''
+}
+
+function removeContract(index: number) {
+  const url = contractPreviewUrls.value[index]
+  if (url) URL.revokeObjectURL(url)
+  contractFiles.value.splice(index, 1)
+  contractPreviewUrls.value.splice(index, 1)
+}
+
 // Step 2: Terms
 const purchasePrice = ref<number | null>(null)
 const markupPercent = ref(15)
@@ -59,6 +82,7 @@ const termMonths = ref(6)
 const paymentType = ref<PaymentType>('EQUAL')
 const paymentInterval = ref('MONTHLY')
 const dealDate = ref(new Date().toISOString().slice(0, 10))
+const customFirstPayment = ref('')
 
 const markupOptions = [10, 15, 20, 25]
 const termOptions = [3, 4, 6, 9, 12, 18, 24]
@@ -71,6 +95,9 @@ const remainingAmount = computed(() => totalPrice.value - downPaymentAmount.valu
 const monthlyPayment = computed(() => termMonths.value > 0 ? remainingAmount.value / termMonths.value : 0)
 
 const firstPaymentDate = computed(() => {
+  if (customFirstPayment.value) {
+    return new Date(customFirstPayment.value).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  }
   const d = new Date(dealDate.value)
   if (paymentInterval.value === 'WEEKLY') d.setDate(d.getDate() + 7)
   else if (paymentInterval.value === 'BIWEEKLY') d.setDate(d.getDate() + 14)
@@ -134,6 +161,11 @@ async function submitDeal() {
       photoUrls = await api.uploadMultiple(photoFiles.value, 'deals')
     }
 
+    let contractUrls: string[] = []
+    if (contractFiles.value.length > 0) {
+      contractUrls = await api.uploadMultiple(contractFiles.value, 'contracts')
+    }
+
     await dealsStore.createDirectDeal({
       ...(clientMode.value === 'search' && selectedClientId.value
         ? { clientId: selectedClientId.value }
@@ -141,6 +173,7 @@ async function submitDeal() {
       ),
       productName: productName.value,
       productPhotos: photoUrls.length ? photoUrls : undefined,
+      contractPhotos: contractUrls.length ? contractUrls : undefined,
       purchasePrice: purchasePrice.value || 0,
       markupPercent: markupPercent.value,
       downPayment: downPaymentAmount.value || undefined,
@@ -148,6 +181,7 @@ async function submitDeal() {
       paymentInterval: paymentInterval.value,
       paymentType: paymentType.value,
       dealDate: dealDate.value,
+      firstPaymentDate: customFirstPayment.value || undefined,
     })
 
     toast.success('Сделка создана')
@@ -270,6 +304,28 @@ watch(clientSearch, () => {
               </div>
             </div>
           </div>
+
+          <!-- Contract photos -->
+          <div class="form-field full-width">
+            <label class="field-label">Фото договора <span class="text-medium-emphasis">(необязательно, {{ contractFiles.length }}/10)</span></label>
+            <input ref="contractInput" type="file" accept="image/*" multiple hidden @change="onContractSelect" />
+            <div
+              v-if="contractFiles.length < 10"
+              class="photo-drop-zone"
+              @click="contractInput?.click()"
+            >
+              <v-icon icon="mdi-file-document-outline" size="24" />
+              <span>Добавить скан договора</span>
+            </div>
+            <div v-if="contractFiles.length" class="photo-grid mt-3">
+              <div v-for="(_, idx) in contractFiles" :key="idx" class="photo-grid-item">
+                <img :src="contractPreviewUrls[idx]" class="photo-grid-img" />
+                <button class="photo-remove-btn" @click.stop="removeContract(idx)">
+                  <v-icon icon="mdi-close" size="14" />
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </v-card>
     </div>
@@ -307,6 +363,10 @@ watch(clientSearch, () => {
                     @click="markupPercent = opt"
                   >{{ opt }}%</button>
                 </div>
+                <div class="input-with-suffix mt-2">
+                  <input v-model.number="markupPercent" type="number" class="field-input" placeholder="15" min="1" />
+                  <span class="input-suffix">%</span>
+                </div>
               </div>
 
               <div class="form-field full-width">
@@ -326,6 +386,10 @@ watch(clientSearch, () => {
                     @click="termMonths = opt"
                   >{{ opt }} мес</button>
                 </div>
+                <div class="input-with-suffix mt-2">
+                  <input v-model.number="termMonths" type="number" class="field-input" placeholder="6" min="1" />
+                  <span class="input-suffix">мес</span>
+                </div>
               </div>
 
               <div class="form-field full-width">
@@ -343,6 +407,20 @@ watch(clientSearch, () => {
               <div class="form-field full-width">
                 <label class="field-label">Дата заключения сделки</label>
                 <input v-model="dealDate" type="date" class="field-input" />
+              </div>
+
+              <div class="form-field full-width">
+                <label class="field-label">Дата первого платежа <span class="text-medium-emphasis">(необязательно)</span></label>
+                <input v-model="customFirstPayment" type="date" class="field-input" :placeholder="firstPaymentDate" />
+                <div class="first-payment-hint">
+                  <div class="first-payment-hint__icon">
+                    <v-icon icon="mdi-calendar-clock" size="14" />
+                  </div>
+                  <div>
+                    <div class="first-payment-hint__date">{{ firstPaymentDate }}</div>
+                    <div class="first-payment-hint__sub">Дата по умолчанию · измените при необходимости</div>
+                  </div>
+                </div>
               </div>
             </div>
           </v-card>
@@ -742,6 +820,47 @@ watch(clientSearch, () => {
   pointer-events: none;
 }
 .input-with-suffix .field-input { padding-right: 36px; }
+
+/* First payment hint */
+.first-payment-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(4, 120, 87, 0.04);
+  border: 1px solid rgba(4, 120, 87, 0.1);
+}
+
+.first-payment-hint__icon {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  border-radius: 8px;
+  background: rgba(4, 120, 87, 0.1);
+  color: #047857;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.first-payment-hint__date {
+  font-size: 13px;
+  font-weight: 700;
+  color: #047857;
+}
+
+.first-payment-hint__sub {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+
+.dark .first-payment-hint {
+  background: rgba(4, 120, 87, 0.08);
+  border-color: rgba(4, 120, 87, 0.15);
+}
 
 /* Photos */
 .photo-drop-zone {

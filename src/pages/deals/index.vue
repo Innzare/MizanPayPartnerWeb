@@ -7,6 +7,7 @@ import { type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { api } from '@/api/client'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
@@ -32,6 +33,50 @@ onMounted(async () => {
 const tab = ref(0)
 const viewMode = ref<'grid' | 'table'>('table')
 const search = ref('')
+const selectMode = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+const deleting = ref(false)
+
+function toggleSelect(id: string) {
+  if (selectedIds.value.has(id)) {
+    selectedIds.value.delete(id)
+  } else {
+    selectedIds.value.add(id)
+  }
+  selectedIds.value = new Set(selectedIds.value) // trigger reactivity
+}
+
+function selectAll() {
+  if (selectedIds.value.size === displayedDeals.value.length) {
+    selectedIds.value = new Set()
+  } else {
+    selectedIds.value = new Set(displayedDeals.value.map(d => d.id))
+  }
+}
+
+function cancelSelect() {
+  selectMode.value = false
+  selectedIds.value = new Set()
+}
+
+async function deleteSelected() {
+  if (!selectedIds.value.size) return
+  if (!confirm(`Удалить ${selectedIds.value.size} сделок? Это действие необратимо.`)) return
+
+  deleting.value = true
+  try {
+    const result = await api.post<{ deleted: number; total: number }>('/deals/delete-batch', {
+      ids: Array.from(selectedIds.value),
+    })
+    toast.success(`Удалено ${result.deleted} сделок`)
+    await dealsStore.fetchDeals()
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка удаления')
+  }
+
+  cancelSelect()
+  deleting.value = false
+}
 const selectedDeal = ref<Deal | null>(null)
 const showDialog = ref(false)
 const sortBy = ref<'newest' | 'amount_desc' | 'amount_asc' | 'progress'>('newest')
@@ -64,7 +109,7 @@ const displayedDeals = computed(() => {
     const s = search.value.toLowerCase()
     result = result.filter(d =>
       d.productName.toLowerCase().includes(s) ||
-      userName(d.client).toLowerCase().includes(s)
+      dealClientName(d).toLowerCase().includes(s)
     )
   }
 
@@ -93,6 +138,11 @@ const tabStats = computed(() => {
 
 function getDealProgress(deal: Deal) {
   return deal.numberOfPayments > 0 ? (deal.paidPayments / deal.numberOfPayments) * 100 : 0
+}
+
+function dealClientName(deal: Deal) {
+  if (deal.client) return userName(deal.client)
+  return deal.externalClientName || '—'
 }
 
 function openDeal(deal: Deal) {
@@ -215,15 +265,56 @@ const selectedDealPaidTotal = computed(() =>
                 <v-icon icon="mdi-view-grid-outline" size="18" />
               </button>
             </div>
+
+            <button v-if="!selectMode" class="view-toggle-btn" @click="selectMode = true" title="Выбрать">
+              <v-icon icon="mdi-checkbox-multiple-outline" size="18" />
+            </button>
           </div>
         </div>
+
+        <!-- Selection bar -->
+        <Transition name="slide-down">
+          <div v-if="selectMode" class="select-bar">
+            <div class="select-bar-left">
+              <v-checkbox-btn
+                :model-value="selectedIds.size === displayedDeals.length && displayedDeals.length > 0"
+                :indeterminate="selectedIds.size > 0 && selectedIds.size < displayedDeals.length"
+                density="compact"
+                hide-details
+                @update:model-value="selectAll"
+              />
+              <span class="select-bar-count">
+                {{ selectedIds.size > 0 ? `Выбрано ${selectedIds.size} из ${displayedDeals.length}` : 'Выберите сделки' }}
+              </span>
+            </div>
+            <div class="select-bar-right">
+              <button
+                v-if="selectedIds.size > 0"
+                class="select-bar-delete"
+                :disabled="deleting"
+                @click="deleteSelected"
+              >
+                <v-progress-circular v-if="deleting" indeterminate size="16" width="2" color="white" />
+                <v-icon v-else icon="mdi-delete-outline" size="18" />
+                <span>{{ deleting ? 'Удаление...' : `Удалить (${selectedIds.size})` }}</span>
+              </button>
+              <button class="select-bar-cancel" @click="cancelSelect">
+                <v-icon icon="mdi-close" size="18" />
+                <span>Отмена</span>
+              </button>
+            </div>
+          </div>
+        </Transition>
 
         <!-- GRID VIEW -->
         <v-row v-if="viewMode === 'grid' && displayedDeals.length">
           <v-col v-for="deal in displayedDeals" :key="deal.id" cols="12" sm="6" lg="4" xl="3">
             <div class="deal-card" @click="openDeal(deal)">
               <div class="deal-card-photo">
-                <v-img :src="deal.productPhotos[0]" height="140" cover />
+                <v-img v-if="deal.productPhotos?.[0]" :src="deal.productPhotos[0]" height="140" cover />
+                <div v-else class="deal-card-placeholder" style="height: 140px;">
+                  <v-icon icon="mdi-package-variant-closed" size="36" />
+                </div>
                 <div
                   class="deal-card-status"
                   :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
@@ -235,7 +326,8 @@ const selectedDealPaidTotal = computed(() =>
               <div class="deal-card-body">
                 <div class="deal-card-title">{{ deal.productName }}</div>
                 <div class="deal-card-client">
-                  <v-icon icon="mdi-account" size="14" /> {{ userName(deal.client) }}
+                  <v-icon icon="mdi-account" size="14" /> {{ dealClientName(deal) }}
+                  <span v-if="!deal.client && deal.externalClientName" class="external-badge">Внешний</span>
                 </div>
 
                 <div class="deal-card-prices">
@@ -262,6 +354,15 @@ const selectedDealPaidTotal = computed(() =>
         <v-table v-if="viewMode === 'table' && displayedDeals.length" density="default" hover class="deals-table">
           <thead>
             <tr>
+              <th v-if="selectMode" style="width: 40px;">
+                <v-checkbox-btn
+                  :model-value="selectedIds.size === displayedDeals.length && displayedDeals.length > 0"
+                  :indeterminate="selectedIds.size > 0 && selectedIds.size < displayedDeals.length"
+                  density="compact"
+                  hide-details
+                  @update:model-value="selectAll"
+                />
+              </th>
               <th>Товар</th>
               <th>Клиент</th>
               <th class="text-end">Итого</th>
@@ -273,18 +374,28 @@ const selectedDealPaidTotal = computed(() =>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="deal in displayedDeals" :key="deal.id" class="cursor-pointer" @click="openDeal(deal)">
+            <tr v-for="deal in displayedDeals" :key="deal.id" class="cursor-pointer" @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)">
+              <td v-if="selectMode" @click.stop>
+                <v-checkbox-btn
+                  :model-value="selectedIds.has(deal.id)"
+                  density="compact"
+                  hide-details
+                  @update:model-value="toggleSelect(deal.id)"
+                />
+              </td>
               <td>
                 <div class="d-flex align-center ga-3 py-3">
-                  <v-avatar size="44" rounded="lg">
-                    <v-img :src="deal.productPhotos[0]" cover />
+                  <v-avatar size="44" rounded="lg" :color="deal.productPhotos?.[0] ? undefined : 'grey-lighten-3'">
+                    <v-img v-if="deal.productPhotos?.[0]" :src="deal.productPhotos[0]" cover />
+                    <v-icon v-else icon="mdi-package-variant-closed" size="22" color="grey" />
                   </v-avatar>
                   <span class="font-weight-medium table-product-name">{{ deal.productName }}</span>
                 </div>
               </td>
               <td>
                 <div class="d-flex align-center ga-2">
-                  <span>{{ userName(deal.client) }}</span>
+                  <span>{{ dealClientName(deal) }}</span>
+                  <span v-if="!deal.client && deal.externalClientName" class="external-badge">Внешний</span>
                   <v-chip size="x-small" variant="tonal" color="warning">
                     <v-icon icon="mdi-star" size="10" start /> {{ deal.client?.rating ?? 0 }}
                   </v-chip>
@@ -344,7 +455,10 @@ const selectedDealPaidTotal = computed(() =>
       <v-card v-if="selectedDeal" rounded="lg">
         <!-- Header with photo -->
         <div class="dialog-hero">
-          <v-img :src="selectedDeal.productPhotos[0]" height="180" cover class="dialog-hero-img" />
+          <v-img v-if="selectedDeal.productPhotos?.[0]" :src="selectedDeal.productPhotos[0]" height="180" cover class="dialog-hero-img" />
+          <div v-else class="deal-card-placeholder dialog-hero-img" style="height: 180px;">
+            <v-icon icon="mdi-package-variant-closed" size="48" />
+          </div>
           <div class="dialog-hero-overlay" />
           <button class="dialog-close" @click="showDialog = false">
             <v-icon icon="mdi-close" size="20" />
@@ -364,10 +478,10 @@ const selectedDealPaidTotal = computed(() =>
           <!-- Client & Date row -->
           <div class="d-flex align-center ga-3 mb-5">
             <div class="dialog-avatar" :style="{ background: '#3b82f6' }">
-              {{ userName(selectedDeal.client).charAt(0) }}
+              {{ dealClientName(selectedDeal).charAt(0) }}
             </div>
             <div>
-              <div class="font-weight-medium">{{ userName(selectedDeal.client) }}</div>
+              <div class="font-weight-medium">{{ dealClientName(selectedDeal) }}</div>
               <div class="text-caption text-medium-emphasis">
                 Рейтинг {{ selectedDeal.client?.rating ?? 0 }} · Создано {{ formatDate(selectedDeal.createdAt) }}
               </div>
@@ -592,6 +706,17 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 .deal-card-photo { position: relative; }
+.external-badge {
+  display: inline-flex; padding: 2px 6px; border-radius: 5px;
+  background: rgba(99, 102, 241, 0.1); color: #6366f1;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  margin-left: 4px; vertical-align: middle;
+}
+.deal-card-placeholder {
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgba(var(--v-theme-on-surface), 0.15);
+}
 .deal-card-status {
   position: absolute; top: 10px; right: 10px;
   font-size: 11px; font-weight: 600;
@@ -625,6 +750,94 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 /* Table */
+/* Selection bar */
+.select-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.select-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.select-bar-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+.select-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.select-bar-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: none;
+  background: #ef4444;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.select-bar-delete:hover { background: #dc2626; }
+.select-bar-delete:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.select-bar-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.select-bar-cancel:hover {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+/* Slide transition */
+.slide-down-enter-active,
+.slide-down-leave-active {
+  transition: all 0.2s ease;
+}
+
+.slide-down-enter-from,
+.slide-down-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* Dark mode */
+.dark .select-bar {
+  background: #1e1e2e;
+  border-color: #2e2e42;
+}
+
 .deals-table :deep(td) { font-size: 14px; }
 .deals-table :deep(th) {
   font-size: 12px !important; text-transform: uppercase;

@@ -119,6 +119,7 @@ export const useDealsStore = defineStore('deals', () => {
     externalClientPhone?: string
     productName: string
     productPhotos?: string[]
+    contractPhotos?: string[]
     productUrl?: string
     purchasePrice: number
     markupPercent: number
@@ -127,6 +128,7 @@ export const useDealsStore = defineStore('deals', () => {
     paymentInterval?: string
     paymentType?: string
     dealDate?: string
+    firstPaymentDate?: string
   }) {
     isLoading.value = true
     error.value = null

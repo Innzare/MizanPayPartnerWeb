@@ -65,11 +65,12 @@ const toggleTheme = () => {
 // Navigation
 const mainNavRoutes = [
   { path: "/", title: "Главная", icon: "mdi-view-dashboard" },
-  { path: "/deals", title: "Портфель", icon: "mdi-briefcase" },
+  { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
   { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
   { path: "/products", title: "Каталог", icon: "mdi-store" },
   { path: "/requests", title: "Заявки", icon: "mdi-file-document-outline" },
+  { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline" },
 ];
 
 const secondaryNavRoutes = [
@@ -81,7 +82,7 @@ const secondaryNavRoutes = [
 // Route titles for header
 const routeTitles: Record<string, string> = {
   "/": "Главная",
-  "/deals": "Портфель",
+  "/deals": "Сделки",
   "/clients": "Клиенты",
   "/payments": "Платежи",
   "/products": "Каталог",
@@ -90,7 +91,9 @@ const routeTitles: Record<string, string> = {
   "/notifications": "Уведомления",
   "/settings": "Настройки",
   "/create-deal": "Новая сделка",
+  "/import": "Импорт сделок",
   "/create-product": "Новый товар",
+  "/co-investors": "Со-инвесторы",
 };
 
 const routeSubtitles: Record<string, string> = {
@@ -103,6 +106,7 @@ const routeSubtitles: Record<string, string> = {
   "/notifications": "Все уведомления",
   "/calculator": "Расчёт условий рассрочки",
   "/settings": "Профиль и настройки",
+  "/co-investors": "Управление капиталом партнёров",
 };
 
 // User initials for avatar
@@ -342,6 +346,10 @@ const confirmLogout = async () => {
                   <button class="lyt-dropdown-item" @click="quickActionsMenu = false; router.push('/create-product')">
                     <v-icon icon="mdi-package-variant-plus" size="18" />
                     <span>Новый товар</span>
+                  </button>
+                  <button class="lyt-dropdown-item" @click="quickActionsMenu = false; router.push('/import')">
+                    <v-icon icon="mdi-file-upload-outline" size="18" />
+                    <span>Импорт из Excel</span>
                   </button>
                 </div>
               </v-menu>

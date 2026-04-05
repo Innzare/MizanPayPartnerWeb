@@ -35,21 +35,53 @@ const selectedRequest = ref<Request | null>(null)
 
 // Offer tiers wizard state
 const acceptStep = ref(1)
-const offerTiers = ref<{ termMonths: number; markupPercent: number; enabled: boolean }[]>([])
-const quickMarkup = ref(15)
 const isSendingOffer = ref(false)
 const TERM_OPTIONS = [3, 4, 6, 9, 12]
 const MARKUP_OPTIONS = [10, 15, 20, 25, 30]
+const DOWN_PAYMENT_OPTIONS = [10, 15, 20, 30]
+
+// Tab: "Со взносом" (always active)
+const withDownTiers = ref<{ termMonths: number; markupPercent: number; enabled: boolean }[]>([])
+const minDownPaymentPercent = ref(20)
+
+// Tab: "Без взноса" (toggleable)
+const noDownEnabled = ref(false)
+const noDownTiers = ref<{ termMonths: number; markupPercent: number; enabled: boolean }[]>([])
+
+const offerTab = ref<'with' | 'without'>('with')
 
 function getDefaultTiers() {
-  return [
+  withDownTiers.value = [
     { termMonths: 3, markupPercent: 10, enabled: true },
     { termMonths: 6, markupPercent: 15, enabled: true },
     { termMonths: 12, markupPercent: 20, enabled: true },
   ]
+  noDownTiers.value = [
+    { termMonths: 3, markupPercent: 15, enabled: true },
+    { termMonths: 6, markupPercent: 20, enabled: true },
+    { termMonths: 12, markupPercent: 25, enabled: true },
+  ]
+  minDownPaymentPercent.value = 20
+  noDownEnabled.value = false
+  offerTab.value = 'with'
 }
 
-const enabledTiers = computed(() => offerTiers.value.filter((t) => t.enabled))
+// Combined tiers for sending
+const enabledTiers = computed(() => {
+  const result: { termMonths: number; markupPercent: number; minDownPaymentPercent: number }[] = []
+  for (const t of withDownTiers.value) {
+    if (t.enabled) result.push({ ...t, minDownPaymentPercent: minDownPaymentPercent.value })
+  }
+  if (noDownEnabled.value) {
+    for (const t of noDownTiers.value) {
+      if (t.enabled) result.push({ ...t, minDownPaymentPercent: 0 })
+    }
+  }
+  return result
+})
+
+// Current tab tiers ref
+const currentTiers = computed(() => offerTab.value === 'with' ? withDownTiers.value : noDownTiers.value)
 
 watch(search, (val) => {
   requestsStore.setFilters({ search: val || undefined })
@@ -130,42 +162,33 @@ function openAcceptFromDetail() {
 function openAcceptDialog(request: Request, e?: Event) {
   e?.stopPropagation()
   selectedRequest.value = request
-  // Reset wizard
   acceptStep.value = 1
-  offerTiers.value = getDefaultTiers()
-  quickMarkup.value = 15
+  getDefaultTiers()
   acceptDialog.value = true
 }
 
-function applyQuickMarkup() {
-  for (const tier of offerTiers.value) {
-    tier.markupPercent = quickMarkup.value
-  }
-}
-
 function toggleTerm(months: number) {
-  const idx = offerTiers.value.findIndex((t) => t.termMonths === months)
+  const tiers = offerTab.value === 'with' ? withDownTiers.value : noDownTiers.value
+  const idx = tiers.findIndex((t) => t.termMonths === months)
   if (idx !== -1) {
-    offerTiers.value[idx].enabled = !offerTiers.value[idx].enabled
+    tiers[idx].enabled = !tiers[idx].enabled
   } else {
-    offerTiers.value.push({ termMonths: months, markupPercent: quickMarkup.value, enabled: true })
-    offerTiers.value.sort((a, b) => a.termMonths - b.termMonths)
+    tiers.push({ termMonths: months, markupPercent: 15, enabled: true })
+    tiers.sort((a, b) => a.termMonths - b.termMonths)
   }
 }
 
 function isTermEnabled(months: number) {
-  return offerTiers.value.some((t) => t.termMonths === months && t.enabled)
+  return currentTiers.value.some((t) => t.termMonths === months && t.enabled)
 }
 
 function getTierMarkup(months: number) {
-  return offerTiers.value.find((t) => t.termMonths === months)?.markupPercent ?? quickMarkup.value
+  return currentTiers.value.find((t) => t.termMonths === months)?.markupPercent ?? 15
 }
 
 function setTierMarkup(months: number, value: number) {
-  const tier = offerTiers.value.find((t) => t.termMonths === months)
-  if (tier) {
-    tier.markupPercent = value
-  }
+  const tier = currentTiers.value.find((t) => t.termMonths === months)
+  if (tier) tier.markupPercent = value
 }
 
 function calcTierTotal(markupPercent: number) {
@@ -184,7 +207,7 @@ async function confirmSendOffer() {
   isSendingOffer.value = true
   try {
     await requestsStore.sendOffer(selectedRequest.value.id, {
-      tiers: enabledTiers.value.map((t) => ({ termMonths: t.termMonths, markupPercent: t.markupPercent })),
+      tiers: enabledTiers.value.map((t) => ({ termMonths: t.termMonths, markupPercent: t.markupPercent, minDownPaymentPercent: t.minDownPaymentPercent })),
     })
     toast.success('Предложение отправлено клиенту')
     acceptDialog.value = false
@@ -697,6 +720,7 @@ const investorTimelineSteps = computed(() => {
                 <v-card rounded="lg" elevation="0" variant="tonal" color="primary" class="pa-3 text-center">
                   <div class="text-caption text-medium-emphasis mb-1">{{ formatMonths(tier.termMonths) }}</div>
                   <div class="text-body-2 font-weight-bold">{{ tier.markupPercent }}% наценка</div>
+                  <div class="text-caption mt-1">{{ tier.minDownPaymentPercent ? 'Взнос от ' + tier.minDownPaymentPercent + '%' : 'Без взноса' }}</div>
                   <div class="text-caption mt-1">{{ formatCurrency(selectedRequest.price * (1 + tier.markupPercent / 100)) }}</div>
                   <div class="text-caption text-medium-emphasis">{{ formatCurrency(selectedRequest.price * (1 + tier.markupPercent / 100) / tier.termMonths) }}/мес</div>
                 </v-card>
@@ -752,63 +776,133 @@ const investorTimelineSteps = computed(() => {
         <div class="pa-4" style="max-height: 60vh; overflow-y: auto">
           <!-- Step 1: Configure tiers -->
           <template v-if="acceptStep === 1">
-            <!-- Quick markup apply -->
-            <div class="text-body-2 font-weight-medium mb-2">Быстрая наценка для всех</div>
-            <div class="d-flex ga-2 flex-wrap mb-2">
-              <v-btn
-                v-for="m in MARKUP_OPTIONS" :key="m"
-                :variant="quickMarkup === m ? 'flat' : 'tonal'"
-                :color="quickMarkup === m ? 'primary' : undefined"
-                size="small"
-                @click="quickMarkup = m"
-              >{{ m }}%</v-btn>
-            </div>
-            <v-btn variant="tonal" size="small" class="mb-4" prepend-icon="mdi-check-all" @click="applyQuickMarkup">
-              Применить {{ quickMarkup }}% ко всем
-            </v-btn>
-
-            <!-- Term cards -->
-            <div class="text-body-2 font-weight-medium mb-2">Варианты сроков</div>
-            <div class="d-flex flex-column ga-3">
-              <v-card
-                v-for="months in TERM_OPTIONS" :key="months"
-                rounded="lg"
-                elevation="0"
-                :border="!isTermEnabled(months)"
-                :color="isTermEnabled(months) ? 'primary' : undefined"
-                :variant="isTermEnabled(months) ? 'tonal' : 'outlined'"
-                class="pa-3"
+            <!-- Tabs: with / without down payment -->
+            <div class="offer-tabs mb-4">
+              <button
+                class="offer-tab"
+                :class="{ active: offerTab === 'with' }"
+                @click="offerTab = 'with'"
               >
-                <div class="d-flex align-center ga-3">
-                  <v-checkbox
-                    :model-value="isTermEnabled(months)"
-                    hide-details
-                    density="compact"
-                    color="primary"
-                    @update:model-value="toggleTerm(months)"
-                  />
-                  <div class="flex-grow-1">
-                    <div class="text-body-2 font-weight-bold">{{ formatMonths(months) }}</div>
-                    <div v-if="isTermEnabled(months)" class="text-caption text-medium-emphasis">
-                      Итого: {{ formatCurrency(calcTierTotal(getTierMarkup(months))) }} · {{ formatCurrency(calcTierMonthly(months, getTierMarkup(months))) }}/мес
+                <v-icon icon="mdi-cash-check" size="16" />
+                Со взносом
+              </button>
+              <button
+                class="offer-tab"
+                :class="{ active: offerTab === 'without', disabled: !noDownEnabled }"
+                @click="offerTab = 'without'"
+              >
+                <v-icon icon="mdi-cash-remove" size="16" />
+                Без взноса
+                <v-switch
+                  v-model="noDownEnabled"
+                  density="compact"
+                  hide-details
+                  color="primary"
+                  class="ml-2"
+                  style="flex: none;"
+                  @click.stop
+                />
+              </button>
+            </div>
+
+            <!-- "Со взносом" settings -->
+            <template v-if="offerTab === 'with'">
+              <div class="d-flex align-center justify-space-between mb-3">
+                <div class="text-body-2 font-weight-medium">Мин. первоначальный взнос</div>
+              </div>
+              <div class="d-flex ga-2 flex-wrap mb-4">
+                <v-btn
+                  v-for="dp in DOWN_PAYMENT_OPTIONS" :key="dp"
+                  :variant="minDownPaymentPercent === dp ? 'flat' : 'tonal'"
+                  :color="minDownPaymentPercent === dp ? 'primary' : undefined"
+                  size="small"
+                  @click="minDownPaymentPercent = dp"
+                >{{ dp }}%</v-btn>
+              </div>
+
+              <div class="text-body-2 font-weight-medium mb-2">Варианты сроков и наценка</div>
+              <div class="d-flex flex-column ga-3">
+                <v-card
+                  v-for="months in TERM_OPTIONS" :key="months"
+                  rounded="lg" elevation="0"
+                  :border="!isTermEnabled(months)"
+                  :color="isTermEnabled(months) ? 'primary' : undefined"
+                  :variant="isTermEnabled(months) ? 'tonal' : 'outlined'"
+                  class="pa-3"
+                >
+                  <div class="d-flex align-center ga-3">
+                    <v-checkbox
+                      :model-value="isTermEnabled(months)"
+                      hide-details density="compact" color="primary"
+                      @update:model-value="toggleTerm(months)"
+                    />
+                    <div class="flex-grow-1">
+                      <div class="text-body-2 font-weight-bold">{{ formatMonths(months) }}</div>
+                      <div v-if="isTermEnabled(months)" class="text-caption text-medium-emphasis">
+                        Итого: {{ formatCurrency(calcTierTotal(getTierMarkup(months))) }} · {{ formatCurrency(calcTierMonthly(months, getTierMarkup(months))) }}/мес
+                      </div>
+                    </div>
+                    <div v-if="isTermEnabled(months)" style="width: 100px">
+                      <v-text-field
+                        :model-value="getTierMarkup(months)"
+                        type="number" variant="outlined" density="compact" suffix="%" hide-details
+                        @update:model-value="(v: any) => setTierMarkup(months, Number(v))"
+                      />
                     </div>
                   </div>
-                  <div v-if="isTermEnabled(months)" style="width: 100px">
-                    <v-text-field
-                      :model-value="getTierMarkup(months)"
-                      type="number"
-                      variant="outlined"
-                      density="compact"
-                      suffix="%"
-                      hide-details
-                      @update:model-value="(v: any) => setTierMarkup(months, Number(v))"
-                    />
-                  </div>
-                </div>
-              </v-card>
-            </div>
+                </v-card>
+              </div>
+            </template>
 
-            <div v-if="!enabledTiers.length" class="text-caption text-error mt-2">
+            <!-- "Без взноса" settings -->
+            <template v-if="offerTab === 'without'">
+              <div v-if="!noDownEnabled" class="text-center pa-8">
+                <v-icon icon="mdi-toggle-switch-off-outline" size="40" style="opacity: 0.3;" class="mb-2" />
+                <div class="text-body-2 text-medium-emphasis">Включите вариант без взноса с помощью переключателя</div>
+              </div>
+
+              <template v-else>
+                <div class="info-banner mb-4">
+                  <v-icon icon="mdi-information-outline" size="16" />
+                  <span>Клиент забирает товар без взноса. Обычно наценка выше чем со взносом.</span>
+                </div>
+
+                <div class="text-body-2 font-weight-medium mb-2">Варианты сроков и наценка</div>
+                <div class="d-flex flex-column ga-3">
+                  <v-card
+                    v-for="months in TERM_OPTIONS" :key="months"
+                    rounded="lg" elevation="0"
+                    :border="!isTermEnabled(months)"
+                    :color="isTermEnabled(months) ? 'primary' : undefined"
+                    :variant="isTermEnabled(months) ? 'tonal' : 'outlined'"
+                    class="pa-3"
+                  >
+                    <div class="d-flex align-center ga-3">
+                      <v-checkbox
+                        :model-value="isTermEnabled(months)"
+                        hide-details density="compact" color="primary"
+                        @update:model-value="toggleTerm(months)"
+                      />
+                      <div class="flex-grow-1">
+                        <div class="text-body-2 font-weight-bold">{{ formatMonths(months) }}</div>
+                        <div v-if="isTermEnabled(months)" class="text-caption text-medium-emphasis">
+                          Итого: {{ formatCurrency(calcTierTotal(getTierMarkup(months))) }} · {{ formatCurrency(calcTierMonthly(months, getTierMarkup(months))) }}/мес
+                        </div>
+                      </div>
+                      <div v-if="isTermEnabled(months)" style="width: 100px">
+                        <v-text-field
+                          :model-value="getTierMarkup(months)"
+                          type="number" variant="outlined" density="compact" suffix="%" hide-details
+                          @update:model-value="(v: any) => setTierMarkup(months, Number(v))"
+                        />
+                      </div>
+                    </div>
+                  </v-card>
+                </div>
+              </template>
+            </template>
+
+            <div v-if="!enabledTiers.length" class="text-caption text-error mt-3">
               Выберите хотя бы один вариант срока
             </div>
           </template>
@@ -825,6 +919,8 @@ const investorTimelineSteps = computed(() => {
                   <v-divider class="my-2" />
                   <div class="text-caption text-medium-emphasis">Наценка</div>
                   <div class="text-body-2 font-weight-bold mb-2">{{ tier.markupPercent }}%</div>
+                  <div class="text-caption text-medium-emphasis">Мин. взнос</div>
+                  <div class="text-body-2 font-weight-bold mb-2">{{ tier.minDownPaymentPercent === 0 ? 'Без взноса' : tier.minDownPaymentPercent + '%' }}</div>
                   <div class="text-caption text-medium-emphasis">Итого</div>
                   <div class="text-body-2 font-weight-bold mb-2">{{ formatCurrency(calcTierTotal(tier.markupPercent)) }}</div>
                   <div class="text-caption text-medium-emphasis">Ежемесячный платёж</div>
@@ -1314,6 +1410,57 @@ const investorTimelineSteps = computed(() => {
 }
 
 /* Tier preview cards */
+/* Offer tabs */
+.offer-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+
+.offer-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.offer-tab.active {
+  background: #fff;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+
+.dark .offer-tab.active {
+  background: #252538;
+  color: #e4e4e7;
+}
+
+.info-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.06);
+  color: #3b82f6;
+  font-size: 13px;
+  border: 1px solid rgba(59, 130, 246, 0.12);
+}
+
 .tier-preview-card {
   transition: transform 0.15s ease;
 }

@@ -75,7 +75,7 @@ export const useRequestsStore = defineStore('requests', () => {
   }
 
   async function sendOffer(id: string, offer: {
-    tiers: { termMonths: number; markupPercent: number }[]
+    tiers: { termMonths: number; markupPercent: number; minDownPaymentPercent: number }[]
   }) {
     try {
       const updated = await api.patch<Request>(`/requests/${id}/offer`, offer)

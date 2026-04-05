@@ -14,6 +14,23 @@ const authStore = useAuthStore()
 // Tabs
 const activeTab = ref<'profile' | 'security' | 'subscription'>('profile')
 
+// Delete account
+const deletingAccount = ref(false)
+
+async function confirmDeleteAccount() {
+  if (!confirm('Удалить аккаунт? Все данные будут удалены безвозвратно. Это действие необратимо.')) return
+  deletingAccount.value = true
+  try {
+    await api.delete('/auth/investor/account')
+    toast.success('Аккаунт удалён')
+    authStore.logout()
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось удалить аккаунт')
+  } finally {
+    deletingAccount.value = false
+  }
+}
+
 const tabs = [
   { id: 'profile' as const, label: 'Профиль', icon: 'mdi-account-outline' },
   { id: 'security' as const, label: 'Безопасность', icon: 'mdi-shield-lock-outline' },
@@ -568,6 +585,27 @@ const plans = [
           </v-card>
         </v-col>
       </v-row>
+
+      <!-- Delete account -->
+      <div class="delete-account-bar">
+        <div class="d-flex align-center ga-3">
+          <div class="delete-account-icon">
+            <v-icon icon="mdi-delete-outline" size="18" />
+          </div>
+          <div>
+            <div class="delete-account-title">Удалить аккаунт</div>
+            <div class="delete-account-desc">Все данные будут удалены безвозвратно</div>
+          </div>
+        </div>
+        <button
+          class="delete-account-btn"
+          :disabled="deletingAccount"
+          @click="confirmDeleteAccount"
+        >
+          <v-progress-circular v-if="deletingAccount" indeterminate size="14" width="2" color="white" />
+          {{ deletingAccount ? 'Удаление...' : 'Удалить' }}
+        </button>
+      </div>
     </div>
 
     <!-- Subscription Tab -->
@@ -927,6 +965,49 @@ const plans = [
   background: rgba(239, 68, 68, 0.06);
   color: #ef4444; border-color: rgba(239, 68, 68, 0.12);
 }
+
+/* Delete account */
+.delete-account-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; margin-top: 32px;
+  border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  transition: all 0.2s;
+}
+.delete-account-bar:hover {
+  border-color: rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.02);
+}
+.delete-account-icon {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.3);
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.2s;
+}
+.delete-account-bar:hover .delete-account-icon {
+  background: rgba(239, 68, 68, 0.08); color: #ef4444;
+}
+.delete-account-title {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  transition: color 0.2s;
+}
+.delete-account-bar:hover .delete-account-title { color: #ef4444; }
+.delete-account-desc {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.3);
+}
+.delete-account-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 34px; padding: 0 14px; border-radius: 8px; border: none;
+  background: rgba(239, 68, 68, 0.08); color: #ef4444;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.delete-account-btn:hover { background: #ef4444; color: #fff; }
+.delete-account-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.dark .delete-account-bar { background: rgba(var(--v-theme-on-surface), 0.03); border-color: #2e2e42; }
 
 /* Verification */
 .verification-status {

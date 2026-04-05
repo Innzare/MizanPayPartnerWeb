@@ -325,6 +325,10 @@ function getCategoryIcon(catId: string) {
                     {{ opt }}%
                   </button>
                 </div>
+                <div class="input-with-suffix mt-2">
+                  <input v-model.number="markupPercent" type="number" class="field-input" placeholder="15" min="1" />
+                  <span class="input-suffix">%</span>
+                </div>
               </div>
 
               <div class="form-field">
@@ -339,6 +343,10 @@ function getCategoryIcon(catId: string) {
                   >
                     {{ opt }}%
                   </button>
+                </div>
+                <div class="input-with-suffix mt-2">
+                  <input v-model.number="minDownPaymentPercent" type="number" class="field-input" placeholder="10" min="1" max="100" />
+                  <span class="input-suffix">%</span>
                 </div>
               </div>
 
@@ -358,6 +366,10 @@ function getCategoryIcon(catId: string) {
                         {{ opt }}
                       </button>
                     </div>
+                    <div class="input-with-suffix mt-2">
+                      <input v-model.number="minTermMonths" type="number" class="field-input" placeholder="6" min="1" />
+                      <span class="input-suffix">мес</span>
+                    </div>
                   </div>
                   <div class="term-range-divider">—</div>
                   <div class="term-range-side">
@@ -372,6 +384,10 @@ function getCategoryIcon(catId: string) {
                       >
                         {{ opt }}
                       </button>
+                    </div>
+                    <div class="input-with-suffix mt-2">
+                      <input v-model.number="maxTermMonths" type="number" class="field-input" placeholder="24" min="1" />
+                      <span class="input-suffix">мес</span>
                     </div>
                   </div>
                 </div>

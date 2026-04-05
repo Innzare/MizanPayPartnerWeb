@@ -61,12 +61,16 @@ export interface Deal {
   investor?: Partial<User>
   productName: string
   productPhotos: string[]
+  contractPhotos?: string[]
   productUrl?: string
   purchasePrice: number
   markup: number
   markupPercent: number
   totalPrice: number
   remainingAmount: number
+  downPayment?: number
+  externalClientName?: string
+  externalClientPhone?: string
   numberOfPayments: number
   paidPayments: number
   paymentInterval: PaymentInterval
@@ -131,7 +135,7 @@ export interface Request {
   acceptedBy?: Partial<User>
 
   // Offer tiers
-  offerTiers?: { termMonths: number; markupPercent: number }[]
+  offerTiers?: { termMonths: number; markupPercent: number; minDownPaymentPercent: number }[]
 
   createdAt: string
   updatedAt: string

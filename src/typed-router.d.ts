@@ -21,11 +21,13 @@ declare module 'vue-router/auto-routes' {
     '/': RouteRecordInfo<'/', '/', Record<never, never>, Record<never, never>>,
     '/calculator': RouteRecordInfo<'/calculator', '/calculator', Record<never, never>, Record<never, never>>,
     '/clients': RouteRecordInfo<'/clients', '/clients', Record<never, never>, Record<never, never>>,
+    '/co-investors': RouteRecordInfo<'/co-investors', '/co-investors', Record<never, never>, Record<never, never>>,
     '/create-deal': RouteRecordInfo<'/create-deal', '/create-deal', Record<never, never>, Record<never, never>>,
     '/create-product': RouteRecordInfo<'/create-product', '/create-product', Record<never, never>, Record<never, never>>,
     '/deals': RouteRecordInfo<'/deals', '/deals', Record<never, never>, Record<never, never>, '/deals/' | '/deals/[id]'>,
     '/deals/': RouteRecordInfo<'/deals/', '/deals', Record<never, never>, Record<never, never>>,
     '/deals/[id]': RouteRecordInfo<'/deals/[id]', '/deals/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/import': RouteRecordInfo<'/import', '/import', Record<never, never>, Record<never, never>>,
     '/login': RouteRecordInfo<'/login', '/login', Record<never, never>, Record<never, never>>,
     '/notifications': RouteRecordInfo<'/notifications', '/notifications', Record<never, never>, Record<never, never>>,
     '/payments': RouteRecordInfo<'/payments', '/payments', Record<never, never>, Record<never, never>>,
@@ -60,6 +62,10 @@ declare module 'vue-router/auto-routes' {
       routes: '/clients'
       views: never
     }
+    'src/pages/co-investors.vue': {
+      routes: '/co-investors'
+      views: never
+    }
     'src/pages/create-deal.vue': {
       routes: '/create-deal'
       views: never
@@ -78,6 +84,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/deals/[id].vue': {
       routes: '/deals/[id]'
+      views: never
+    }
+    'src/pages/import.vue': {
+      routes: '/import'
       views: never
     }
     'src/pages/login.vue': {
