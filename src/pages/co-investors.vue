@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatCurrencyShort, formatPhone } from '@/utils/formatters'
@@ -10,6 +11,7 @@ import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Lege
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
+const router = useRouter()
 const { isDark } = useIsDark()
 const toast = useToast()
 const dealsStore = useDealsStore()
@@ -627,7 +629,7 @@ function pluralDeals(n: number) {
                     </div>
 
                     <div v-else class="ci-deals-list">
-                      <div v-for="deal in ci.dealsList" :key="deal.id" class="ci-deal-row">
+                      <div v-for="deal in ci.dealsList" :key="deal.id" class="ci-deal-row ci-deal-row--clickable" @click="router.push(`/deals/${deal.id}`)">
                         <div class="ci-deal-info">
                           <div class="ci-deal-name">{{ deal.productName }}</div>
                           <div class="ci-deal-meta">
@@ -1103,7 +1105,13 @@ function pluralDeals(n: number) {
   display: flex; align-items: center; gap: 14px;
   padding: 12px 14px; border-radius: 10px;
   background: rgba(var(--v-theme-on-surface), 0.02);
-  transition: background 0.15s;
+  transition: all 0.15s;
+}
+.ci-deal-row--clickable {
+  cursor: pointer;
+}
+.ci-deal-row--clickable:hover {
+  background: rgba(var(--v-theme-primary), 0.04);
 }
 .ci-deal-row:hover {
   background: rgba(var(--v-theme-on-surface), 0.04);
