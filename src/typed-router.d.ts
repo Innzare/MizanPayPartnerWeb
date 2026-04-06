@@ -27,6 +27,7 @@ declare module 'vue-router/auto-routes' {
     '/deals': RouteRecordInfo<'/deals', '/deals', Record<never, never>, Record<never, never>, '/deals/' | '/deals/[id]'>,
     '/deals/': RouteRecordInfo<'/deals/', '/deals', Record<never, never>, Record<never, never>>,
     '/deals/[id]': RouteRecordInfo<'/deals/[id]', '/deals/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/finance': RouteRecordInfo<'/finance', '/finance', Record<never, never>, Record<never, never>>,
     '/import': RouteRecordInfo<'/import', '/import', Record<never, never>, Record<never, never>>,
     '/login': RouteRecordInfo<'/login', '/login', Record<never, never>, Record<never, never>>,
     '/notifications': RouteRecordInfo<'/notifications', '/notifications', Record<never, never>, Record<never, never>>,
@@ -34,6 +35,7 @@ declare module 'vue-router/auto-routes' {
     '/products': RouteRecordInfo<'/products', '/products', Record<never, never>, Record<never, never>, '/products/' | '/products/[id]'>,
     '/products/': RouteRecordInfo<'/products/', '/products', Record<never, never>, Record<never, never>>,
     '/products/[id]': RouteRecordInfo<'/products/[id]', '/products/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/registry': RouteRecordInfo<'/registry', '/registry', Record<never, never>, Record<never, never>>,
     '/requests': RouteRecordInfo<'/requests', '/requests', Record<never, never>, Record<never, never>>,
     '/settings': RouteRecordInfo<'/settings', '/settings', Record<never, never>, Record<never, never>>,
     '/users/[id]': RouteRecordInfo<'/users/[id]', '/users/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
@@ -86,6 +88,10 @@ declare module 'vue-router/auto-routes' {
       routes: '/deals/[id]'
       views: never
     }
+    'src/pages/finance.vue': {
+      routes: '/finance'
+      views: never
+    }
     'src/pages/import.vue': {
       routes: '/import'
       views: never
@@ -112,6 +118,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/products/[id].vue': {
       routes: '/products/[id]'
+      views: never
+    }
+    'src/pages/registry.vue': {
+      routes: '/registry'
       views: never
     }
     'src/pages/requests.vue': {

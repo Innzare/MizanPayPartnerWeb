@@ -71,6 +71,8 @@ const mainNavRoutes = [
   { path: "/products", title: "Каталог", icon: "mdi-store" },
   { path: "/requests", title: "Заявки", icon: "mdi-file-document-outline" },
   { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline" },
+  { path: "/finance", title: "Мой капитал", icon: "mdi-wallet-outline" },
+  { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account" },
 ];
 
 const secondaryNavRoutes = [
@@ -94,6 +96,8 @@ const routeTitles: Record<string, string> = {
   "/import": "Импорт сделок",
   "/create-product": "Новый товар",
   "/co-investors": "Со-инвесторы",
+  "/finance": "Мой капитал",
+  "/registry": "Реестр клиентов",
 };
 
 const routeSubtitles: Record<string, string> = {
@@ -107,6 +111,8 @@ const routeSubtitles: Record<string, string> = {
   "/calculator": "Расчёт условий рассрочки",
   "/settings": "Профиль и настройки",
   "/co-investors": "Управление капиталом партнёров",
+  "/finance": "Учёт доходов и расходов",
+  "/registry": "Проверяйте платёжеспособность клиентов",
 };
 
 // User initials for avatar

@@ -234,8 +234,11 @@ const proofInputRef = ref<HTMLInputElement | null>(null)
 const proofEnlargeDialog = ref(false)
 const proofEnlargeUrl = ref('')
 
+const markPaidAmount = ref<number | null>(null)
+
 function openMarkPaid(p: typeof payments.value[0]) {
   markPaidTarget.value = p
+  markPaidAmount.value = Math.round(p.amount)
   markPaidProofFile.value = null
   markPaidProofPreview.value = ''
   markPaidDialog.value = true
@@ -270,7 +273,9 @@ async function confirmMarkPaid() {
     if (markPaidProofFile.value) {
       proofScreenshot = await api.upload(markPaidProofFile.value, `proofs/${markPaidTarget.value.dealId}`)
     }
-    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, { proofScreenshot })
+    const paidAmount = markPaidAmount.value && markPaidAmount.value !== markPaidTarget.value.amount
+      ? markPaidAmount.value : undefined
+    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, { amount: paidAmount, proofScreenshot })
     toast.success('Платёж отмечен как оплаченный')
     markPaidDialog.value = false
     markPaidTarget.value = null
@@ -281,26 +286,62 @@ async function confirmMarkPaid() {
   }
 }
 
-// Reminder via messenger
-function sendReminder(messenger: 'whatsapp' | 'telegram', payment?: typeof payments.value[0]) {
-  const phone = (client.value?.phone || deal.value?.externalClientPhone || '')?.replace(/\D/g, '')
-  if (!phone || !deal.value) return
+// API reminder via WhatsApp
+const sendingReminder = ref(false)
 
-  const p = payment || payments.value.find(p => p.status === 'PENDING' || p.status === 'OVERDUE')
-  const amount = p ? formatCurrency(p.amount) : ''
-  const date = p ? formatDateShort(p.dueDate) : ''
-  const product = deal.value.productName
+// Per-deal reminder settings
+const dealReminderCustom = ref(false)
+const dealReminderEnabled = ref(true)
+const dealReminderDays = ref(3)
 
-  const text = p
-    ? `Здравствуйте! Напоминаю о платеже ${amount} по "${product}" (срок: ${date}). Пожалуйста, не забудьте оплатить вовремя.`
-    : `Здравствуйте! Напоминаю о предстоящем платеже по "${product}".`
+async function loadDealReminder() {
+  if (!dealId.value) return
+  try {
+    const data = await api.get<any>(`/whatsapp/deal/${dealId.value}/settings`)
+    if (data?.useCustom) {
+      dealReminderCustom.value = true
+      dealReminderEnabled.value = data.enabled !== false
+      dealReminderDays.value = data.daysBefore || 3
+    }
+  } catch {}
+}
 
-  const encoded = encodeURIComponent(text)
-
-  if (messenger === 'whatsapp') {
-    window.open(`https://wa.me/${phone}?text=${encoded}`, '_blank')
+async function toggleDealReminder(useCustom: boolean | null) {
+  if (!useCustom) {
+    await api.patch(`/whatsapp/deal/${dealId.value}/settings`, { useCustom: false })
+    dealReminderCustom.value = false
   } else {
-    window.open(`https://t.me/${phone}?text=${encoded}`, '_blank')
+    dealReminderCustom.value = true
+    await saveDealReminder()
+  }
+}
+
+async function saveDealReminder() {
+  try {
+    await api.patch(`/whatsapp/deal/${dealId.value}/settings`, {
+      useCustom: true,
+      enabled: dealReminderEnabled.value,
+      daysBefore: dealReminderDays.value,
+    })
+  } catch {}
+}
+
+onMounted(() => { loadDealReminder() })
+
+async function sendApiReminder() {
+  if (!deal.value) return
+  sendingReminder.value = true
+  try {
+    const result = await api.post<{ sent: boolean; error?: string }>(`/whatsapp/remind/${deal.value.id}`)
+    if (result.sent) {
+      toast.success('Напоминание отправлено в WhatsApp')
+    } else {
+      toast.error(result.error || 'Не удалось отправить')
+    }
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка отправки')
+  } finally {
+    sendingReminder.value = false
   }
 }
 
@@ -527,9 +568,6 @@ const timeline = computed(() => {
                       <button class="action-btn action-btn--warning" title="Перенести дату" @click="openReschedule(p)">
                         <v-icon icon="mdi-calendar-clock" size="16" />
                       </button>
-                      <button v-if="client?.phone" class="action-btn action-btn--wa" title="Напомнить в WhatsApp" @click="sendReminder('whatsapp', p)">
-                        <v-icon icon="mdi-whatsapp" size="16" />
-                      </button>
                     </div>
                     <span v-else class="text-medium-emphasis">—</span>
                   </td>
@@ -604,15 +642,48 @@ const timeline = computed(() => {
             </div>
 
             <!-- Reminder buttons -->
-            <div v-if="(client?.phone || deal?.externalClientPhone) && deal?.status === 'ACTIVE'" class="d-flex ga-2 mt-4">
-              <button class="reminder-btn reminder-btn--wa" @click="sendReminder('whatsapp')">
-                <v-icon icon="mdi-whatsapp" size="16" />
-                Напомнить
+            <div v-if="(client?.phone || deal?.externalClientPhone) && deal?.status === 'ACTIVE'" class="d-flex ga-2 mt-4" style="flex-wrap: wrap;">
+              <button class="reminder-btn reminder-btn--api" :disabled="sendingReminder" @click="sendApiReminder">
+                <v-progress-circular v-if="sendingReminder" indeterminate size="14" width="2" />
+                <v-icon v-else icon="mdi-whatsapp" size="16" />
+                {{ sendingReminder ? 'Отправка...' : 'Напомнить в WhatsApp' }}
               </button>
-              <button class="reminder-btn reminder-btn--tg" @click="sendReminder('telegram')">
-                <v-icon icon="mdi-send" size="16" />
-                Напомнить
-              </button>
+            </div>
+
+            <!-- Per-deal reminder settings -->
+            <div class="deal-reminder-settings mt-4">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <span class="text-caption font-weight-bold" style="opacity: 0.6;">Настройки напоминаний</span>
+                <v-switch
+                  v-model="dealReminderCustom"
+                  density="compact"
+                  hide-details
+                  color="primary"
+                  :label="dealReminderCustom ? 'Свои настройки' : 'Глобальные'"
+                  style="flex: none;"
+                  @update:model-value="toggleDealReminder"
+                />
+              </div>
+
+              <div v-if="dealReminderCustom" class="deal-reminder-fields">
+                <div class="d-flex align-center ga-3 mb-2">
+                  <span class="text-caption">Вкл/выкл</span>
+                  <v-switch v-model="dealReminderEnabled" density="compact" hide-details color="primary" style="flex: none;" @update:model-value="saveDealReminder" />
+                </div>
+                <div v-if="dealReminderEnabled" class="d-flex align-center ga-2 flex-wrap">
+                  <span class="text-caption" style="opacity: 0.6;">За</span>
+                  <button
+                    v-for="d in [1,2,3,5,7]" :key="d"
+                    class="deal-day-chip"
+                    :class="{ active: dealReminderDays === d }"
+                    @click="dealReminderDays = d; saveDealReminder()"
+                  >{{ d }} дн</button>
+                  <span class="text-caption" style="opacity: 0.6;">до платежа</span>
+                </div>
+              </div>
+              <div v-else class="text-caption text-medium-emphasis">
+                Используются глобальные настройки из раздела WhatsApp
+              </div>
             </div>
           </v-card>
 
@@ -851,6 +922,23 @@ const timeline = computed(() => {
             <div class="d-flex justify-space-between">
               <span class="text-caption text-medium-emphasis">Дата</span>
               <span>{{ formatDate(markPaidTarget.dueDate) }}</span>
+            </div>
+          </div>
+
+          <!-- Amount -->
+          <div class="mb-5">
+            <label class="field-label">Фактическая сумма оплаты</label>
+            <div class="input-with-suffix">
+              <input
+                v-model.number="markPaidAmount"
+                type="number"
+                class="field-input"
+                min="1"
+              />
+              <span class="input-suffix">₽</span>
+            </div>
+            <div v-if="markPaidTarget && markPaidAmount && markPaidAmount !== markPaidTarget.amount" class="text-caption mt-1" :style="{ color: markPaidAmount > markPaidTarget.amount ? '#10b981' : '#f59e0b' }">
+              {{ markPaidAmount > markPaidTarget.amount ? `Переплата ${formatCurrency(markPaidAmount - markPaidTarget.amount)} — оставшиеся платежи будут пересчитаны` : `Недоплата ${formatCurrency(markPaidTarget.amount - markPaidAmount)}` }}
             </div>
           </div>
 
@@ -1106,6 +1194,33 @@ const timeline = computed(() => {
 .reminder-btn--tg:hover {
   background: rgba(34, 158, 217, 0.15);
 }
+/* Deal reminder settings */
+.deal-reminder-settings {
+  padding-top: 14px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.deal-reminder-fields {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 8px;
+}
+.deal-day-chip {
+  padding: 4px 10px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer; transition: all 0.15s;
+}
+.deal-day-chip:hover { background: rgba(var(--v-theme-primary), 0.08); color: rgb(var(--v-theme-primary)); }
+.deal-day-chip.active { background: rgba(var(--v-theme-primary), 0.12); color: rgb(var(--v-theme-primary)); }
+
+.reminder-btn--api {
+  background: #25d366 !important;
+  color: #fff !important;
+  border: none;
+  flex: 1;
+}
+.reminder-btn--api:hover { background: #1da851 !important; }
+.reminder-btn--api:disabled { opacity: 0.5; }
 
 /* Rescheduled hint */
 .rescheduled-hint {
@@ -1146,6 +1261,14 @@ const timeline = computed(() => {
 }
 .field-input:focus {
   border-color: #047857;
+}
+.input-with-suffix { position: relative; }
+.input-with-suffix .field-input { padding-right: 36px; }
+.input-suffix {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  pointer-events: none;
 }
 .reason-chip {
   padding: 6px 14px; border-radius: 8px; border: none;

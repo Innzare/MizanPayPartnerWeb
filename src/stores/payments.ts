@@ -86,7 +86,7 @@ export const usePaymentsStore = defineStore('payments', () => {
   async function markAsPaid(
     paymentId: string,
     dealId: string,
-    options?: { method?: string; proofScreenshot?: string; note?: string }
+    options?: { amount?: number; method?: string; proofScreenshot?: string; note?: string }
   ) {
     try {
       const updated = await api.patch<Payment>(`/payments/${paymentId}/paid`, options || {})

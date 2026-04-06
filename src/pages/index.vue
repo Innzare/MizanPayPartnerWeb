@@ -9,6 +9,7 @@ import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { api } from '@/api/client'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -21,6 +22,25 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineEleme
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+
+const sendingBulk = ref(false)
+
+async function sendBulkReminders() {
+  if (!confirm('Отправить напоминания всем клиентам с просроченными или приближающимися платежами?')) return
+  sendingBulk.value = true
+  try {
+    const result = await api.post<{ sent: number; failed: number; total: number }>('/whatsapp/remind-all')
+    toast.success(`Отправлено ${result.sent} из ${result.total} напоминаний`)
+    if (result.failed > 0) {
+      toast.error(`${result.failed} не удалось отправить`)
+    }
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка рассылки')
+  } finally {
+    sendingBulk.value = false
+  }
+}
+
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const requestsStore = useRequestsStore()
@@ -275,6 +295,10 @@ function getAvatarColor(name?: string) {
           <v-icon icon="mdi-bell-outline" size="18" style="color: #ef4444;" />
           <span>Уведомл.</span>
           <div v-if="notificationsStore.unreadCount" class="qa-badge">{{ notificationsStore.unreadCount }}</div>
+        </button>
+        <button class="qa-mini" @click="sendBulkReminders" :disabled="sendingBulk" title="Напомнить всем">
+          <v-icon icon="mdi-whatsapp" size="18" style="color: #25d366;" />
+          <span>WhatsApp</span>
         </button>
       </div>
 

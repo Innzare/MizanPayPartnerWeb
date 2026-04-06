@@ -6,13 +6,144 @@ import { CITIES } from '@/constants/cities'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { api } from '@/api/client'
+import QRCode from 'qrcode'
 
 const { isDark } = useIsDark()
 const toast = useToast()
 const authStore = useAuthStore()
 
 // Tabs
-const activeTab = ref<'profile' | 'security' | 'subscription'>('profile')
+const activeTab = ref<'profile' | 'security' | 'whatsapp' | 'subscription'>('profile')
+
+// WhatsApp
+const waStatus = ref<'disconnected' | 'connecting' | 'connected' | 'loading'>('loading')
+const waQrCode = ref<string | null>(null)
+const waPolling = ref<ReturnType<typeof setInterval> | null>(null)
+
+async function checkWhatsAppStatus() {
+  try {
+    const result = await api.get<{ status: string; connected: boolean }>('/whatsapp/session/status')
+    waStatus.value = result.connected ? 'connected' : 'disconnected'
+    if (result.connected) loadWaSettings()
+  } catch {
+    waStatus.value = 'disconnected'
+  }
+}
+
+async function connectWhatsApp() {
+  waStatus.value = 'connecting'
+  try {
+    await api.post('/whatsapp/session')
+    const qrResult = await api.get<{ qr: string | null; status: string }>('/whatsapp/session/qr')
+    if (qrResult.qr) {
+      waQrCode.value = await QRCode.toDataURL(qrResult.qr, { width: 260, margin: 2 })
+    }
+
+    // Poll for connection
+    waPolling.value = setInterval(async () => {
+      const status = await api.get<{ status: string; connected: boolean }>('/whatsapp/session/status')
+      if (status.connected) {
+        waStatus.value = 'connected'
+        waQrCode.value = null
+        if (waPolling.value) clearInterval(waPolling.value)
+        toast.success('WhatsApp подключён!')
+        loadWaSettings()
+      }
+    }, 3000)
+
+    // Stop polling after 2 minutes
+    setTimeout(() => {
+      if (waPolling.value) {
+        clearInterval(waPolling.value)
+        if (waStatus.value === 'connecting') {
+          waStatus.value = 'disconnected'
+          waQrCode.value = null
+          toast.error('Время ожидания истекло. Попробуйте снова.')
+        }
+      }
+    }, 120000)
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка подключения')
+    waStatus.value = 'disconnected'
+  }
+}
+
+async function disconnectWhatsApp() {
+  if (!confirm('Отключить WhatsApp? Напоминания перестанут отправляться.')) return
+  try {
+    await api.delete('/whatsapp/session')
+    waStatus.value = 'disconnected'
+    toast.success('WhatsApp отключён')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка отключения')
+  }
+}
+
+// WhatsApp reminder settings
+const waSettings = ref({
+  enabled: false,
+  daysBefore: 3,
+  remindOverdue: true,
+  sendTime: '10:00',
+  template: 'Здравствуйте, {клиент}! Напоминаем об оплате по рассрочке: {товар} — {сумма}, срок: {дата}.{телефон_строка}',
+  overdueTemplate: 'Здравствуйте, {клиент}! У вас просрочен платёж по рассрочке: {товар} — {сумма}, срок был: {дата}. Просим оплатить как можно скорее.{телефон_строка}',
+})
+const savingSettings = ref(false)
+const daysOptions = [1, 2, 3, 5, 7]
+const templateVars = ['{сумма}', '{товар}', '{дата}', '{клиент}', '{телефон_строка}']
+
+const templateRef = ref<HTMLTextAreaElement | null>(null)
+const overdueTemplateRef = ref<HTMLTextAreaElement | null>(null)
+
+async function loadWaSettings() {
+  try {
+    const data = await api.get<any>('/whatsapp/settings')
+    waSettings.value = { ...waSettings.value, ...data }
+  } catch {}
+}
+
+async function saveWaSettings() {
+  savingSettings.value = true
+  try {
+    await api.patch('/whatsapp/settings', waSettings.value)
+    toast.success('Настройки сохранены')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка сохранения')
+  } finally {
+    savingSettings.value = false
+  }
+}
+
+function previewTemplate(tpl: string): string {
+  return tpl
+    .replace(/\{сумма\}/g, '15 000 ₽')
+    .replace(/\{товар\}/g, 'iPhone 15 Pro')
+    .replace(/\{дата\}/g, '15 апреля')
+    .replace(/\{клиент\}/g, 'Ахмед')
+    .replace(/\{телефон_строка\}/g, '\nПо вопросам: +7 928 000 00 00')
+}
+
+function insertVar(field: 'template' | 'overdueTemplate', variable: string) {
+  const textarea = field === 'template' ? templateRef.value : overdueTemplateRef.value
+  if (!textarea) {
+    waSettings.value[field] += variable
+    return
+  }
+  const start = textarea.selectionStart
+  const end = textarea.selectionEnd
+  const text = waSettings.value[field]
+  waSettings.value[field] = text.substring(0, start) + variable + text.substring(end)
+  nextTick(() => {
+    const pos = start + variable.length
+    textarea.selectionStart = pos
+    textarea.selectionEnd = pos
+    textarea.focus()
+  })
+}
+
+onMounted(() => {
+  checkWhatsAppStatus()
+})
 
 // Delete account
 const deletingAccount = ref(false)
@@ -34,6 +165,7 @@ async function confirmDeleteAccount() {
 const tabs = [
   { id: 'profile' as const, label: 'Профиль', icon: 'mdi-account-outline' },
   { id: 'security' as const, label: 'Безопасность', icon: 'mdi-shield-lock-outline' },
+  { id: 'whatsapp' as const, label: 'WhatsApp', icon: 'mdi-whatsapp' },
   { id: 'subscription' as const, label: 'Подписка', icon: 'mdi-crown-outline' },
 ]
 
@@ -608,6 +740,225 @@ const plans = [
       </div>
     </div>
 
+    <!-- WhatsApp Tab -->
+    <div v-if="activeTab === 'whatsapp'" class="tab-content">
+      <v-card rounded="lg" elevation="0" border class="pa-6">
+        <!-- Connected state -->
+        <div v-if="waStatus === 'connected'">
+          <!-- Status banner -->
+          <div class="wa-connected-banner">
+            <div class="wa-connected-icon">
+              <v-icon icon="mdi-whatsapp" size="28" />
+            </div>
+            <div class="wa-connected-info">
+              <div class="wa-connected-title">WhatsApp подключён</div>
+              <div class="wa-connected-desc">Напоминания отправляются от вашего номера</div>
+            </div>
+            <div class="wa-connected-badge">Активен</div>
+          </div>
+        </div>
+      </v-card>
+
+      <!-- Settings cards (only when connected) -->
+      <template v-if="waStatus === 'connected'">
+
+        <!-- Card 1: Auto-reminders -->
+        <v-card rounded="lg" elevation="0" border class="pa-5 mt-4">
+          <div class="wa-card-header">
+            <div class="wa-card-icon" style="background: rgba(37, 211, 102, 0.1); color: #25d366;">
+              <v-icon icon="mdi-clock-check-outline" size="20" />
+            </div>
+            <div class="wa-card-title">Автоматические напоминания</div>
+            <v-switch
+              v-model="waSettings.enabled"
+              color="#25d366"
+              hide-details
+              density="compact"
+              inset
+            />
+          </div>
+
+          <div v-if="waSettings.enabled" class="wa-card-body">
+            <!-- Days before -->
+            <div class="wa-field">
+              <div class="wa-field-label">
+                <v-icon icon="mdi-calendar-alert" size="16" class="mr-1" style="opacity: 0.5;" />
+                За сколько дней напоминать
+              </div>
+              <div class="wa-chips-row">
+                <button
+                  v-for="d in daysOptions" :key="d"
+                  class="wa-chip" :class="{ 'wa-chip--active': waSettings.daysBefore === d }"
+                  @click="waSettings.daysBefore = d"
+                >{{ d }} {{ d === 1 ? 'день' : d < 5 ? 'дня' : 'дней' }}</button>
+              </div>
+            </div>
+
+            <!-- Send time -->
+            <div class="wa-field">
+              <div class="wa-field-label">
+                <v-icon icon="mdi-clock-outline" size="16" class="mr-1" style="opacity: 0.5;" />
+                Время отправки
+              </div>
+              <input v-model="waSettings.sendTime" type="time" class="wa-time-input" />
+            </div>
+
+            <!-- Overdue -->
+            <div class="wa-toggle-row">
+              <div>
+                <div class="wa-field-label" style="margin-bottom: 0;">
+                  <v-icon icon="mdi-alert-circle-outline" size="16" class="mr-1" style="opacity: 0.5; color: #ef4444;" />
+                  Напоминать при просрочке
+                </div>
+                <div class="wa-field-hint">Уведомление, если платёж просрочен</div>
+              </div>
+              <v-switch v-model="waSettings.remindOverdue" color="#25d366" hide-details density="compact" inset />
+            </div>
+          </div>
+        </v-card>
+
+        <!-- Card 2: Templates -->
+        <v-card v-if="waSettings.enabled" rounded="lg" elevation="0" border class="pa-5 mt-4">
+          <div class="wa-card-header mb-4">
+            <div class="wa-card-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
+              <v-icon icon="mdi-message-text-outline" size="20" />
+            </div>
+            <div class="wa-card-title">Шаблоны сообщений</div>
+          </div>
+
+          <!-- Regular template -->
+          <div class="wa-template-block">
+            <div class="wa-template-label">
+              <v-icon icon="mdi-bell-outline" size="14" color="primary" />
+              Напоминание о платеже
+            </div>
+            <textarea
+              ref="templateRef"
+              v-model="waSettings.template"
+              class="wa-template-textarea"
+              rows="3"
+              placeholder="Текст напоминания..."
+            />
+            <div class="wa-var-row">
+              <span class="wa-var-label">Вставить:</span>
+              <button v-for="v in templateVars" :key="'tpl-' + v" class="wa-var-chip" @click="insertVar('template', v)">{{ v }}</button>
+            </div>
+            <div v-if="waSettings.template" class="wa-preview-block">
+              <div class="wa-preview-header">
+                <v-icon icon="mdi-eye-outline" size="14" />
+                Предпросмотр
+              </div>
+              <div class="wa-bubble">
+                <div class="wa-bubble-text">{{ previewTemplate(waSettings.template) }}</div>
+                <div class="wa-bubble-time">10:00</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Overdue template -->
+          <div v-if="waSettings.remindOverdue" class="wa-template-block wa-template-block--overdue">
+            <div class="wa-template-label">
+              <v-icon icon="mdi-alert-circle-outline" size="14" color="error" />
+              При просрочке платежа
+            </div>
+            <textarea
+              ref="overdueTemplateRef"
+              v-model="waSettings.overdueTemplate"
+              class="wa-template-textarea"
+              rows="3"
+              placeholder="Текст для просроченных..."
+            />
+            <div class="wa-var-row">
+              <span class="wa-var-label">Вставить:</span>
+              <button v-for="v in templateVars" :key="'overdue-' + v" class="wa-var-chip" @click="insertVar('overdueTemplate', v)">{{ v }}</button>
+            </div>
+            <div v-if="waSettings.overdueTemplate" class="wa-preview-block">
+              <div class="wa-preview-header">
+                <v-icon icon="mdi-eye-outline" size="14" />
+                Предпросмотр
+              </div>
+              <div class="wa-bubble wa-bubble--overdue">
+                <div class="wa-bubble-text">{{ previewTemplate(waSettings.overdueTemplate) }}</div>
+                <div class="wa-bubble-time">10:00</div>
+              </div>
+            </div>
+          </div>
+        </v-card>
+
+        <!-- Save + Disconnect -->
+        <div class="wa-bottom-actions mt-4">
+          <button class="wa-save-btn" :disabled="savingSettings" @click="saveWaSettings">
+            <v-progress-circular v-if="savingSettings" indeterminate size="16" width="2" color="white" />
+            <v-icon v-else icon="mdi-content-save-outline" size="18" />
+            {{ savingSettings ? 'Сохранение...' : 'Сохранить настройки' }}
+          </button>
+          <button class="wa-disconnect-btn" @click="disconnectWhatsApp">
+            <v-icon icon="mdi-link-off" size="16" />
+            Отключить
+          </button>
+        </div>
+      </template>
+
+      <!-- Connecting / Loading / Disconnected -->
+      <v-card v-if="waStatus !== 'connected'" rounded="lg" elevation="0" border class="pa-6">
+        <!-- Connecting state (QR code) -->
+        <div v-if="waStatus === 'connecting'" class="text-center">
+          <div class="text-h6 font-weight-bold mb-2">Отсканируйте QR-код</div>
+          <div class="text-body-2 text-medium-emphasis mb-5">
+            Откройте WhatsApp → Связанные устройства → Привязать устройство
+          </div>
+
+          <div v-if="waQrCode" class="wa-qr-wrap">
+            <img :src="waQrCode" class="wa-qr-img" />
+          </div>
+          <div v-else class="wa-qr-wrap">
+            <v-progress-circular indeterminate size="40" color="primary" />
+            <div class="text-caption text-medium-emphasis mt-3">Загрузка QR-кода...</div>
+          </div>
+
+          <div class="text-caption text-medium-emphasis mt-4">
+            QR-код обновляется автоматически. Ожидание: 2 минуты.
+          </div>
+        </div>
+
+        <!-- Loading state -->
+        <div v-if="waStatus === 'loading'" class="text-center pa-8">
+          <v-progress-circular indeterminate size="32" color="primary" />
+        </div>
+
+        <!-- Disconnected state -->
+        <div v-if="waStatus === 'disconnected'" class="text-center">
+          <div class="wa-status-icon">
+            <v-icon icon="mdi-whatsapp" size="40" />
+          </div>
+          <div class="text-h6 font-weight-bold mt-3">Подключите WhatsApp</div>
+          <div class="text-body-2 text-medium-emphasis mt-1 mb-2" style="max-width: 420px; margin: 0 auto;">
+            Отправляйте напоминания о платежах клиентам прямо в WhatsApp одной кнопкой — без открытия приложения
+          </div>
+
+          <div class="wa-features">
+            <div class="wa-feature">
+              <v-icon icon="mdi-send" size="16" color="primary" />
+              <span>Напоминания от вашего номера</span>
+            </div>
+            <div class="wa-feature">
+              <v-icon icon="mdi-clock-fast" size="16" color="primary" />
+              <span>Отправка в один клик</span>
+            </div>
+            <div class="wa-feature">
+              <v-icon icon="mdi-account-group" size="16" color="primary" />
+              <span>Массовая рассылка</span>
+            </div>
+          </div>
+
+          <button class="btn-whatsapp-connect" @click="connectWhatsApp">
+            <v-icon icon="mdi-qrcode-scan" size="18" />
+            Подключить WhatsApp
+          </button>
+        </div>
+      </v-card>
+    </div>
+
     <!-- Subscription Tab -->
     <div v-if="activeTab === 'subscription'" class="tab-content">
       <!-- Current plan -->
@@ -1009,6 +1360,260 @@ const plans = [
 .delete-account-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .dark .delete-account-bar { background: rgba(var(--v-theme-on-surface), 0.03); border-color: #2e2e42; }
 
+/* WhatsApp */
+.wa-connected-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 16px 20px; border-radius: 14px;
+  background: linear-gradient(135deg, rgba(37, 211, 102, 0.08) 0%, rgba(37, 211, 102, 0.02) 100%);
+  border: 1px solid rgba(37, 211, 102, 0.15);
+}
+.wa-connected-icon {
+  width: 48px; height: 48px; border-radius: 14px;
+  background: rgba(37, 211, 102, 0.12); color: #25d366;
+  display: flex; align-items: center; justify-content: center;
+}
+.wa-connected-info { flex: 1; }
+.wa-connected-title { font-size: 15px; font-weight: 700; color: #25d366; }
+.wa-connected-desc { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 1px; }
+.wa-connected-badge {
+  padding: 4px 12px; border-radius: 8px;
+  background: #25d366; color: #fff;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+}
+
+/* Cards */
+.wa-card-header {
+  display: flex; align-items: center; gap: 12px;
+}
+.wa-card-icon {
+  width: 40px; height: 40px; min-width: 40px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+}
+.wa-card-title { flex: 1; font-size: 15px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
+.wa-card-body { margin-top: 20px; display: flex; flex-direction: column; gap: 20px; }
+
+/* Fields */
+.wa-field { display: flex; flex-direction: column; gap: 8px; }
+.wa-field-label {
+  display: flex; align-items: center;
+  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.wa-field-hint { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.35); margin-top: 2px; }
+.wa-chips-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.wa-chip {
+  padding: 8px 14px; border-radius: 10px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.55);
+  cursor: pointer; transition: all 0.15s;
+}
+.wa-chip:hover { background: rgba(37, 211, 102, 0.08); color: #25d366; }
+.wa-chip--active { background: rgba(37, 211, 102, 0.12); color: #25d366; box-shadow: inset 0 0 0 2px rgba(37, 211, 102, 0.3); }
+.wa-time-input {
+  width: 140px; height: 42px; padding: 0 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px; font-size: 14px; color: inherit;
+  background: rgba(var(--v-theme-on-surface), 0.03); outline: none;
+}
+.wa-time-input:focus { border-color: #25d366; box-shadow: 0 0 0 3px rgba(37, 211, 102, 0.08); }
+.wa-toggle-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 16px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+
+/* Templates */
+.wa-template-block {
+  padding: 18px; border-radius: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  margin-bottom: 16px;
+}
+.wa-template-block--overdue {
+  border-color: rgba(239, 68, 68, 0.12);
+  background: rgba(239, 68, 68, 0.02);
+}
+.wa-template-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.7);
+  margin-bottom: 10px;
+}
+.wa-template-textarea {
+  width: 100%; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  font-size: 13px; line-height: 1.6; color: inherit; resize: vertical;
+  background: rgba(var(--v-theme-on-surface), 0.02); outline: none;
+}
+.wa-template-textarea:focus { border-color: #25d366; box-shadow: 0 0 0 3px rgba(37, 211, 102, 0.08); }
+.wa-var-row {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+}
+.wa-var-label { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.35); }
+.wa-var-chip {
+  padding: 3px 8px; border-radius: 6px; border: none;
+  background: rgba(37, 211, 102, 0.08); color: #25d366;
+  font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+}
+.wa-var-chip:hover { background: rgba(37, 211, 102, 0.15); }
+
+/* Preview bubble */
+.wa-preview-block { margin-top: 14px; }
+.wa-preview-header {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.35);
+  margin-bottom: 8px;
+}
+.wa-bubble {
+  max-width: 360px; padding: 10px 14px; border-radius: 0 12px 12px 12px;
+  background: #dcf8c6; color: #1a1a1a;
+  font-size: 13px; line-height: 1.5;
+  position: relative;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+.wa-bubble--overdue { background: #fef2f2; }
+.wa-bubble-time {
+  text-align: right; font-size: 10px; color: rgba(0,0,0,0.35); margin-top: 4px;
+}
+.wa-bubble-text { white-space: pre-line; }
+
+/* Bottom actions */
+.wa-bottom-actions {
+  display: flex; align-items: center; gap: 12px;
+}
+.wa-save-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 44px; padding: 0 24px; border-radius: 12px; border: none;
+  background: #25d366; color: #fff;
+  font-size: 14px; font-weight: 700;
+  cursor: pointer; transition: all 0.15s;
+}
+.wa-save-btn:hover { background: #1da851; }
+.wa-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.wa-disconnect-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 44px; padding: 0 18px; border-radius: 12px;
+  border: 1px solid rgba(239, 68, 68, 0.2); background: transparent;
+  color: #ef4444; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.wa-disconnect-btn:hover { background: rgba(239, 68, 68, 0.04); }
+
+/* QR / Disconnected */
+.wa-status-icon {
+  width: 72px; height: 72px; border-radius: 20px; margin: 0 auto;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.3);
+  display: flex; align-items: center; justify-content: center;
+}
+.wa-qr-wrap {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 20px; min-height: 280px;
+}
+.wa-qr-img {
+  width: 260px; height: 260px; border-radius: 16px;
+  border: 2px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.wa-features {
+  display: flex; flex-direction: column; gap: 8px; align-items: center;
+  margin: 20px 0 24px;
+}
+.wa-feature {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.btn-whatsapp-connect {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 48px; padding: 0 28px; border-radius: 14px; border: none;
+  background: #25d366; color: #fff;
+  font-size: 15px; font-weight: 700;
+  cursor: pointer; transition: all 0.15s;
+}
+.btn-whatsapp-connect:hover { background: #1da851; }
+
+/* Dark mode WhatsApp */
+.dark .wa-connected-banner { background: linear-gradient(135deg, rgba(37, 211, 102, 0.12) 0%, rgba(37, 211, 102, 0.04) 100%); border-color: rgba(37, 211, 102, 0.2); }
+.dark .wa-chip { background: #252538; }
+.dark .wa-chip--active { background: rgba(37, 211, 102, 0.15); }
+.dark .wa-time-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .wa-time-input:focus { border-color: #25d366; }
+.dark .wa-toggle-row { background: #1e1e2e; border-color: #2e2e42; }
+.dark .wa-template-block { background: #1e1e2e; border-color: #2e2e42; }
+.dark .wa-template-block--overdue { background: rgba(239, 68, 68, 0.04); border-color: rgba(239, 68, 68, 0.15); }
+.dark .wa-template-textarea { background: #252538; border-color: #2e2e42; }
+.dark .wa-template-textarea:focus { border-color: #25d366; }
+.dark .wa-bubble { background: #1a3a2a; color: #e4e4e7; }
+.dark .wa-bubble--overdue { background: #3b1111; color: #fca5a5; }
+.dark .wa-bubble-time { color: rgba(255,255,255,0.3); }
+
+/* WhatsApp settings */
+.wa-settings-section { margin-bottom: 20px; }
+.wa-settings-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+}
+.wa-settings-title {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.wa-settings-subtitle {
+  font-size: 12px; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.wa-settings-details { margin-top: 4px; }
+.wa-chips-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.wa-chip {
+  height: 34px; padding: 0 14px; border-radius: 10px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.wa-chip:hover { background: rgba(var(--v-theme-on-surface), 0.08); }
+.wa-chip--active {
+  background: rgba(37, 211, 102, 0.12); color: #047857;
+  box-shadow: inset 0 0 0 1.5px rgba(4, 120, 87, 0.3);
+}
+.wa-textarea {
+  resize: vertical; min-height: 72px; line-height: 1.5;
+  font-family: inherit;
+}
+.wa-var-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+}
+.wa-var-chip {
+  height: 26px; padding: 0 10px; border-radius: 6px; border: none;
+  background: rgba(37, 211, 102, 0.08); color: #047857;
+  font-size: 11px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.wa-var-chip:hover { background: rgba(37, 211, 102, 0.18); }
+.wa-preview { margin-top: 12px; }
+.wa-preview-label {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.35); margin-bottom: 6px;
+}
+.wa-preview-bubble {
+  padding: 10px 14px; border-radius: 0 12px 12px 12px;
+  background: rgba(37, 211, 102, 0.07);
+  border: 1px solid rgba(37, 211, 102, 0.15);
+  font-size: 13px; line-height: 1.5; white-space: pre-line;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  max-width: 400px;
+}
+.wa-preview-bubble--overdue {
+  background: rgba(239, 68, 68, 0.05);
+  border-color: rgba(239, 68, 68, 0.15);
+}
+.btn-whatsapp-save {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 44px; padding: 0 24px; border-radius: 12px; border: none;
+  background: #25d366; color: #fff;
+  font-size: 14px; font-weight: 700;
+  cursor: pointer; transition: all 0.15s;
+  margin-top: 4px;
+}
+.btn-whatsapp-save:hover { background: #1da851; }
+.btn-whatsapp-save:disabled { opacity: 0.6; cursor: not-allowed; }
+
 /* Verification */
 .verification-status {
   display: flex; flex-direction: column; align-items: center;
@@ -1268,4 +1873,11 @@ const plans = [
 .dark .profile-card-role {
   background: rgba(4, 120, 87, 0.15); color: #34d399;
 }
+.dark .wa-chip { background: #252538; color: rgba(var(--v-theme-on-surface), 0.5); }
+.dark .wa-chip:hover { background: #2e2e42; }
+.dark .wa-chip--active { background: rgba(37, 211, 102, 0.15); color: #34d399; }
+.dark .wa-var-chip { background: rgba(37, 211, 102, 0.1); color: #34d399; }
+.dark .wa-var-chip:hover { background: rgba(37, 211, 102, 0.2); }
+.dark .wa-preview-bubble { background: rgba(37, 211, 102, 0.06); border-color: rgba(37, 211, 102, 0.12); }
+.dark .wa-preview-bubble--overdue { background: rgba(239, 68, 68, 0.06); border-color: rgba(239, 68, 68, 0.12); }
 </style>

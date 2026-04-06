@@ -1,12 +1,13 @@
 <script lang="ts" setup>
 import { usePaymentsStore } from '@/stores/payments'
 import { useDealsStore } from '@/stores/deals'
-import { formatCurrency, formatDate, formatDateShort } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShort, formatPercent } from '@/utils/formatters'
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { api } from '@/api/client'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
@@ -15,6 +16,24 @@ const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
 
 const pageLoading = ref(true)
+
+const sendingBulk = ref(false)
+
+async function sendBulkReminders() {
+  if (!confirm('Отправить напоминания всем клиентам с просроченными или приближающимися платежами?')) return
+  sendingBulk.value = true
+  try {
+    const result = await api.post<{ sent: number; failed: number; total: number }>('/whatsapp/remind-all')
+    toast.success(`Отправлено ${result.sent} из ${result.total} напоминаний`)
+    if (result.failed > 0) {
+      toast.error(`${result.failed} не удалось отправить`)
+    }
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка рассылки')
+  } finally {
+    sendingBulk.value = false
+  }
+}
 
 onMounted(async () => {
   try {
@@ -431,13 +450,32 @@ function daysUntil(dateStr: string) {
   return `через ${diff} дн.`
 }
 
-async function handleMarkPaid(e: Event, payment: Payment) {
+const markPaidDialog = ref(false)
+const markPaidTarget = ref<Payment | null>(null)
+const markPaidAmount = ref<number | null>(null)
+const markPaidLoading = ref(false)
+
+function handleMarkPaid(e: Event, payment: Payment) {
   e.stopPropagation()
+  markPaidTarget.value = payment
+  markPaidAmount.value = Math.round(payment.amount)
+  markPaidDialog.value = true
+}
+
+async function confirmMarkPaid() {
+  if (!markPaidTarget.value) return
+  markPaidLoading.value = true
   try {
-    await paymentsStore.markAsPaid(payment.id, payment.dealId)
+    const amount = markPaidAmount.value && markPaidAmount.value !== markPaidTarget.value.amount
+      ? markPaidAmount.value : undefined
+    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, { amount })
     toast.success('Платёж отмечен как оплаченный')
+    markPaidDialog.value = false
+    markPaidTarget.value = null
   } catch (e: any) {
     toast.error(e.message || 'Ошибка при отметке оплаты')
+  } finally {
+    markPaidLoading.value = false
   }
 }
 
@@ -532,6 +570,12 @@ const rescheduleReasonOptions = [
 
     <!-- View mode toggle -->
     <div class="d-flex ga-2 mb-4 align-center">
+      <button class="btn-whatsapp" :disabled="sendingBulk" @click="sendBulkReminders">
+        <v-progress-circular v-if="sendingBulk" indeterminate size="14" width="2" color="white" />
+        <v-icon v-else icon="mdi-whatsapp" size="18" />
+        {{ sendingBulk ? 'Рассылка...' : 'Напомнить всем' }}
+      </button>
+      <v-spacer />
       <div class="view-toggle">
         <button class="view-toggle-btn" :class="{ active: viewMode === 'table' }" @click="viewMode = 'table'">
           <v-icon icon="mdi-table" size="16" />
@@ -1026,7 +1070,7 @@ const rescheduleReasonOptions = [
             </div>
             <div class="dialog-finance-item">
               <div class="dialog-finance-label">Наценка</div>
-              <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ selectedDeal.markupPercent }}%)</div>
+              <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ formatPercent(selectedDeal.markupPercent) }})</div>
             </div>
             <div class="dialog-finance-item">
               <div class="dialog-finance-label">Оплачено</div>
@@ -1089,6 +1133,44 @@ const rescheduleReasonOptions = [
     </v-dialog>
 
     <!-- Reschedule Dialog -->
+    <!-- Mark Paid Dialog -->
+    <v-dialog v-model="markPaidDialog" max-width="420">
+      <v-card rounded="lg" class="pa-6">
+        <div class="text-h6 font-weight-bold mb-1">Отметить оплату</div>
+        <div class="text-caption text-medium-emphasis mb-4">Подтвердите получение платежа</div>
+
+        <div v-if="markPaidTarget" class="reschedule-info mb-4">
+          <div class="d-flex justify-space-between mb-1">
+            <span class="text-caption text-medium-emphasis">Платёж #{{ markPaidTarget.number }}</span>
+            <span class="font-weight-bold">{{ formatCurrency(markPaidTarget.amount) }}</span>
+          </div>
+          <div class="d-flex justify-space-between">
+            <span class="text-caption text-medium-emphasis">Срок</span>
+            <span>{{ formatDateShort(markPaidTarget.dueDate) }}</span>
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <label class="field-label">Фактическая сумма</label>
+          <div style="position: relative;">
+            <input v-model.number="markPaidAmount" type="number" class="field-input" min="1" style="padding-right: 36px;" />
+            <span style="position: absolute; right: 14px; top: 50%; transform: translateY(-50%); font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.35); pointer-events: none;">₽</span>
+          </div>
+          <div v-if="markPaidTarget && markPaidAmount && markPaidAmount !== markPaidTarget.amount" class="text-caption mt-1" :style="{ color: markPaidAmount > markPaidTarget.amount ? '#10b981' : '#f59e0b' }">
+            {{ markPaidAmount > markPaidTarget.amount ? `Переплата ${formatCurrency(markPaidAmount - markPaidTarget.amount)} — оставшиеся платежи будут пересчитаны` : `Недоплата ${formatCurrency(markPaidTarget.amount - markPaidAmount)}` }}
+          </div>
+        </div>
+
+        <div class="d-flex ga-3 justify-end">
+          <button class="btn-secondary" @click="markPaidDialog = false">Отмена</button>
+          <button class="btn-primary" :disabled="markPaidLoading || !markPaidAmount" @click="confirmMarkPaid">
+            <v-progress-circular v-if="markPaidLoading" indeterminate size="14" width="2" color="white" class="mr-1" />
+            {{ markPaidLoading ? 'Оплата...' : 'Подтвердить' }}
+          </button>
+        </div>
+      </v-card>
+    </v-dialog>
+
     <v-dialog v-model="rescheduleDialog" max-width="440">
       <v-card v-if="reschedulePaymentRef" rounded="lg">
         <div class="pa-5">
@@ -1821,6 +1903,15 @@ const rescheduleReasonOptions = [
 .dark .cal-month-stats { background: #1e1e2e; border-color: #2e2e42; }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
 .dark .reschedule-info { background: #1e1e2e; border-color: #2e2e42; }
+.btn-whatsapp {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 38px; padding: 0 16px; border-radius: 10px; border: none;
+  background: #25d366; color: #fff;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.btn-whatsapp:hover { background: #1da851; }
+.btn-whatsapp:disabled { opacity: 0.5; cursor: not-allowed; }
 .external-badge {
   display: inline-flex; padding: 2px 6px; border-radius: 5px;
   background: rgba(99, 102, 241, 0.1); color: #6366f1;
