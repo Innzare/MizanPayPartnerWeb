@@ -10,14 +10,6 @@ import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { api } from '@/api/client'
-import { Bar, Line, Doughnut } from 'vue-chartjs'
-import {
-  Chart as ChartJS,
-  CategoryScale, LinearScale, BarElement, PointElement, LineElement,
-  ArcElement, Tooltip, Legend, Filler
-} from 'chart.js'
-
-ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, ArcElement, Tooltip, Legend, Filler)
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
@@ -67,139 +59,6 @@ const upcomingPayments = computed(() => {
 
 const topActiveDeals = computed(() => dealsStore.activeDeals.slice(0, 4))
 
-// --- Chart Data ---
-
-// Revenue by month (last 6 months from paid payments)
-const revenueChartData = computed(() => {
-  const months: Record<string, number> = {}
-  const now = new Date()
-
-  for (let i = 5; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    const key = d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
-    months[key] = 0
-  }
-
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID' && p.paidAt).forEach(p => {
-    const d = new Date(p.paidAt!)
-    const key = d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
-    if (key in months) months[key] = (months[key] ?? 0) + p.amount
-  })
-
-  return {
-    labels: Object.keys(months),
-    datasets: [{
-      label: 'Поступления',
-      data: Object.values(months),
-      backgroundColor: 'rgba(4, 120, 87, 0.15)',
-      borderColor: '#047857',
-      borderWidth: 2,
-      borderRadius: 6,
-      hoverBackgroundColor: 'rgba(4, 120, 87, 0.3)',
-    }]
-  }
-})
-
-// Payment forecast (next 6 months)
-const forecastChartData = computed(() => {
-  const months: Record<string, number> = {}
-  const now = new Date()
-
-  for (let i = 0; i < 6; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() + i, 1)
-    const key = d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
-    months[key] = 0
-  }
-
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
-    const d = new Date(p.dueDate)
-    const key = d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
-    if (key in months) months[key] = (months[key] ?? 0) + p.amount
-  })
-
-  return {
-    labels: Object.keys(months),
-    datasets: [{
-      label: 'Ожидаемые платежи',
-      data: Object.values(months),
-      borderColor: '#047857',
-      backgroundColor: 'rgba(4, 120, 87, 0.06)',
-      borderWidth: 2.5,
-      pointBackgroundColor: '#047857',
-      pointBorderColor: '#fff',
-      pointBorderWidth: 2,
-      pointRadius: 3,
-      pointHoverRadius: 6,
-      fill: true,
-      tension: 0.4,
-    }]
-  }
-})
-
-// Chart options
-const barOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: { display: false },
-    tooltip: {
-      backgroundColor: '#1a1a2e',
-      titleColor: '#fff',
-      bodyColor: '#fff',
-      padding: 12,
-      cornerRadius: 8,
-      callbacks: {
-        label: (ctx: any) => formatCurrency(ctx.raw)
-      }
-    }
-  },
-  scales: {
-    x: {
-      grid: { display: false },
-      ticks: { color: '#9ca3af', font: { size: 12 } },
-      border: { display: false },
-    },
-    y: {
-      grid: { color: 'rgba(0,0,0,0.04)' },
-      ticks: {
-        color: '#9ca3af',
-        font: { size: 12 },
-        callback: (v: any) => formatCurrencyShort(v),
-      },
-      border: { display: false },
-    }
-  }
-}
-
-const lineOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: 'index' as const, intersect: false },
-  plugins: {
-    legend: { display: false },
-    tooltip: {
-      mode: 'index' as const,
-      intersect: false,
-      callbacks: {
-        label: (ctx: any) => `${ctx.dataset.label}: ${(ctx.parsed.y ?? 0).toLocaleString('ru-RU')} ₽`
-      }
-    }
-  },
-  scales: {
-    x: {
-      grid: { display: false },
-      ticks: { font: { size: 11 } },
-    },
-    y: {
-      grid: { color: 'rgba(0,0,0,0.04)' },
-      ticks: {
-        font: { size: 11 },
-        callback: (v: any) => v >= 1000 ? (v / 1000).toFixed(0) + 'k' : String(v),
-      },
-    }
-  }
-}
-
 const pageLoading = ref(true)
 
 onMounted(async () => {
@@ -216,39 +75,6 @@ onMounted(async () => {
     pageLoading.value = false
   }
 })
-
-// Deal status distribution (doughnut)
-const statusDistribution = computed(() => {
-  const active = dealsStore.activeDeals.length
-  const completed = dealsStore.completedDeals.length
-  const disputed = dealsStore.deals.filter(d => d.status === 'DISPUTED').length
-  const cancelled = dealsStore.deals.filter(d => d.status === 'CANCELLED').length
-  return {
-    labels: ['Активные', 'Завершённые', 'Спорные', 'Отменённые'],
-    datasets: [{
-      data: [active, completed, disputed, cancelled],
-      backgroundColor: ['#047857', '#3b82f6', '#f59e0b', '#ef4444'],
-      borderWidth: 0,
-      hoverOffset: 4,
-    }]
-  }
-})
-
-const doughnutOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  cutout: '70%',
-  plugins: {
-    legend: { display: false },
-    tooltip: {
-      backgroundColor: '#1a1a2e',
-      titleColor: '#fff',
-      bodyColor: '#fff',
-      padding: 10,
-      cornerRadius: 8,
-    },
-  },
-}
 
 // Overdue amount
 const overdueAmount = computed(() =>
@@ -409,144 +235,6 @@ function getAvatarColor(name?: string) {
         </div>
       </div>
     </div>
-
-    <!-- Charts Row: Revenue + Forecast side by side -->
-    <div class="dash-section-title">Финансы</div>
-    <v-row class="mb-2">
-      <!-- Revenue Chart -->
-      <v-col cols="12" lg="6">
-        <v-card rounded="lg" elevation="0" border class="pa-5">
-          <div class="d-flex align-center justify-space-between mb-4">
-            <div>
-              <div class="chart-title">Поступления</div>
-              <div class="chart-subtitle">За последние 6 месяцев</div>
-            </div>
-            <div class="chart-total">
-              {{ formatCurrency(paymentsStore.paidPayments.reduce((s, p) => s + p.amount, 0)) }}
-            </div>
-          </div>
-          <div style="height: 240px;">
-            <Bar :data="revenueChartData" :options="barOptions" />
-          </div>
-        </v-card>
-      </v-col>
-
-      <!-- Payment Forecast -->
-      <v-col cols="12" lg="6">
-        <v-card rounded="lg" elevation="0" border class="pa-5">
-          <div class="d-flex align-center justify-space-between mb-2">
-            <div>
-              <div class="chart-title">Прогноз поступлений</div>
-              <div class="chart-subtitle">На 6 месяцев вперёд</div>
-            </div>
-            <div class="d-flex align-center ga-1">
-              <div style="width: 8px; height: 8px; border-radius: 50%; background: #047857;" />
-              <span class="chart-subtitle">Поступления</span>
-            </div>
-          </div>
-
-          <div class="forecast-summary mb-4">
-            <div class="forecast-summary-item">
-              <div class="forecast-summary-label">Всего ожидается</div>
-              <div class="forecast-summary-value" style="color: #047857;">
-                {{ formatCurrency(paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0)) }}
-              </div>
-            </div>
-            <div class="forecast-summary-item">
-              <div class="forecast-summary-label">Платежей</div>
-              <div class="forecast-summary-value" style="color: #f59e0b;">
-                {{ paymentsStore.pendingPayments.length }}
-              </div>
-            </div>
-            <div class="forecast-summary-item">
-              <div class="forecast-summary-label">Средний платёж</div>
-              <div class="forecast-summary-value" style="color: #8b5cf6;">
-                {{ formatCurrency(paymentsStore.pendingPayments.length > 0 ? paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0) / paymentsStore.pendingPayments.length : 0) }}
-              </div>
-            </div>
-          </div>
-
-          <div style="height: 180px;">
-            <Line :data="forecastChartData" :options="lineOptions" />
-          </div>
-        </v-card>
-      </v-col>
-    </v-row>
-
-    <!-- Deal Status Distribution -->
-    <div class="dash-section-title">Обзор портфеля</div>
-    <v-row class="mb-2">
-      <v-col cols="12" lg="4">
-        <v-card rounded="lg" elevation="0" border class="pa-5 h-100">
-          <div class="chart-title mb-1">Статус сделок</div>
-          <div class="chart-subtitle mb-4">Распределение по статусам</div>
-          <div class="d-flex align-center" style="gap: 24px;">
-            <div style="width: 140px; height: 140px; flex-shrink: 0;">
-              <Doughnut :data="statusDistribution" :options="doughnutOptions" />
-            </div>
-            <div class="status-legend">
-              <div class="status-legend-item">
-                <div class="status-dot" style="background: #047857;" />
-                <span>Активные</span>
-                <span class="status-legend-count">{{ dealsStore.activeDeals.length }}</span>
-              </div>
-              <div class="status-legend-item">
-                <div class="status-dot" style="background: #3b82f6;" />
-                <span>Завершённые</span>
-                <span class="status-legend-count">{{ dealsStore.completedDeals.length }}</span>
-              </div>
-              <div class="status-legend-item">
-                <div class="status-dot" style="background: #f59e0b;" />
-                <span>Спорные</span>
-                <span class="status-legend-count">{{ dealsStore.deals.filter(d => d.status === 'DISPUTED').length }}</span>
-              </div>
-              <div class="status-legend-item">
-                <div class="status-dot" style="background: #ef4444;" />
-                <span>Отменённые</span>
-                <span class="status-legend-count">{{ dealsStore.deals.filter(d => d.status === 'CANCELLED').length }}</span>
-              </div>
-            </div>
-          </div>
-        </v-card>
-      </v-col>
-
-      <v-col cols="12" lg="8">
-        <v-card rounded="lg" elevation="0" border class="pa-5 h-100">
-          <div class="d-flex align-center justify-space-between mb-4">
-            <div>
-              <div class="chart-title">Сводка по платежам</div>
-              <div class="chart-subtitle">Текущее состояние</div>
-            </div>
-          </div>
-          <div class="payment-summary-grid">
-            <div class="payment-summary-card">
-              <div class="payment-summary-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
-                <v-icon icon="mdi-check-circle" size="22" />
-              </div>
-              <div class="payment-summary-value">{{ paymentsStore.paidPayments.length }}</div>
-              <div class="payment-summary-label">Оплаченных</div>
-              <div class="payment-summary-amount" style="color: #047857;">{{ formatCurrencyShort(paymentsStore.paidPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
-            </div>
-            <div class="payment-summary-card">
-              <div class="payment-summary-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
-                <v-icon icon="mdi-clock-outline" size="22" />
-              </div>
-              <div class="payment-summary-value">{{ paymentsStore.pendingPayments.length }}</div>
-              <div class="payment-summary-label">Ожидаемых</div>
-              <div class="payment-summary-amount" style="color: #3b82f6;">{{ formatCurrencyShort(paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
-            </div>
-            <div class="payment-summary-card">
-              <div class="payment-summary-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
-                <v-icon icon="mdi-alert-circle" size="22" />
-              </div>
-              <div class="payment-summary-value">{{ paymentsStore.overduePayments.length }}</div>
-              <div class="payment-summary-label">Просроченных</div>
-              <div class="payment-summary-amount" style="color: #ef4444;">{{ formatCurrencyShort(overdueAmount) }}</div>
-            </div>
-          </div>
-        </v-card>
-      </v-col>
-    </v-row>
 
     <!-- Upcoming Payments + Active Deals side by side -->
     <div class="dash-section-title">Активность</div>
@@ -819,8 +507,6 @@ function getAvatarColor(name?: string) {
   padding-bottom: 4px;
 }
 
-.h-100 { height: 100%; }
-
 .kpi-card {
   display: flex;
   align-items: center;
@@ -860,7 +546,7 @@ function getAvatarColor(name?: string) {
   white-space: nowrap;
 }
 
-/* Chart cards */
+/* Chart title (used in activity section) */
 .chart-title {
   font-size: 16px;
   font-weight: 600;
@@ -870,28 +556,6 @@ function getAvatarColor(name?: string) {
 .chart-subtitle {
   font-size: 13px;
   color: rgba(var(--v-theme-on-surface), 0.45);
-}
-
-.chart-total {
-  font-size: 20px;
-  font-weight: 700;
-  color: #047857;
-}
-
-/* Forecast summary */
-.forecast-summary {
-  display: flex;
-  gap: 24px;
-}
-
-.forecast-summary-label {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-
-.forecast-summary-value {
-  font-size: 15px;
-  font-weight: 700;
 }
 
 /* Link button */
@@ -1074,78 +738,6 @@ function getAvatarColor(name?: string) {
   align-items: center;
   justify-content: center;
   padding: 0 4px;
-}
-
-/* Status legend */
-.status-legend {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.status-legend-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.status-legend-count {
-  margin-left: auto;
-  font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-
-/* Payment summary grid */
-.payment-summary-grid {
-  display: flex;
-  gap: 16px;
-}
-
-.payment-summary-card {
-  flex: 1;
-  text-align: center;
-  padding: 16px 12px;
-  border-radius: 12px;
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-}
-
-.payment-summary-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 auto 10px;
-}
-
-.payment-summary-value {
-  font-size: 24px;
-  font-weight: 800;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  line-height: 1;
-}
-
-.payment-summary-label {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-  margin-top: 4px;
-}
-
-.payment-summary-amount {
-  font-size: 14px;
-  font-weight: 700;
-  margin-top: 8px;
 }
 
 /* Dark mode */

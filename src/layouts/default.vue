@@ -63,8 +63,9 @@ const toggleTheme = () => {
 };
 
 // Navigation
-const mainNavRoutes = [
+const allMainNavRoutes = [
   { path: "/", title: "Главная", icon: "mdi-view-dashboard" },
+  { path: "/analytics", title: "Аналитика", icon: "mdi-chart-line" },
   { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
   { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
@@ -73,17 +74,33 @@ const mainNavRoutes = [
   { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline" },
   { path: "/finance", title: "Мой капитал", icon: "mdi-wallet-outline" },
   { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account" },
+  { path: "/staff", title: "Сотрудники", icon: "mdi-account-key", ownerOnly: true },
 ];
 
-const secondaryNavRoutes = [
+const allSecondaryNavRoutes = [
   { path: "/notifications", title: "Уведомления", icon: "mdi-bell-outline" },
   { path: "/calculator", title: "Калькулятор", icon: "mdi-calculator" },
   { path: "/settings", title: "Настройки", icon: "mdi-cog" },
 ];
 
+const mainNavRoutes = computed(() =>
+  allMainNavRoutes.filter((r) => {
+    if ((r as any).ownerOnly && !authStore.isOwner) return false;
+    return authStore.canAccess(r.path);
+  })
+);
+
+const secondaryNavRoutes = computed(() =>
+  allSecondaryNavRoutes.filter((r) => {
+    if ((r as any).ownerOnly && !authStore.isOwner) return false;
+    return authStore.canAccess(r.path);
+  })
+);
+
 // Route titles for header
 const routeTitles: Record<string, string> = {
   "/": "Главная",
+  "/analytics": "Аналитика",
   "/deals": "Сделки",
   "/clients": "Клиенты",
   "/payments": "Платежи",
@@ -98,10 +115,12 @@ const routeTitles: Record<string, string> = {
   "/co-investors": "Со-инвесторы",
   "/finance": "Мой капитал",
   "/registry": "Реестр клиентов",
+  "/staff": "Сотрудники",
 };
 
 const routeSubtitles: Record<string, string> = {
   "/": "Обзор вашего портфеля",
+  "/analytics": "Доход, поступления и прогнозы",
   "/deals": "Управление сделками",
   "/clients": "Ваши клиенты",
   "/payments": "Все платежи по сделкам",
@@ -113,6 +132,7 @@ const routeSubtitles: Record<string, string> = {
   "/co-investors": "Управление капиталом партнёров",
   "/finance": "Учёт доходов и расходов",
   "/registry": "Проверяйте платёжеспособность клиентов",
+  "/staff": "Управление доступами сотрудников",
 };
 
 // User initials for avatar
@@ -276,7 +296,7 @@ const confirmLogout = async () => {
                 authStore.userName || "Администратор"
               }}</span>
               <span class="lyt-sidebar-user-role">{{
-"Инвестор"
+                authStore.isStaff ? (authStore.staffRole === 'MANAGER' ? 'Менеджер' : 'Оператор') : 'Владелец'
               }}</span>
             </div>
             <v-tooltip text="Выйти" location="end" :disabled="!collapsed">

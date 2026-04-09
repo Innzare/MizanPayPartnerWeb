@@ -86,7 +86,7 @@ export const usePaymentsStore = defineStore('payments', () => {
   async function markAsPaid(
     paymentId: string,
     dealId: string,
-    options?: { amount?: number; method?: string; proofScreenshot?: string; note?: string }
+    options?: { amount?: number; method?: string; proofScreenshot?: string; note?: string; onTime?: boolean }
   ) {
     try {
       const updated = await api.patch<Payment>(`/payments/${paymentId}/paid`, options || {})
@@ -129,6 +129,23 @@ export const usePaymentsStore = defineStore('payments', () => {
     }
   }
 
+  async function unmarkPaid(paymentId: string, dealId: string) {
+    try {
+      const updated = await api.patch<Payment>(`/payments/${paymentId}/unpaid`)
+      const dealPayments = payments.value[dealId]
+      if (dealPayments) {
+        const idx = dealPayments.findIndex((p) => p.id === paymentId)
+        if (idx !== -1) {
+          dealPayments[idx] = updated
+          payments.value = { ...payments.value, [dealId]: [...dealPayments] }
+        }
+      }
+    } catch (e: any) {
+      error.value = e.message || 'Ошибка при отмене оплаты'
+      throw e
+    }
+  }
+
   function addPayments(dealId: string, newPayments: Payment[]) {
     payments.value = { ...payments.value, [dealId]: newPayments }
   }
@@ -147,6 +164,7 @@ export const usePaymentsStore = defineStore('payments', () => {
     getPaymentsForDeal,
     getNextPayment,
     markAsPaid,
+    unmarkPaid,
     reschedulePayment,
     addPayments,
   }

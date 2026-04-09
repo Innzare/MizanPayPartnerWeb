@@ -235,13 +235,30 @@ const proofEnlargeDialog = ref(false)
 const proofEnlargeUrl = ref('')
 
 const markPaidAmount = ref<number | null>(null)
+const markPaidOnTime = ref(false)
 
 function openMarkPaid(p: typeof payments.value[0]) {
   markPaidTarget.value = p
   markPaidAmount.value = Math.round(p.amount)
   markPaidProofFile.value = null
   markPaidProofPreview.value = ''
+  markPaidOnTime.value = p.status === 'OVERDUE' ? false : false
   markPaidDialog.value = true
+}
+
+const unpaidLoading = ref<string | null>(null)
+
+async function confirmUnmarkPaid(p: typeof payments.value[0]) {
+  unpaidLoading.value = p.id
+  try {
+    await paymentsStore.unmarkPaid(p.id, p.dealId)
+    await dealsStore.fetchDeals()
+    toast.success('Оплата отменена')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка при отмене оплаты')
+  } finally {
+    unpaidLoading.value = null
+  }
 }
 
 function onProofFileSelected(event: Event) {
@@ -275,7 +292,12 @@ async function confirmMarkPaid() {
     }
     const paidAmount = markPaidAmount.value && markPaidAmount.value !== markPaidTarget.value.amount
       ? markPaidAmount.value : undefined
-    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, { amount: paidAmount, proofScreenshot })
+    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, {
+      amount: paidAmount,
+      proofScreenshot,
+      onTime: markPaidOnTime.value || undefined,
+    })
+    await dealsStore.fetchDeals()
     toast.success('Платёж отмечен как оплаченный')
     markPaidDialog.value = false
     markPaidTarget.value = null
@@ -569,7 +591,17 @@ const timeline = computed(() => {
                         <v-icon icon="mdi-calendar-clock" size="16" />
                       </button>
                     </div>
-                    <span v-else class="text-medium-emphasis">—</span>
+                    <div v-else class="d-flex align-center justify-center">
+                      <button
+                        class="action-btn action-btn--danger"
+                        title="Отменить оплату"
+                        :disabled="unpaidLoading === p.id"
+                        @click="confirmUnmarkPaid(p)"
+                      >
+                        <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                        <v-icon v-else icon="mdi-undo" size="16" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -964,6 +996,22 @@ const timeline = computed(() => {
             />
           </div>
 
+          <!-- On-time toggle (show when payment is overdue) -->
+          <div v-if="markPaidTarget && markPaidTarget.status === 'OVERDUE'" class="ontime-toggle mb-5" :class="{ 'ontime-toggle--active': markPaidOnTime }" @click="markPaidOnTime = !markPaidOnTime">
+            <div class="ontime-toggle-icon">
+              <v-icon :icon="markPaidOnTime ? 'mdi-check-circle' : 'mdi-clock-alert-outline'" size="18" :color="markPaidOnTime ? '#047857' : '#f59e0b'" />
+            </div>
+            <div class="ontime-toggle-content">
+              <div class="ontime-toggle-title">Оплачено без просрочки</div>
+              <div class="ontime-toggle-desc">Не повлияет на рейтинг клиента</div>
+            </div>
+            <div class="ontime-toggle-switch">
+              <div class="ontime-switch-track" :class="{ 'ontime-switch-track--on': markPaidOnTime }">
+                <div class="ontime-switch-thumb" />
+              </div>
+            </div>
+          </div>
+
           <div class="d-flex ga-3">
             <button class="btn-secondary flex-grow-1" @click="markPaidDialog = false">Отмена</button>
             <button class="btn-primary flex-grow-1" :disabled="markPaidUploading" @click="confirmMarkPaid">
@@ -1171,6 +1219,87 @@ const timeline = computed(() => {
 }
 .action-btn--wa:hover {
   background: rgba(37, 211, 102, 0.18);
+}
+.action-btn--danger {
+  background: rgba(239, 68, 68, 0.08); color: #ef4444;
+}
+.action-btn--danger:hover {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+/* On-time toggle */
+.ontime-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+  user-select: none;
+}
+.ontime-toggle:hover {
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.ontime-toggle--active {
+  border-color: rgba(4, 120, 87, 0.3);
+  background: rgba(4, 120, 87, 0.04);
+}
+.ontime-toggle-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ontime-toggle--active .ontime-toggle-icon {
+  background: rgba(4, 120, 87, 0.1);
+}
+.ontime-toggle-content {
+  flex: 1;
+  min-width: 0;
+}
+.ontime-toggle-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.87);
+  line-height: 1.3;
+}
+.ontime-toggle-desc {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  line-height: 1.3;
+  margin-top: 1px;
+}
+.ontime-switch-track {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.15);
+  position: relative;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+.ontime-switch-track--on {
+  background: #047857;
+}
+.ontime-switch-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.ontime-switch-track--on .ontime-switch-thumb {
+  transform: translateX(16px);
 }
 
 /* Reminder buttons */

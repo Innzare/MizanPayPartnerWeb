@@ -1,12 +1,16 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { User } from '@/types'
+import type { User, StaffRole } from '@/types'
+import { ROLE_ROUTE_ACCESS } from '@/types'
 import { api } from '@/api/client'
 
 interface AuthResponse {
   user: User
   accessToken: string
   refreshToken: string
+  staffId?: string
+  staffRole?: StaffRole
+  staffName?: string
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -17,16 +21,32 @@ export const useAuthStore = defineStore('auth', () => {
   const error = ref<string | null>(null)
 
   const isAuthenticated = computed(() => !!accessToken.value)
+  const isStaff = computed(() => !!user.value?.staffId)
+  const staffRole = computed(() => user.value?.staffRole)
+  const isOwner = computed(() => isAuthenticated.value && !isStaff.value)
   const userName = computed(() => {
     if (!user.value) return ''
     return `${user.value.firstName} ${user.value.lastName}`
   })
+
+  function canAccess(path: string): boolean {
+    if (!isStaff.value) return true // owner sees everything
+    const role = staffRole.value
+    if (!role) return false
+    const allowed = ROLE_ROUTE_ACCESS[role] || []
+    return allowed.some((r) => path === r || path.startsWith(r + '/'))
+  }
 
   async function login(email: string, password: string) {
     isLoading.value = true
     error.value = null
     try {
       const data = await api.post<AuthResponse>('/auth/investor/login', { email, password })
+      // If staff login, inject staffId/staffRole into user object
+      if (data.staffId) {
+        data.user.staffId = data.staffId
+        data.user.staffRole = data.staffRole
+      }
       user.value = data.user
       accessToken.value = data.accessToken
       refreshToken.value = data.refreshToken
@@ -106,5 +126,5 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  return { user, accessToken, refreshToken, isLoading, error, isAuthenticated, userName, login, logout, checkAuth, updateProfile, changePassword }
+  return { user, accessToken, refreshToken, isLoading, error, isAuthenticated, isStaff, staffRole, isOwner, userName, canAccess, login, logout, checkAuth, updateProfile, changePassword }
 })

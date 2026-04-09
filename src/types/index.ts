@@ -1,6 +1,7 @@
 // Investor (authenticated user in partner web)
 export type VerificationLevel = 'NONE' | 'BASIC' | 'VERIFIED' | 'FULL'
 export type SubscriptionPlan = 'FREE' | 'PRO' | 'BUSINESS'
+export type StaffRole = 'MANAGER' | 'OPERATOR'
 
 export interface User {
   id: string
@@ -20,8 +21,33 @@ export interface User {
   isBlocked: boolean
   subscriptionPlan: SubscriptionPlan
   subscriptionExpiry?: string
+  staffId?: string
+  staffRole?: StaffRole
   createdAt: string
   updatedAt: string
+}
+
+export interface StaffMember {
+  id: string
+  email: string
+  firstName: string
+  lastName: string
+  role: StaffRole
+  investorId: string
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
+  MANAGER: 'Менеджер',
+  OPERATOR: 'Оператор',
+}
+
+// Routes accessible per role (owner = all routes)
+export const ROLE_ROUTE_ACCESS: Record<StaffRole, string[]> = {
+  MANAGER: ['/', '/analytics', '/deals', '/clients', '/payments', '/products', '/requests', '/co-investors', '/finance', '/registry', '/notifications', '/calculator', '/create-deal', '/create-product', '/import'],
+  OPERATOR: ['/', '/analytics', '/deals', '/clients', '/payments', '/notifications', '/calculator'],
 }
 
 // Category

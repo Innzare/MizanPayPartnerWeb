@@ -454,11 +454,13 @@ const markPaidDialog = ref(false)
 const markPaidTarget = ref<Payment | null>(null)
 const markPaidAmount = ref<number | null>(null)
 const markPaidLoading = ref(false)
+const markPaidOnTime = ref(false)
 
 function handleMarkPaid(e: Event, payment: Payment) {
   e.stopPropagation()
   markPaidTarget.value = payment
   markPaidAmount.value = Math.round(payment.amount)
+  markPaidOnTime.value = false
   markPaidDialog.value = true
 }
 
@@ -468,7 +470,10 @@ async function confirmMarkPaid() {
   try {
     const amount = markPaidAmount.value && markPaidAmount.value !== markPaidTarget.value.amount
       ? markPaidAmount.value : undefined
-    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, { amount })
+    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, {
+      amount,
+      onTime: markPaidOnTime.value || undefined,
+    })
     toast.success('Платёж отмечен как оплаченный')
     markPaidDialog.value = false
     markPaidTarget.value = null
@@ -476,6 +481,21 @@ async function confirmMarkPaid() {
     toast.error(e.message || 'Ошибка при отметке оплаты')
   } finally {
     markPaidLoading.value = false
+  }
+}
+
+const unpaidLoading = ref<string | null>(null)
+
+async function handleUnmarkPaid(e: Event, payment: Payment) {
+  e.stopPropagation()
+  unpaidLoading.value = payment.id
+  try {
+    await paymentsStore.unmarkPaid(payment.id, payment.dealId)
+    toast.success('Оплата отменена')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка при отмене оплаты')
+  } finally {
+    unpaidLoading.value = null
   }
 }
 
@@ -803,6 +823,12 @@ const rescheduleReasonOptions = [
                         <v-icon icon="mdi-calendar-arrow-right" size="14" />
                       </button>
                     </div>
+                    <div class="d-flex ga-1 mt-2" v-else-if="p.status === 'PAID'">
+                      <button class="action-btn action-btn--danger" style="width: 26px; height: 26px;" :disabled="unpaidLoading === p.id" @click.stop="handleUnmarkPaid($event, p)">
+                        <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="10" width="2" />
+                        <v-icon v-else icon="mdi-undo" size="14" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </template>
@@ -880,6 +906,12 @@ const rescheduleReasonOptions = [
                   </button>
                   <button class="action-btn action-btn--warning" style="width: 26px; height: 26px;" @click.stop="openReschedule($event, p)">
                     <v-icon icon="mdi-calendar-arrow-right" size="14" />
+                  </button>
+                </div>
+                <div class="d-flex ga-1 mt-2" v-else-if="p.status === 'PAID'">
+                  <button class="action-btn action-btn--danger" style="width: 26px; height: 26px;" :disabled="unpaidLoading === p.id" @click.stop="handleUnmarkPaid($event, p)">
+                    <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="10" width="2" />
+                    <v-icon v-else icon="mdi-undo" size="14" />
                   </button>
                 </div>
               </div>
@@ -1008,7 +1040,16 @@ const rescheduleReasonOptions = [
                     </template>
                   </v-tooltip>
                 </div>
-                <span v-else class="text-medium-emphasis">—</span>
+                <div v-else class="d-flex align-center justify-center">
+                  <v-tooltip text="Отменить оплату" location="top">
+                    <template #activator="{ props }">
+                      <button v-bind="props" class="action-btn action-btn--danger" :disabled="unpaidLoading === p.id" @click="handleUnmarkPaid($event, p)">
+                        <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                        <v-icon v-else icon="mdi-undo" size="16" />
+                      </button>
+                    </template>
+                  </v-tooltip>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -1158,6 +1199,22 @@ const rescheduleReasonOptions = [
           </div>
           <div v-if="markPaidTarget && markPaidAmount && markPaidAmount !== markPaidTarget.amount" class="text-caption mt-1" :style="{ color: markPaidAmount > markPaidTarget.amount ? '#10b981' : '#f59e0b' }">
             {{ markPaidAmount > markPaidTarget.amount ? `Переплата ${formatCurrency(markPaidAmount - markPaidTarget.amount)} — оставшиеся платежи будут пересчитаны` : `Недоплата ${formatCurrency(markPaidTarget.amount - markPaidAmount)}` }}
+          </div>
+        </div>
+
+        <!-- On-time toggle -->
+        <div v-if="markPaidTarget && markPaidTarget.status === 'OVERDUE'" class="ontime-toggle mb-4" :class="{ 'ontime-toggle--active': markPaidOnTime }" @click="markPaidOnTime = !markPaidOnTime">
+          <div class="ontime-toggle-icon">
+            <v-icon :icon="markPaidOnTime ? 'mdi-check-circle' : 'mdi-clock-alert-outline'" size="18" :color="markPaidOnTime ? '#047857' : '#f59e0b'" />
+          </div>
+          <div class="ontime-toggle-content">
+            <div class="ontime-toggle-title">Оплачено без просрочки</div>
+            <div class="ontime-toggle-desc">Не повлияет на рейтинг клиента</div>
+          </div>
+          <div class="ontime-toggle-switch">
+            <div class="ontime-switch-track" :class="{ 'ontime-switch-track--on': markPaidOnTime }">
+              <div class="ontime-switch-thumb" />
+            </div>
           </div>
         </div>
 
@@ -1372,6 +1429,87 @@ const rescheduleReasonOptions = [
 }
 .action-btn--warning:hover {
   background: rgba(245, 158, 11, 0.2);
+}
+.action-btn--danger {
+  background: rgba(239, 68, 68, 0.1); color: #ef4444;
+}
+.action-btn--danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+/* On-time toggle */
+.ontime-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+  user-select: none;
+}
+.ontime-toggle:hover {
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.ontime-toggle--active {
+  border-color: rgba(4, 120, 87, 0.3);
+  background: rgba(4, 120, 87, 0.04);
+}
+.ontime-toggle-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ontime-toggle--active .ontime-toggle-icon {
+  background: rgba(4, 120, 87, 0.1);
+}
+.ontime-toggle-content {
+  flex: 1;
+  min-width: 0;
+}
+.ontime-toggle-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.87);
+  line-height: 1.3;
+}
+.ontime-toggle-desc {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  line-height: 1.3;
+  margin-top: 1px;
+}
+.ontime-switch-track {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.15);
+  position: relative;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+.ontime-switch-track--on {
+  background: #047857;
+}
+.ontime-switch-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.ontime-switch-track--on .ontime-switch-thumb {
+  transform: translateX(16px);
 }
 
 /* Deal Dialog */

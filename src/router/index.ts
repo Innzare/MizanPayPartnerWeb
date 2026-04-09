@@ -30,6 +30,11 @@ router.beforeEach(async (to, from, next) => {
     return next("/");
   }
 
+  // Role-based access check for staff
+  if (authStore.isAuthenticated && !authStore.canAccess(to.path)) {
+    return next("/");
+  }
+
   next();
 });
 
