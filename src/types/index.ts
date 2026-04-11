@@ -46,8 +46,8 @@ export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
 
 // Routes accessible per role (owner = all routes)
 export const ROLE_ROUTE_ACCESS: Record<StaffRole, string[]> = {
-  MANAGER: ['/', '/analytics', '/deals', '/clients', '/payments', '/products', '/requests', '/co-investors', '/finance', '/registry', '/notifications', '/calculator', '/create-deal', '/create-product', '/import'],
-  OPERATOR: ['/', '/analytics', '/deals', '/clients', '/payments', '/notifications', '/calculator'],
+  MANAGER: ['/', '/analytics', '/deals', '/clients', '/payments', '/products', '/requests', '/co-investors', '/finance', '/registry', '/notifications', '/activity', '/calculator', '/create-deal', '/create-product', '/import'],
+  OPERATOR: ['/', '/analytics', '/deals', '/clients', '/payments', '/notifications', '/activity', '/calculator'],
 }
 
 // Category
@@ -105,6 +105,7 @@ export interface Deal {
   status: DealStatus
   createdAt: string
   completedAt?: string
+  deletedAt?: string
   updatedAt: string
   payments?: Payment[]
 }
@@ -247,6 +248,45 @@ export interface PortfolioCalculatorResult {
   averageYield: number
   monthlyForecast: { month: string; amount: number }[]
   riskLevel: 'low' | 'medium' | 'high'
+}
+
+// ==================== ACTIVITY LOG ====================
+
+export type ActivityType =
+  | 'DEAL_CREATED'
+  | 'DEAL_DELETED'
+  | 'DEAL_RESTORED'
+  | 'DEAL_PERMANENTLY_DELETED'
+  | 'DEAL_STATUS_CHANGED'
+  | 'PAYMENT_PAID'
+  | 'PAYMENT_UNPAID'
+  | 'PAYMENT_RESCHEDULED'
+  | 'CLIENT_BLACKLISTED'
+  | 'CLIENT_UNBLACKLISTED'
+  | 'CLIENT_REVIEW_ADDED'
+  | 'TRANSACTION_CREATED'
+  | 'TRANSACTION_DELETED'
+  | 'STAFF_INVITED'
+  | 'STAFF_REMOVED'
+  | 'STAFF_ROLE_CHANGED'
+  | 'PROFILE_UPDATED'
+  | 'REQUEST_OFFER_SENT'
+  | 'PRODUCT_CREATED'
+  | 'PRODUCT_DELETED'
+
+export interface ActivityLog {
+  id: string
+  investorId: string
+  actorType: 'OWNER' | 'STAFF'
+  actorId: string
+  actorName: string
+  type: ActivityType
+  title: string
+  description?: string
+  entityType?: string
+  entityId?: string
+  meta?: Record<string, any>
+  createdAt: string
 }
 
 // Helpers

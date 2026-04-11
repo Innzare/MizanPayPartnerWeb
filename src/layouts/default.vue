@@ -78,8 +78,6 @@ const allMainNavRoutes = [
 ];
 
 const allSecondaryNavRoutes = [
-  { path: "/notifications", title: "Уведомления", icon: "mdi-bell-outline" },
-  { path: "/calculator", title: "Калькулятор", icon: "mdi-calculator" },
   { path: "/settings", title: "Настройки", icon: "mdi-cog" },
 ];
 
@@ -116,6 +114,7 @@ const routeTitles: Record<string, string> = {
   "/finance": "Мой капитал",
   "/registry": "Реестр клиентов",
   "/staff": "Сотрудники",
+  "/activity": "История действий",
 };
 
 const routeSubtitles: Record<string, string> = {
@@ -133,6 +132,7 @@ const routeSubtitles: Record<string, string> = {
   "/finance": "Учёт доходов и расходов",
   "/registry": "Проверяйте платёжеспособность клиентов",
   "/staff": "Управление доступами сотрудников",
+  "/activity": "Журнал всех действий в личном кабинете",
 };
 
 // User initials for avatar
@@ -357,11 +357,23 @@ const confirmLogout = async () => {
                 <v-icon icon="mdi-calculator" size="20" />
               </router-link>
 
-              <!-- Quick actions -->
+              <!-- Activity history -->
+              <router-link to="/activity" class="lyt-header-icon-btn" title="История действий">
+                <v-icon icon="mdi-history" size="20" />
+              </router-link>
+
+              <!-- Notifications -->
+              <router-link to="/notifications" class="lyt-header-icon-btn" title="Уведомления">
+                <v-icon icon="mdi-bell-outline" size="20" />
+                <span v-if="notificationsStore.unreadCount" class="lyt-header-badge">{{ notificationsStore.unreadCount }}</span>
+              </router-link>
+
+              <!-- Quick actions (accent) -->
               <v-menu v-model="quickActionsMenu" offset="8">
                 <template v-slot:activator="{ props }">
-                  <button class="lyt-header-icon-btn" v-bind="props" title="Быстрые действия">
+                  <button class="lyt-header-add-btn" v-bind="props" title="Быстрые действия">
                     <v-icon icon="mdi-plus" size="20" />
+                    <span v-if="!isMobile" class="lyt-header-add-btn-label">Создать</span>
                   </button>
                 </template>
                 <div class="lyt-dropdown">
@@ -379,12 +391,6 @@ const confirmLogout = async () => {
                   </button>
                 </div>
               </v-menu>
-
-              <!-- Notifications -->
-              <router-link to="/notifications" class="lyt-header-icon-btn" title="Уведомления">
-                <v-icon icon="mdi-bell-outline" size="20" />
-                <span v-if="notificationsStore.unreadCount" class="lyt-header-badge">{{ notificationsStore.unreadCount }}</span>
-              </router-link>
 
               <div class="lyt-header-divider" />
 
@@ -904,6 +910,47 @@ const confirmLogout = async () => {
   height: 24px;
   background: #f0f0f0;
   margin: 0 8px;
+}
+
+/* Accent "Create" button */
+.lyt-header-add-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 2px rgba(4, 120, 87, 0.2), 0 4px 12px rgba(4, 120, 87, 0.18);
+  margin-left: 4px;
+}
+
+.lyt-header-add-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(4, 120, 87, 0.25), 0 8px 20px rgba(4, 120, 87, 0.3);
+}
+
+.lyt-header-add-btn:active {
+  transform: translateY(0);
+}
+
+.lyt-header-add-btn-label {
+  letter-spacing: -0.01em;
+}
+
+@media (max-width: 600px) {
+  .lyt-header-add-btn {
+    width: 40px;
+    padding: 0;
+    justify-content: center;
+  }
 }
 
 .lyt-header-user {

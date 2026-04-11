@@ -61,19 +61,79 @@ function cancelSelect() {
 
 async function deleteSelected() {
   if (!selectedIds.value.size) return
-  if (!confirm(`Удалить ${selectedIds.value.size} сделок? Это действие необратимо.`)) return
+  if (!confirm(`Переместить ${selectedIds.value.size} сделок в корзину?`)) return
 
   deleting.value = true
   try {
     const result = await api.post<{ deleted: number; total: number }>('/deals/delete-batch', {
       ids: Array.from(selectedIds.value),
     })
-    toast.success(`Удалено ${result.deleted} сделок`)
+    toast.success(`${result.deleted} сделок перемещено в корзину`)
     await dealsStore.fetchDeals()
   } catch (e: any) {
     toast.error(e.message || 'Ошибка удаления')
   }
 
+  cancelSelect()
+  deleting.value = false
+}
+
+async function restoreSelected() {
+  if (!selectedIds.value.size) return
+  deleting.value = true
+  try {
+    await dealsStore.restoreBatch(Array.from(selectedIds.value))
+    toast.success(`${selectedIds.value.size} сделок восстановлено`)
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка восстановления')
+  }
+  cancelSelect()
+  deleting.value = false
+}
+
+async function emptyTrash() {
+  if (!confirm('Удалить все сделки из корзины навсегда? Это действие необратимо.')) return
+  deleting.value = true
+  try {
+    await dealsStore.emptyTrash()
+    toast.success('Корзина очищена')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка очистки')
+  }
+  deleting.value = false
+}
+
+async function restoreOne(id: string) {
+  try {
+    await dealsStore.restoreDeal(id)
+    toast.success('Сделка восстановлена')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка восстановления')
+  }
+}
+
+async function permanentDeleteOne(id: string) {
+  if (!confirm('Удалить сделку навсегда? Это действие необратимо.')) return
+  try {
+    await dealsStore.permanentDelete(id)
+    toast.success('Сделка удалена навсегда')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка удаления')
+  }
+}
+
+async function permanentDeleteSelected() {
+  if (!selectedIds.value.size) return
+  if (!confirm(`Удалить ${selectedIds.value.size} сделок навсегда? Это действие необратимо.`)) return
+  deleting.value = true
+  try {
+    for (const id of selectedIds.value) {
+      await dealsStore.permanentDelete(id)
+    }
+    toast.success(`Удалено навсегда`)
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка удаления')
+  }
   cancelSelect()
   deleting.value = false
 }
@@ -85,6 +145,7 @@ const tabFilters = [
   { label: 'Активные', key: 'active' },
   { label: 'Завершённые', key: 'completed' },
   { label: 'Все', key: 'all' },
+  { label: 'Корзина', key: 'trash' },
 ]
 
 const sortOptions = [
@@ -94,11 +155,21 @@ const sortOptions = [
   { title: 'По прогрессу', value: 'progress' },
 ]
 
+const isTrashTab = computed(() => tab.value === 3)
+
 const baseDeals = computed(() => {
   switch (tab.value) {
     case 0: return dealsStore.activeDeals
     case 1: return dealsStore.completedDeals
+    case 2: return dealsStore.investorDeals
+    case 3: return dealsStore.trash
     default: return dealsStore.investorDeals
+  }
+})
+
+watch(tab, (v) => {
+  if (v === 3 && !dealsStore.trash.length) {
+    dealsStore.fetchTrash()
   }
 })
 
@@ -226,7 +297,7 @@ const selectedDealPaidTotal = computed(() =>
               @click="tab = i"
             >
               {{ f.label }}
-              <span class="tab-count">{{ i === 0 ? dealsStore.activeDeals.length : i === 1 ? dealsStore.completedDeals.length : dealsStore.investorDeals.length }}</span>
+              <span class="tab-count">{{ i === 0 ? dealsStore.activeDeals.length : i === 1 ? dealsStore.completedDeals.length : i === 2 ? dealsStore.investorDeals.length : dealsStore.trash.length }}</span>
             </button>
           </div>
 
@@ -288,15 +359,35 @@ const selectedDealPaidTotal = computed(() =>
               </span>
             </div>
             <div class="select-bar-right">
+              <template v-if="isTrashTab">
+                <button
+                  v-if="selectedIds.size > 0"
+                  class="select-bar-restore"
+                  :disabled="deleting"
+                  @click="restoreSelected"
+                >
+                  <v-icon icon="mdi-restore" size="18" />
+                  <span>Восстановить ({{ selectedIds.size }})</span>
+                </button>
+                <button
+                  v-if="selectedIds.size > 0"
+                  class="select-bar-delete"
+                  :disabled="deleting"
+                  @click="permanentDeleteSelected"
+                >
+                  <v-icon icon="mdi-delete-forever" size="18" />
+                  <span>Удалить навсегда</span>
+                </button>
+              </template>
               <button
-                v-if="selectedIds.size > 0"
+                v-else-if="selectedIds.size > 0"
                 class="select-bar-delete"
                 :disabled="deleting"
                 @click="deleteSelected"
               >
                 <v-progress-circular v-if="deleting" indeterminate size="16" width="2" color="white" />
                 <v-icon v-else icon="mdi-delete-outline" size="18" />
-                <span>{{ deleting ? 'Удаление...' : `Удалить (${selectedIds.size})` }}</span>
+                <span>{{ deleting ? 'Удаление...' : `В корзину (${selectedIds.size})` }}</span>
               </button>
               <button class="select-bar-cancel" @click="cancelSelect">
                 <v-icon icon="mdi-close" size="18" />
@@ -305,6 +396,28 @@ const selectedDealPaidTotal = computed(() =>
             </div>
           </div>
         </Transition>
+
+        <!-- Trash actions bar -->
+        <div v-if="isTrashTab && displayedDeals.length" class="trash-bar">
+          <div class="trash-bar-left">
+            <div class="trash-bar-icon">
+              <v-icon icon="mdi-delete-clock-outline" size="18" />
+            </div>
+            <div class="trash-bar-text">
+              <div class="trash-bar-title">{{ dealsStore.trash.length }} {{ dealsStore.trash.length === 1 ? 'сделка' : dealsStore.trash.length < 5 ? 'сделки' : 'сделок' }} в корзине</div>
+              <div class="trash-bar-sub">Автоматически удалятся навсегда через 30 дней</div>
+            </div>
+          </div>
+          <button
+            class="trash-bar-btn"
+            :disabled="deleting"
+            @click="emptyTrash"
+          >
+            <v-progress-circular v-if="deleting" indeterminate size="14" width="2" />
+            <v-icon v-else icon="mdi-delete-sweep-outline" size="17" />
+            <span>Очистить корзину</span>
+          </button>
+        </div>
 
         <!-- GRID VIEW -->
         <v-row v-if="viewMode === 'grid' && displayedDeals.length">
@@ -371,6 +484,7 @@ const selectedDealPaidTotal = computed(() =>
               <th class="text-center">Прогресс</th>
               <th>Статус</th>
               <th>Дата</th>
+              <th v-if="isTrashTab" class="text-end">Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -425,19 +539,31 @@ const selectedDealPaidTotal = computed(() =>
                 </div>
               </td>
               <td class="text-medium-emphasis text-no-wrap">{{ timeAgo(deal.createdAt) }}</td>
+              <td v-if="isTrashTab" class="text-end text-no-wrap" @click.stop>
+                <div class="row-actions">
+                  <button class="row-action-btn row-action-btn--restore" title="Восстановить" @click="restoreOne(deal.id)">
+                    <v-icon icon="mdi-restore" size="17" />
+                  </button>
+                  <button class="row-action-btn row-action-btn--delete" title="Удалить навсегда" @click="permanentDeleteOne(deal.id)">
+                    <v-icon icon="mdi-delete-forever-outline" size="17" />
+                  </button>
+                </div>
+              </td>
             </tr>
           </tbody>
         </v-table>
 
         <!-- Empty state -->
         <div v-if="!displayedDeals.length" class="text-center pa-12">
-          <v-icon icon="mdi-briefcase-search-outline" size="56" color="grey-lighten-1" class="mb-3" />
-          <p class="text-body-1 font-weight-medium text-medium-emphasis mb-1">Нет сделок</p>
+          <v-icon :icon="isTrashTab ? 'mdi-delete-empty' : 'mdi-briefcase-search-outline'" size="56" color="grey-lighten-1" class="mb-3" />
+          <p class="text-body-1 font-weight-medium text-medium-emphasis mb-1">
+            {{ isTrashTab ? 'Корзина пуста' : 'Нет сделок' }}
+          </p>
           <p class="text-body-2 text-medium-emphasis">
-            {{ search ? 'Попробуйте изменить параметры поиска' : 'Создайте первую сделку' }}
+            {{ isTrashTab ? 'Удалённые сделки будут отображаться здесь' : search ? 'Попробуйте изменить параметры поиска' : 'Создайте первую сделку' }}
           </p>
           <v-btn
-            v-if="!search"
+            v-if="!search && !isTrashTab"
             variant="tonal"
             color="primary"
             class="mt-4"
@@ -799,6 +925,144 @@ const selectedDealPaidTotal = computed(() =>
 
 .select-bar-delete:hover { background: #dc2626; }
 .select-bar-delete:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.select-bar-restore {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: none;
+  background: #047857;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.select-bar-restore:hover { background: #065f46; }
+.select-bar-restore:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── Trash bar ── */
+.trash-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.04) 0%, rgba(239, 68, 68, 0.01) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.14);
+}
+
+.trash-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.trash-bar-icon {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.trash-bar-text { min-width: 0; line-height: 1.3; }
+
+.trash-bar-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+
+.trash-bar-sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 2px;
+}
+
+.trash-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 9px;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: rgba(var(--v-theme-surface), 1);
+  color: #ef4444;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.trash-bar-btn:hover:not(:disabled) {
+  background: #ef4444;
+  color: #fff;
+  border-color: #ef4444;
+}
+
+.trash-bar-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dark .trash-bar {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(239, 68, 68, 0.02) 100%);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.dark .trash-bar-btn {
+  background: #1e1e2e;
+}
+
+/* ── Row action buttons ── */
+.row-actions {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.row-action-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.row-action-btn:hover {
+  border-color: rgba(var(--v-theme-on-surface), 0.1);
+}
+
+.row-action-btn--restore:hover {
+  background: rgba(4, 120, 87, 0.08);
+  border-color: rgba(4, 120, 87, 0.2);
+  color: #047857;
+}
+
+.row-action-btn--delete:hover {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
 
 .select-bar-cancel {
   display: inline-flex;

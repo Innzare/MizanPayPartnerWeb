@@ -94,9 +94,10 @@ const contractEnlargeDialog = ref(false)
 
 // Delete deal
 const deleting = ref(false)
+const isDeleted = computed(() => !!deal.value?.deletedAt)
 
 function confirmDeleteDeal() {
-  if (!confirm('Удалить сделку и все платежи? Это действие необратимо.')) return
+  if (!confirm('Переместить сделку в корзину? Её можно будет восстановить в течение 30 дней.')) return
   deleteDeal()
 }
 
@@ -104,7 +105,34 @@ async function deleteDeal() {
   deleting.value = true
   try {
     await api.delete(`/deals/${dealId.value}`)
-    toast.success('Сделка удалена')
+    toast.success('Сделка перемещена в корзину')
+    router.push('/deals')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось удалить сделку')
+  } finally {
+    deleting.value = false
+  }
+}
+
+async function restoreDeal() {
+  deleting.value = true
+  try {
+    await dealsStore.restoreDeal(dealId.value)
+    await dealsStore.fetchDeal(dealId.value)
+    toast.success('Сделка восстановлена')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось восстановить сделку')
+  } finally {
+    deleting.value = false
+  }
+}
+
+async function permanentDeleteDeal() {
+  if (!confirm('Удалить сделку навсегда? Это действие необратимо.')) return
+  deleting.value = true
+  try {
+    await dealsStore.permanentDelete(dealId.value)
+    toast.success('Сделка удалена навсегда')
     router.push('/deals')
   } catch (e: any) {
     toast.error(e.message || 'Не удалось удалить сделку')
@@ -431,6 +459,25 @@ const timeline = computed(() => {
     </div>
 
     <div v-else-if="deal">
+      <!-- Deleted notice strip -->
+      <div v-if="isDeleted" class="deleted-strip mb-4">
+        <div class="deleted-strip-icon">
+          <v-icon icon="mdi-delete-clock-outline" size="18" />
+        </div>
+        <div class="deleted-strip-text">
+          <span class="deleted-strip-title">Эта сделка в корзине</span>
+          <span class="deleted-strip-sub">Удалена {{ deal?.deletedAt ? timeAgo(deal.deletedAt) : '' }} · будет удалена навсегда через 30 дней</span>
+        </div>
+        <button
+          class="deleted-strip-btn"
+          :disabled="deleting"
+          @click="restoreDeal"
+        >
+          <v-icon icon="mdi-restore" size="16" />
+          Восстановить
+        </button>
+      </div>
+
       <!-- Hero -->
       <div class="detail-hero mb-6">
         <v-img :src="deal.productPhotos[0]" height="220" cover class="detail-hero-img" />
@@ -830,15 +877,52 @@ const timeline = computed(() => {
         </v-col>
       </v-row>
 
+      <!-- Deleted banner -->
+      <div v-if="isDeleted" class="trash-banner">
+        <div class="trash-banner-stripe" />
+        <div class="trash-banner-content">
+          <div class="trash-banner-icon">
+            <v-icon icon="mdi-delete-clock-outline" size="22" />
+          </div>
+          <div class="trash-banner-text">
+            <div class="trash-banner-title">Сделка в корзине</div>
+            <div class="trash-banner-desc">
+              Удалена {{ deal?.deletedAt ? timeAgo(deal.deletedAt) : '' }}
+              <span class="trash-banner-dot">·</span>
+              автоматически исчезнет через 30 дней
+            </div>
+          </div>
+          <div class="trash-banner-actions">
+            <button
+              class="trash-btn trash-btn--restore"
+              :disabled="deleting"
+              @click="restoreDeal"
+            >
+              <v-progress-circular v-if="deleting" indeterminate size="14" width="2" color="white" />
+              <v-icon v-else icon="mdi-restore" size="16" />
+              <span>Восстановить</span>
+            </button>
+            <button
+              class="trash-btn trash-btn--delete"
+              :disabled="deleting"
+              @click="permanentDeleteDeal"
+            >
+              <v-icon icon="mdi-delete-forever-outline" size="16" />
+              <span>Удалить навсегда</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Delete deal -->
-      <div class="delete-deal-bar" :class="{ 'delete-deal-bar--hover': !deleting }">
+      <div v-else class="delete-deal-bar" :class="{ 'delete-deal-bar--hover': !deleting }">
         <div class="d-flex align-center ga-3">
           <div class="delete-deal-icon">
             <v-icon icon="mdi-delete-outline" size="18" />
           </div>
           <div>
             <div class="delete-deal-title">Удалить сделку</div>
-            <div class="delete-deal-desc">Сделка и все платежи будут удалены</div>
+            <div class="delete-deal-desc">Сделка будет перемещена в корзину</div>
           </div>
         </div>
         <button
@@ -849,7 +933,7 @@ const timeline = computed(() => {
         >
           <v-progress-circular v-if="deleting" indeterminate size="16" width="2" color="white" />
           <v-icon v-else icon="mdi-delete-outline" size="16" />
-          <span>{{ deleting ? 'Удаление...' : 'Удалить' }}</span>
+          <span>{{ deleting ? 'Удаление...' : 'В корзину' }}</span>
         </button>
       </div>
 
@@ -1528,6 +1612,216 @@ const timeline = computed(() => {
 .dark .delete-deal-bar {
   background: rgba(var(--v-theme-on-surface), 0.03);
   border-color: #2e2e42;
+}
+
+/* ── Deleted strip ── */
+.deleted-strip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.14);
+}
+
+.deleted-strip-icon {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.deleted-strip-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.deleted-strip-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+
+.deleted-strip-sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.deleted-strip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  background: rgba(var(--v-theme-surface), 1);
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.deleted-strip-btn:hover:not(:disabled) {
+  border-color: rgba(4, 120, 87, 0.4);
+  color: #047857;
+  background: rgba(4, 120, 87, 0.04);
+}
+
+.deleted-strip-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dark .deleted-strip {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.dark .deleted-strip-btn {
+  background: #1e1e2e;
+  border-color: #2e2e42;
+}
+
+@media (max-width: 600px) {
+  .deleted-strip-sub { display: none; }
+}
+
+/* ── Trash banner ── */
+.trash-banner {
+  position: relative;
+  margin-top: 24px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.06) 0%, rgba(245, 158, 11, 0.02) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.18);
+  overflow: hidden;
+}
+
+.trash-banner-stripe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%);
+}
+
+.trash-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 22px 18px 26px;
+}
+
+.trash-banner-icon {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.trash-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.trash-banner-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  letter-spacing: -0.01em;
+}
+
+.trash-banner-desc {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-top: 2px;
+}
+
+.trash-banner-dot {
+  opacity: 0.4;
+  margin: 0 4px;
+}
+
+.trash-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.trash-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+}
+
+.trash-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.trash-btn--restore {
+  background: #047857;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(4, 120, 87, 0.15), 0 4px 12px rgba(4, 120, 87, 0.18);
+}
+
+.trash-btn--restore:hover:not(:disabled) {
+  background: #065f46;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(4, 120, 87, 0.2), 0 8px 20px rgba(4, 120, 87, 0.25);
+}
+
+.trash-btn--delete {
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+}
+
+.trash-btn--delete:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.dark .trash-banner {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.03) 100%);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+@media (max-width: 600px) {
+  .trash-banner-content {
+    flex-wrap: wrap;
+  }
+  .trash-banner-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 /* Contract photos */

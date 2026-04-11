@@ -81,6 +81,72 @@ const overdueAmount = computed(() =>
   paymentsStore.overduePayments.reduce((s, p) => s + p.amount, 0)
 )
 
+// ── Metric breakdown dialog ──
+type MetricKey = 'invested' | 'revenue' | 'profit' | 'remaining' | 'monthly' | 'roi' | 'overdue'
+const breakdownOpen = ref(false)
+const breakdownTitle = ref('')
+const breakdownDeals = ref<{ deal: any; value: number; label?: string }[]>([])
+const breakdownTotal = ref(0)
+const breakdownSuffix = ref('')
+
+function openBreakdown(metric: MetricKey) {
+  let deals: { deal: any; value: number; label?: string }[] = []
+  let title = ''
+  let suffix = ''
+
+  switch (metric) {
+    case 'invested':
+      title = 'Инвестировано'
+      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.purchasePrice }))
+      break
+    case 'revenue':
+      title = 'Общий оборот'
+      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.totalPrice }))
+      break
+    case 'profit':
+      title = 'Прибыль'
+      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.markup, label: `${d.markupPercent}%` }))
+      break
+    case 'remaining':
+      title = 'Ожидается к получению'
+      deals = dealsStore.activeDeals.map(d => ({ deal: d, value: d.remainingAmount }))
+      break
+    case 'monthly':
+      title = 'Доход / мес'
+      deals = dealsStore.activeDeals
+        .filter(d => d.numberOfPayments > 0)
+        .map(d => ({ deal: d, value: Math.round(d.totalPrice / d.numberOfPayments), label: `${d.numberOfPayments} мес` }))
+      break
+    case 'roi':
+      title = 'ROI'
+      suffix = '%'
+      deals = dealsStore.investorDeals
+        .filter(d => d.purchasePrice > 0)
+        .map(d => ({ deal: d, value: Math.round((d.markup / d.purchasePrice) * 1000) / 10, label: `${formatCurrency(d.markup)} / ${formatCurrency(d.purchasePrice)}` }))
+      break
+    case 'overdue':
+      title = 'Просроченные платежи'
+      const byDeal = new Map<string, { deal: any; value: number }>()
+      for (const p of paymentsStore.overduePayments) {
+        const deal = dealsStore.getDeal(p.dealId)
+        const existing = byDeal.get(p.dealId)
+        if (existing) {
+          existing.value += p.amount
+        } else {
+          byDeal.set(p.dealId, { deal, value: p.amount })
+        }
+      }
+      deals = [...byDeal.values()]
+      break
+  }
+
+  breakdownDeals.value = deals.sort((a, b) => b.value - a.value)
+  breakdownTotal.value = deals.reduce((s, d) => s + d.value, 0)
+  breakdownTitle.value = title
+  breakdownSuffix.value = suffix
+  breakdownOpen.value = true
+}
+
 const AVATAR_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
 function getInitial(name?: string) { return name ? name.charAt(0).toUpperCase() : '?' }
 function getAvatarColor(name?: string) {
@@ -129,31 +195,31 @@ function getAvatarColor(name?: string) {
       </div>
 
       <div class="hero-card">
-        <div class="hero-main">
+        <div class="hero-main hero-clickable" @click="openBreakdown('remaining')">
           <div class="hero-label">Ожидается к получению</div>
           <div class="hero-amount">{{ formatCurrency(dealsStore.totalRemaining) }}</div>
-          <div class="hero-sub">
-            из {{ formatCurrency(dealsStore.totalRevenue) }} общего оборота
+          <div class="hero-sub" @click.stop="openBreakdown('revenue')">
+            из <span class="hero-sub-link">{{ formatCurrency(dealsStore.totalRevenue) }}</span> общего оборота
           </div>
         </div>
 
         <div class="hero-metrics">
-          <div class="hero-metric">
+          <div class="hero-metric hero-clickable" @click="openBreakdown('invested')">
             <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalInvested) }}</span>
             <span class="hero-metric-label">Инвестировано</span>
           </div>
           <div class="hero-metric-divider" />
-          <div class="hero-metric">
+          <div class="hero-metric hero-clickable" @click="openBreakdown('profit')">
             <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalProfit) }}</span>
             <span class="hero-metric-label">Прибыль</span>
           </div>
           <div class="hero-metric-divider" />
-          <div class="hero-metric">
+          <div class="hero-metric hero-clickable" @click="openBreakdown('roi')">
             <span class="hero-metric-value">{{ formatPercent(dealsStore.roi) }}</span>
             <span class="hero-metric-label">ROI</span>
           </div>
           <div class="hero-metric-divider" />
-          <div class="hero-metric">
+          <div class="hero-metric hero-clickable" @click="openBreakdown('monthly')">
             <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.monthlyIncome) }}</span>
             <span class="hero-metric-label">Доход / мес</span>
           </div>
@@ -175,7 +241,7 @@ function getAvatarColor(name?: string) {
     <!-- KPI Cards (horizontal) -->
     <div class="dash-section-title">Ключевые показатели</div>
     <div class="kpi-row mb-6">
-      <div class="kpi-card">
+      <div class="kpi-card kpi-clickable" @click="openBreakdown('invested')">
         <div class="kpi-icon-wrap" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
           <v-icon icon="mdi-cash-multiple" size="20" />
         </div>
@@ -185,7 +251,7 @@ function getAvatarColor(name?: string) {
         </div>
       </div>
 
-      <div class="kpi-card">
+      <div class="kpi-card kpi-clickable" @click="openBreakdown('monthly')">
         <div class="kpi-icon-wrap" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
           <v-icon icon="mdi-calendar-month" size="20" />
         </div>
@@ -225,7 +291,7 @@ function getAvatarColor(name?: string) {
         </div>
       </div>
 
-      <div class="kpi-card" v-if="overdueAmount > 0">
+      <div class="kpi-card kpi-clickable" v-if="overdueAmount > 0" @click="openBreakdown('overdue')">
         <div class="kpi-icon-wrap" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
           <v-icon icon="mdi-alert-circle" size="20" />
         </div>
@@ -338,6 +404,51 @@ function getAvatarColor(name?: string) {
       </v-col>
     </v-row>
     </template>
+
+    <!-- Metric Breakdown Dialog -->
+    <v-dialog v-model="breakdownOpen" max-width="560" scrollable>
+      <v-card rounded="lg">
+        <v-card-title class="d-flex align-center justify-space-between pa-5 pb-3">
+          <span class="text-h6">{{ breakdownTitle }}</span>
+          <v-btn icon variant="text" size="small" @click="breakdownOpen = false">
+            <v-icon icon="mdi-close" />
+          </v-btn>
+        </v-card-title>
+
+        <v-divider />
+
+        <v-card-text class="pa-0" style="max-height: 400px;">
+          <div v-if="!breakdownDeals.length" class="pa-8 text-center text-medium-emphasis">
+            Нет данных
+          </div>
+
+          <div v-for="(item, i) in breakdownDeals" :key="i" class="breakdown-row">
+            <div class="breakdown-avatar" :style="{ background: getAvatarColor(item.deal?.productName) }">
+              {{ getInitial(item.deal?.productName) }}
+            </div>
+            <div class="breakdown-info">
+              <div class="breakdown-product">{{ item.deal?.productName || 'Товар' }}</div>
+              <div class="breakdown-meta">{{ userName(item.deal?.client) || item.deal?.externalClientName || '—' }}</div>
+            </div>
+            <div class="breakdown-right">
+              <div class="breakdown-value">
+                {{ breakdownSuffix ? item.value + breakdownSuffix : formatCurrency(item.value) }}
+              </div>
+              <div v-if="item.label" class="breakdown-label">{{ item.label }}</div>
+            </div>
+          </div>
+        </v-card-text>
+
+        <v-divider />
+
+        <div class="breakdown-footer">
+          <span class="text-body-2 text-medium-emphasis">Итого ({{ breakdownDeals.length }} {{ breakdownDeals.length === 1 ? 'сделка' : breakdownDeals.length < 5 ? 'сделки' : 'сделок' }})</span>
+          <span class="text-h6 font-weight-bold">
+            {{ breakdownSuffix ? (Math.round(breakdownTotal * 10) / 10) + breakdownSuffix : formatCurrency(breakdownTotal) }}
+          </span>
+        </div>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -738,6 +849,93 @@ function getAvatarColor(name?: string) {
   align-items: center;
   justify-content: center;
   padding: 0 4px;
+}
+
+/* Clickable metrics */
+.hero-clickable {
+  cursor: pointer;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+.hero-clickable:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.hero-sub-link {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.hero-sub-link:hover {
+  opacity: 1;
+}
+
+.kpi-clickable {
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.kpi-clickable:hover {
+  border-color: rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.04);
+}
+
+/* Breakdown dialog */
+.breakdown-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  transition: background 0.15s;
+}
+.breakdown-row:hover {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.breakdown-avatar {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+}
+.breakdown-info {
+  flex: 1;
+  min-width: 0;
+}
+.breakdown-product {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.breakdown-meta {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.breakdown-right {
+  text-align: right;
+  flex-shrink: 0;
+}
+.breakdown-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.breakdown-label {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.breakdown-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
 }
 
 /* Dark mode */

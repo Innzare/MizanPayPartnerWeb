@@ -16,14 +16,14 @@ export const useDealsStore = defineStore('deals', () => {
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
-  const investorDeals = computed(() => deals.value)
+  const investorDeals = computed(() => deals.value.filter((d) => !d.deletedAt))
 
   const activeDeals = computed(() =>
-    deals.value.filter((d) => d.status === 'ACTIVE')
+    deals.value.filter((d) => d.status === 'ACTIVE' && !d.deletedAt)
   )
 
   const completedDeals = computed(() =>
-    deals.value.filter((d) => d.status === 'COMPLETED')
+    deals.value.filter((d) => d.status === 'COMPLETED' && !d.deletedAt)
   )
 
   const totalInvested = computed(() =>
@@ -144,9 +144,50 @@ export const useDealsStore = defineStore('deals', () => {
     }
   }
 
+  // ==================== TRASH ====================
+
+  const trash = ref<Deal[]>([])
+  const trashLoading = ref(false)
+
+  async function fetchTrash() {
+    trashLoading.value = true
+    try {
+      trash.value = await api.get<Deal[]>('/deals/trash/list')
+    } catch (e: any) {
+      console.error('Failed to fetch trash:', e)
+    } finally {
+      trashLoading.value = false
+    }
+  }
+
+  async function restoreDeal(id: string) {
+    await api.patch(`/deals/trash/${id}/restore`)
+    const deal = trash.value.find((d) => d.id === id)
+    trash.value = trash.value.filter((d) => d.id !== id)
+    if (deal) deals.value.unshift(deal)
+  }
+
+  async function restoreBatch(ids: string[]) {
+    await api.post('/deals/trash/restore-batch', { ids })
+    const restored = trash.value.filter((d) => ids.includes(d.id))
+    trash.value = trash.value.filter((d) => !ids.includes(d.id))
+    deals.value.unshift(...restored)
+  }
+
+  async function permanentDelete(id: string) {
+    await api.delete(`/deals/trash/${id}/permanent`)
+    trash.value = trash.value.filter((d) => d.id !== id)
+  }
+
+  async function emptyTrash() {
+    await api.delete('/deals/trash/empty')
+    trash.value = []
+  }
+
   return {
     deals, isLoading, error, investorDeals, activeDeals, completedDeals,
     totalInvested, totalRevenue, totalProfit, totalRemaining, monthlyIncome, roi,
     fetchDeals, getDeal, fetchDeal, updateDealStatus, fetchAnalytics, createDirectDeal,
+    trash, trashLoading, fetchTrash, restoreDeal, restoreBatch, permanentDelete, emptyTrash,
   }
 })

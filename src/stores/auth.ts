@@ -13,8 +13,17 @@ interface AuthResponse {
   staffName?: string
 }
 
+function loadCachedUser(): User | null {
+  try {
+    const raw = localStorage.getItem('user')
+    return raw ? JSON.parse(raw) as User : null
+  } catch {
+    return null
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
-  const user = ref<User | null>(null)
+  const user = ref<User | null>(loadCachedUser())
   const accessToken = ref<string | null>(localStorage.getItem('access_token'))
   const refreshToken = ref<string | null>(localStorage.getItem('refresh_token'))
   const isLoading = ref(false)

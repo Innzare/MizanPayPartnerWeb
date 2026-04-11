@@ -89,9 +89,11 @@ const earnedProfit = computed(() =>
   paymentsStore.paidPayments.reduce((s, p) => s + getPaymentProfit(p), 0)
 )
 
-// Expected profit (from pending payments)
+// Expected profit (from pending + overdue payments — not yet received)
 const expectedProfit = computed(() =>
-  paymentsStore.pendingPayments.reduce((s, p) => s + getPaymentProfit(p), 0)
+  paymentsStore.allPaymentsFlat
+    .filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
+    .reduce((s, p) => s + getPaymentProfit(p), 0)
 )
 
 // This month's earned profit
@@ -101,25 +103,12 @@ const thisMonthProfit = computed(() => {
   const thisYear = now.getFullYear()
   return paymentsStore.paidPayments
     .filter(p => {
-      if (!p.paidAt) return false
-      const d = new Date(p.paidAt)
+      const dateStr = p.paidAt || p.dueDate
+      if (!dateStr) return false
+      const d = new Date(dateStr)
       return d.getMonth() === thisMonth && d.getFullYear() === thisYear
     })
     .reduce((s, p) => s + getPaymentProfit(p), 0)
-})
-
-// This month's revenue (total payments received)
-const thisMonthRevenue = computed(() => {
-  const now = new Date()
-  const thisMonth = now.getMonth()
-  const thisYear = now.getFullYear()
-  return paymentsStore.paidPayments
-    .filter(p => {
-      if (!p.paidAt) return false
-      const d = new Date(p.paidAt)
-      return d.getMonth() === thisMonth && d.getFullYear() === thisYear
-    })
-    .reduce((s, p) => s + p.amount, 0)
 })
 
 // ── Profit detail dialog ──
@@ -290,14 +279,16 @@ const yearMonths = computed((): MonthData[] => {
     const isPast = calYear.value < currentYear || (calYear.value === currentYear && i <= currentMonth)
     const isCurrent = calYear.value === currentYear && i === currentMonth
 
-    // Paid payments in this month
+    // Paid payments in this month (by paidAt, fallback to dueDate)
     const paidInMonth = paymentsStore.allPaymentsFlat.filter(p => {
-      if (p.status !== 'PAID' || !p.paidAt) return false
-      const d = new Date(p.paidAt)
+      if (p.status !== 'PAID') return false
+      const dateStr = p.paidAt || p.dueDate
+      if (!dateStr) return false
+      const d = new Date(dateStr)
       return d.getFullYear() === calYear.value && d.getMonth() === i
     })
 
-    // Pending payments due this month
+    // Pending/overdue payments due this month
     const pendingInMonth = paymentsStore.allPaymentsFlat.filter(p => {
       if (p.status !== 'PENDING' && p.status !== 'OVERDUE') return false
       const d = new Date(p.dueDate)
@@ -356,8 +347,10 @@ function openMonthDetail(m: MonthData) {
 const revenueChartData = computed(() => {
   const months = getLast6Months()
 
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID' && p.paidAt).forEach(p => {
-    const key = getMonthKey(new Date(p.paidAt!))
+  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID').forEach(p => {
+    const dateStr = p.paidAt || p.dueDate
+    if (!dateStr) return
+    const key = getMonthKey(new Date(dateStr))
     if (key in months) months[key] += p.amount
   })
 
@@ -380,8 +373,10 @@ const revenueChartData = computed(() => {
 const profitChartData = computed(() => {
   const months = getLast6Months()
 
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID' && p.paidAt).forEach(p => {
-    const key = getMonthKey(new Date(p.paidAt!))
+  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID').forEach(p => {
+    const dateStr = p.paidAt || p.dueDate
+    if (!dateStr) return
+    const key = getMonthKey(new Date(dateStr))
     if (key in months) months[key] += getPaymentProfit(p)
   })
 

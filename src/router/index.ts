@@ -10,20 +10,24 @@ const router = createRouter({
 
 const publicRoutes = ["/login"];
 
+let authChecked = false;
+
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore();
 
   const isPublicRoute = publicRoutes.some(r => to.path.startsWith(r));
 
-  if (!authStore.isAuthenticated) {
+  // Always run checkAuth once on first navigation to refresh user from backend
+  if (!authChecked) {
+    authChecked = true;
     await authStore.checkAuth();
+  }
 
-    if (!authStore.isAuthenticated && !isPublicRoute) {
-      return next({
-        path: "/login",
-        query: { redirect: to.fullPath },
-      });
-    }
+  if (!authStore.isAuthenticated && !isPublicRoute) {
+    return next({
+      path: "/login",
+      query: { redirect: to.fullPath },
+    });
   }
 
   if (authStore.isAuthenticated && to.path === "/login") {
