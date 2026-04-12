@@ -2,7 +2,7 @@
 import { useProductsStore } from '@/stores/products'
 import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatDate } from '@/utils/formatters'
-import { userName } from '@/types'
+import { userName, clientProfileName } from '@/types'
 import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter, useRoute } from 'vue-router'
@@ -269,10 +269,10 @@ async function deleteProduct() {
               >
                 <div class="d-flex align-center ga-3">
                   <div class="deal-avatar" :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.color || '#6b7280' }">
-                    {{ userName(deal.client).charAt(0) }}
+                    {{ (deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '?').charAt(0) }}
                   </div>
                   <div class="flex-grow-1 min-width-0">
-                    <div class="deal-client">{{ userName(deal.client) }}</div>
+                    <div class="deal-client">{{ deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—' }}</div>
                     <div class="deal-info">
                       {{ deal.paidPayments }}/{{ deal.numberOfPayments }} платежей
                     </div>

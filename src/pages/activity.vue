@@ -6,7 +6,7 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useRouter } from 'vue-router'
 import { formatCurrency, timeAgo } from '@/utils/formatters'
-import { userName } from '@/types'
+import { userName, clientProfileName } from '@/types'
 import type { ActivityType, ActivityLog, Deal, Payment } from '@/types'
 
 const { isDark } = useIsDark()
@@ -217,12 +217,13 @@ const selectedPayment = computed<Payment | null>(() => {
 function clientDisplayName(deal: Deal | null): string {
   if (!deal) return '—'
   if (deal.client) return userName(deal.client)
+  if (deal.clientProfile) return clientProfileName(deal.clientProfile)
   return deal.externalClientName || '—'
 }
 
 function clientDisplayPhone(deal: Deal | null): string {
   if (!deal) return ''
-  return deal.client?.phone || deal.externalClientPhone || ''
+  return deal.client?.phone || deal.clientProfile?.phone || deal.externalClientPhone || ''
 }
 
 function formatDateLong(iso?: string | null): string {

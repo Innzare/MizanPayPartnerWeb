@@ -529,7 +529,7 @@ const timeline = computed(() => {
           </div>
           <h1 class="detail-hero-title">{{ deal.productName }}</h1>
           <div class="detail-hero-meta">
-            <v-icon icon="mdi-account" size="16" /> {{ userName(deal.client) }}
+            <v-icon icon="mdi-account" size="16" /> {{ deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—' }}
             <span class="mx-2">·</span>
             Создано {{ formatDate(deal.createdAt) }}
           </div>
@@ -811,7 +811,7 @@ const timeline = computed(() => {
           </v-card>
 
           <!-- Fallback: old client card (platform or external) -->
-          <v-card v-else-if="client || deal.externalClientName" rounded="lg" elevation="0" border class="pa-5 mb-6">
+          <v-card v-else-if="client || deal.clientProfile || deal.externalClientName" rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="section-title mb-4">Клиент</div>
 
             <!-- Platform client -->

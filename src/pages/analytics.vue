@@ -3,7 +3,7 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatCurrencyShort, formatPercent, formatDate } from '@/utils/formatters'
 import { useRouter } from 'vue-router'
-import { userName } from '@/types'
+import { userName, clientProfileName } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
@@ -206,7 +206,7 @@ const profitByDeal = computed(() => {
     result.push({
       dealId,
       productName: deal.productName,
-      clientName: deal.client ? userName(deal.client) : deal.externalClientName || '—',
+      clientName: deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—',
       markupPercent: deal.markupPercent,
       totalReceived: data.received,
       profitEarned: data.profit,

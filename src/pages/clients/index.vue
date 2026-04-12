@@ -5,7 +5,7 @@ import { usePaymentsStore } from '@/stores/payments'
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import { formatCurrency, formatDate, formatDateShort, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { type Deal, type ClientProfile, userName } from '@/types'
+import { type Deal, type ClientProfile, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -422,10 +422,10 @@ const selectedDealPaidTotal = computed(() =>
             @click="showDialog = false; router.push(`/clients/${selectedDeal.clientProfileId || selectedDeal.clientId}`)"
           >
             <div class="dialog-avatar" :style="{ background: '#3b82f6' }">
-              {{ userName(selectedDeal.client).charAt(0) }}
+              {{ (selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '?').charAt(0) }}
             </div>
             <div class="flex-grow-1">
-              <div class="font-weight-medium">{{ userName(selectedDeal.client) }}</div>
+              <div class="font-weight-medium">{{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '—' }}</div>
               <div class="text-caption text-medium-emphasis">
                 Рейтинг {{ selectedDeal.client?.rating ?? 0 }} · Создано {{ formatDate(selectedDeal.createdAt) }}
               </div>

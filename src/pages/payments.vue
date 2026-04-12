@@ -3,7 +3,7 @@ import { usePaymentsStore } from '@/stores/payments'
 import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatDate, formatDateShort, formatPercent } from '@/utils/formatters'
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
-import { type Payment, type Deal, userName } from '@/types'
+import { type Payment, type Deal, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -90,12 +90,12 @@ const paymentsByDate = computed(() => {
   paymentsStore.allPaymentsFlat.forEach(p => {
     const key = p.dueDate.slice(0, 10)
     if (!map[key]) map[key] = []
-    const deal = dealsStore.getDeal(p.dealId)
+    const deal = getDealForPayment(p)
     map[key].push({
       ...p,
-      _dealName: getDealName(p.dealId),
-      _clientName: getClientName(p.dealId),
-      _isExternal: !deal?.client && !!deal?.externalClientName,
+      _dealName: getDealName(p),
+      _clientName: getClientName(p),
+      _isExternal: !deal?.client && !deal?.clientProfile?.userId && !!(deal?.clientProfile || deal?.externalClientName),
     })
   })
   return map
@@ -346,7 +346,7 @@ const selectedDeal = ref<Deal | null>(null)
 const showDealDialog = ref(false)
 
 function openDealFromPayment(payment: Payment) {
-  const deal = dealsStore.getDeal(payment.dealId)
+  const deal = getDealForPayment(payment)
   if (deal) {
     selectedDeal.value = deal
     showDealDialog.value = true
@@ -393,8 +393,8 @@ const displayedPayments = computed(() => {
   if (search.value) {
     const s = search.value.toLowerCase()
     payments = payments.filter((p) => {
-      const deal = dealsStore.getDeal(p.dealId)
-      const clientName = deal?.client ? userName(deal.client) : deal?.externalClientName || ''
+      const deal = getDealForPayment(p)
+      const clientName = deal?.client ? userName(deal.client) : deal?.clientProfile ? clientProfileName(deal.clientProfile) : deal?.externalClientName || ''
       return deal?.productName.toLowerCase().includes(s) || clientName.toLowerCase().includes(s)
     })
   }
@@ -410,13 +410,13 @@ const displayedPayments = computed(() => {
       case 'number':
         return dir * (a.number - b.number)
       case 'deal': {
-        const da = getDealName(a.dealId)
-        const db = getDealName(b.dealId)
+        const da = getDealName(a)
+        const db = getDealName(b)
         return dir * da.localeCompare(db, 'ru')
       }
       case 'client': {
-        const ca = getClientName(a.dealId)
-        const cb = getClientName(b.dealId)
+        const ca = getClientName(a)
+        const cb = getClientName(b)
         return dir * ca.localeCompare(cb, 'ru')
       }
       case 'status': {
@@ -431,14 +431,19 @@ const displayedPayments = computed(() => {
   return payments
 })
 
-function getDealName(dealId: string) {
-  return dealsStore.getDeal(dealId)?.productName || dealId
+function getDealForPayment(payment: Payment): Deal | undefined {
+  return payment.deal || dealsStore.getDeal(payment.dealId)
 }
 
-function getClientName(dealId: string) {
-  const deal = dealsStore.getDeal(dealId)
+function getDealName(payment: Payment) {
+  return getDealForPayment(payment)?.productName || payment.dealId
+}
+
+function getClientName(payment: Payment) {
+  const deal = getDealForPayment(payment)
   if (!deal) return '—'
   if (deal.client) return userName(deal.client)
+  if (deal.clientProfile) return clientProfileName(deal.clientProfile)
   return deal.externalClientName || '—'
 }
 
@@ -993,11 +998,11 @@ const rescheduleReasonOptions = [
           <tbody>
             <tr v-for="p in displayedPayments" :key="p.id" class="clickable-row" @click="openDealFromPayment(p)">
               <td>
-                <span class="font-weight-medium">{{ getDealName(p.dealId) }}</span>
+                <span class="font-weight-medium">{{ getDealName(p) }}</span>
               </td>
               <td class="text-medium-emphasis">
-                {{ getClientName(p.dealId) }}
-                <span v-if="!dealsStore.getDeal(p.dealId)?.client && dealsStore.getDeal(p.dealId)?.externalClientName" class="external-badge">Внешний</span>
+                {{ getClientName(p) }}
+                <span v-if="!getDealForPayment(p)?.client && !getDealForPayment(p)?.clientProfile?.userId" class="external-badge">Внешний</span>
               </td>
               <td class="text-center">{{ p.number }}</td>
               <td class="text-right font-weight-bold text-no-wrap">{{ formatCurrency(p.amount) }}</td>
@@ -1090,10 +1095,10 @@ const rescheduleReasonOptions = [
         <v-card-text class="pa-5">
           <div class="d-flex align-center ga-3 mb-5">
             <div class="dialog-avatar" :style="{ background: selectedDeal.client ? '#3b82f6' : '#6366f1' }">
-              {{ (selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.externalClientName || '?').charAt(0) }}
+              {{ (selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '?').charAt(0) }}
             </div>
             <div>
-              <div class="font-weight-medium">{{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.externalClientName || '—' }}</div>
+              <div class="font-weight-medium">{{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '—' }}</div>
               <div class="text-caption text-medium-emphasis">
                 Рейтинг {{ selectedDeal.client?.rating ?? 0 }} · Создано {{ formatDate(selectedDeal.createdAt) }}
               </div>
@@ -1241,7 +1246,7 @@ const rescheduleReasonOptions = [
           <div class="reschedule-info mb-4">
             <div class="reschedule-info-row">
               <span class="reschedule-info-label">Сделка</span>
-              <span class="reschedule-info-value">{{ getDealName(reschedulePaymentRef.dealId) }}</span>
+              <span class="reschedule-info-value">{{ getDealForPayment(reschedulePaymentRef)?.productName || reschedulePaymentRef.dealId }}</span>
             </div>
             <div class="reschedule-info-row">
               <span class="reschedule-info-label">Платёж №{{ reschedulePaymentRef.number }}</span>

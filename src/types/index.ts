@@ -133,6 +133,7 @@ export interface Payment {
   rescheduledFrom?: string
   rescheduledAt?: string
   rescheduleReason?: string
+  deal?: Deal
 }
 
 // Request

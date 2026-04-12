@@ -4,7 +4,7 @@ import { usePaymentsStore } from '@/stores/payments'
 import { useRequestsStore } from '@/stores/requests'
 import { useNotificationsStore } from '@/stores/notifications'
 import { formatCurrency, formatCurrencyShort, formatPercent, formatDateShort } from '@/utils/formatters'
-import { userName } from '@/types'
+import { userName, clientProfileName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
@@ -148,6 +148,12 @@ function openBreakdown(metric: MetricKey) {
 }
 
 const AVATAR_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
+function dealClientName(deal?: any): string {
+  if (!deal) return '—'
+  if (deal.client) return userName(deal.client)
+  if (deal.clientProfile) return clientProfileName(deal.clientProfile)
+  return deal.externalClientName || '—'
+}
 function getInitial(name?: string) { return name ? name.charAt(0).toUpperCase() : '?' }
 function getAvatarColor(name?: string) {
   if (!name) return AVATAR_COLORS[0]
@@ -325,12 +331,12 @@ function getAvatarColor(name?: string) {
               :key="item.payment.id"
               class="payment-row"
             >
-              <div class="payment-avatar" :style="{ background: getAvatarColor(userName(item.deal?.client)) }">
-                {{ getInitial(userName(item.deal?.client)) }}
+              <div class="payment-avatar" :style="{ background: getAvatarColor(dealClientName(item.deal)) }">
+                {{ getInitial(dealClientName(item.deal)) }}
               </div>
               <div class="payment-info">
                 <div class="payment-product">{{ item.deal?.productName || 'Товар' }}</div>
-                <div class="payment-meta">{{ userName(item.deal?.client) }} · {{ formatDateShort(item.payment.dueDate) }}</div>
+                <div class="payment-meta">{{ dealClientName(item.deal) }} · {{ formatDateShort(item.payment.dueDate) }}</div>
               </div>
               <div class="payment-right">
                 <div class="payment-amount">{{ formatCurrency(item.payment.amount) }}</div>
@@ -375,7 +381,7 @@ function getAvatarColor(name?: string) {
               </v-avatar>
               <div class="deal-info">
                 <div class="deal-product">{{ deal.productName }}</div>
-                <div class="deal-meta">{{ userName(deal.client) }}</div>
+                <div class="deal-meta">{{ dealClientName(deal) }}</div>
               </div>
               <div class="deal-progress-col">
                 <div class="deal-progress-label">{{ deal.paidPayments }} / {{ deal.numberOfPayments }}</div>
