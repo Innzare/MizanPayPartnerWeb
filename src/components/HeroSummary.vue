@@ -28,6 +28,7 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
     <div :style="!canView && showLockedOverlay ? { filter: 'blur(5px)', opacity: 0.7, pointerEvents: 'none', userSelect: 'none' } : {}">
       <div class="hs-main hs-clickable" @click="emit('metric', 'remaining')">
         <div class="hs-label">Общая сводка</div>
+        <div class="hs-sublabel">Ожидается к получению</div>
         <div class="hs-amount">{{ canView ? formatCurrency(dealsStore.totalRemaining) : '— ₽' }}</div>
         <div class="hs-sub" @click.stop="emit('metric', 'revenue')">
           из <span class="hs-sub-link">{{ canView ? formatCurrency(dealsStore.totalRevenue) : '— ₽' }}</span> общего оборота
@@ -99,7 +100,10 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
 
 .hs-label {
   font-size: 13px; font-weight: 500; color: rgba(255, 255, 255, 0.65);
-  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;
+}
+.hs-sublabel {
+  font-size: 12px; color: rgba(255, 255, 255, 0.45); margin-bottom: 4px;
 }
 .hs-amount {
   font-size: 32px; font-weight: 800; letter-spacing: -0.5px;

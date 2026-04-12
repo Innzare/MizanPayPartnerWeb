@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { useProductsStore } from '@/stores/products'
-import { formatCurrency } from '@/utils/formatters'
+import { formatCurrency, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter } from 'vue-router'
@@ -303,8 +303,11 @@ function getCategoryIcon(catId: string) {
                 <label class="field-label">Цена товара <span class="required">*</span></label>
                 <div class="input-with-suffix">
                   <input
-                    v-model.number="price"
-                    type="number"
+                    :value="price || ''"
+                    v-maska="CURRENCY_MASK"
+                    @maska="(e: any) => price = parseMasked(e)"
+                    type="text"
+                    inputmode="numeric"
                     class="field-input"
                     placeholder="0"
                   />

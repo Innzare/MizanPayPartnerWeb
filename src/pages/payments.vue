@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { usePaymentsStore } from '@/stores/payments'
 import { useDealsStore } from '@/stores/deals'
-import { formatCurrency, formatDate, formatDateShort, formatPercent } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShort, formatPercent, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
@@ -1242,7 +1242,7 @@ const rescheduleReasonOptions = [
         <div class="mb-4">
           <label class="field-label">Фактическая сумма</label>
           <div style="position: relative;">
-            <input v-model.number="markPaidAmount" type="number" class="field-input" min="1" style="padding-right: 36px;" />
+            <input :value="markPaidAmount || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => markPaidAmount = parseMasked(e)" type="text" inputmode="numeric" class="field-input" style="padding-right: 36px;" />
             <span style="position: absolute; right: 14px; top: 50%; transform: translateY(-50%); font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.35); pointer-events: none;">₽</span>
           </div>
           <div v-if="markPaidTarget && markPaidAmount && markPaidAmount !== markPaidTarget.amount" class="text-caption mt-1" :style="{ color: markPaidAmount > markPaidTarget.amount ? '#10b981' : '#f59e0b' }">

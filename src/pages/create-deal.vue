@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { useDealsStore } from '@/stores/deals'
-import { formatCurrency } from '@/utils/formatters'
+import { formatCurrency, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter } from 'vue-router'
@@ -342,7 +342,7 @@ async function submitDeal() {
               <div class="form-field full-width">
                 <label class="field-label">Закупочная цена <span class="required">*</span></label>
                 <div class="input-with-suffix">
-                  <input v-model.number="purchasePrice" type="number" class="field-input" placeholder="0" />
+                  <input :value="purchasePrice || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => purchasePrice = parseMasked(e)" type="text" inputmode="numeric" class="field-input" placeholder="0" />
                   <span class="input-suffix">₽</span>
                 </div>
               </div>
@@ -365,7 +365,7 @@ async function submitDeal() {
               <div class="form-field full-width">
                 <label class="field-label">Первоначальный взнос</label>
                 <div class="input-with-suffix">
-                  <input v-model.number="downPayment" type="number" class="field-input" placeholder="0" />
+                  <input :value="downPayment || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => downPayment = parseMasked(e)" type="text" inputmode="numeric" class="field-input" placeholder="0" />
                   <span class="input-suffix">₽</span>
                 </div>
               </div>

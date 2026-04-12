@@ -2,7 +2,7 @@
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { useClientsStore } from '@/stores/clients'
-import { formatCurrency, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { userName, clientProfileName, type Deal } from '@/types'
 import { useAuthStore } from '@/stores/auth'
@@ -1333,10 +1333,12 @@ const timeline = computed(() => {
             <label class="field-label">Фактическая сумма оплаты</label>
             <div class="input-with-suffix">
               <input
-                v-model.number="markPaidAmount"
-                type="number"
+                :value="markPaidAmount || ''"
+                v-maska="CURRENCY_MASK"
+                @maska="(e: any) => markPaidAmount = parseMasked(e)"
+                type="text"
+                inputmode="numeric"
                 class="field-input"
-                min="1"
               />
               <span class="input-suffix">₽</span>
             </div>

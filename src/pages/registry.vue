@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { api } from '@/api/client'
-import { formatPhone, formatDate } from '@/utils/formatters'
+import { formatPhone, formatDate, PHONE_MASK } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useRouter } from 'vue-router'
@@ -716,6 +716,7 @@ function renderStars(rating: number): string[] {
             <label class="rg-field-label">Телефон <span style="color: #ef4444;">*</span></label>
             <input
               v-model="blacklistForm.phone"
+              v-maska="PHONE_MASK"
               type="tel"
               class="rg-field-input"
               placeholder="+7 (___) ___-__-__"
@@ -774,6 +775,7 @@ function renderStars(rating: number): string[] {
             <label class="rg-field-label">Телефон <span style="color: #ef4444;">*</span></label>
             <input
               v-model="reviewForm.phone"
+              v-maska="PHONE_MASK"
               type="tel"
               class="rg-field-input"
               placeholder="+7 (___) ___-__-__"

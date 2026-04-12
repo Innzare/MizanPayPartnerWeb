@@ -38,6 +38,16 @@ export function formatPhone(phone: string): string {
   return phone;
 }
 
+// ── Maska masks ──
+
+export const PHONE_MASK = '+7 (###) ###-##-##'
+
+export const CURRENCY_MASK = { number: { locale: 'ru-RU', fraction: 0, unsigned: true } }
+
+export function parseMasked(e: any): number {
+  return Number(e.detail?.unmasked) || 0
+}
+
 export function formatMonths(months: number): string {
   if (months === 1) return '1 месяц';
   if (months >= 2 && months <= 4) return `${months} месяца`;

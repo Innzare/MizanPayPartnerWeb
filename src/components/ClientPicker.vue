@@ -2,6 +2,7 @@
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import type { ClientProfile } from '@/types'
 import { clientProfileName } from '@/types'
+import { formatPhone } from '@/utils/formatters'
 
 const props = defineProps<{
   modelValue?: string | null
@@ -66,12 +67,6 @@ function selectProfile(profile: ClientProfile) {
   if (!items.value.find(i => i.id === profile.id)) items.value = [profile, ...items.value]
   emit('update:modelValue', profile.id)
   emit('selected', profile)
-}
-
-function formatPhone(phone: string): string {
-  const d = phone.replace(/\D/g, '')
-  if (d.length === 11) return `+${d[0]} (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7,9)}-${d.slice(9,11)}`
-  return phone
 }
 
 function hasPassport(p: ClientProfile): boolean {

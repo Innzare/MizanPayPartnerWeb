@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { calculateBasic } from '@/utils/calculator'
-import { formatCurrency, formatPercent } from '@/utils/formatters'
+import { formatCurrency, formatPercent, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import type { BasicCalculatorInputs, CalculatorResult } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 
@@ -73,11 +73,13 @@ function reset() {
             <label class="field-label">Закупочная цена <span class="required">*</span></label>
             <div class="input-with-suffix">
               <input
-                v-model.number="inputs.purchasePrice"
-                type="number"
+                :value="inputs.purchasePrice || ''"
+                v-maska="CURRENCY_MASK"
+                @maska="(e: any) => inputs.purchasePrice = parseMasked(e)"
+                type="text"
+                inputmode="numeric"
                 class="field-input"
                 placeholder="100 000"
-                min="0"
               />
               <span class="input-suffix">₽</span>
             </div>
@@ -126,11 +128,13 @@ function reset() {
             <label class="field-label">Первоначальный взнос</label>
             <div class="input-with-suffix">
               <input
-                v-model.number="inputs.downPayment"
-                type="number"
+                :value="inputs.downPayment || ''"
+                v-maska="CURRENCY_MASK"
+                @maska="(e: any) => inputs.downPayment = parseMasked(e)"
+                type="text"
+                inputmode="numeric"
                 class="field-input"
                 placeholder="10 000"
-                min="0"
               />
               <span class="input-suffix">₽</span>
             </div>

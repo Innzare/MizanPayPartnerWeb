@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { api } from '@/api/client'
-import { formatCurrency, formatCurrencyShort, formatDate } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { Bar } from 'vue-chartjs'
@@ -617,10 +617,11 @@ function formatTransactionAmount(t: Transaction) {
             <label class="fn-field-label">Сумма *</label>
             <div class="fn-field-input-wrap">
               <input
-                v-model.number="form.amount"
-                type="number"
-                min="0"
-                step="100"
+                :value="form.amount || ''"
+                v-maska="CURRENCY_MASK"
+                @maska="(e: any) => form.amount = parseMasked(e)"
+                type="text"
+                inputmode="numeric"
                 placeholder="0"
                 class="fn-field-input"
               />

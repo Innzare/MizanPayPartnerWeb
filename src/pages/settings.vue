@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { useAuthStore } from '@/stores/auth'
-import { formatPhone, formatDate } from '@/utils/formatters'
+import { formatPhone, formatDate, PHONE_MASK } from '@/utils/formatters'
 import { CITIES } from '@/constants/cities'
 
 import { useIsDark } from '@/composables/useIsDark'
@@ -619,7 +619,7 @@ const plans = [
               </div>
               <div class="form-field">
                 <label class="field-label">Телефон <span class="required">*</span></label>
-                <input v-model="editForm.phone" type="tel" class="field-input" placeholder="+7 (___) ___-__-__" />
+                <input v-model="editForm.phone" v-maska="PHONE_MASK" type="tel" class="field-input" placeholder="+7 (___) ___-__-__" />
               </div>
               <div class="form-field">
                 <label class="field-label">Город <span class="required">*</span></label>

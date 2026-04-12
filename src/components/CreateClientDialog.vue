@@ -2,6 +2,7 @@
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import type { ClientProfile } from '@/types'
 import { useToast } from '@/composables/useToast'
+import { PHONE_MASK } from '@/utils/formatters'
 
 const props = defineProps<{
   modelValue: boolean
@@ -99,7 +100,7 @@ async function save() {
           </div>
           <div class="form-field">
             <label class="field-label">Телефон <span class="required">*</span></label>
-            <input v-model="form.phone" type="tel" class="field-input" placeholder="+7 (999) 123-45-67" />
+            <input v-model="form.phone" v-maska="PHONE_MASK" type="tel" class="field-input" placeholder="+7 (___) ___-__-__" />
           </div>
         </div>
         <div class="form-field">

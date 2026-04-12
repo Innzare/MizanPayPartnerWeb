@@ -16,6 +16,7 @@
     "@fontsource/roboto": "5.2.7",
     "@mdi/font": "7.4.47",
     "chart.js": "^4.5.1",
+    "maska": "^3.2.0",
     "pdfmake": "^0.2.18",
     "pinia": "^3.0.3",
     "qrcode": "^1.5.4",

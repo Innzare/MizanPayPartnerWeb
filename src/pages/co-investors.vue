@@ -2,7 +2,7 @@
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useDealsStore } from '@/stores/deals'
-import { formatCurrency, formatCurrencyShort, formatPhone } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatPhone, PHONE_MASK, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import type { Deal } from '@/types'
@@ -701,6 +701,7 @@ function pluralDeals(n: number) {
             <label class="ci-field-label">Телефон</label>
             <input
               v-model="form.phone"
+              v-maska="PHONE_MASK"
               type="tel"
               class="ci-field-input"
               placeholder="+7 (___) ___-__-__"
@@ -712,11 +713,13 @@ function pluralDeals(n: number) {
             <label class="ci-field-label">Капитал <span style="color: #ef4444;">*</span></label>
             <div class="ci-field-input-wrap">
               <input
-                v-model.number="form.capital"
-                type="number"
+                :value="form.capital || ''"
+                v-maska="CURRENCY_MASK"
+                @maska="(e: any) => form.capital = parseMasked(e)"
+                type="text"
+                inputmode="numeric"
                 class="ci-field-input"
                 placeholder="0"
-                min="0"
               />
               <span class="ci-field-suffix">₽</span>
             </div>

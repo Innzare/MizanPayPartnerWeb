@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { useProductsStore } from '@/stores/products'
 import { useDealsStore } from '@/stores/deals'
-import { formatCurrency, formatDate } from '@/utils/formatters'
+import { formatCurrency, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { userName, clientProfileName } from '@/types'
 import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
@@ -396,7 +396,7 @@ async function deleteProduct() {
           <div class="d-flex ga-3 mb-3">
             <div class="flex-grow-1">
               <label class="field-label">Цена</label>
-              <input v-model.number="editForm.price" type="number" class="field-input" />
+              <input :value="editForm.price || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => editForm.price = parseMasked(e)" type="text" inputmode="numeric" class="field-input" />
             </div>
             <div class="flex-grow-1">
               <label class="field-label">Город</label>
