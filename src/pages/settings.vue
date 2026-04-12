@@ -5,15 +5,22 @@ import { CITIES } from '@/constants/cities'
 
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useSubscription } from '@/composables/useSubscription'
 import { api } from '@/api/client'
 import QRCode from 'qrcode'
 
 const { isDark } = useIsDark()
 const toast = useToast()
 const authStore = useAuthStore()
+const { canAccess: canAccessFeature, plan: currentPlan, isFree } = useSubscription()
+const settingsPlanLabels: Record<string, string> = { PRO: 'Стандарт', BUSINESS: 'Бизнес', PREMIUM: 'Премиум' }
 
 // Tabs
-const activeTab = ref<'profile' | 'security' | 'whatsapp' | 'subscription'>('profile')
+const route = useRoute()
+const validTabs = ['profile', 'security', 'whatsapp', 'export', 'subscription'] as const
+type TabId = typeof validTabs[number]
+const initTab = validTabs.includes(route.query.tab as TabId) ? route.query.tab as TabId : 'profile'
+const activeTab = ref<TabId>(initTab)
 
 // WhatsApp
 const waStatus = ref<'disconnected' | 'connecting' | 'connected' | 'loading'>('loading')
@@ -145,6 +152,34 @@ onMounted(() => {
   checkWhatsAppStatus()
 })
 
+// Export Excel
+const exporting = ref(false)
+
+async function exportExcel() {
+  exporting.value = true
+  try {
+    const response = await fetch(`${import.meta.env.VITE_API_URL}/export/excel`, {
+      headers: { Authorization: `Bearer ${authStore.accessToken}` },
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      throw new Error(err.message || 'Ошибка экспорта')
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `MizanPay_Export_${new Date().toISOString().slice(0, 10)}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('Файл скачан')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка экспорта')
+  } finally {
+    exporting.value = false
+  }
+}
+
 // Delete account
 const deletingAccount = ref(false)
 
@@ -166,6 +201,7 @@ const tabs = [
   { id: 'profile' as const, label: 'Профиль', icon: 'mdi-account-outline' },
   { id: 'security' as const, label: 'Безопасность', icon: 'mdi-shield-lock-outline' },
   { id: 'whatsapp' as const, label: 'WhatsApp', icon: 'mdi-whatsapp' },
+  { id: 'export' as const, label: 'Экспорт', icon: 'mdi-download-outline' },
   { id: 'subscription' as const, label: 'Подписка', icon: 'mdi-crown-outline' },
 ]
 
@@ -306,83 +342,156 @@ const verificationSteps = [
 
 // Subscription
 const planLabels: Record<string, string> = {
-  free: 'Без подписки',
-  standard: 'Стандарт',
-  business: 'Бизнес',
-  premium: 'Премиум',
+  FREE: 'Без подписки',
+  PRO: 'Стандарт',
+  BUSINESS: 'Бизнес',
+  PREMIUM: 'Премиум',
+}
+
+const showContactDialog = ref(false)
+const selectedPlan = ref<typeof plans[number] | null>(null)
+const dialogPeriod = ref<'monthly' | 'yearly'>('monthly')
+const billingPeriod = ref<'monthly' | 'yearly'>('monthly')
+const requestMessage = ref('')
+const requestSending = ref(false)
+const requestSent = ref(false)
+
+function selectPlan(plan: typeof plans[number]) {
+  if (plan.id === authStore.user?.subscriptionPlan) return
+  selectedPlan.value = plan
+  dialogPeriod.value = billingPeriod.value
+  requestMessage.value = ''
+  requestSent.value = false
+  showContactDialog.value = true
+}
+
+const dialogPrice = computed(() => {
+  if (!selectedPlan.value) return ''
+  return dialogPeriod.value === 'yearly' ? selectedPlan.value.yearlyPrice : selectedPlan.value.monthlyPrice
+})
+
+const dialogTotalPrice = computed(() => {
+  if (!selectedPlan.value) return ''
+  if (dialogPeriod.value === 'yearly') return selectedPlan.value.yearlyTotal
+  return ''
+})
+
+async function sendSubscriptionRequest() {
+  if (!selectedPlan.value || requestSending.value) return
+  requestSending.value = true
+  try {
+    const price = dialogPeriod.value === 'yearly'
+      ? `${selectedPlan.value.yearlyPrice}/мес (${selectedPlan.value.yearlyTotal})`
+      : `${selectedPlan.value.monthlyPrice}/мес`
+    await api.post('/auth/investor/subscription-request', {
+      plan: selectedPlan.value.label,
+      period: dialogPeriod.value === 'yearly' ? 'Ежегодно' : 'Ежемесячно',
+      price,
+      message: requestMessage.value || undefined,
+    })
+    requestSent.value = true
+    toast.success('Заявка отправлена!')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка отправки')
+  } finally {
+    requestSending.value = false
+  }
 }
 
 const plans = [
   {
-    id: 'free',
+    id: 'FREE' as const,
     label: 'Без подписки',
-    price: '0 ₽',
+    monthlyPrice: '0 ₽',
+    yearlyPrice: '0 ₽',
     priceNote: 'навсегда',
+    yearlyTotal: '',
+    yearlySaving: '',
     responsePrice: '500 ₽',
     features: [
       'До 3 активных сделок',
       'Отклик на заявку — 500 ₽',
-      'Калькулятор рассрочки',
-      'Стандартная поддержка',
     ],
     limitations: [
       'Нет аналитики',
-      'Нет экспорта',
-      'Нет приоритета в каталоге',
+      'Нет PDF договоров',
+      'Нет экспорта PDF',
+      'Нет экспорта в Excel',
+      'Нет импорта из Excel',
+      'Нет WhatsApp-напоминаний',
+      'Нет со-инвесторов',
+      'Нет сотрудников',
+      'Нет раздела «Мой капитал»',
+      'Нет реестра клиентов',
+      'Нет истории действий',
+      'Нет календаря платежей',
     ],
     icon: 'mdi-gift-outline',
   },
   {
-    id: 'standard',
+    id: 'PRO' as const,
     label: 'Стандарт',
-    price: '3 900 ₽',
+    monthlyPrice: '3 900 ₽',
+    yearlyPrice: '3 100 ₽',
     priceNote: 'в месяц',
+    yearlyTotal: '37 200 ₽ / год',
+    yearlySaving: 'Экономия 9 600 ₽',
     responsePrice: '300 ₽',
     features: [
       'До 15 активных сделок',
       'Отклик на заявку — 300 ₽',
-      'Базовая аналитика',
+      'Аналитика (KPI цифры)',
       'Экспорт PDF',
-      'Приоритетная поддержка',
+      'PDF договора',
+      'Со-инвесторы, сотрудники',
+      'Мой капитал, реестр клиентов',
+      'История действий',
     ],
     limitations: [
-      'Нет приоритета в каталоге',
+      'Нет графиков в аналитике',
+      'Нет экспорта в Excel',
+      'Нет импорта из Excel',
+      'Нет WhatsApp-напоминаний',
+      'Нет календаря платежей',
     ],
     icon: 'mdi-star-outline',
   },
   {
-    id: 'business',
+    id: 'BUSINESS' as const,
     label: 'Бизнес',
-    price: '7 900 ₽',
+    monthlyPrice: '7 900 ₽',
+    yearlyPrice: '6 300 ₽',
     priceNote: 'в месяц',
+    yearlyTotal: '75 600 ₽ / год',
+    yearlySaving: 'Экономия 19 200 ₽',
     responsePrice: '100 ₽',
+    includesFrom: 'Все функции Стандарт',
     features: [
       'До 50 активных сделок',
       'Отклик на заявку — 100 ₽',
       'Полная аналитика + графики',
       'Экспорт PDF / Excel',
-      'Приоритет в каталоге',
-      'Персональный менеджер',
+      'Импорт из Excel',
+      'WhatsApp-напоминания',
+      'Календарь платежей',
     ],
     limitations: [],
     icon: 'mdi-rocket-launch-outline',
     popular: true,
   },
   {
-    id: 'premium',
+    id: 'PREMIUM' as const,
     label: 'Премиум',
-    price: '11 900 ₽',
+    monthlyPrice: '11 900 ₽',
+    yearlyPrice: '9 500 ₽',
     priceNote: 'в месяц',
+    yearlyTotal: '114 000 ₽ / год',
+    yearlySaving: 'Экономия 28 800 ₽',
     responsePrice: 'Бесплатно',
+    includesFrom: 'Все функции Бизнес',
     features: [
       'Безлимит активных сделок',
       'Отклик на заявку — бесплатно',
-      'Полная аналитика + графики',
-      'Экспорт PDF / Excel / API',
-      'Топ-приоритет в каталоге',
-      'Персональный менеджер',
-      'Кастомные отчёты',
-      'Ранний доступ к фичам',
     ],
     limitations: [],
     icon: 'mdi-crown-outline',
@@ -554,7 +663,11 @@ const plans = [
             />
             <div class="profile-card-name">{{ authStore.userName }}</div>
             <div class="profile-card-phone">{{ formatPhone(authStore.user?.phone || '') }}</div>
-            <div class="profile-card-role">
+            <div v-if="!isFree" class="profile-plan-badge">
+              <v-icon icon="mdi-crown" size="12" />
+              {{ settingsPlanLabels[currentPlan] }}
+            </div>
+            <div v-else class="profile-card-role">
               <v-icon icon="mdi-shield-check" size="14" />
               Инвестор
             </div>
@@ -742,6 +855,52 @@ const plans = [
 
     <!-- WhatsApp Tab -->
     <div v-if="activeTab === 'whatsapp'" class="tab-content">
+      <!-- Upgrade prompt for FREE -->
+      <template v-if="!canAccessFeature('whatsapp')">
+        <div class="wa-locked-card">
+          <div class="wa-locked-icon-wrap">
+            <v-icon icon="mdi-whatsapp" size="36" color="#25d366" />
+            <div class="wa-locked-crown">
+              <v-icon icon="mdi-crown" size="16" color="#e8b931" />
+            </div>
+          </div>
+          <div class="wa-locked-title">WhatsApp-напоминания</div>
+          <div class="wa-locked-desc">
+            Отправляйте напоминания о платежах клиентам прямо в WhatsApp — автоматически или вручную, без открытия приложения.
+          </div>
+
+          <div class="wa-locked-features">
+            <div class="wa-locked-feature">
+              <v-icon icon="mdi-clock-check-outline" size="18" color="#25d366" />
+              <span>Автоматические напоминания за 1–3 дня до платежа</span>
+            </div>
+            <div class="wa-locked-feature">
+              <v-icon icon="mdi-send-outline" size="18" color="#25d366" />
+              <span>Ручная отправка напоминания одной кнопкой</span>
+            </div>
+            <div class="wa-locked-feature">
+              <v-icon icon="mdi-account-group-outline" size="18" color="#25d366" />
+              <span>Массовая рассылка «Напомнить всем»</span>
+            </div>
+            <div class="wa-locked-feature">
+              <v-icon icon="mdi-file-document-edit-outline" size="18" color="#25d366" />
+              <span>Настраиваемые шаблоны сообщений</span>
+            </div>
+          </div>
+
+          <div class="wa-locked-plan-badge">
+            <v-icon icon="mdi-crown" size="14" color="#e8b931" />
+            Доступно с плана Бизнес
+          </div>
+
+          <button class="wa-locked-btn" @click="activeTab = 'subscription'">
+            <v-icon icon="mdi-arrow-right" size="18" />
+            Перейти к подпискам
+          </button>
+        </div>
+      </template>
+
+      <template v-else>
       <v-card rounded="lg" elevation="0" border class="pa-6">
         <!-- Connected state -->
         <div v-if="waStatus === 'connected'">
@@ -957,28 +1116,167 @@ const plans = [
           </button>
         </div>
       </v-card>
+      </template>
+    </div>
+
+    <!-- Export Tab -->
+    <div v-if="activeTab === 'export'" class="tab-content">
+      <template v-if="!canAccessFeature('excelExport')">
+        <!-- Locked state -->
+        <div class="export-locked-card">
+          <div class="export-locked-icon-wrap">
+            <v-icon icon="mdi-file-excel-outline" size="36" color="#047857" />
+            <div class="export-locked-crown">
+              <v-icon icon="mdi-crown" size="16" color="#e8b931" />
+            </div>
+          </div>
+          <div class="export-locked-title">Экспорт данных</div>
+          <div class="export-locked-desc">
+            Скачайте все данные из личного кабинета в формате Excel — сделки, платежи, клиентов и сводку с формулами.
+          </div>
+
+          <div class="export-locked-features">
+            <div class="export-locked-feature">
+              <v-icon icon="mdi-handshake" size="18" color="#047857" />
+              <span>Все сделки с финансами</span>
+            </div>
+            <div class="export-locked-feature">
+              <v-icon icon="mdi-calendar-check" size="18" color="#047857" />
+              <span>История платежей</span>
+            </div>
+            <div class="export-locked-feature">
+              <v-icon icon="mdi-account-group" size="18" color="#047857" />
+              <span>База клиентов</span>
+            </div>
+            <div class="export-locked-feature">
+              <v-icon icon="mdi-function-variant" size="18" color="#047857" />
+              <span>Формулы и итоги</span>
+            </div>
+          </div>
+
+          <div class="export-locked-plan-badge">
+            <v-icon icon="mdi-crown" size="14" color="#e8b931" />
+            Доступно с плана Бизнес
+          </div>
+
+          <button class="export-locked-btn" @click="activeTab = 'subscription'">
+            <v-icon icon="mdi-arrow-right" size="18" />
+            Перейти к подпискам
+          </button>
+        </div>
+      </template>
+
+      <template v-else>
+        <!-- Available state -->
+        <div class="export-card">
+          <div class="export-card-header">
+            <div class="export-card-icon">
+              <v-icon icon="mdi-file-excel-outline" size="24" />
+            </div>
+            <div>
+              <div class="export-card-title">Экспорт в Excel</div>
+              <div class="export-card-desc">Скачать все данные из личного кабинета</div>
+            </div>
+          </div>
+
+          <div class="export-sheets">
+            <div class="export-sheet">
+              <v-icon icon="mdi-chart-pie" size="20" color="#047857" />
+              <div>
+                <div class="export-sheet-title">Сводка</div>
+                <div class="export-sheet-desc">Общие показатели, ROI, статистика платежей</div>
+              </div>
+            </div>
+            <div class="export-sheet">
+              <v-icon icon="mdi-handshake" size="20" color="#3b82f6" />
+              <div>
+                <div class="export-sheet-title">Сделки</div>
+                <div class="export-sheet-desc">Все сделки с формулами наценки и итогами</div>
+              </div>
+            </div>
+            <div class="export-sheet">
+              <v-icon icon="mdi-calendar-check" size="20" color="#8b5cf6" />
+              <div>
+                <div class="export-sheet-title">Платежи</div>
+                <div class="export-sheet-desc">Все платежи, суммы по статусам (SUMIF)</div>
+              </div>
+            </div>
+            <div class="export-sheet">
+              <v-icon icon="mdi-account-group" size="20" color="#f59e0b" />
+              <div>
+                <div class="export-sheet-title">Клиенты</div>
+                <div class="export-sheet-desc">Профили клиентов, паспортные данные, суммы</div>
+              </div>
+            </div>
+          </div>
+
+          <button
+            class="export-download-btn"
+            :disabled="exporting"
+            @click="exportExcel"
+          >
+            <v-progress-circular v-if="exporting" indeterminate size="18" width="2" color="white" />
+            <v-icon v-else icon="mdi-download" size="20" />
+            {{ exporting ? 'Формирование файла...' : 'Скачать Excel' }}
+          </button>
+        </div>
+      </template>
     </div>
 
     <!-- Subscription Tab -->
     <div v-if="activeTab === 'subscription'" class="tab-content">
       <!-- Current plan -->
-      <div v-if="authStore.user?.subscriptionPlan !== 'free'" class="current-plan-banner">
+      <div v-if="authStore.user?.subscriptionPlan && authStore.user.subscriptionPlan !== 'FREE'" class="current-plan-banner">
         <div class="current-plan-left">
           <v-icon icon="mdi-crown" size="20" />
           <div>
             <div class="current-plan-label">Текущий план</div>
-            <div class="current-plan-name">{{ planLabels[authStore.user?.subscriptionPlan || 'free'] }}</div>
+            <div class="current-plan-name">{{ planLabels[authStore.user?.subscriptionPlan || 'FREE'] }}</div>
           </div>
         </div>
-        <div v-if="authStore.user?.subscriptionExpiry" class="current-plan-expiry">
-          до {{ formatDate(authStore.user.subscriptionExpiry) }}
+        <div class="current-plan-right">
+          <div v-if="authStore.user?.daysUntilExpiry != null" class="current-plan-expiry">
+            <span v-if="authStore.user.daysUntilExpiry > 0">Осталось {{ authStore.user.daysUntilExpiry }} дн.</span>
+            <span v-else class="text-error">Подписка истекла</span>
+          </div>
+          <div v-if="authStore.user?.subscriptionExpiry" class="current-plan-date">
+            до {{ formatDate(authStore.user.subscriptionExpiry) }}
+          </div>
         </div>
+      </div>
+
+      <!-- Usage info -->
+      <div v-if="authStore.user?.planLimits" class="usage-banner mb-5">
+        <v-icon icon="mdi-chart-bar" size="18" />
+        <span>
+          Активных сделок: <strong>{{ Math.max(0, authStore.user.activeDeals || 0) }}</strong>
+          из <strong>{{ authStore.user.planLimits.maxActiveDeals === Infinity ? '∞' : authStore.user.planLimits.maxActiveDeals }}</strong>
+        </span>
       </div>
 
       <!-- Response cost explainer -->
       <div class="info-banner mb-5">
         <v-icon icon="mdi-information-outline" size="18" />
         <span>Клиенты оставляют заявки бесплатно. Чтобы связаться с клиентом, нужно оплатить отклик. Чем выше подписка — тем дешевле отклик.</span>
+      </div>
+
+      <!-- Billing period toggle -->
+      <div class="billing-toggle-wrap mb-5">
+        <button
+          class="billing-toggle-btn"
+          :class="{ active: billingPeriod === 'monthly' }"
+          @click="billingPeriod = 'monthly'"
+        >
+          Ежемесячно
+        </button>
+        <button
+          class="billing-toggle-btn"
+          :class="{ active: billingPeriod === 'yearly' }"
+          @click="billingPeriod = 'yearly'"
+        >
+          Ежегодно
+          <span class="billing-discount-badge">−20%</span>
+        </button>
       </div>
 
       <!-- Plans grid -->
@@ -997,8 +1295,17 @@ const plans = [
             <v-icon :icon="plan.icon" size="24" />
           </div>
           <div class="plan-name">{{ plan.label }}</div>
-          <div class="plan-price">{{ plan.price }}</div>
-          <div class="plan-price-note">{{ plan.priceNote }}</div>
+          <div class="plan-price">
+            {{ billingPeriod === 'yearly' ? plan.yearlyPrice : plan.monthlyPrice }}
+          </div>
+          <div class="plan-price-note">
+            <template v-if="plan.id === 'FREE'">навсегда</template>
+            <template v-else>в месяц</template>
+          </div>
+          <div v-if="billingPeriod === 'yearly' && plan.yearlyTotal" class="plan-yearly-info">
+            <div class="plan-yearly-total">{{ plan.yearlyTotal }}</div>
+            <div class="plan-yearly-saving">{{ plan.yearlySaving }}</div>
+          </div>
 
           <!-- Response price highlight -->
           <div class="plan-response-price" :class="{ 'plan-response-price--free': plan.responsePrice === 'Бесплатно' }">
@@ -1007,6 +1314,11 @@ const plans = [
           </div>
 
           <div class="plan-divider" />
+
+          <div v-if="plan.includesFrom" class="plan-includes-badge">
+            <v-icon icon="mdi-check-decagram" size="16" />
+            <span>{{ plan.includesFrom }}</span>
+          </div>
 
           <div class="plan-features">
             <div v-for="(feature, fi) in plan.features" :key="fi" class="plan-feature">
@@ -1028,14 +1340,15 @@ const plans = [
               class="btn-plan btn-plan--current"
               disabled
             >
-              Текущий план
+              Текущий
             </button>
             <button
               v-else
               class="btn-plan"
-              :class="{ 'btn-plan--primary': plan.popular || plan.id === 'premium' }"
+              :class="{ 'btn-plan--primary': plan.id === 'PRO' || plan.popular || plan.id === 'PREMIUM' }"
+              @click="selectPlan(plan)"
             >
-              {{ plan.id === 'free' ? 'Текущий' : 'Выбрать' }}
+              Выбрать
             </button>
           </div>
         </div>
@@ -1046,6 +1359,106 @@ const plans = [
         <v-icon icon="mdi-scale-balance" size="16" />
         <span>При 20+ откликах в месяц подписка <strong>Бизнес</strong> окупается. При 25+ — выгоднее <strong>Премиум</strong>.</span>
       </div>
+
+      <!-- Subscription request dialog -->
+      <v-dialog v-model="showContactDialog" max-width="480">
+        <div class="sub-dialog" :class="{ dark: isDark }">
+          <button class="sub-dialog-close" @click="showContactDialog = false">
+            <v-icon icon="mdi-close" size="20" />
+          </button>
+
+          <!-- Header -->
+          <div class="sub-dialog-header">
+            <div class="sub-dialog-icon">
+              <v-icon :icon="selectedPlan?.icon || 'mdi-star'" size="28" />
+            </div>
+            <div class="sub-dialog-title">{{ selectedPlan?.label }}</div>
+            <div class="sub-dialog-price">{{ dialogPrice }}</div>
+            <div class="sub-dialog-price-note">в месяц</div>
+            <div v-if="dialogTotalPrice" class="sub-dialog-total">{{ dialogTotalPrice }}</div>
+          </div>
+
+          <!-- Period toggle -->
+          <div class="sub-dialog-period">
+            <button
+              class="sub-period-btn"
+              :class="{ active: dialogPeriod === 'monthly' }"
+              @click="dialogPeriod = 'monthly'"
+            >
+              Ежемесячно
+            </button>
+            <button
+              class="sub-period-btn"
+              :class="{ active: dialogPeriod === 'yearly' }"
+              @click="dialogPeriod = 'yearly'"
+            >
+              Ежегодно
+              <span class="sub-period-badge">−20%</span>
+            </button>
+          </div>
+
+          <!-- Saving highlight -->
+          <div v-if="dialogPeriod === 'yearly' && selectedPlan?.yearlySaving" class="sub-dialog-saving">
+            <v-icon icon="mdi-piggy-bank-outline" size="16" />
+            {{ selectedPlan.yearlySaving }}
+          </div>
+
+          <!-- Success state -->
+          <template v-if="requestSent">
+            <div class="sub-dialog-success">
+              <v-icon icon="mdi-check-circle" size="48" />
+              <div class="sub-dialog-success-title">Заявка отправлена!</div>
+              <div class="sub-dialog-success-text">
+                Мы свяжемся с вами в ближайшее время для подключения подписки.
+              </div>
+              <button class="sub-dialog-btn sub-dialog-btn--primary" @click="showContactDialog = false">
+                Отлично
+              </button>
+            </div>
+          </template>
+
+          <template v-else>
+            <!-- Comment -->
+            <div class="sub-dialog-field">
+              <label class="sub-dialog-label">Комментарий <span style="opacity: 0.4;">(необязательно)</span></label>
+              <textarea
+                v-model="requestMessage"
+                class="sub-dialog-textarea"
+                placeholder="Например: хочу перейти с текущего плана..."
+                rows="2"
+              />
+            </div>
+
+            <!-- Submit button -->
+            <button
+              class="sub-dialog-btn sub-dialog-btn--primary"
+              :disabled="requestSending"
+              @click="sendSubscriptionRequest"
+            >
+              <v-icon v-if="requestSending" icon="mdi-loading mdi-spin" size="18" />
+              <v-icon v-else icon="mdi-send" size="18" />
+              {{ requestSending ? 'Отправка...' : 'Отправить заявку' }}
+            </button>
+
+            <!-- Divider -->
+            <div class="sub-dialog-divider">
+              <span>или свяжитесь напрямую</span>
+            </div>
+
+            <!-- Contact buttons -->
+            <div class="sub-dialog-contacts">
+              <a class="sub-contact-btn sub-contact-btn--wa" href="https://wa.me/79170414764" target="_blank">
+                <v-icon icon="mdi-whatsapp" size="20" />
+                WhatsApp
+              </a>
+              <a class="sub-contact-btn sub-contact-btn--tg" href="https://t.me/mizanpay" target="_blank">
+                <v-icon icon="mdi-send" size="20" />
+                Telegram
+              </a>
+            </div>
+          </template>
+        </div>
+      </v-dialog>
     </div>
   </div>
 </template>
@@ -1075,8 +1488,9 @@ const plans = [
 .settings-tabs {
   display: flex; gap: 4px; margin-bottom: 24px;
   padding: 4px; border-radius: 12px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .settings-tab {
   display: flex; align-items: center; gap: 6px;
@@ -1091,10 +1505,10 @@ const plans = [
   background: rgba(var(--v-theme-on-surface), 0.04);
 }
 .settings-tab.active {
-  background: #fff;
-  color: rgba(var(--v-theme-on-surface), 0.85);
+  background: #047857;
+  color: #fff;
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
 }
 @media (max-width: 600px) {
   .settings-tabs { overflow-x: auto; }
@@ -1272,6 +1686,14 @@ const plans = [
   background: rgba(4, 120, 87, 0.1); color: #047857;
   font-size: 12px; font-weight: 600;
 }
+.profile-plan-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 10px; padding: 4px 14px 4px 10px; border-radius: 10px;
+  background: rgba(232, 185, 49, 0.12); color: #b8941e;
+  border: 1px solid rgba(232, 185, 49, 0.25);
+  font-size: 12px; font-weight: 700;
+}
+.profile-plan-badge .v-icon { color: #e8b931; }
 
 /* Stats grid */
 .stats-grid {
@@ -1317,10 +1739,102 @@ const plans = [
   color: #ef4444; border-color: rgba(239, 68, 68, 0.12);
 }
 
+/* Export tab — locked card */
+.export-locked-card {
+  display: flex; flex-direction: column; align-items: center;
+  background: #fff; border: 2px solid rgba(232, 185, 49, 0.25);
+  border-radius: 16px; padding: 40px 32px; text-align: center;
+}
+.export-locked-icon-wrap {
+  position: relative; width: 72px; height: 72px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 120, 87, 0.08); border-radius: 50%; margin-bottom: 16px;
+}
+.export-locked-crown {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: #fff; border: 2px solid rgba(232, 185, 49, 0.3);
+  display: flex; align-items: center; justify-content: center;
+}
+.export-locked-title {
+  font-size: 20px; font-weight: 700; margin-bottom: 8px;
+}
+.export-locked-desc {
+  font-size: 14px; color: rgba(var(--v-theme-on-surface), 0.55);
+  max-width: 460px; line-height: 1.5; margin-bottom: 24px;
+}
+.export-locked-features {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px;
+  text-align: left; margin-bottom: 24px; width: 100%; max-width: 480px;
+}
+.export-locked-feature {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgba(4, 120, 87, 0.05); border-radius: 10px; padding: 10px 14px;
+}
+.export-locked-plan-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; color: #b8941e;
+  background: rgba(232, 185, 49, 0.1); border: 1px solid rgba(232, 185, 49, 0.2);
+  border-radius: 20px; padding: 6px 16px; margin-bottom: 20px;
+}
+.export-locked-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 44px; padding: 0 28px; border-radius: 12px; border: none;
+  background: #047857; color: #fff; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.export-locked-btn:hover { background: #065f46; }
+
+/* Export tab — available card */
+.export-card {
+  background: #fff; border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 16px; padding: 28px;
+}
+.export-card-header {
+  display: flex; align-items: center; gap: 14px; margin-bottom: 24px;
+}
+.export-card-icon {
+  width: 48px; height: 48px; border-radius: 14px;
+  background: rgba(4, 120, 87, 0.1); color: #047857;
+  display: flex; align-items: center; justify-content: center;
+}
+.export-card-title { font-size: 18px; font-weight: 700; }
+.export-card-desc { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 2px; }
+
+.export-sheets {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px;
+}
+.export-sheet {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 16px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.export-sheet .v-icon { margin-top: 2px; flex-shrink: 0; }
+.export-sheet-title { font-size: 13px; font-weight: 600; }
+.export-sheet-desc { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 2px; }
+
+.export-download-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 48px; padding: 0 32px; border-radius: 12px; border: none;
+  background: #047857; color: #fff; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.export-download-btn:hover { background: #065f46; }
+.export-download-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Dark mode export */
+.dark .export-locked-card { background: #1e1e2e; border-color: rgba(232, 185, 49, 0.15); }
+.dark .export-locked-crown { background: #1e1e2e; }
+.dark .export-locked-feature { background: rgba(4, 120, 87, 0.08); }
+.dark .export-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .export-sheet { background: rgba(var(--v-theme-on-surface), 0.04); border-color: #2e2e42; }
+
 /* Delete account */
 .delete-account-bar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 20px; margin-top: 32px;
+  padding: 16px 20px; margin-top: 12px;
   border-radius: 14px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
   background: rgba(var(--v-theme-on-surface), 0.02);
@@ -1359,6 +1873,60 @@ const plans = [
 .delete-account-btn:hover { background: #ef4444; color: #fff; }
 .delete-account-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .dark .delete-account-bar { background: rgba(var(--v-theme-on-surface), 0.03); border-color: #2e2e42; }
+
+/* WhatsApp locked card */
+.wa-locked-card {
+  display: flex; flex-direction: column; align-items: center;
+  background: #fff; border: 2px solid rgba(232, 185, 49, 0.25);
+  border-radius: 16px; padding: 40px 32px; text-align: center;
+}
+.wa-locked-icon-wrap {
+  position: relative; width: 72px; height: 72px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(37, 211, 102, 0.08); border-radius: 50%; margin-bottom: 16px;
+}
+.wa-locked-crown {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: #fff; border: 2px solid rgba(232, 185, 49, 0.3);
+  display: flex; align-items: center; justify-content: center;
+}
+.wa-locked-title {
+  font-size: 20px; font-weight: 700; margin-bottom: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.87);
+}
+.wa-locked-desc {
+  font-size: 14px; color: rgba(var(--v-theme-on-surface), 0.55);
+  max-width: 460px; line-height: 1.5; margin-bottom: 24px;
+}
+.wa-locked-features {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px;
+  text-align: left; margin-bottom: 24px; width: 100%; max-width: 520px;
+}
+.wa-locked-feature {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgba(37, 211, 102, 0.05); border-radius: 10px; padding: 10px 14px;
+}
+.wa-locked-plan-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; color: #b8941e;
+  background: rgba(232, 185, 49, 0.1); border: 1px solid rgba(232, 185, 49, 0.2);
+  border-radius: 20px; padding: 6px 16px; margin-bottom: 20px;
+}
+.wa-locked-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 44px; padding: 0 28px; border-radius: 12px; border: none;
+  background: #047857; color: #fff; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.wa-locked-btn:hover { background: #065f46; }
+
+/* Dark mode */
+.dark .wa-locked-card { background: #1e1e2e; border-color: rgba(232, 185, 49, 0.15); }
+.dark .wa-locked-crown { background: #1e1e2e; }
+.dark .wa-locked-feature { background: rgba(37, 211, 102, 0.08); }
+.dark .wa-locked-plan-badge { background: rgba(232, 185, 49, 0.08); border-color: rgba(232, 185, 49, 0.15); }
 
 /* WhatsApp */
 .wa-connected-banner {
@@ -1678,9 +2246,71 @@ const plans = [
 .current-plan-name {
   font-size: 16px; font-weight: 700; color: #047857;
 }
+.current-plan-right {
+  text-align: right;
+}
 .current-plan-expiry {
+  font-size: 13px; font-weight: 600;
+  color: #047857;
+}
+.current-plan-date {
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.usage-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-radius: 10px; font-size: 13px;
+  background: rgba(var(--v-theme-primary), 0.06);
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+
+/* Billing toggle */
+.billing-toggle-wrap {
+  display: inline-flex; gap: 4px;
+  padding: 4px; border-radius: 10px;
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.billing-toggle-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 18px; border-radius: 8px; border: none;
   font-size: 13px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.5);
+  background: transparent;
+  cursor: pointer; transition: all 0.15s;
+}
+.billing-toggle-btn:hover {
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.billing-toggle-btn.active {
+  background: #047857; color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
+}
+.billing-discount-badge {
+  padding: 2px 7px; border-radius: 5px;
+  font-size: 11px; font-weight: 700;
+  background: rgba(4, 120, 87, 0.12);
+  color: #047857;
+}
+.billing-toggle-btn.active .billing-discount-badge {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+/* Yearly info on card */
+.plan-yearly-info {
+  text-align: center; margin-bottom: 4px;
+}
+.plan-yearly-total {
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.plan-yearly-saving {
+  font-size: 11px; font-weight: 600;
+  color: #047857;
 }
 
 /* Plans grid */
@@ -1696,19 +2326,22 @@ const plans = [
 .plan-card {
   position: relative; padding: 24px 20px;
   border-radius: 14px;
-  background: rgba(var(--v-theme-on-surface), 0.02);
+  background: #fff;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
   display: flex; flex-direction: column; align-items: center;
   transition: all 0.2s;
 }
 .plan-card:hover {
   border-color: rgba(var(--v-theme-on-surface), 0.15);
   transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.05);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
 }
 .plan-card--active {
-  border-color: rgba(4, 120, 87, 0.3);
-  background: rgba(4, 120, 87, 0.03);
+  border-color: #047857;
+  border-width: 2px;
+  background: rgba(4, 120, 87, 0.04);
+  box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.1), 0 4px 16px rgba(4, 120, 87, 0.08);
 }
 .plan-card--popular {
   border-color: rgba(4, 120, 87, 0.2);
@@ -1772,6 +2405,17 @@ const plans = [
   margin-bottom: 14px;
 }
 
+.plan-includes-badge {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; padding: 8px 12px; margin-bottom: 10px;
+  border-radius: 8px;
+  background: rgba(4, 120, 87, 0.08);
+  border: 1px solid rgba(4, 120, 87, 0.15);
+  font-size: 13px; font-weight: 600;
+  color: #047857;
+}
+.plan-includes-badge .v-icon { color: #047857; }
+
 .plan-features {
   display: flex; flex-direction: column; gap: 8px;
   width: 100%;
@@ -1788,9 +2432,9 @@ const plans = [
 }
 .plan-limitation {
   display: flex; align-items: center; gap: 8px;
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.35);
+  font-size: 12px; color: #d32f2f;
 }
-.plan-limitation .v-icon { color: rgba(var(--v-theme-on-surface), 0.25); flex-shrink: 0; }
+.plan-limitation .v-icon { color: #d32f2f; flex-shrink: 0; }
 
 .plan-btn-wrap {
   width: 100%; margin-top: auto; padding-top: 16px;
@@ -1824,10 +2468,173 @@ const plans = [
 .plans-comparison-note strong { color: #047857; font-weight: 600; }
 .plans-comparison-note .v-icon { color: rgba(var(--v-theme-on-surface), 0.35); flex-shrink: 0; }
 
+/* Subscription dialog */
+.sub-dialog {
+  background: #fff; border-radius: 20px;
+  padding: 32px; position: relative;
+  overflow: hidden;
+}
+.sub-dialog-close {
+  position: absolute; top: 16px; right: 16px; z-index: 1;
+  width: 32px; height: 32px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.sub-dialog-close:hover {
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.sub-dialog-header {
+  text-align: center; margin-bottom: 20px;
+}
+.sub-dialog-icon {
+  width: 56px; height: 56px; border-radius: 14px; margin: 0 auto 12px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 120, 87, 0.1); color: #047857;
+}
+.sub-dialog-title {
+  font-size: 20px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  margin-bottom: 4px;
+}
+.sub-dialog-price {
+  font-size: 32px; font-weight: 800;
+  color: #047857; line-height: 1.2;
+}
+.sub-dialog-price-note {
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.sub-dialog-total {
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 2px;
+}
+
+/* Period toggle in dialog */
+.sub-dialog-period {
+  display: flex; gap: 4px; padding: 4px;
+  border-radius: 10px; margin-bottom: 16px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.sub-period-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 14px; border-radius: 8px; border: none;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.5);
+  transition: all 0.15s;
+}
+.sub-period-btn:hover { color: rgba(var(--v-theme-on-surface), 0.7); }
+.sub-period-btn.active {
+  background: #047857; color: #fff; font-weight: 600;
+  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
+}
+.sub-period-badge {
+  padding: 1px 6px; border-radius: 4px;
+  font-size: 10px; font-weight: 700;
+  background: rgba(4, 120, 87, 0.12); color: #047857;
+}
+.sub-period-btn.active .sub-period-badge {
+  background: rgba(255,255,255,0.2); color: #fff;
+}
+
+/* Saving */
+.sub-dialog-saving {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 14px; border-radius: 8px; margin-bottom: 16px;
+  background: #f0fdf4; border: 1px solid #bbf7d0;
+  font-size: 13px; font-weight: 600; color: #047857;
+}
+
+/* Field */
+.sub-dialog-field {
+  margin-bottom: 16px;
+}
+.sub-dialog-label {
+  display: block; font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-bottom: 6px;
+}
+.sub-dialog-textarea {
+  width: 100%; padding: 10px 14px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.8);
+  resize: none; outline: none; font-family: inherit;
+  transition: border-color 0.15s;
+}
+.sub-dialog-textarea:focus {
+  border-color: #047857;
+}
+
+/* Buttons */
+.sub-dialog-btn {
+  width: 100%; height: 44px; border-radius: 10px; border: none;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  transition: all 0.15s;
+}
+.sub-dialog-btn--primary {
+  background: #047857; color: #fff;
+}
+.sub-dialog-btn--primary:hover { background: #065f46; }
+.sub-dialog-btn--primary:disabled {
+  opacity: 0.6; cursor: not-allowed;
+}
+
+/* Divider */
+.sub-dialog-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 20px 0;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.35);
+}
+.sub-dialog-divider::before,
+.sub-dialog-divider::after {
+  content: ''; flex: 1; height: 1px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+
+/* Contact buttons */
+.sub-dialog-contacts {
+  display: flex; gap: 10px;
+}
+.sub-contact-btn {
+  flex: 1; height: 40px; border-radius: 10px; border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  text-decoration: none; transition: all 0.15s;
+}
+.sub-contact-btn--wa {
+  background: #25d366; color: #fff;
+}
+.sub-contact-btn--wa:hover { background: #1fb855; }
+.sub-contact-btn--tg {
+  background: #229ed9; color: #fff;
+}
+.sub-contact-btn--tg:hover { background: #1a8bc2; }
+
+/* Success state */
+.sub-dialog-success {
+  text-align: center; padding: 12px 0;
+}
+.sub-dialog-success .v-icon { color: #047857; margin-bottom: 12px; }
+.sub-dialog-success-title {
+  font-size: 18px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  margin-bottom: 6px;
+}
+.sub-dialog-success-text {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-bottom: 20px; line-height: 1.5;
+}
+
 /* Dark mode */
 .dark .settings-tab.active {
-  background: #252538; color: #e4e4e7;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  background: #047857; color: #fff;
+  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.3);
 }
 .dark .field-input {
   background: #252538; border-color: #2e2e42; color: #e4e4e7;
@@ -1841,9 +2648,10 @@ const plans = [
   border-color: rgba(4, 120, 87, 0.2);
 }
 .dark .stat-item { background: #1e1e2e; border-color: #2e2e42; }
-.dark .plan-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .plan-card { background: #1e1e2e; border-color: #2e2e42; box-shadow: none; }
 .dark .plan-card:hover { border-color: #3e3e52; box-shadow: 0 4px 16px rgba(0,0,0,0.2); }
-.dark .plan-card--active { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.25); }
+.dark .plan-card--active { background: rgba(4, 120, 87, 0.08); border-color: #047857; box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.15), 0 4px 16px rgba(4, 120, 87, 0.1); }
+.dark .plan-includes-badge { background: rgba(4, 120, 87, 0.12); border-color: rgba(4, 120, 87, 0.2); }
 .dark .plan-response-price { background: #252538; }
 .dark .plan-response-price--free { background: rgba(4, 120, 87, 0.1); }
 .dark .plan-divider { background: #2e2e42; }
@@ -1855,6 +2663,10 @@ const plans = [
   border-color: rgba(4, 120, 87, 0.2);
 }
 .dark .settings-tabs { background: #1a1a2e; border-color: #2e2e42; }
+.dark .billing-toggle-wrap { background: #1a1a2e; border-color: #2e2e42; box-shadow: none; }
+.dark .billing-toggle-btn.active { background: #047857; color: #fff; }
+.dark .billing-discount-badge { background: rgba(4, 120, 87, 0.2); color: #34d399; }
+.dark .billing-toggle-btn.active .billing-discount-badge { background: rgba(255,255,255,0.2); color: #fff; }
 .dark .info-banner {
   background: rgba(59, 130, 246, 0.1);
   border-color: rgba(59, 130, 246, 0.2);
@@ -1873,6 +2685,9 @@ const plans = [
 .dark .profile-card-role {
   background: rgba(4, 120, 87, 0.15); color: #34d399;
 }
+.dark .profile-plan-badge {
+  background: rgba(232, 185, 49, 0.08); border-color: rgba(232, 185, 49, 0.18);
+}
 .dark .wa-chip { background: #252538; color: rgba(var(--v-theme-on-surface), 0.5); }
 .dark .wa-chip:hover { background: #2e2e42; }
 .dark .wa-chip--active { background: rgba(37, 211, 102, 0.15); color: #34d399; }
@@ -1880,4 +2695,17 @@ const plans = [
 .dark .wa-var-chip:hover { background: rgba(37, 211, 102, 0.2); }
 .dark .wa-preview-bubble { background: rgba(37, 211, 102, 0.06); border-color: rgba(37, 211, 102, 0.12); }
 .dark .wa-preview-bubble--overdue { background: rgba(239, 68, 68, 0.06); border-color: rgba(239, 68, 68, 0.12); }
+
+/* Dialog dark */
+.dark .sub-dialog { background: #1a1a2e; }
+.dark .sub-dialog-close { background: #252538; color: #71717a; }
+.dark .sub-dialog-close:hover { background: #2e2e42; color: #a1a1aa; }
+.dark .sub-dialog-period { background: #252538; border-color: #2e2e42; }
+.dark .sub-period-btn { color: #71717a; }
+.dark .sub-period-btn.active { background: #047857; color: #fff; }
+.dark .sub-period-badge { background: rgba(4,120,87,0.2); color: #34d399; }
+.dark .sub-period-btn.active .sub-period-badge { background: rgba(255,255,255,0.2); color: #fff; }
+.dark .sub-dialog-saving { background: rgba(4,120,87,0.1); border-color: rgba(4,120,87,0.2); }
+.dark .sub-dialog-textarea { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .sub-dialog-textarea:focus { border-color: #047857; }
 </style>

@@ -1,7 +1,22 @@
 // Investor (authenticated user in partner web)
 export type VerificationLevel = 'NONE' | 'BASIC' | 'VERIFIED' | 'FULL'
-export type SubscriptionPlan = 'FREE' | 'PRO' | 'BUSINESS'
+export type SubscriptionPlan = 'FREE' | 'PRO' | 'BUSINESS' | 'PREMIUM'
 export type StaffRole = 'MANAGER' | 'OPERATOR'
+
+export interface PlanFeatures {
+  analytics: boolean
+  analyticsCharts: boolean
+  pdfContract: boolean
+  pdfExport: boolean
+  excelExport: boolean
+  import: boolean
+  activity: boolean
+  registry: boolean
+  coInvestors: boolean
+  finance: boolean
+  staff: boolean
+  whatsapp: boolean
+}
 
 export interface User {
   id: string
@@ -21,6 +36,9 @@ export interface User {
   isBlocked: boolean
   subscriptionPlan: SubscriptionPlan
   subscriptionExpiry?: string
+  planLimits?: { maxActiveDeals: number; responseCost: number }
+  planFeatures?: PlanFeatures
+  daysUntilExpiry?: number | null
   staffId?: string
   staffRole?: StaffRole
   createdAt: string

@@ -7,11 +7,14 @@ import logoText from "@/assets/images/logo-text.svg";
 import logoTextDark from "@/assets/images/logo-text-dark.svg";
 import { useAuthStore } from "@/stores/auth";
 import { useNotificationsStore } from "@/stores/notifications";
+import { useSubscription } from "@/composables/useSubscription";
 import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
+import type { PlanFeatures } from "@/types";
 
 const authStore = useAuthStore();
 const notificationsStore = useNotificationsStore();
+const subscription = useSubscription();
 const theme = useTheme();
 
 const route = useRoute();
@@ -19,6 +22,10 @@ const router = useRouter();
 
 const quickActionsMenu = ref(false);
 const showCreateClientDialog = ref(false);
+
+const planBadgeLabels: Record<string, string> = { PRO: 'Стандарт', BUSINESS: 'Бизнес', PREMIUM: 'Премиум' };
+const planBadgeLabel = computed(() => planBadgeLabels[subscription.plan.value] || '');
+const hasPlan = computed(() => !subscription.isFree.value);
 
 const logoutDialog = ref(false);
 const DRAWER_BREAKPOINT = 1280;
@@ -65,18 +72,18 @@ const toggleTheme = () => {
 };
 
 // Navigation
-const allMainNavRoutes = [
+const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?: boolean; requiredFeature?: keyof PlanFeatures }[] = [
   { path: "/", title: "Главная", icon: "mdi-view-dashboard" },
-  { path: "/analytics", title: "Аналитика", icon: "mdi-chart-line" },
+  { path: "/analytics", title: "Аналитика", icon: "mdi-chart-line", requiredFeature: "analytics" },
   { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
   { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
   { path: "/products", title: "Каталог", icon: "mdi-store" },
   { path: "/requests", title: "Заявки", icon: "mdi-file-document-outline" },
-  { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline" },
-  { path: "/finance", title: "Мой капитал", icon: "mdi-wallet-outline" },
-  { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account" },
-  { path: "/staff", title: "Сотрудники", icon: "mdi-account-key", ownerOnly: true },
+  { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
+  { path: "/finance", title: "Мой капитал", icon: "mdi-wallet-outline", requiredFeature: "finance" },
+  { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account", requiredFeature: "registry" },
+  { path: "/staff", title: "Сотрудники", icon: "mdi-account-key", ownerOnly: true, requiredFeature: "staff" },
 ];
 
 const allSecondaryNavRoutes = [
@@ -84,10 +91,15 @@ const allSecondaryNavRoutes = [
 ];
 
 const mainNavRoutes = computed(() =>
-  allMainNavRoutes.filter((r) => {
-    if ((r as any).ownerOnly && !authStore.isOwner) return false;
-    return authStore.canAccess(r.path);
-  })
+  allMainNavRoutes
+    .filter((r) => {
+      if (r.ownerOnly && !authStore.isOwner) return false;
+      return authStore.canAccess(r.path);
+    })
+    .map((r) => ({
+      ...r,
+      locked: !!r.requiredFeature && !subscription.canAccess(r.requiredFeature),
+    }))
 );
 
 const secondaryNavRoutes = computed(() =>
@@ -212,24 +224,30 @@ const confirmLogout = async () => {
             <v-tooltip
               v-for="item in mainNavRoutes"
               :key="item.path"
-              :text="item.title"
+              :text="item.locked ? `${item.title} — доступно с плана Стандарт` : item.title"
               location="end"
-              :disabled="!collapsed"
+              :disabled="!collapsed && !item.locked"
             >
               <template #activator="{ props: tip }">
-                <router-link
-                  :to="item.path"
+                <component
+                  :is="item.locked ? 'button' : 'router-link'"
+                  :to="item.locked ? undefined : item.path"
                   class="lyt-nav-item"
-                  :class="{ 'lyt-nav-item--active': isActive(item.path) }"
+                  :class="{
+                    'lyt-nav-item--active': !item.locked && isActive(item.path),
+                    'lyt-nav-item--locked': item.locked,
+                  }"
                   v-bind="tip"
+                  @click="item.locked && $router.push({ path: '/settings', query: { tab: 'subscription' } })"
                 >
                   <div
-                    :style="{ display: 'flex', gap: collapsed ? '0' : '12px' }"
+                    :style="{ display: 'flex', gap: collapsed ? '0' : '12px', alignItems: 'center', width: '100%' }"
                   >
                     <v-icon :icon="item.icon" size="20" />
                     <span class="lyt-nav-text">{{ item.title }}</span>
+                    <v-icon v-if="item.locked" icon="mdi-crown" size="16" class="lyt-nav-crown" />
                   </div>
-                </router-link>
+                </component>
               </template>
             </v-tooltip>
           </nav>
@@ -297,7 +315,11 @@ const confirmLogout = async () => {
               <span class="lyt-sidebar-user-name">{{
                 authStore.userName || "Администратор"
               }}</span>
-              <span class="lyt-sidebar-user-role">{{
+              <span v-if="hasPlan" class="lyt-plan-badge">
+                <v-icon icon="mdi-crown" size="10" />
+                {{ planBadgeLabel }}
+              </span>
+              <span v-else class="lyt-sidebar-user-role">{{
                 authStore.isStaff ? (authStore.staffRole === 'MANAGER' ? 'Менеджер' : 'Оператор') : 'Владелец'
               }}</span>
             </div>
@@ -360,9 +382,21 @@ const confirmLogout = async () => {
               </router-link>
 
               <!-- Activity history -->
-              <router-link to="/activity" class="lyt-header-icon-btn" title="История действий">
-                <v-icon icon="mdi-history" size="20" />
-              </router-link>
+              <v-tooltip :text="subscription.canAccess('activity') ? 'История действий' : 'Доступно с плана Стандарт'" location="bottom">
+                <template #activator="{ props: tip }">
+                  <component
+                    :is="subscription.canAccess('activity') ? 'router-link' : 'button'"
+                    :to="subscription.canAccess('activity') ? '/activity' : undefined"
+                    class="lyt-header-icon-btn"
+                    :class="{ 'lyt-header-icon-btn--locked': !subscription.canAccess('activity') }"
+                    v-bind="tip"
+                    @click="!subscription.canAccess('activity') && $router.push({ path: '/settings', query: { tab: 'subscription' } })"
+                  >
+                    <v-icon icon="mdi-history" size="20" />
+                    <v-icon v-if="!subscription.canAccess('activity')" icon="mdi-crown" size="14" class="lyt-crown-badge" />
+                  </component>
+                </template>
+              </v-tooltip>
 
               <!-- Notifications -->
               <router-link to="/notifications" class="lyt-header-icon-btn" title="Уведомления">
@@ -379,6 +413,10 @@ const confirmLogout = async () => {
                   </button>
                 </template>
                 <div class="lyt-dropdown">
+                  <button class="lyt-dropdown-item" @click="quickActionsMenu = false; showCreateClientDialog = true">
+                    <v-icon icon="mdi-account-plus-outline" size="18" />
+                    <span>Создать клиента</span>
+                  </button>
                   <button class="lyt-dropdown-item" @click="quickActionsMenu = false; router.push('/create-deal')">
                     <v-icon icon="mdi-handshake" size="18" />
                     <span>Новая сделка</span>
@@ -387,14 +425,15 @@ const confirmLogout = async () => {
                     <v-icon icon="mdi-package-variant-plus" size="18" />
                     <span>Новый товар</span>
                   </button>
-                  <button class="lyt-dropdown-item" @click="quickActionsMenu = false; router.push('/import')">
+                  <button
+                    class="lyt-dropdown-item"
+                    :class="{ 'lyt-dropdown-item--locked': !subscription.canAccess('import') }"
+                    :disabled="!subscription.canAccess('import')"
+                    @click="quickActionsMenu = false; subscription.canAccess('import') ? router.push('/import') : router.push({ path: '/settings', query: { tab: 'subscription' } })"
+                  >
                     <v-icon icon="mdi-file-upload-outline" size="18" />
                     <span>Импорт из Excel</span>
-                  </button>
-                  <div style="border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08); margin: 4px 0;" />
-                  <button class="lyt-dropdown-item" @click="quickActionsMenu = false; showCreateClientDialog = true">
-                    <v-icon icon="mdi-account-plus-outline" size="18" />
-                    <span>Создать клиента</span>
+                    <v-icon v-if="!subscription.canAccess('import')" icon="mdi-crown" size="16" class="ml-auto" style="color: #e8b931;" />
                   </button>
                 </div>
               </v-menu>
@@ -404,8 +443,11 @@ const confirmLogout = async () => {
               <v-menu offset="8">
                 <template v-slot:activator="{ props }">
                   <button class="lyt-header-user" v-bind="props">
-                    <div class="lyt-header-user-avatar">
+                    <div class="lyt-header-user-avatar" style="position: relative;">
                       {{ userInitials }}
+                      <div v-if="hasPlan" class="lyt-avatar-plan-dot">
+                        <v-icon icon="mdi-crown" size="8" color="#fff" />
+                      </div>
                     </div>
                     <v-icon
                       icon="mdi-chevron-down"
@@ -423,6 +465,10 @@ const confirmLogout = async () => {
                     <div>
                       <p class="lyt-dropdown-name">
                         {{ authStore.userName || "Администратор" }}
+                        <span v-if="hasPlan" class="lyt-dropdown-plan-badge">
+                          <v-icon icon="mdi-crown" size="10" />
+                          {{ planBadgeLabel }}
+                        </span>
                       </p>
                       <p class="lyt-dropdown-email">
                         {{ authStore.user?.phone ? '+7 ' + authStore.user.phone.slice(1, 4) + ' ***' : '' }}
@@ -658,6 +704,24 @@ const confirmLogout = async () => {
   color: #047857;
 }
 
+.lyt-nav-item--locked {
+  opacity: 0.55;
+  cursor: pointer;
+  border: 1px solid rgba(232, 185, 49, 0.35);
+  border-radius: 10px;
+}
+
+.lyt-nav-item--locked:hover {
+  opacity: 0.75;
+  border-color: rgba(232, 185, 49, 0.55);
+  background: rgba(232, 185, 49, 0.06);
+}
+
+.lyt-nav-crown {
+  margin-left: auto;
+  color: #e8b931;
+}
+
 .lyt-nav-text {
   transition:
     opacity 0.2s ease,
@@ -770,6 +834,33 @@ const confirmLogout = async () => {
   font-size: 11px;
   color: #9ca3af;
 }
+
+.lyt-plan-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+  color: #b8941e; background: rgba(232, 185, 49, 0.12);
+  border: 1px solid rgba(232, 185, 49, 0.25);
+  border-radius: 10px; padding: 1px 8px 1px 6px;
+  line-height: 1;
+}
+.lyt-plan-badge .v-icon { color: #e8b931; }
+
+.lyt-avatar-plan-dot {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #e8b931; border: 2px solid #fff;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.lyt-dropdown-plan-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 700;
+  color: #b8941e; background: rgba(232, 185, 49, 0.12);
+  border: 1px solid rgba(232, 185, 49, 0.25);
+  border-radius: 10px; padding: 1px 7px 1px 5px;
+  margin-left: 6px; vertical-align: middle;
+}
+.lyt-dropdown-plan-badge .v-icon { color: #e8b931; }
 
 .lyt-sidebar-logout {
   width: 32px;
@@ -895,6 +986,27 @@ const confirmLogout = async () => {
   border-color: #e5e7eb;
 }
 
+.lyt-header-icon-btn--locked {
+  opacity: 0.65;
+  cursor: pointer;
+  border-color: rgba(232, 185, 49, 0.4);
+  position: relative;
+}
+
+.lyt-header-icon-btn--locked:hover {
+  opacity: 0.85;
+  border-color: rgba(232, 185, 49, 0.6);
+  background: rgba(232, 185, 49, 0.06);
+}
+
+.lyt-crown-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -5px;
+  color: #e8b931;
+  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.9));
+}
+
 .lyt-header-badge {
   position: absolute;
   top: -4px;
@@ -936,13 +1048,12 @@ const confirmLogout = async () => {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 1px 2px rgba(4, 120, 87, 0.2), 0 4px 12px rgba(4, 120, 87, 0.18);
+  box-shadow: none;
   margin-left: 4px;
 }
 
 .lyt-header-add-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 4px rgba(4, 120, 87, 0.25), 0 8px 20px rgba(4, 120, 87, 0.3);
+  opacity: 0.9;
 }
 
 .lyt-header-add-btn:active {
@@ -1073,6 +1184,19 @@ const confirmLogout = async () => {
   background: #fef2f2;
 }
 
+.lyt-dropdown-item--locked {
+  opacity: 0.55;
+  cursor: pointer;
+  border: 1px solid rgba(232, 185, 49, 0.35);
+  border-radius: 8px;
+}
+
+.lyt-dropdown-item--locked:hover {
+  background: rgba(232, 185, 49, 0.06);
+  border-color: rgba(232, 185, 49, 0.55);
+  opacity: 0.75;
+}
+
 /* ===== LOGOUT DIALOG ===== */
 .lyt-logout-dialog {
   background: #fff;
@@ -1186,6 +1310,15 @@ const confirmLogout = async () => {
   color: #059669;
 }
 
+.dark .lyt-nav-item--locked {
+  border-color: rgba(232, 185, 49, 0.25);
+}
+
+.dark .lyt-nav-item--locked:hover {
+  border-color: rgba(232, 185, 49, 0.4);
+  background: rgba(232, 185, 49, 0.08);
+}
+
 .dark .lyt-theme-btn,
 .dark .lyt-collapse-btn {
   color: #71717a;
@@ -1207,6 +1340,13 @@ const confirmLogout = async () => {
 
 .dark .lyt-sidebar-user-role {
   color: #71717a;
+}
+.dark .lyt-plan-badge {
+  background: rgba(232, 185, 49, 0.08); border-color: rgba(232, 185, 49, 0.18);
+}
+.dark .lyt-avatar-plan-dot { border-color: #1e1e2e; }
+.dark .lyt-dropdown-plan-badge {
+  background: rgba(232, 185, 49, 0.1); border-color: rgba(232, 185, 49, 0.2);
 }
 
 .dark .lyt-sidebar-logout {
@@ -1263,6 +1403,19 @@ const confirmLogout = async () => {
   border-color: #3f3f5c;
 }
 
+.dark .lyt-header-icon-btn--locked {
+  border-color: rgba(232, 185, 49, 0.3);
+}
+
+.dark .lyt-header-icon-btn--locked:hover {
+  border-color: rgba(232, 185, 49, 0.5);
+  background: rgba(232, 185, 49, 0.08);
+}
+
+.dark .lyt-crown-badge {
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.8));
+}
+
 .dark .lyt-header-divider {
   background: #2e2e42;
 }
@@ -1307,6 +1460,10 @@ const confirmLogout = async () => {
 
 .dark .lyt-dropdown-item--danger:hover {
   background: rgba(239, 68, 68, 0.12);
+}
+
+.dark .lyt-dropdown-item--locked:hover {
+  background: rgba(232, 185, 49, 0.08);
 }
 
 .dark .lyt-logout-dialog {

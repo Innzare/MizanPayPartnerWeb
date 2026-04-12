@@ -14,7 +14,9 @@ declare module 'vue' {
     ClientPicker: typeof import('./components/ClientPicker.vue')['default']
     CreateClientDialog: typeof import('./components/CreateClientDialog.vue')['default']
     GlobalToast: typeof import('./components/GlobalToast.vue')['default']
+    HeroSummary: typeof import('./components/HeroSummary.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    UpgradePrompt: typeof import('./components/UpgradePrompt.vue')['default']
   }
 }

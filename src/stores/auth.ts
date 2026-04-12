@@ -51,17 +51,29 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
     try {
       const data = await api.post<AuthResponse>('/auth/investor/login', { email, password })
-      // If staff login, inject staffId/staffRole into user object
-      if (data.staffId) {
-        data.user.staffId = data.staffId
-        data.user.staffRole = data.staffRole
-      }
-      user.value = data.user
       accessToken.value = data.accessToken
       refreshToken.value = data.refreshToken
       localStorage.setItem('access_token', data.accessToken)
       localStorage.setItem('refresh_token', data.refreshToken)
-      localStorage.setItem('user', JSON.stringify(data.user))
+
+      // Fetch full profile (includes planFeatures, planLimits, etc.)
+      try {
+        const profile = await api.getSilent<User>('/auth/investor/profile')
+        if (data.staffId) {
+          profile.staffId = data.staffId
+          profile.staffRole = data.staffRole
+        }
+        user.value = profile
+        localStorage.setItem('user', JSON.stringify(profile))
+      } catch {
+        // Fallback to login response data
+        if (data.staffId) {
+          data.user.staffId = data.staffId
+          data.user.staffRole = data.staffRole
+        }
+        user.value = data.user
+        localStorage.setItem('user', JSON.stringify(data.user))
+      }
     } catch (e: any) {
       error.value = e.message || 'Ошибка входа'
       throw e

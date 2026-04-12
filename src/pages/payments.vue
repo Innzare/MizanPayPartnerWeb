@@ -7,11 +7,13 @@ import { type Payment, type Deal, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useSubscription } from '@/composables/useSubscription'
 import { api } from '@/api/client'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+const subscription = useSubscription()
 const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
 
@@ -49,6 +51,10 @@ onMounted(async () => {
 })
 
 const tab = ref(0)
+watch(tab, (v) => {
+  sortField.value = 'dueDate'
+  sortAsc.value = v === 2 ? false : true
+})
 const search = ref('')
 const viewMode = ref<'table' | 'calendar'>('table')
 
@@ -86,6 +92,7 @@ function nextMonth() {
 
 // Map: dateKey (YYYY-MM-DD) -> payments[]
 const paymentsByDate = computed(() => {
+  if (!subscription.canAccess('analyticsCharts')) return {} as Record<string, (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]>
   const map: Record<string, (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]> = {}
   paymentsStore.allPaymentsFlat.forEach(p => {
     const key = p.dueDate.slice(0, 10)
@@ -595,7 +602,20 @@ const rescheduleReasonOptions = [
 
     <!-- View mode toggle -->
     <div class="d-flex ga-2 mb-4 align-center">
-      <button class="btn-whatsapp" :disabled="sendingBulk" @click="sendBulkReminders">
+      <v-tooltip v-if="!subscription.canAccess('whatsapp')" text="Доступно с плана Стандарт" location="bottom">
+        <template #activator="{ props: tip }">
+          <button
+            class="btn-whatsapp btn-whatsapp--locked"
+            v-bind="tip"
+            @click="router.push({ path: '/settings', query: { tab: 'subscription' } })"
+          >
+            <v-icon icon="mdi-whatsapp" size="18" />
+            Напомнить всем
+            <v-icon icon="mdi-crown" size="14" class="btn-whatsapp-crown" />
+          </button>
+        </template>
+      </v-tooltip>
+      <button v-else class="btn-whatsapp" :disabled="sendingBulk" @click="sendBulkReminders">
         <v-progress-circular v-if="sendingBulk" indeterminate size="14" width="2" color="white" />
         <v-icon v-else icon="mdi-whatsapp" size="18" />
         {{ sendingBulk ? 'Рассылка...' : 'Напомнить всем' }}
@@ -606,15 +626,37 @@ const rescheduleReasonOptions = [
           <v-icon icon="mdi-table" size="16" />
           <span class="d-none d-sm-inline">Таблица</span>
         </button>
-        <button class="view-toggle-btn" :class="{ active: viewMode === 'calendar' }" @click="viewMode = 'calendar'">
+        <button
+          class="view-toggle-btn"
+          :class="{
+            active: viewMode === 'calendar',
+            'view-toggle-btn--locked': !subscription.canAccess('analyticsCharts') && viewMode !== 'calendar',
+          }"
+          @click="viewMode = 'calendar'"
+        >
           <v-icon icon="mdi-calendar-month" size="16" />
           <span class="d-none d-sm-inline">Календарь</span>
+          <v-icon v-if="!subscription.canAccess('analyticsCharts')" icon="mdi-crown" size="14" class="view-toggle-crown" />
         </button>
       </div>
     </div>
 
     <!-- CALENDAR VIEW -->
     <template v-if="viewMode === 'calendar'">
+      <div class="cal-section" :class="{ 'cal-section--locked': !subscription.canAccess('analyticsCharts') }">
+      <div v-if="!subscription.canAccess('analyticsCharts')" class="cal-overlay" @click="router.push({ path: '/settings', query: { tab: 'subscription' } })">
+        <div class="cal-overlay-content">
+          <div class="cal-overlay-icon">
+            <v-icon icon="mdi-crown" size="24" />
+          </div>
+          <div class="cal-overlay-title">Календарь платежей</div>
+          <div class="cal-overlay-text">Визуальный календарь с платежами по дням доступен с плана Бизнес</div>
+          <button class="cal-overlay-btn">
+            Перейти на план
+            <v-icon icon="mdi-arrow-right" size="16" />
+          </button>
+        </div>
+      </div>
       <v-row>
         <v-col :cols="12" :lg="calendarScale === 'month' ? 8 : 12">
           <v-card rounded="lg" elevation="0" border>
@@ -924,6 +966,7 @@ const rescheduleReasonOptions = [
           </div>
         </v-card>
       </v-dialog>
+      </div>
     </template>
 
     <!-- TABLE VIEW -->
@@ -967,6 +1010,7 @@ const rescheduleReasonOptions = [
         <v-table v-if="displayedPayments.length" density="comfortable" hover class="payments-table">
           <thead>
             <tr>
+              <th class="th-index">№</th>
               <th class="sortable-th" @click="toggleSort('deal')">
                 Сделка
                 <v-icon :icon="sortIcon('deal')" size="14" class="sort-icon" :class="{ active: sortField === 'deal' }" />
@@ -974,10 +1018,6 @@ const rescheduleReasonOptions = [
               <th class="sortable-th" @click="toggleSort('client')">
                 Клиент
                 <v-icon :icon="sortIcon('client')" size="14" class="sort-icon" :class="{ active: sortField === 'client' }" />
-              </th>
-              <th class="sortable-th text-center" @click="toggleSort('number')">
-                №
-                <v-icon :icon="sortIcon('number')" size="14" class="sort-icon" :class="{ active: sortField === 'number' }" />
               </th>
               <th class="sortable-th text-right" @click="toggleSort('amount')">
                 Сумма
@@ -996,7 +1036,8 @@ const rescheduleReasonOptions = [
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in displayedPayments" :key="p.id" class="clickable-row" @click="openDealFromPayment(p)">
+            <tr v-for="(p, idx) in displayedPayments" :key="p.id" class="clickable-row" @click="openDealFromPayment(p)">
+              <td class="td-index">{{ idx + 1 }}</td>
               <td>
                 <span class="font-weight-medium">{{ getDealName(p) }}</span>
               </td>
@@ -1004,14 +1045,16 @@ const rescheduleReasonOptions = [
                 {{ getClientName(p) }}
                 <span v-if="!getDealForPayment(p)?.client && !getDealForPayment(p)?.clientProfile?.userId" class="external-badge">Внешний</span>
               </td>
-              <td class="text-center">{{ p.number }}</td>
-              <td class="text-right font-weight-bold text-no-wrap">{{ formatCurrency(p.amount) }}</td>
+              <td class="text-right text-no-wrap">
+                <span class="font-weight-bold">{{ formatCurrency(p.amount) }}</span>
+                <span class="payment-of-total">{{ p.number }} из {{ getDealForPayment(p)?.numberOfPayments || '?' }}</span>
+              </td>
               <td>
                 <div>
-                  <span>{{ formatDate(p.dueDate) }}</span>
+                  <span>{{ formatDateShort(p.dueDate) }}</span>
                   <div v-if="p.rescheduledFrom" class="rescheduled-hint">
                     <v-icon icon="mdi-calendar-arrow-right" size="12" />
-                    <span>с {{ formatDate(p.rescheduledFrom) }}</span>
+                    <span>с {{ formatDateShort(p.rescheduledFrom) }}</span>
                   </div>
                 </div>
               </td>
@@ -1076,7 +1119,7 @@ const rescheduleReasonOptions = [
     <v-dialog v-model="showDealDialog" max-width="680" scrollable>
       <v-card v-if="selectedDeal" rounded="lg">
         <div class="dialog-hero">
-          <v-img :src="selectedDeal.productPhotos[0]" height="180" cover class="dialog-hero-img" />
+          <v-img :src="selectedDeal.productPhotos?.[0]" height="180" cover class="dialog-hero-img" />
           <div class="dialog-hero-overlay" />
           <button class="dialog-close" @click="showDealDialog = false">
             <v-icon icon="mdi-close" size="20" />
@@ -1386,6 +1429,21 @@ const rescheduleReasonOptions = [
   color: rgba(var(--v-theme-on-surface), 0.5) !important;
 }
 
+.th-index {
+  width: 40px; padding-left: 12px !important; padding-right: 4px !important;
+}
+.td-index {
+  width: 40px; padding-left: 12px !important; padding-right: 4px !important;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  font-size: 12px !important;
+}
+.payment-of-total {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
 .sortable-th {
   cursor: pointer; user-select: none; white-space: nowrap;
 }
@@ -1724,6 +1782,80 @@ const rescheduleReasonOptions = [
   background: rgba(var(--v-theme-primary), 0.1);
   color: rgb(var(--v-theme-primary)); font-weight: 600;
 }
+.view-toggle-btn--locked {
+  opacity: 0.55;
+  border: 1px solid rgba(232, 185, 49, 0.35);
+  border-radius: 0 8px 8px 0;
+}
+.view-toggle-btn--locked:hover {
+  opacity: 0.75;
+  border-color: rgba(232, 185, 49, 0.55);
+  background: rgba(232, 185, 49, 0.06);
+}
+.view-toggle-crown {
+  color: #e8b931;
+  margin-left: 2px;
+}
+
+/* Calendar lock */
+.cal-section {
+  position: relative;
+}
+.cal-section--locked {
+  pointer-events: none;
+  user-select: none;
+}
+.cal-section--locked > *:not(.cal-overlay) {
+  filter: blur(5px);
+  opacity: 0.7;
+}
+.cal-overlay {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 80px;
+  pointer-events: auto; cursor: pointer;
+  border-radius: 16px;
+}
+.cal-overlay-content {
+  text-align: center; padding: 28px 32px;
+  background: #fff;
+  border-radius: 18px;
+  border: 1px solid rgba(232, 185, 49, 0.3);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1);
+  max-width: 360px;
+}
+.cal-overlay-icon {
+  width: 48px; height: 48px; border-radius: 12px; margin: 0 auto 12px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(232, 185, 49, 0.1);
+  color: #e8b931;
+}
+.cal-overlay-title {
+  font-size: 17px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  margin-bottom: 6px;
+}
+.cal-overlay-text {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
+  line-height: 1.5; margin-bottom: 16px;
+}
+.cal-overlay-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 20px; border-radius: 10px; border: none;
+  background: #047857; color: #fff;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.cal-overlay-btn:hover { background: #065f46; }
+
+.dark .cal-overlay-content {
+  background: #1e1e2e;
+  border-color: rgba(232, 185, 49, 0.25);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+.dark .cal-overlay-icon {
+  background: rgba(232, 185, 49, 0.12);
+}
 
 /* Calendar */
 .cal-nav-btn {
@@ -2055,6 +2187,17 @@ const rescheduleReasonOptions = [
 }
 .btn-whatsapp:hover { background: #1da851; }
 .btn-whatsapp:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-whatsapp--locked {
+  opacity: 0.55;
+  border: 1px solid rgba(232, 185, 49, 0.4);
+}
+.btn-whatsapp--locked:hover {
+  opacity: 0.75;
+  background: #25d366;
+}
+.btn-whatsapp-crown {
+  color: #e8b931;
+}
 .external-badge {
   display: inline-flex; padding: 2px 6px; border-radius: 5px;
   background: rgba(99, 102, 241, 0.1); color: #6366f1;

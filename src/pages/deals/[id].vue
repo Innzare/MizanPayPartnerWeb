@@ -7,9 +7,11 @@ import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { userName, clientProfileName, type Deal } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import { generateContract } from '@/utils/contractPdf'
+import { generateDealSummary } from '@/utils/dealSummaryPdf'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useSubscription } from '@/composables/useSubscription'
 import { api } from '@/api/client'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
@@ -27,6 +29,7 @@ const paymentsStore = usePaymentsStore()
 const clientsStore = useClientsStore()
 
 const authStore = useAuthStore()
+const { canAccess: canAccessFeature } = useSubscription()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const dealId = computed(() => route.params.id as string)
@@ -467,6 +470,12 @@ function downloadContract() {
   generateContract(deal.value, payments.value, investor)
 }
 
+function downloadSummary() {
+  if (!deal.value) return
+  const investor = authStore.user || {} as Partial<import('@/types').User>
+  generateDealSummary(deal.value, payments.value, investor)
+}
+
 // Deal timeline events
 const timeline = computed(() => {
   if (!deal.value) return []
@@ -486,9 +495,9 @@ const timeline = computed(() => {
 <template>
   <div class="at-page" :class="{ dark: isDark }">
     <!-- Back button -->
-    <button class="back-btn mb-4" @click="router.push('/deals')">
+    <button class="back-btn mb-4" @click="router.back()">
       <v-icon icon="mdi-arrow-left" size="18" />
-      Назад к портфелю
+      Назад
     </button>
 
     <!-- Page loader -->
@@ -764,50 +773,52 @@ const timeline = computed(() => {
               </div>
             </div>
 
-            <!-- Reminder buttons -->
-            <div v-if="deal.clientProfile.phone && deal.status === 'ACTIVE'" class="d-flex ga-2 mt-4" style="flex-wrap: wrap;">
-              <button class="reminder-btn reminder-btn--api" :disabled="sendingReminder" @click="sendApiReminder">
-                <v-progress-circular v-if="sendingReminder" indeterminate size="14" width="2" />
-                <v-icon v-else icon="mdi-whatsapp" size="16" />
-                {{ sendingReminder ? 'Отправка...' : 'Напомнить в WhatsApp' }}
-              </button>
-            </div>
-
-            <!-- Per-deal reminder settings -->
-            <div class="deal-reminder-settings mt-4">
-              <div class="d-flex align-center justify-space-between mb-2">
-                <span class="text-caption font-weight-bold" style="opacity: 0.6;">Настройки напоминаний</span>
-                <v-switch
-                  v-model="dealReminderCustom"
-                  density="compact"
-                  hide-details
-                  color="primary"
-                  :label="dealReminderCustom ? 'Свои настройки' : 'Глобальные'"
-                  style="flex: none;"
-                  @update:model-value="toggleDealReminder"
-                />
+            <!-- Reminder buttons (PRO+) -->
+            <template v-if="canAccessFeature('whatsapp')">
+              <div v-if="deal.clientProfile.phone && deal.status === 'ACTIVE'" class="d-flex ga-2 mt-4" style="flex-wrap: wrap;">
+                <button class="reminder-btn reminder-btn--api" :disabled="sendingReminder" @click="sendApiReminder">
+                  <v-progress-circular v-if="sendingReminder" indeterminate size="14" width="2" />
+                  <v-icon v-else icon="mdi-whatsapp" size="16" />
+                  {{ sendingReminder ? 'Отправка...' : 'Напомнить в WhatsApp' }}
+                </button>
               </div>
 
-              <div v-if="dealReminderCustom" class="deal-reminder-fields">
-                <div class="d-flex align-center ga-3 mb-2">
-                  <span class="text-caption">Вкл/выкл</span>
-                  <v-switch v-model="dealReminderEnabled" density="compact" hide-details color="primary" style="flex: none;" @update:model-value="saveDealReminder" />
+              <!-- Per-deal reminder settings -->
+              <div class="deal-reminder-settings mt-4">
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <span class="text-caption font-weight-bold" style="opacity: 0.6;">Настройки напоминаний</span>
+                  <v-switch
+                    v-model="dealReminderCustom"
+                    density="compact"
+                    hide-details
+                    color="primary"
+                    :label="dealReminderCustom ? 'Свои настройки' : 'Глобальные'"
+                    style="flex: none;"
+                    @update:model-value="toggleDealReminder"
+                  />
                 </div>
-                <div v-if="dealReminderEnabled" class="d-flex align-center ga-2 flex-wrap">
-                  <span class="text-caption" style="opacity: 0.6;">За</span>
-                  <button
-                    v-for="d in [1,2,3,5,7]" :key="d"
-                    class="deal-day-chip"
-                    :class="{ active: dealReminderDays === d }"
-                    @click="dealReminderDays = d; saveDealReminder()"
-                  >{{ d }} дн</button>
-                  <span class="text-caption" style="opacity: 0.6;">до платежа</span>
+
+                <div v-if="dealReminderCustom" class="deal-reminder-fields">
+                  <div class="d-flex align-center ga-3 mb-2">
+                    <span class="text-caption">Вкл/выкл</span>
+                    <v-switch v-model="dealReminderEnabled" density="compact" hide-details color="primary" style="flex: none;" @update:model-value="saveDealReminder" />
+                  </div>
+                  <div v-if="dealReminderEnabled" class="d-flex align-center ga-2 flex-wrap">
+                    <span class="text-caption" style="opacity: 0.6;">За</span>
+                    <button
+                      v-for="d in [1,2,3,5,7]" :key="d"
+                      class="deal-day-chip"
+                      :class="{ active: dealReminderDays === d }"
+                      @click="dealReminderDays = d; saveDealReminder()"
+                    >{{ d }} дн</button>
+                    <span class="text-caption" style="opacity: 0.6;">до платежа</span>
+                  </div>
+                </div>
+                <div v-else class="text-caption text-medium-emphasis">
+                  Используются глобальные настройки из раздела WhatsApp
                 </div>
               </div>
-              <div v-else class="text-caption text-medium-emphasis">
-                Используются глобальные настройки из раздела WhatsApp
-              </div>
-            </div>
+            </template>
           </v-card>
 
           <!-- Fallback: old client card (platform or external) -->
@@ -872,50 +883,52 @@ const timeline = computed(() => {
               </div>
             </div>
 
-            <!-- Reminder buttons -->
-            <div v-if="(client?.phone || deal?.externalClientPhone) && deal?.status === 'ACTIVE'" class="d-flex ga-2 mt-4" style="flex-wrap: wrap;">
-              <button class="reminder-btn reminder-btn--api" :disabled="sendingReminder" @click="sendApiReminder">
-                <v-progress-circular v-if="sendingReminder" indeterminate size="14" width="2" />
-                <v-icon v-else icon="mdi-whatsapp" size="16" />
-                {{ sendingReminder ? 'Отправка...' : 'Напомнить в WhatsApp' }}
-              </button>
-            </div>
-
-            <!-- Per-deal reminder settings -->
-            <div class="deal-reminder-settings mt-4">
-              <div class="d-flex align-center justify-space-between mb-2">
-                <span class="text-caption font-weight-bold" style="opacity: 0.6;">Настройки напоминаний</span>
-                <v-switch
-                  v-model="dealReminderCustom"
-                  density="compact"
-                  hide-details
-                  color="primary"
-                  :label="dealReminderCustom ? 'Свои настройки' : 'Глобальные'"
-                  style="flex: none;"
-                  @update:model-value="toggleDealReminder"
-                />
+            <!-- Reminder buttons (PRO+) -->
+            <template v-if="canAccessFeature('whatsapp')">
+              <div v-if="(client?.phone || deal?.externalClientPhone) && deal?.status === 'ACTIVE'" class="d-flex ga-2 mt-4" style="flex-wrap: wrap;">
+                <button class="reminder-btn reminder-btn--api" :disabled="sendingReminder" @click="sendApiReminder">
+                  <v-progress-circular v-if="sendingReminder" indeterminate size="14" width="2" />
+                  <v-icon v-else icon="mdi-whatsapp" size="16" />
+                  {{ sendingReminder ? 'Отправка...' : 'Напомнить в WhatsApp' }}
+                </button>
               </div>
 
-              <div v-if="dealReminderCustom" class="deal-reminder-fields">
-                <div class="d-flex align-center ga-3 mb-2">
-                  <span class="text-caption">Вкл/выкл</span>
-                  <v-switch v-model="dealReminderEnabled" density="compact" hide-details color="primary" style="flex: none;" @update:model-value="saveDealReminder" />
+              <!-- Per-deal reminder settings -->
+              <div class="deal-reminder-settings mt-4">
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <span class="text-caption font-weight-bold" style="opacity: 0.6;">Настройки напоминаний</span>
+                  <v-switch
+                    v-model="dealReminderCustom"
+                    density="compact"
+                    hide-details
+                    color="primary"
+                    :label="dealReminderCustom ? 'Свои настройки' : 'Глобальные'"
+                    style="flex: none;"
+                    @update:model-value="toggleDealReminder"
+                  />
                 </div>
-                <div v-if="dealReminderEnabled" class="d-flex align-center ga-2 flex-wrap">
-                  <span class="text-caption" style="opacity: 0.6;">За</span>
-                  <button
-                    v-for="d in [1,2,3,5,7]" :key="d"
-                    class="deal-day-chip"
-                    :class="{ active: dealReminderDays === d }"
-                    @click="dealReminderDays = d; saveDealReminder()"
-                  >{{ d }} дн</button>
-                  <span class="text-caption" style="opacity: 0.6;">до платежа</span>
+
+                <div v-if="dealReminderCustom" class="deal-reminder-fields">
+                  <div class="d-flex align-center ga-3 mb-2">
+                    <span class="text-caption">Вкл/выкл</span>
+                    <v-switch v-model="dealReminderEnabled" density="compact" hide-details color="primary" style="flex: none;" @update:model-value="saveDealReminder" />
+                  </div>
+                  <div v-if="dealReminderEnabled" class="d-flex align-center ga-2 flex-wrap">
+                    <span class="text-caption" style="opacity: 0.6;">За</span>
+                    <button
+                      v-for="d in [1,2,3,5,7]" :key="d"
+                      class="deal-day-chip"
+                      :class="{ active: dealReminderDays === d }"
+                      @click="dealReminderDays = d; saveDealReminder()"
+                    >{{ d }} дн</button>
+                    <span class="text-caption" style="opacity: 0.6;">до платежа</span>
+                  </div>
+                </div>
+                <div v-else class="text-caption text-medium-emphasis">
+                  Используются глобальные настройки из раздела WhatsApp
                 </div>
               </div>
-              <div v-else class="text-caption text-medium-emphasis">
-                Используются глобальные настройки из раздела WhatsApp
-              </div>
-            </div>
+            </template>
           </v-card>
 
           <!-- Guarantor card -->
@@ -1012,10 +1025,49 @@ const timeline = computed(() => {
                   <div class="text-caption text-medium-emphasis">PDF с условиями и графиком</div>
                 </div>
               </div>
-              <button class="contract-download-btn" @click="downloadContract">
-                <v-icon icon="mdi-download" size="18" />
-                Скачать
-              </button>
+              <v-tooltip :text="canAccessFeature('pdfContract') ? 'Скачать PDF' : 'Доступно с плана Стандарт'" location="top">
+                <template #activator="{ props: tip }">
+                  <button
+                    class="contract-download-btn"
+                    :class="{ 'contract-download-btn--disabled': !canAccessFeature('pdfContract') }"
+                    :disabled="!canAccessFeature('pdfContract')"
+                    v-bind="tip"
+                    @click="canAccessFeature('pdfContract') && downloadContract()"
+                  >
+                    <v-icon :icon="canAccessFeature('pdfContract') ? 'mdi-download' : 'mdi-lock-outline'" size="18" />
+                    Скачать
+                  </button>
+                </template>
+              </v-tooltip>
+            </div>
+          </v-card>
+
+          <!-- Deal summary PDF -->
+          <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
+            <div class="d-flex align-center justify-space-between">
+              <div class="d-flex align-center ga-3">
+                <div class="contract-icon" style="background: rgba(139, 92, 246, 0.1);">
+                  <v-icon icon="mdi-file-chart-outline" size="22" color="#8b5cf6" />
+                </div>
+                <div>
+                  <div class="font-weight-bold" style="font-size: 14px;">Сводка по сделке</div>
+                  <div class="text-caption text-medium-emphasis">PDF с деталями и графиком платежей</div>
+                </div>
+              </div>
+              <v-tooltip :text="canAccessFeature('pdfExport') ? 'Скачать PDF' : 'Доступно с плана Стандарт'" location="top">
+                <template #activator="{ props: tip }">
+                  <button
+                    class="contract-download-btn"
+                    :class="{ 'contract-download-btn--disabled': !canAccessFeature('pdfExport') }"
+                    :disabled="!canAccessFeature('pdfExport')"
+                    v-bind="tip"
+                    @click="canAccessFeature('pdfExport') && downloadSummary()"
+                  >
+                    <v-icon :icon="canAccessFeature('pdfExport') ? 'mdi-download' : 'mdi-lock-outline'" size="18" />
+                    Скачать
+                  </button>
+                </template>
+              </v-tooltip>
             </div>
           </v-card>
 
@@ -1761,6 +1813,8 @@ const timeline = computed(() => {
   cursor: pointer; transition: all 0.15s;
 }
 .contract-download-btn:hover { background: #2563eb; }
+.contract-download-btn--disabled { opacity: 0.5; cursor: not-allowed; }
+.contract-download-btn--disabled:hover { background: #3b82f6; }
 
 /* Delete deal */
 .delete-deal-bar {

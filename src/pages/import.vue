@@ -40,7 +40,10 @@ function togglePaymentDateCol(header: string) {
 }
 
 // Step 3: Result
-const result = ref<{ imported: number; skipped: number; total: number; errors: string[] } | null>(null)
+const result = ref<{
+  imported: number; skipped: number; total: number; errors: string[];
+  limitReached?: boolean; remainingSlots?: number | null; maxDeals?: number | null;
+} | null>(null)
 
 const FIELD_OPTIONS = [
   { key: 'dealDate', label: 'Дата сделки', icon: 'mdi-calendar' },
@@ -129,7 +132,11 @@ async function confirmImport() {
 
     result.value = await response.json()
     step.value = 'result'
-    toast.success(`Импортировано ${result.value!.imported} сделок`)
+    if (result.value!.limitReached) {
+      toast.warning(`Импортировано ${result.value!.imported} из ${result.value!.total} сделок — достигнут лимит плана`)
+    } else {
+      toast.success(`Импортировано ${result.value!.imported} сделок`)
+    }
   } catch (e: any) {
     toast.error(e.message || 'Ошибка импорта')
   } finally {
@@ -452,9 +459,26 @@ const mappedCount = computed(() => Object.keys(mapping.value).length)
     <div v-if="step === 'result' && result" class="step-content">
       <v-card rounded="lg" elevation="0" border class="pa-8 text-center">
         <div class="result-icon">
-          <v-icon icon="mdi-check-circle" size="56" color="primary" />
+          <v-icon :icon="result.limitReached ? 'mdi-alert-circle' : 'mdi-check-circle'" size="56" :color="result.limitReached ? 'warning' : 'primary'" />
         </div>
-        <div class="text-h5 font-weight-bold mt-4">Импорт завершён</div>
+        <div class="text-h5 font-weight-bold mt-4">
+          {{ result.limitReached ? 'Импорт частично завершён' : 'Импорт завершён' }}
+        </div>
+
+        <!-- Limit warning -->
+        <div v-if="result.limitReached" class="result-limit-banner">
+          <v-icon icon="mdi-crown" size="18" />
+          <div>
+            <div class="result-limit-title">Достигнут лимит плана</div>
+            <div class="result-limit-text">
+              Импортировано {{ result.imported }} из {{ result.total }} сделок.
+              Максимум активных сделок по вашему плану — {{ result.maxDeals }}.
+            </div>
+          </div>
+          <button class="result-limit-btn" @click="router.push({ path: '/settings', query: { tab: 'subscription' } })">
+            Улучшить план
+          </button>
+        </div>
 
         <div class="result-stats">
           <div class="result-stat">
@@ -468,6 +492,10 @@ const mappedCount = computed(() => Object.keys(mapping.value).length)
           <div class="result-stat">
             <div class="result-stat-value">{{ result.total }}</div>
             <div class="result-stat-label">Всего строк</div>
+          </div>
+          <div v-if="result.limitReached" class="result-stat">
+            <div class="result-stat-value" style="color: #ef4444;">{{ result.total - result.imported - result.skipped }}</div>
+            <div class="result-stat-label">Не импортировано (лимит)</div>
           </div>
         </div>
 
@@ -577,6 +605,28 @@ const mappedCount = computed(() => Object.keys(mapping.value).length)
 
 /* Result */
 .result-icon { margin-bottom: 8px; }
+.result-limit-banner {
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  margin: 16px 0 0; padding: 14px 18px; border-radius: 12px;
+  background: rgba(232, 185, 49, 0.08);
+  border: 1px solid rgba(232, 185, 49, 0.25);
+}
+.result-limit-banner > .v-icon { color: #e8b931; flex-shrink: 0; }
+.result-limit-title {
+  font-size: 13px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.result-limit-text {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
+  line-height: 1.4; margin-top: 2px;
+}
+.result-limit-btn {
+  flex-shrink: 0; padding: 6px 14px; border-radius: 8px; border: none;
+  background: #e8b931; color: #fff;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: all 0.15s;
+}
+.result-limit-btn:hover { background: #d4a82a; }
 .result-stats {
   display: flex; gap: 32px; justify-content: center; margin: 24px 0;
 }

@@ -3,17 +3,19 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { useRequestsStore } from '@/stores/requests'
 import { useNotificationsStore } from '@/stores/notifications'
-import { formatCurrency, formatCurrencyShort, formatPercent, formatDateShort } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDateShort } from '@/utils/formatters'
 import { userName, clientProfileName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { api } from '@/api/client'
+import HeroSummary from '@/components/HeroSummary.vue'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+
 
 const sendingBulk = ref(false)
 
@@ -200,47 +202,12 @@ function getAvatarColor(name?: string) {
         </button>
       </div>
 
-      <div class="hero-card">
-        <div class="hero-main hero-clickable" @click="openBreakdown('remaining')">
-          <div class="hero-label">Ожидается к получению</div>
-          <div class="hero-amount">{{ formatCurrency(dealsStore.totalRemaining) }}</div>
-          <div class="hero-sub" @click.stop="openBreakdown('revenue')">
-            из <span class="hero-sub-link">{{ formatCurrency(dealsStore.totalRevenue) }}</span> общего оборота
-          </div>
-        </div>
-
-        <div class="hero-metrics">
-          <div class="hero-metric hero-clickable" @click="openBreakdown('invested')">
-            <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalInvested) }}</span>
-            <span class="hero-metric-label">Инвестировано</span>
-          </div>
-          <div class="hero-metric-divider" />
-          <div class="hero-metric hero-clickable" @click="openBreakdown('profit')">
-            <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.totalProfit) }}</span>
-            <span class="hero-metric-label">Прибыль</span>
-          </div>
-          <div class="hero-metric-divider" />
-          <div class="hero-metric hero-clickable" @click="openBreakdown('roi')">
-            <span class="hero-metric-value">{{ formatPercent(dealsStore.roi) }}</span>
-            <span class="hero-metric-label">ROI</span>
-          </div>
-          <div class="hero-metric-divider" />
-          <div class="hero-metric hero-clickable" @click="openBreakdown('monthly')">
-            <span class="hero-metric-value">{{ formatCurrencyShort(dealsStore.monthlyIncome) }}</span>
-            <span class="hero-metric-label">Доход / мес</span>
-          </div>
-        </div>
-
-        <div class="hero-progress">
-          <div class="hero-progress-header">
-            <span>Получено {{ formatCurrencyShort(dealsStore.totalRevenue - dealsStore.totalRemaining) }}</span>
-            <span>{{ dealsStore.totalRevenue > 0 ? Math.round(((dealsStore.totalRevenue - dealsStore.totalRemaining) / dealsStore.totalRevenue) * 100) : 0 }}%</span>
-          </div>
-          <div class="hero-progress-bar">
-            <div class="hero-progress-fill" :style="{ width: dealsStore.totalRevenue > 0 ? ((dealsStore.totalRevenue - dealsStore.totalRemaining) / dealsStore.totalRevenue * 100) + '%' : '0%' }" />
-          </div>
-        </div>
-      </div>
+      <HeroSummary
+        show-analytics-link
+        show-locked-overlay
+        class="hero-card"
+        @metric="openBreakdown($event as MetricKey)"
+      />
 
     </div>
 
@@ -329,7 +296,8 @@ function getAvatarColor(name?: string) {
             <div
               v-for="item in upcomingPayments"
               :key="item.payment.id"
-              class="payment-row"
+              class="payment-row payment-row--clickable"
+              @click="item.deal && router.push(`/deals/${item.deal.id}`)"
             >
               <div class="payment-avatar" :style="{ background: getAvatarColor(dealClientName(item.deal)) }">
                 {{ getInitial(dealClientName(item.deal)) }}
@@ -374,10 +342,12 @@ function getAvatarColor(name?: string) {
             <div
               v-for="deal in topActiveDeals"
               :key="deal.id"
-              class="deal-row"
+              class="deal-row deal-row--clickable"
+              @click="router.push(`/deals/${deal.id}`)"
             >
               <v-avatar size="44" rounded="lg" class="deal-photo">
-                <v-img :src="deal.productPhotos?.[0]" cover />
+                <v-img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" cover />
+                <v-icon v-else icon="mdi-package-variant-closed" size="22" color="grey" />
               </v-avatar>
               <div class="deal-info">
                 <div class="deal-product">{{ deal.productName }}</div>
@@ -479,10 +449,6 @@ function getAvatarColor(name?: string) {
 
 .hero-card {
   flex: 1;
-  background: linear-gradient(135deg, #047857 0%, #065f46 50%, #064e3b 100%);
-  border-radius: 16px;
-  padding: 28px 32px;
-  color: #fff;
 }
 
 /* Quick Actions Sidebar */
@@ -527,93 +493,6 @@ function getAvatarColor(name?: string) {
 @media (max-width: 960px) {
   .hero-row { flex-direction: column; }
   .qa-sidebar { flex-direction: row; justify-content: center; }
-}
-
-.hero-main {
-  margin-bottom: 24px;
-}
-
-.hero-label {
-  font-size: 13px;
-  font-weight: 500;
-  opacity: 0.7;
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.hero-amount {
-  font-size: 36px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-}
-
-.hero-metrics {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  padding: 16px 0;
-}
-
-.hero-metric {
-  flex: 1;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.hero-metric-value {
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.hero-metric-label {
-  font-size: 12px;
-  opacity: 0.6;
-}
-
-.hero-sub {
-  font-size: 13px;
-  opacity: 0.55;
-  margin-top: 4px;
-}
-
-.hero-metric-divider {
-  width: 1px;
-  height: 32px;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.hero-progress {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.hero-progress-header {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  opacity: 0.65;
-  margin-bottom: 8px;
-}
-
-.hero-progress-bar {
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.15);
-  overflow: hidden;
-}
-
-.hero-progress-fill {
-  height: 100%;
-  border-radius: 3px;
-  background: #34d399;
-  transition: width 0.6s ease;
 }
 
 /* KPI Row (horizontal) */
@@ -705,6 +584,7 @@ function getAvatarColor(name?: string) {
   transition: background 0.15s;
 }
 
+.payment-row--clickable { cursor: pointer; }
 .payment-row:hover {
   background: rgba(var(--v-theme-on-surface), 0.03);
 }
@@ -781,12 +661,14 @@ function getAvatarColor(name?: string) {
   transition: background 0.15s;
 }
 
+.deal-row--clickable { cursor: pointer; }
 .deal-row:hover {
   background: rgba(var(--v-theme-on-surface), 0.03);
 }
 
 .deal-photo {
   flex-shrink: 0;
+  background: rgba(var(--v-theme-on-surface), 0.04);
 }
 
 .deal-info {
@@ -857,24 +739,6 @@ function getAvatarColor(name?: string) {
   padding: 0 4px;
 }
 
-/* Clickable metrics */
-.hero-clickable {
-  cursor: pointer;
-  border-radius: 10px;
-  transition: background 0.15s;
-}
-.hero-clickable:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-.hero-sub-link {
-  text-decoration: underline;
-  text-decoration-style: dotted;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-.hero-sub-link:hover {
-  opacity: 1;
-}
 
 .kpi-clickable {
   cursor: pointer;
@@ -945,9 +809,6 @@ function getAvatarColor(name?: string) {
 }
 
 /* Dark mode */
-.dark .hero-card {
-  background: linear-gradient(135deg, #047857 0%, #064e3b 50%, #022c22 100%);
-}
 
 .dark .kpi-card {
   background: #1e1e2e;
@@ -969,8 +830,7 @@ function getAvatarColor(name?: string) {
 }
 
 @media (max-width: 960px) {
-  .hero-amount { font-size: 28px; }
-  .hero-card { padding: 20px 24px; }
+  .hero-card { min-width: 0; }
   .deal-progress-col, .deal-amount { display: none; }
 }
 </style>

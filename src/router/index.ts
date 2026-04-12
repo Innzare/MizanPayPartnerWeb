@@ -2,6 +2,18 @@ import { createRouter, createWebHistory } from "vue-router";
 import { setupLayouts } from "virtual:generated-layouts";
 import { routes } from "vue-router/auto-routes";
 import { useAuthStore } from "@/stores/auth";
+import { useSubscription } from "@/composables/useSubscription";
+import type { PlanFeatures } from "@/types";
+
+const ROUTE_FEATURES: Record<string, keyof PlanFeatures> = {
+  '/analytics': 'analytics',
+  '/import': 'import',
+  '/activity': 'activity',
+  '/registry': 'registry',
+  '/co-investors': 'coInvestors',
+  '/finance': 'finance',
+  '/staff': 'staff',
+};
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -37,6 +49,19 @@ router.beforeEach(async (to, from, next) => {
   // Role-based access check for staff
   if (authStore.isAuthenticated && !authStore.canAccess(to.path)) {
     return next("/");
+  }
+
+  // Subscription-based feature check
+  if (authStore.isAuthenticated) {
+    const featureKey = Object.entries(ROUTE_FEATURES).find(
+      ([route]) => to.path === route || to.path.startsWith(route + '/')
+    )?.[1];
+    if (featureKey) {
+      const sub = useSubscription();
+      if (!sub.canAccess(featureKey)) {
+        return next({ path: '/settings', query: { tab: 'subscription' } });
+      }
+    }
   }
 
   next();

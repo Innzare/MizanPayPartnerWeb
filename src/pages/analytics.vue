@@ -6,6 +6,8 @@ import { useRouter } from 'vue-router'
 import { userName, clientProfileName } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useSubscription } from '@/composables/useSubscription'
+import HeroSummary from '@/components/HeroSummary.vue'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -18,6 +20,8 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineEleme
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const router = useRouter()
+const { canAccess: canAccessFeature } = useSubscription()
+const hasCharts = computed(() => canAccessFeature('analyticsCharts'))
 
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
@@ -39,8 +43,20 @@ onMounted(async () => {
 
 // ── Helpers ──
 
+// Extract year and month from ISO date string without timezone conversion
+function parseDateStr(dateStr: string): { year: number; month: number } {
+  const year = parseInt(dateStr.slice(0, 4))
+  const month = parseInt(dateStr.slice(5, 7)) - 1 // 0-based
+  return { year, month }
+}
+
 function getMonthKey(date: Date) {
   return date.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' })
+}
+
+function getMonthKeyFromStr(dateStr: string): string {
+  const { year, month } = parseDateStr(dateStr)
+  return getMonthKey(new Date(year, month, 1))
 }
 
 function getLast6Months() {
@@ -65,8 +81,12 @@ function getNext6Months() {
 
 // ── Profit calculation ──
 // Each payment contains a profit portion: amount * (markupPercent / (100 + markupPercent))
-function getPaymentProfit(payment: { amount: number; dealId: string }) {
-  const deal = dealsStore.getDeal(payment.dealId)
+function getDealForPayment(payment: any) {
+  return dealsStore.getDeal(payment.dealId) || payment.deal
+}
+
+function getPaymentProfit(payment: { amount: number; dealId: string; deal?: any }) {
+  const deal = getDealForPayment(payment)
   if (!deal || !deal.markupPercent) return 0
   return payment.amount * (deal.markupPercent / (100 + deal.markupPercent))
 }
@@ -103,10 +123,8 @@ const thisMonthProfit = computed(() => {
   const thisYear = now.getFullYear()
   return paymentsStore.paidPayments
     .filter(p => {
-      const dateStr = p.paidAt || p.dueDate
-      if (!dateStr) return false
-      const d = new Date(dateStr)
-      return d.getMonth() === thisMonth && d.getFullYear() === thisYear
+      const { year: y, month: m } = parseDateStr(p.dueDate)
+      return m === thisMonth && y === thisYear
     })
     .reduce((s, p) => s + getPaymentProfit(p), 0)
 })
@@ -162,21 +180,19 @@ const profitByDeal = computed(() => {
     sourcePayments = paymentsStore.paidPayments
   }
 
-  // Filter by month and/or year
+  // Filter by month and/or year (always by dueDate string — no timezone issues)
   const paidPayments = sourcePayments.filter(p => {
-    // Determine the relevant date for this payment
-    const dateStr = (p.status === 'PAID' && p.paidAt) ? p.paidAt : p.dueDate
-    if (!dateStr) return false
-    const d = new Date(dateStr)
+    if (!p.dueDate) return false
+    const { year: y, month: m } = parseDateStr(p.dueDate)
 
     // Filter by year if set (and no specific month selected = "whole year")
     if (year && !monthKey) {
-      return d.getFullYear() === year
+      return y === year
     }
 
     // Filter by specific month key
     if (monthKey) {
-      return getMonthKey(d) === monthKey
+      return getMonthKeyFromStr(p.dueDate) === monthKey
     }
 
     return true // "За всё время" without year
@@ -202,12 +218,15 @@ const profitByDeal = computed(() => {
   const result: DealProfit[] = []
   for (const [dealId, data] of Object.entries(dealMap)) {
     const deal = dealsStore.getDeal(dealId)
-    if (!deal) continue
+    // Fallback: find deal data from one of the payments
+    const paymentDeal = !deal ? paidPayments.find(p => p.dealId === dealId)?.deal : null
+    const d = deal || paymentDeal
+    if (!d) continue
     result.push({
       dealId,
-      productName: deal.productName,
-      clientName: deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—',
-      markupPercent: deal.markupPercent,
+      productName: d.productName || 'Товар',
+      clientName: d.client ? userName(d.client) : d.clientProfile ? clientProfileName(d.clientProfile) : (d as any).externalClientName || '—',
+      markupPercent: d.markupPercent || 0,
       totalReceived: data.received,
       profitEarned: data.profit,
       paidProfit: data.paidProfit,
@@ -215,7 +234,7 @@ const profitByDeal = computed(() => {
       paymentsCount: data.count,
       paidCount: data.paidCount,
       pendingCount: data.pendingCount,
-      status: deal.status,
+      status: d.status || 'ACTIVE',
     })
   }
 
@@ -279,21 +298,14 @@ const yearMonths = computed((): MonthData[] => {
     const isPast = calYear.value < currentYear || (calYear.value === currentYear && i <= currentMonth)
     const isCurrent = calYear.value === currentYear && i === currentMonth
 
-    // Paid payments in this month (by paidAt, fallback to dueDate)
-    const paidInMonth = paymentsStore.allPaymentsFlat.filter(p => {
-      if (p.status !== 'PAID') return false
-      const dateStr = p.paidAt || p.dueDate
-      if (!dateStr) return false
-      const d = new Date(dateStr)
-      return d.getFullYear() === calYear.value && d.getMonth() === i
+    // All payments due this month (grouped by dueDate string — no timezone issues)
+    const monthPayments = paymentsStore.allPaymentsFlat.filter(p => {
+      const { year: y, month: m } = parseDateStr(p.dueDate)
+      return y === calYear.value && m === i
     })
 
-    // Pending/overdue payments due this month
-    const pendingInMonth = paymentsStore.allPaymentsFlat.filter(p => {
-      if (p.status !== 'PENDING' && p.status !== 'OVERDUE') return false
-      const d = new Date(p.dueDate)
-      return d.getFullYear() === calYear.value && d.getMonth() === i
-    })
+    const paidInMonth = monthPayments.filter(p => p.status === 'PAID')
+    const pendingInMonth = monthPayments.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
 
     const earned = paidInMonth.reduce((s, p) => s + getPaymentProfit(p), 0)
     const expected = pendingInMonth.reduce((s, p) => s + getPaymentProfit(p), 0)
@@ -348,9 +360,7 @@ const revenueChartData = computed(() => {
   const months = getLast6Months()
 
   paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID').forEach(p => {
-    const dateStr = p.paidAt || p.dueDate
-    if (!dateStr) return
-    const key = getMonthKey(new Date(dateStr))
+    const key = getMonthKeyFromStr(p.dueDate)
     if (key in months) months[key] += p.amount
   })
 
@@ -374,9 +384,7 @@ const profitChartData = computed(() => {
   const months = getLast6Months()
 
   paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID').forEach(p => {
-    const dateStr = p.paidAt || p.dueDate
-    if (!dateStr) return
-    const key = getMonthKey(new Date(dateStr))
+    const key = getMonthKeyFromStr(p.dueDate)
     if (key in months) months[key] += getPaymentProfit(p)
   })
 
@@ -400,7 +408,7 @@ const forecastChartData = computed(() => {
   const months = getNext6Months()
 
   paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
-    const key = getMonthKey(new Date(p.dueDate))
+    const key = getMonthKeyFromStr(p.dueDate)
     if (key in months) months[key] += p.amount
   })
 
@@ -429,7 +437,7 @@ const profitForecastData = computed(() => {
   const months = getNext6Months()
 
   paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
-    const key = getMonthKey(new Date(p.dueDate))
+    const key = getMonthKeyFromStr(p.dueDate)
     if (key in months) months[key] += getPaymentProfit(p)
   })
 
@@ -561,6 +569,66 @@ const doughnutOptions = {
     },
   },
 }
+
+// ── Metric breakdown dialog ──
+const breakdownOpen = ref(false)
+const breakdownTitle = ref('')
+const breakdownDeals = ref<{ deal: any; value: number; label?: string }[]>([])
+const breakdownTotal = ref(0)
+const breakdownSuffix = ref('')
+
+function openBreakdown(metric: string) {
+  let deals: { deal: any; value: number; label?: string }[] = []
+  let title = ''
+  let suffix = ''
+
+  switch (metric) {
+    case 'invested':
+      title = 'Инвестировано'
+      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.purchasePrice }))
+      break
+    case 'revenue':
+      title = 'Общий оборот'
+      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.totalPrice }))
+      break
+    case 'profit':
+      title = 'Прибыль'
+      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.markup, label: `${d.markupPercent}%` }))
+      break
+    case 'remaining':
+      title = 'Ожидается к получению'
+      deals = dealsStore.activeDeals.map(d => ({ deal: d, value: d.remainingAmount }))
+      break
+    case 'monthly':
+      title = 'Доход / мес'
+      deals = dealsStore.activeDeals
+        .filter(d => d.numberOfPayments > 0)
+        .map(d => ({ deal: d, value: Math.round(d.totalPrice / d.numberOfPayments), label: `${d.numberOfPayments} мес` }))
+      break
+    case 'roi':
+      title = 'ROI'
+      suffix = '%'
+      deals = dealsStore.investorDeals
+        .filter(d => d.purchasePrice > 0)
+        .map(d => ({ deal: d, value: Math.round((d.markup / d.purchasePrice) * 1000) / 10, label: `${formatCurrency(d.markup)} / ${formatCurrency(d.purchasePrice)}` }))
+      break
+    default:
+      return
+  }
+
+  breakdownDeals.value = deals.sort((a, b) => b.value - a.value)
+  breakdownTotal.value = deals.reduce((s, d) => s + d.value, 0)
+  breakdownTitle.value = title
+  breakdownSuffix.value = suffix
+  breakdownOpen.value = true
+}
+
+const BD_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
+function bdInitial(name?: string) { return name ? name.charAt(0).toUpperCase() : '?' }
+function bdColor(name?: string) {
+  if (!name) return BD_COLORS[0]
+  return BD_COLORS[name.charCodeAt(0) % BD_COLORS.length]
+}
 </script>
 
 <template>
@@ -570,6 +638,9 @@ const doughnutOptions = {
     </div>
 
     <template v-else>
+      <!-- Hero summary -->
+      <HeroSummary class="mb-6" @metric="openBreakdown" />
+
       <!-- KPI Cards -->
       <div class="kpi-row mb-6">
         <div class="kpi-card">
@@ -633,6 +704,43 @@ const doughnutOptions = {
         </div>
       </div>
 
+      <div class="an-sections-wrap" :class="{ 'an-sections-wrap--reorder': !hasCharts }">
+
+      <!-- Charts: BUSINESS+ only (blurred for lower plans) -->
+      <div class="an-charts-section" :class="{ 'an-charts-section--locked': !hasCharts }">
+      <div v-if="!hasCharts" class="an-charts-overlay" @click="router.push({ path: '/settings', query: { tab: 'subscription' } })">
+        <div class="an-charts-overlay-content">
+          <div class="an-charts-overlay-icon">
+            <v-icon icon="mdi-crown" size="28" />
+          </div>
+          <div class="an-charts-overlay-title">Графики и детальная аналитика</div>
+          <div class="an-charts-overlay-text">
+            Графики доходов, прогнозы, годовой обзор и диаграммы распределения — доступны с плана Бизнес
+          </div>
+          <div class="an-charts-overlay-features">
+            <div class="an-charts-overlay-feat">
+              <v-icon icon="mdi-chart-bar" size="16" />
+              <span>Графики доходов</span>
+            </div>
+            <div class="an-charts-overlay-feat">
+              <v-icon icon="mdi-calendar-text" size="16" />
+              <span>Годовой обзор</span>
+            </div>
+            <div class="an-charts-overlay-feat">
+              <v-icon icon="mdi-chart-line" size="16" />
+              <span>Прогнозы</span>
+            </div>
+            <div class="an-charts-overlay-feat">
+              <v-icon icon="mdi-chart-donut" size="16" />
+              <span>Диаграммы</span>
+            </div>
+          </div>
+          <button class="an-charts-overlay-btn">
+            Перейти на план Бизнес
+            <v-icon icon="mdi-arrow-right" size="16" />
+          </button>
+        </div>
+      </div>
       <!-- Formula explainer -->
       <div class="an-formula mb-5">
         <div class="an-formula-icon">
@@ -881,7 +989,10 @@ const doughnutOptions = {
         </v-col>
       </v-row>
 
-      <!-- Portfolio overview -->
+      </div>
+
+      <!-- Portfolio overview — available for PRO+ -->
+      <div class="an-portfolio-section">
       <div class="an-section-title">Обзор портфеля</div>
       <v-row class="mb-2">
         <v-col cols="12" lg="4">
@@ -951,6 +1062,8 @@ const doughnutOptions = {
           </v-card>
         </v-col>
       </v-row>
+      </div>
+      </div>
     </template>
 
     <!-- Profit Detail Dialog -->
@@ -1001,6 +1114,11 @@ const doughnutOptions = {
               <div class="pd-summary-label">Сделок</div>
               <div class="pd-summary-value">{{ profitByDeal.length }}</div>
             </div>
+            <div class="pd-summary-divider" />
+            <div class="pd-summary-item">
+              <div class="pd-summary-label">Платежей</div>
+              <div class="pd-summary-value">{{ profitByDeal.reduce((s, d) => s + d.paymentsCount, 0) }}</div>
+            </div>
           </div>
 
           <!-- Deal list -->
@@ -1031,11 +1149,141 @@ const doughnutOptions = {
         </div>
       </v-card>
     </v-dialog>
+
+    <!-- Metric Breakdown Dialog -->
+    <v-dialog v-model="breakdownOpen" max-width="560" scrollable>
+      <v-card rounded="lg">
+        <v-card-title class="d-flex align-center justify-space-between pa-5 pb-3">
+          <span class="text-h6">{{ breakdownTitle }}</span>
+          <v-btn icon variant="text" size="small" @click="breakdownOpen = false">
+            <v-icon icon="mdi-close" />
+          </v-btn>
+        </v-card-title>
+        <v-divider />
+        <v-card-text class="pa-0" style="max-height: 400px;">
+          <div v-if="!breakdownDeals.length" class="pa-8 text-center text-medium-emphasis">
+            Нет данных
+          </div>
+          <div v-for="(item, i) in breakdownDeals" :key="i" class="bd-row">
+            <div class="bd-avatar" :style="{ background: bdColor(item.deal?.productName) }">
+              {{ bdInitial(item.deal?.productName) }}
+            </div>
+            <div class="bd-info">
+              <div class="bd-product">{{ item.deal?.productName || 'Товар' }}</div>
+              <div class="bd-meta">{{ userName(item.deal?.client) || item.deal?.externalClientName || '—' }}</div>
+            </div>
+            <div class="bd-right">
+              <div class="bd-value">
+                {{ breakdownSuffix ? item.value + breakdownSuffix : formatCurrency(item.value) }}
+              </div>
+              <div v-if="item.label" class="bd-label">{{ item.label }}</div>
+            </div>
+          </div>
+        </v-card-text>
+        <v-divider />
+        <div class="bd-footer">
+          <span class="text-body-2 text-medium-emphasis">Итого ({{ breakdownDeals.length }} {{ breakdownDeals.length === 1 ? 'сделка' : breakdownDeals.length < 5 ? 'сделки' : 'сделок' }})</span>
+          <span class="text-h6 font-weight-bold">
+            {{ breakdownSuffix ? (Math.round(breakdownTotal * 10) / 10) + breakdownSuffix : formatCurrency(breakdownTotal) }}
+          </span>
+        </div>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <style scoped>
 .h-100 { height: 100%; }
+
+/* Sections wrapper for reordering */
+.an-sections-wrap {
+  display: flex;
+  flex-direction: column;
+}
+.an-sections-wrap--reorder .an-portfolio-section {
+  order: -1;
+}
+.an-sections-wrap--reorder .an-charts-section {
+  order: 1;
+}
+
+/* Charts section lock */
+.an-charts-section {
+  position: relative;
+}
+.an-charts-section--locked {
+  pointer-events: none;
+  user-select: none;
+}
+.an-charts-section--locked > *:not(.an-charts-overlay) {
+  filter: blur(5px);
+  opacity: 0.7;
+}
+.an-charts-overlay {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 60px;
+  pointer-events: auto; cursor: pointer;
+  border-radius: 16px;
+}
+.an-charts-overlay-content {
+  text-align: center; padding: 32px 36px;
+  background: #fff;
+  border-radius: 20px;
+  border: 1px solid rgba(232, 185, 49, 0.3);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1);
+  max-width: 420px;
+}
+.an-charts-overlay-icon {
+  width: 56px; height: 56px; border-radius: 14px; margin: 0 auto 14px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(232, 185, 49, 0.1);
+  color: #e8b931;
+}
+.an-charts-overlay-title {
+  font-size: 18px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  margin-bottom: 6px;
+}
+.an-charts-overlay-text {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
+  line-height: 1.5; margin-bottom: 16px;
+}
+.an-charts-overlay-features {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  margin-bottom: 20px; text-align: left;
+}
+.an-charts-overlay-feat {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.an-charts-overlay-feat .v-icon { color: #047857; }
+.an-charts-overlay-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 12px 24px; border-radius: 10px; border: none;
+  background: #047857; color: #fff;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.an-charts-overlay-btn:hover { background: #065f46; }
+
+.dark .an-charts-overlay {
+  background: rgba(26, 26, 46, 0.3);
+}
+.dark .an-charts-overlay-content {
+  background: #1e1e2e;
+  border-color: rgba(232, 185, 49, 0.25);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+.dark .an-charts-overlay-icon {
+  background: rgba(232, 185, 49, 0.12);
+}
+.dark .an-charts-overlay-feat {
+  background: rgba(255, 255, 255, 0.04);
+}
 
 /* Section titles */
 .an-section-title {
@@ -1568,5 +1816,36 @@ const doughnutOptions = {
 .pd-deal-chevron {
   color: rgba(var(--v-theme-on-surface), 0.2);
   flex-shrink: 0;
+}
+
+/* Breakdown dialog */
+.bd-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  transition: background 0.1s;
+}
+.bd-row:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.bd-avatar {
+  width: 36px; height: 36px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 14px; flex-shrink: 0;
+}
+.bd-info { flex: 1; min-width: 0; }
+.bd-product {
+  font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bd-meta {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bd-right { text-align: right; flex-shrink: 0; }
+.bd-value { font-size: 14px; font-weight: 700; }
+.bd-label {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.bd-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 20px;
 }
 </style>
