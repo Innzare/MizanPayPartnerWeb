@@ -30,8 +30,12 @@ export const useClientsStore = defineStore('clients', () => {
       let key: string
       if (deal.clientId) {
         key = deal.clientId
+      } else if (deal.clientProfileId) {
+        // If clientProfile is linked to a registered user, group by userId
+        key = deal.clientProfile?.userId
+          ? deal.clientProfile.userId
+          : `cp:${deal.clientProfileId}`
       } else if (deal.externalClientName) {
-        // Group external clients by name + phone
         const phone = deal.externalClientPhone || ''
         key = `ext:${deal.externalClientName.toLowerCase().trim()}:${phone.replace(/\D/g, '')}`
       } else {
@@ -39,7 +43,7 @@ export const useClientsStore = defineStore('clients', () => {
       }
 
       if (!groups[key]) groups[key] = []
-      groups[key].push(deal)
+      groups[key]!.push(deal)
     }
 
     const results: ClientInfo[] = []
@@ -49,6 +53,7 @@ export const useClientsStore = defineStore('clients', () => {
 
       const firstDeal = clientDeals[0]!
       const isExternal = key.startsWith('ext:')
+      const isClientProfile = key.startsWith('cp:')
       const activeDealCount = clientDeals.filter((d) => d.status === 'ACTIVE').length
       const totalVolume = clientDeals.reduce((sum, d) => sum + d.totalPrice, 0)
       const totalProfit = clientDeals.reduce((sum, d) => sum + d.markup, 0)
@@ -79,7 +84,25 @@ export const useClientsStore = defineStore('clients', () => {
 
       // Build user object
       let user: User
-      if (isExternal) {
+      if (isClientProfile) {
+        const cp = firstDeal.clientProfile
+        user = {
+          id: key,
+          email: '',
+          phone: cp?.phone || '',
+          firstName: cp?.firstName || '',
+          lastName: cp?.lastName || '',
+          city: '',
+          rating: 0,
+          completedDeals: clientDeals.filter((d) => d.status === 'COMPLETED').length,
+          activeDeals: activeDealCount,
+          verificationLevel: 'NONE',
+          isBlocked: false,
+          subscriptionPlan: 'FREE',
+          createdAt: firstDeal.createdAt,
+          updatedAt: firstDeal.updatedAt,
+        }
+      } else if (isExternal) {
         user = {
           id: key,
           email: '',
@@ -97,13 +120,15 @@ export const useClientsStore = defineStore('clients', () => {
           updatedAt: firstDeal.updatedAt,
         }
       } else {
-        const client = firstDeal.client
+        // Platform client — try deal.client first, fall back to clientProfile
+        const client = clientDeals.find(d => d.client)?.client
+        const cp = clientDeals.find(d => d.clientProfile)?.clientProfile
         user = {
           id: firstDeal.clientId || key,
           email: '',
-          phone: client?.phone || '',
-          firstName: client?.firstName || '',
-          lastName: client?.lastName || '',
+          phone: client?.phone || cp?.phone || '',
+          firstName: client?.firstName || cp?.firstName || '',
+          lastName: client?.lastName || cp?.lastName || '',
           city: client?.city || '',
           avatar: client?.avatar,
           rating: client?.rating ?? 0,
@@ -126,7 +151,7 @@ export const useClientsStore = defineStore('clients', () => {
         remaining,
         onTimeRate,
         nextPaymentDate,
-        isExternal,
+        isExternal: isExternal || (isClientProfile && !firstDeal.clientProfile?.userId),
       })
     }
 

@@ -3,7 +3,7 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { type Deal, userName } from '@/types'
+import { type Deal, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -22,6 +22,7 @@ onMounted(async () => {
     await Promise.all([
       dealsStore.fetchDeals(),
       paymentsStore.fetchPayments(),
+      dealsStore.fetchTrash(),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки сделок')
@@ -213,6 +214,7 @@ function getDealProgress(deal: Deal) {
 
 function dealClientName(deal: Deal) {
   if (deal.client) return userName(deal.client)
+  if (deal.clientProfile) return clientProfileName(deal.clientProfile)
   return deal.externalClientName || '—'
 }
 
@@ -440,7 +442,7 @@ const selectedDealPaidTotal = computed(() =>
                 <div class="deal-card-title">{{ deal.productName }}</div>
                 <div class="deal-card-client">
                   <v-icon icon="mdi-account" size="14" /> {{ dealClientName(deal) }}
-                  <span v-if="!deal.client && deal.externalClientName" class="external-badge">Внешний</span>
+                  <span v-if="!deal.client && deal.clientProfile && !deal.clientProfile.userId" class="external-badge">Внешний</span>
                 </div>
 
                 <div class="deal-card-prices">
@@ -509,7 +511,7 @@ const selectedDealPaidTotal = computed(() =>
               <td>
                 <div class="d-flex align-center ga-2">
                   <span>{{ dealClientName(deal) }}</span>
-                  <span v-if="!deal.client && deal.externalClientName" class="external-badge">Внешний</span>
+                  <span v-if="!deal.client && deal.clientProfile && !deal.clientProfile.userId" class="external-badge">Внешний</span>
                   <v-chip size="x-small" variant="tonal" color="warning">
                     <v-icon icon="mdi-star" size="10" start /> {{ deal.client?.rating ?? 0 }}
                   </v-chip>

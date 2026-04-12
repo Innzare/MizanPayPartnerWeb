@@ -117,6 +117,8 @@ export const useDealsStore = defineStore('deals', () => {
     clientId?: string
     externalClientName?: string
     externalClientPhone?: string
+    clientProfileId?: string
+    guarantorProfileId?: string
     productName: string
     productPhotos?: string[]
     contractPhotos?: string[]
@@ -184,10 +186,18 @@ export const useDealsStore = defineStore('deals', () => {
     trash.value = []
   }
 
+  async function updateGuarantor(dealId: string, guarantorProfileId: string | null) {
+    const updated = await api.patch<Deal>(`/deals/${dealId}/guarantor`, { guarantorProfileId })
+    const idx = deals.value.findIndex(d => d.id === dealId)
+    if (idx !== -1) deals.value[idx] = updated
+    return updated
+  }
+
   return {
     deals, isLoading, error, investorDeals, activeDeals, completedDeals,
     totalInvested, totalRevenue, totalProfit, totalRemaining, monthlyIncome, roi,
     fetchDeals, getDeal, fetchDeal, updateDealStatus, fetchAnalytics, createDirectDeal,
     trash, trashLoading, fetchTrash, restoreDeal, restoreBatch, permanentDelete, emptyTrash,
+    updateGuarantor,
   }
 })

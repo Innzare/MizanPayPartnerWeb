@@ -22,7 +22,9 @@ declare module 'vue-router/auto-routes' {
     '/activity': RouteRecordInfo<'/activity', '/activity', Record<never, never>, Record<never, never>>,
     '/analytics': RouteRecordInfo<'/analytics', '/analytics', Record<never, never>, Record<never, never>>,
     '/calculator': RouteRecordInfo<'/calculator', '/calculator', Record<never, never>, Record<never, never>>,
-    '/clients': RouteRecordInfo<'/clients', '/clients', Record<never, never>, Record<never, never>>,
+    '/clients': RouteRecordInfo<'/clients', '/clients', Record<never, never>, Record<never, never>, '/clients/' | '/clients/[id]'>,
+    '/clients/': RouteRecordInfo<'/clients/', '/clients', Record<never, never>, Record<never, never>>,
+    '/clients/[id]': RouteRecordInfo<'/clients/[id]', '/clients/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/co-investors': RouteRecordInfo<'/co-investors', '/co-investors', Record<never, never>, Record<never, never>>,
     '/create-deal': RouteRecordInfo<'/create-deal', '/create-deal', Record<never, never>, Record<never, never>>,
     '/create-product': RouteRecordInfo<'/create-product', '/create-product', Record<never, never>, Record<never, never>>,
@@ -41,7 +43,6 @@ declare module 'vue-router/auto-routes' {
     '/requests': RouteRecordInfo<'/requests', '/requests', Record<never, never>, Record<never, never>>,
     '/settings': RouteRecordInfo<'/settings', '/settings', Record<never, never>, Record<never, never>>,
     '/staff': RouteRecordInfo<'/staff', '/staff', Record<never, never>, Record<never, never>>,
-    '/users/[id]': RouteRecordInfo<'/users/[id]', '/users/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
   }
 
   /**
@@ -72,7 +73,15 @@ declare module 'vue-router/auto-routes' {
       views: never
     }
     'src/pages/clients.vue': {
-      routes: '/clients'
+      routes: '/clients' | '/clients/' | '/clients/[id]'
+      views: 'default'
+    }
+    'src/pages/clients/index.vue': {
+      routes: '/clients/'
+      views: never
+    }
+    'src/pages/clients/[id].vue': {
+      routes: '/clients/[id]'
       views: never
     }
     'src/pages/co-investors.vue': {
@@ -145,10 +154,6 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/staff.vue': {
       routes: '/staff'
-      views: never
-    }
-    'src/pages/users/[id].vue': {
-      routes: '/users/[id]'
       views: never
     }
   }

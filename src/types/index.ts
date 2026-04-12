@@ -97,6 +97,10 @@ export interface Deal {
   downPayment?: number
   externalClientName?: string
   externalClientPhone?: string
+  clientProfileId?: string
+  clientProfile?: ClientProfile
+  guarantorProfileId?: string
+  guarantorProfile?: ClientProfile
   numberOfPayments: number
   paidPayments: number
   paymentInterval: PaymentInterval
@@ -248,6 +252,58 @@ export interface PortfolioCalculatorResult {
   averageYield: number
   monthlyForecast: { month: string; amount: number }[]
   riskLevel: 'low' | 'medium' | 'high'
+}
+
+// ==================== CLIENT PROFILES ====================
+
+export interface ClientProfile {
+  id: string
+  phone: string
+  firstName: string
+  lastName: string
+  patronymic?: string
+  birthDate?: string
+  passportSeries?: string
+  passportNumber?: string
+  passportIssuedBy?: string
+  passportIssuedAt?: string
+  registrationAddress?: string
+  residentialAddress?: string
+  inn?: string
+  userId?: string
+  user?: Partial<User>
+  createdByInvestorId?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ClientProfileStats {
+  profile: ClientProfile
+  totalDeals: number
+  activeDeals: number
+  completedDeals: number
+  overduePayments: number
+  totalVolume: number
+  blacklistEntries: {
+    id: string
+    reason?: string
+    createdAt: string
+    investorName: string
+    investorId: string
+  }[]
+  reviews: {
+    id: string
+    rating: number
+    comment?: string
+    createdAt: string
+    investorName: string
+    investorId: string
+  }[]
+}
+
+export function clientProfileName(p?: ClientProfile | null): string {
+  if (!p) return '—'
+  return `${p.lastName || ''} ${p.firstName || ''} ${p.patronymic || ''}`.trim() || '—'
 }
 
 // ==================== ACTIVITY LOG ====================

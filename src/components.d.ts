@@ -11,6 +11,8 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ClientPicker: typeof import('./components/ClientPicker.vue')['default']
+    CreateClientDialog: typeof import('./components/CreateClientDialog.vue')['default']
     GlobalToast: typeof import('./components/GlobalToast.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

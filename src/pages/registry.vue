@@ -25,7 +25,12 @@ interface ClientReview {
 }
 
 interface ClientProfile {
+  id: string
   phone: string
+  firstName: string
+  lastName: string
+  patronymic?: string
+  hasPassport: boolean
   names: string[]
   totalDeals: number
   completedDeals: number
@@ -101,6 +106,9 @@ function getRatingColor(rating: number) {
   return RATING_COLORS[Math.round(rating)] || '#9ca3af'
 }
 
+// ── Registry mode: My clients vs Global search ──
+const registryMode = ref<'my' | 'global'>('my')
+
 // ── Fetch ──
 
 let searchTimeout: ReturnType<typeof setTimeout> | null = null
@@ -113,7 +121,9 @@ async function fetchClients() {
     if (search.value.trim()) params.set('search', search.value.trim())
     params.set('limit', '200')
     const query = params.toString()
-    allClients.value = await api.get<ClientProfile[]>(`/registry/clients${query ? '?' + query : ''}`)
+
+    const endpoint = registryMode.value === 'my' ? '/registry/my-clients' : '/registry/clients'
+    allClients.value = await api.get<ClientProfile[]>(`${endpoint}${query ? '?' + query : ''}`)
     applyFilters()
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки реестра')
@@ -121,6 +131,12 @@ async function fetchClients() {
     pageLoading.value = false
     searchLoading.value = false
   }
+}
+
+function switchMode(mode: 'my' | 'global') {
+  registryMode.value = mode
+  pageLoading.value = true
+  fetchClients()
 }
 
 function onSearchInput() {
@@ -302,6 +318,33 @@ function renderStars(rating: number): string[] {
       </div>
     </div>
 
+    <!-- Mode switch: My clients / Global search -->
+    <div class="rg-mode-switch mb-4">
+      <button
+        class="rg-mode-btn"
+        :class="{ 'rg-mode-btn--active': registryMode === 'my' }"
+        @click="switchMode('my')"
+      >
+        <v-icon icon="mdi-account-group-outline" size="18" />
+        <span>Мои клиенты</span>
+        <span class="rg-mode-count">{{ registryMode === 'my' ? stats.total : '' }}</span>
+      </button>
+      <button
+        class="rg-mode-btn"
+        :class="{ 'rg-mode-btn--active': registryMode === 'global' }"
+        @click="switchMode('global')"
+      >
+        <v-icon icon="mdi-earth" size="18" />
+        <span>Глобальный поиск</span>
+      </button>
+    </div>
+
+    <!-- Global search hint -->
+    <div v-if="registryMode === 'global' && !search.trim()" class="rg-global-hint mb-4">
+      <v-icon icon="mdi-information-outline" size="18" />
+      <span>Введите телефон или имя клиента для поиска по всей базе MizanPay. Здесь отображаются все зарегистрированные клиенты всех инвесторов.</span>
+    </div>
+
     <!-- External disclaimer -->
     <div v-if="clientTypeFilter === 'external' || (clientTypeFilter === 'all' && stats.external > 0)" class="rg-disclaimer mb-6">
       <v-icon icon="mdi-alert-circle-outline" size="18" />
@@ -454,7 +497,7 @@ function renderStars(rating: number): string[] {
                 </div>
                 <div class="rg-meta">
                   {{ formatPhone(client.phone) }}
-                  <span v-if="client.isOnPlatform" class="rg-platform-badge rg-platform-badge--link" @click.stop="router.push(`/users/${client.platformUserId}`)">
+                  <span v-if="client.isOnPlatform" class="rg-platform-badge rg-platform-badge--link" @click.stop="router.push(`/clients/${client.id}`)">
                     <v-icon icon="mdi-open-in-new" size="10" class="mr-1" /> На платформе
                   </span>
                   <span v-else class="rg-external-badge">Внешний</span>
@@ -1576,5 +1619,78 @@ function renderStars(rating: number): string[] {
 }
 .dark .stat-icon:last-child {
   color: #a1a1aa !important;
+}
+
+/* ── Mode switch ── */
+.rg-mode-switch {
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-radius: 12px;
+  width: fit-content;
+}
+
+.rg-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.rg-mode-btn:hover {
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+
+.rg-mode-btn--active {
+  background: rgba(var(--v-theme-surface), 1);
+  color: rgb(var(--v-theme-primary));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.rg-mode-count {
+  font-size: 11px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rg-mode-count:empty { display: none; }
+
+.rg-global-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dark .rg-mode-switch {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dark .rg-mode-btn--active {
+  background: #1e1e2e;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 </style>

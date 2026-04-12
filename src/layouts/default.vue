@@ -8,6 +8,7 @@ import logoTextDark from "@/assets/images/logo-text-dark.svg";
 import { useAuthStore } from "@/stores/auth";
 import { useNotificationsStore } from "@/stores/notifications";
 import GlobalToast from "@/components/GlobalToast.vue";
+import CreateClientDialog from "@/components/CreateClientDialog.vue";
 
 const authStore = useAuthStore();
 const notificationsStore = useNotificationsStore();
@@ -17,6 +18,7 @@ const route = useRoute();
 const router = useRouter();
 
 const quickActionsMenu = ref(false);
+const showCreateClientDialog = ref(false);
 
 const logoutDialog = ref(false);
 const DRAWER_BREAKPOINT = 1280;
@@ -330,10 +332,10 @@ const confirmLogout = async () => {
               </button>
               <div>
                 <h1 class="lyt-header-title">
-                  {{ routeTitles[route.path] || (route.path.startsWith('/deals/') ? 'Детали сделки' : 'Страница') }}
+                  {{ routeTitles[route.path] || (route.path.startsWith('/deals/') ? 'Детали сделки' : route.path.startsWith('/clients/') ? 'Профиль клиента' : 'Страница') }}
                 </h1>
                 <p class="lyt-header-subtitle" v-if="!isMobile">
-                  {{ routeSubtitles[route.path] || (route.path.startsWith('/deals/') ? 'Подробная информация' : '') }}
+                  {{ routeSubtitles[route.path] || (route.path.startsWith('/deals/') ? 'Подробная информация' : route.path.startsWith('/clients/') ? 'Документы, сделки и история' : '') }}
                 </p>
               </div>
             </div>
@@ -388,6 +390,11 @@ const confirmLogout = async () => {
                   <button class="lyt-dropdown-item" @click="quickActionsMenu = false; router.push('/import')">
                     <v-icon icon="mdi-file-upload-outline" size="18" />
                     <span>Импорт из Excel</span>
+                  </button>
+                  <div style="border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08); margin: 4px 0;" />
+                  <button class="lyt-dropdown-item" @click="quickActionsMenu = false; showCreateClientDialog = true">
+                    <v-icon icon="mdi-account-plus-outline" size="18" />
+                    <span>Создать клиента</span>
                   </button>
                 </div>
               </v-menu>
@@ -468,6 +475,7 @@ const confirmLogout = async () => {
       </v-dialog>
     </v-app>
     <GlobalToast />
+    <CreateClientDialog v-model="showCreateClientDialog" @created="router.push(`/clients/${$event.id}`)" />
   </v-responsive>
 </template>
 

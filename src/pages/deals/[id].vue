@@ -4,13 +4,15 @@ import { usePaymentsStore } from '@/stores/payments'
 import { useClientsStore } from '@/stores/clients'
 import { formatCurrency, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { userName, type Deal } from '@/types'
+import { userName, clientProfileName, type Deal } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import { generateContract } from '@/utils/contractPdf'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { api } from '@/api/client'
+import ClientPicker from '@/components/ClientPicker.vue'
+import CreateClientDialog from '@/components/CreateClientDialog.vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler
@@ -111,6 +113,42 @@ async function deleteDeal() {
     toast.error(e.message || 'Не удалось удалить сделку')
   } finally {
     deleting.value = false
+  }
+}
+
+// ── Guarantor ──
+const guarantorSaving = ref(false)
+const showCreateGuarantorDialog = ref(false)
+
+async function onGuarantorSelected(profile: import('@/types').ClientProfile | null) {
+  if (!profile || !deal.value) return
+  guarantorSaving.value = true
+  try {
+    const updated = await dealsStore.updateGuarantor(deal.value.id, profile.id)
+    deal.value = updated
+    toast.success('Поручитель привязан')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось привязать поручителя')
+  } finally {
+    guarantorSaving.value = false
+  }
+}
+
+async function onGuarantorCreated(profile: import('@/types').ClientProfile) {
+  await onGuarantorSelected(profile)
+}
+
+async function removeGuarantor() {
+  if (!deal.value) return
+  guarantorSaving.value = true
+  try {
+    const updated = await dealsStore.updateGuarantor(deal.value.id, null)
+    deal.value = updated
+    toast.success('Поручитель убран')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось убрать поручителя')
+  } finally {
+    guarantorSaving.value = false
   }
 }
 
@@ -658,12 +696,126 @@ const timeline = computed(() => {
 
         <!-- Right column -->
         <v-col cols="12" lg="4">
-          <!-- Client card -->
-          <v-card v-if="client || deal.externalClientName" rounded="lg" elevation="0" border class="pa-5 mb-6">
+          <!-- Client profile card -->
+          <v-card v-if="deal.clientProfile" rounded="lg" elevation="0" border class="pa-5 mb-6">
+            <div class="section-title mb-4">Клиент</div>
+
+            <router-link :to="`/clients/${deal.clientProfileId}`" class="profile-card-link">
+              <div class="d-flex align-center ga-3 mb-4">
+                <div class="profile-avatar profile-avatar--client">{{ (deal.clientProfile.firstName || '')[0] || '' }}{{ (deal.clientProfile.lastName || '')[0] || '' }}</div>
+                <div class="flex-grow-1">
+                  <div class="font-weight-bold">{{ clientProfileName(deal.clientProfile) }}</div>
+                  <div class="text-caption text-medium-emphasis d-flex align-center ga-2">
+                    <v-icon icon="mdi-phone" size="12" />
+                    {{ formatPhone(deal.clientProfile.phone) }}
+                  </div>
+                </div>
+                <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
+              </div>
+            </router-link>
+
+            <div class="profile-details-list">
+              <template v-if="deal.clientProfile.passportSeries || deal.clientProfile.passportNumber">
+                <div class="profile-detail-row">
+                  <span class="profile-detail-label">Паспорт</span>
+                  <span class="profile-detail-value">{{ deal.clientProfile.passportSeries }} {{ deal.clientProfile.passportNumber }}</span>
+                </div>
+                <div v-if="deal.clientProfile.passportIssuedBy" class="profile-detail-row">
+                  <span class="profile-detail-label">Кем выдан</span>
+                  <span class="profile-detail-value">{{ deal.clientProfile.passportIssuedBy }}</span>
+                </div>
+                <div v-if="deal.clientProfile.passportIssuedAt" class="profile-detail-row">
+                  <span class="profile-detail-label">Дата выдачи</span>
+                  <span class="profile-detail-value">{{ formatDate(deal.clientProfile.passportIssuedAt) }}</span>
+                </div>
+              </template>
+              <div v-else class="profile-detail-hint">
+                <v-icon icon="mdi-information-outline" size="14" />
+                Паспортные данные не заполнены
+              </div>
+
+              <div v-if="deal.clientProfile.birthDate" class="profile-detail-row">
+                <span class="profile-detail-label">Дата рождения</span>
+                <span class="profile-detail-value">{{ formatDate(deal.clientProfile.birthDate) }}</span>
+              </div>
+              <div v-if="deal.clientProfile.registrationAddress" class="profile-detail-row">
+                <span class="profile-detail-label">Адрес регистрации</span>
+                <span class="profile-detail-value">{{ deal.clientProfile.registrationAddress }}</span>
+              </div>
+              <div v-if="deal.clientProfile.residentialAddress" class="profile-detail-row">
+                <span class="profile-detail-label">Адрес проживания</span>
+                <span class="profile-detail-value">{{ deal.clientProfile.residentialAddress }}</span>
+              </div>
+              <div v-if="deal.clientProfile.inn" class="profile-detail-row">
+                <span class="profile-detail-label">ИНН</span>
+                <span class="profile-detail-value">{{ deal.clientProfile.inn }}</span>
+              </div>
+            </div>
+
+            <div v-if="clientInfo" class="mt-4">
+              <div class="client-info-label mb-1">Своевременность платежей</div>
+              <div class="d-flex align-center ga-2">
+                <v-progress-linear
+                  :model-value="clientInfo.onTimeRate"
+                  :color="clientInfo.onTimeRate >= 90 ? 'success' : clientInfo.onTimeRate >= 70 ? 'warning' : 'error'"
+                  rounded height="6" class="flex-grow-1"
+                />
+                <span class="text-caption font-weight-bold">{{ clientInfo.onTimeRate }}%</span>
+              </div>
+            </div>
+
+            <!-- Reminder buttons -->
+            <div v-if="deal.clientProfile.phone && deal.status === 'ACTIVE'" class="d-flex ga-2 mt-4" style="flex-wrap: wrap;">
+              <button class="reminder-btn reminder-btn--api" :disabled="sendingReminder" @click="sendApiReminder">
+                <v-progress-circular v-if="sendingReminder" indeterminate size="14" width="2" />
+                <v-icon v-else icon="mdi-whatsapp" size="16" />
+                {{ sendingReminder ? 'Отправка...' : 'Напомнить в WhatsApp' }}
+              </button>
+            </div>
+
+            <!-- Per-deal reminder settings -->
+            <div class="deal-reminder-settings mt-4">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <span class="text-caption font-weight-bold" style="opacity: 0.6;">Настройки напоминаний</span>
+                <v-switch
+                  v-model="dealReminderCustom"
+                  density="compact"
+                  hide-details
+                  color="primary"
+                  :label="dealReminderCustom ? 'Свои настройки' : 'Глобальные'"
+                  style="flex: none;"
+                  @update:model-value="toggleDealReminder"
+                />
+              </div>
+
+              <div v-if="dealReminderCustom" class="deal-reminder-fields">
+                <div class="d-flex align-center ga-3 mb-2">
+                  <span class="text-caption">Вкл/выкл</span>
+                  <v-switch v-model="dealReminderEnabled" density="compact" hide-details color="primary" style="flex: none;" @update:model-value="saveDealReminder" />
+                </div>
+                <div v-if="dealReminderEnabled" class="d-flex align-center ga-2 flex-wrap">
+                  <span class="text-caption" style="opacity: 0.6;">За</span>
+                  <button
+                    v-for="d in [1,2,3,5,7]" :key="d"
+                    class="deal-day-chip"
+                    :class="{ active: dealReminderDays === d }"
+                    @click="dealReminderDays = d; saveDealReminder()"
+                  >{{ d }} дн</button>
+                  <span class="text-caption" style="opacity: 0.6;">до платежа</span>
+                </div>
+              </div>
+              <div v-else class="text-caption text-medium-emphasis">
+                Используются глобальные настройки из раздела WhatsApp
+              </div>
+            </div>
+          </v-card>
+
+          <!-- Fallback: old client card (platform or external) -->
+          <v-card v-else-if="client || deal.externalClientName" rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="section-title mb-4">Клиент</div>
 
             <!-- Platform client -->
-            <div v-if="client" class="d-flex align-center ga-3 mb-4" style="cursor: pointer;" @click="router.push(`/users/${deal.clientId}`)">
+            <div v-if="client" class="d-flex align-center ga-3 mb-4" style="cursor: pointer;" @click="router.push(deal.clientProfileId ? `/clients/${deal.clientProfileId}` : `/clients/${deal.clientId}`)">
               <div class="client-avatar">{{ (client.firstName || '')[0] || '' }}{{ (client.lastName || '')[0] || '' }}</div>
               <div class="flex-grow-1">
                 <div class="font-weight-bold">{{ userName(client) }}</div>
@@ -766,6 +918,88 @@ const timeline = computed(() => {
             </div>
           </v-card>
 
+          <!-- Guarantor card -->
+          <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
+            <div class="d-flex align-center justify-space-between mb-4">
+              <div class="d-flex align-center ga-2">
+                <v-icon icon="mdi-shield-account" size="18" style="color: #6366f1;" />
+                <div class="section-title">Поручитель</div>
+              </div>
+              <v-btn
+                v-if="deal.guarantorProfile && !deal.deletedAt"
+                variant="text"
+                size="x-small"
+                color="error"
+                prepend-icon="mdi-close"
+                @click="removeGuarantor"
+                :loading="guarantorSaving"
+              >
+                Убрать
+              </v-btn>
+            </div>
+
+            <!-- Existing guarantor -->
+            <template v-if="deal.guarantorProfile">
+              <router-link :to="`/clients/${deal.guarantorProfileId}`" class="profile-card-link">
+                <div class="d-flex align-center ga-3 mb-4">
+                  <div class="profile-avatar profile-avatar--guarantor">{{ (deal.guarantorProfile.firstName || '')[0] || '' }}{{ (deal.guarantorProfile.lastName || '')[0] || '' }}</div>
+                  <div class="flex-grow-1">
+                    <div class="font-weight-bold">{{ clientProfileName(deal.guarantorProfile) }}</div>
+                    <div class="text-caption text-medium-emphasis d-flex align-center ga-2">
+                      <v-icon icon="mdi-phone" size="12" />
+                      {{ formatPhone(deal.guarantorProfile.phone) }}
+                    </div>
+                  </div>
+                  <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
+                </div>
+              </router-link>
+
+              <div class="profile-details-list">
+                <template v-if="deal.guarantorProfile.passportSeries || deal.guarantorProfile.passportNumber">
+                  <div class="profile-detail-row">
+                    <span class="profile-detail-label">Паспорт</span>
+                    <span class="profile-detail-value">{{ deal.guarantorProfile.passportSeries }} {{ deal.guarantorProfile.passportNumber }}</span>
+                  </div>
+                  <div v-if="deal.guarantorProfile.passportIssuedBy" class="profile-detail-row">
+                    <span class="profile-detail-label">Кем выдан</span>
+                    <span class="profile-detail-value">{{ deal.guarantorProfile.passportIssuedBy }}</span>
+                  </div>
+                  <div v-if="deal.guarantorProfile.passportIssuedAt" class="profile-detail-row">
+                    <span class="profile-detail-label">Дата выдачи</span>
+                    <span class="profile-detail-value">{{ formatDate(deal.guarantorProfile.passportIssuedAt) }}</span>
+                  </div>
+                </template>
+                <div v-else class="profile-detail-hint">
+                  <v-icon icon="mdi-information-outline" size="14" />
+                  Паспортные данные не заполнены
+                </div>
+              </div>
+            </template>
+
+            <!-- No guarantor — picker + create -->
+            <template v-else-if="!deal.deletedAt">
+              <div class="guarantor-picker-wrap">
+                <ClientPicker
+                  :model-value="null"
+                  label="Найти поручителя по телефону или имени..."
+                  @selected="onGuarantorSelected"
+                />
+              </div>
+              <button class="create-client-btn" type="button" @click="showCreateGuarantorDialog = true">
+                <div class="create-client-btn__icon">
+                  <v-icon icon="mdi-account-plus-outline" size="20" />
+                </div>
+                <div>
+                  <div class="create-client-btn__title">Создать нового клиента</div>
+                  <div class="create-client-btn__sub">Добавить поручителя с паспортными данными</div>
+                </div>
+              </button>
+              <CreateClientDialog v-model="showCreateGuarantorDialog" @created="onGuarantorCreated" />
+            </template>
+
+            <div v-else class="text-body-2 text-medium-emphasis">Не назначен</div>
+          </v-card>
+
           <!-- Contract download -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="d-flex align-center justify-space-between">
@@ -788,7 +1022,7 @@ const timeline = computed(() => {
           <!-- Contract photos -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="d-flex align-center justify-space-between mb-4">
-              <div class="section-title">Фото договора</div>
+              <div class="section-title">Документы</div>
               <button class="btn-sm btn-sm--outline" @click="contractInputRef?.click()" :disabled="contractUploading">
                 <v-icon :icon="contractUploading ? 'mdi-loading' : 'mdi-plus'" size="16" :class="{ 'mdi-spin': contractUploading }" />
                 {{ contractUploading ? 'Загрузка...' : 'Добавить' }}
@@ -811,7 +1045,8 @@ const timeline = computed(() => {
 
             <div v-else class="text-center pa-6 text-medium-emphasis text-body-2">
               <v-icon icon="mdi-file-document-outline" size="32" class="mb-2" style="opacity: 0.3;" />
-              <div>Нет фото договора</div>
+              <div>Нет документов</div>
+              <div class="text-caption mt-1" style="opacity: 0.5;">Фото договора, паспортов, справок</div>
             </div>
           </v-card>
 
@@ -1962,5 +2197,110 @@ const timeline = computed(() => {
 @media (max-width: 960px) {
   .detail-hero-title { font-size: 22px; }
   .detail-hero-content { bottom: 16px; left: 20px; right: 20px; }
+}
+
+/* Profile card (client & guarantor) */
+.profile-card-link {
+  text-decoration: none;
+  color: inherit;
+  display: block;
+  border-radius: 12px;
+  transition: background 0.15s;
+  margin: -8px;
+  padding: 8px;
+}
+.profile-card-link:hover {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.profile-avatar {
+  width: 48px; height: 48px; min-width: 48px; border-radius: 12px;
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 16px; text-transform: uppercase;
+}
+.profile-avatar--client { background: #047857; }
+.profile-avatar--guarantor { background: #6366f1; }
+
+.profile-details-list {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.profile-detail-row {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  gap: 16px;
+}
+.profile-detail-row:last-child { border-bottom: none; padding-bottom: 0; }
+.profile-detail-label {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45);
+  white-space: nowrap; flex-shrink: 0;
+}
+.profile-detail-value {
+  font-size: 14px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  text-align: right;
+}
+.profile-detail-hint {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  padding: 8px 0;
+}
+
+/* Guarantor picker */
+.guarantor-picker-wrap {
+  margin-bottom: 12px;
+}
+.guarantor-picker-wrap :deep(.v-autocomplete) {
+  --v-input-control-height: 44px;
+}
+.guarantor-picker-wrap :deep(.v-field) {
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+/* Create client button */
+.create-client-btn {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 18px;
+  border-radius: 12px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.15);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+}
+.create-client-btn:hover {
+  background: rgba(var(--v-theme-primary), 0.05);
+  border-color: rgba(var(--v-theme-primary), 0.3);
+  color: rgb(var(--v-theme-primary));
+}
+.create-client-btn__icon {
+  width: 40px; height: 40px; min-width: 40px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.create-client-btn:hover .create-client-btn__icon {
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary));
+}
+.create-client-btn__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.create-client-btn__sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+.dark .create-client-btn {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border-color: rgba(var(--v-theme-on-surface), 0.1);
 }
 </style>

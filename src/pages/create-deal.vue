@@ -4,10 +4,12 @@ import { formatCurrency } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter } from 'vue-router'
-import type { PaymentType } from '@/types'
+import type { PaymentType, ClientProfile } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { api } from '@/api/client'
+import ClientPicker from '@/components/ClientPicker.vue'
+import CreateClientDialog from '@/components/CreateClientDialog.vue'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -106,38 +108,37 @@ const firstPaymentDate = computed(() => {
 })
 
 // Step 3: Client
-const clientMode = ref<'external' | 'search'>('external')
-const externalName = ref('')
-const externalPhone = ref('')
-const clientSearch = ref('')
-const searchResults = ref<Array<{ id: string; firstName: string; lastName: string; city: string; rating: number }>>([])
-const selectedClientId = ref('')
-const searching = ref(false)
+const selectedClientProfileId = ref<string | null>(null)
+const selectedGuarantorProfileId = ref<string | null>(null)
 
-async function searchClients() {
-  if (!clientSearch.value || clientSearch.value.length < 2) {
-    searchResults.value = []
-    return
-  }
-  searching.value = true
-  try {
-    searchResults.value = await api.get<typeof searchResults.value>(`/users/search?q=${encodeURIComponent(clientSearch.value)}&limit=10`)
-  } catch {
-    searchResults.value = []
-  } finally {
-    searching.value = false
-  }
+// Selected profiles (resolved by ClientPicker)
+const selectedClientProfile = ref<ClientProfile | null>(null)
+const selectedGuarantorProfile = ref<ClientProfile | null>(null)
+
+const clientPickerRef = ref<InstanceType<typeof ClientPicker> | null>(null)
+
+function onClientSelected(profile: ClientProfile | null) {
+  selectedClientProfile.value = profile
+}
+function onGuarantorSelected(profile: ClientProfile | null) {
+  selectedGuarantorProfile.value = profile
 }
 
-const selectedClient = computed(() => searchResults.value.find(c => c.id === selectedClientId.value))
+// Create client dialog
+const showCreateDialog = ref(false)
+
+function openCreateDialog() {
+  showCreateDialog.value = true
+}
+
+function onClientCreated(profile: ClientProfile) {
+  clientPickerRef.value?.selectProfile(profile)
+}
 
 // Validation
 const step1Valid = computed(() => !!productName.value)
 const step2Valid = computed(() => (purchasePrice.value ?? 0) > 0 && termMonths.value > 0)
-const step3Valid = computed(() => {
-  if (clientMode.value === 'external') return !!externalName.value && !!externalPhone.value
-  return !!selectedClientId.value
-})
+const step3Valid = computed(() => !!selectedClientProfileId.value)
 
 function nextStep() { if (step.value < 4) step.value++ }
 function prevStep() { if (step.value > 1) step.value-- }
@@ -167,10 +168,8 @@ async function submitDeal() {
     }
 
     await dealsStore.createDirectDeal({
-      ...(clientMode.value === 'search' && selectedClientId.value
-        ? { clientId: selectedClientId.value }
-        : { externalClientName: externalName.value, externalClientPhone: externalPhone.value }
-      ),
+      clientProfileId: selectedClientProfileId.value || undefined,
+      guarantorProfileId: selectedGuarantorProfileId.value || undefined,
       productName: productName.value,
       productPhotos: photoUrls.length ? photoUrls : undefined,
       contractPhotos: contractUrls.length ? contractUrls : undefined,
@@ -193,12 +192,6 @@ async function submitDeal() {
   }
 }
 
-// Debounced search
-let searchTimeout: ReturnType<typeof setTimeout> | null = null
-watch(clientSearch, () => {
-  if (searchTimeout) clearTimeout(searchTimeout)
-  searchTimeout = setTimeout(searchClients, 400)
-})
 </script>
 
 <template>
@@ -470,95 +463,56 @@ watch(clientSearch, () => {
       </v-row>
     </div>
 
-    <!-- Step 3: Client -->
+    <!-- Step 3: Client & Guarantor -->
     <div v-if="step === 3" class="step-content">
       <div class="step-title-row">
         <div class="step-icon-wrap">
           <v-icon icon="mdi-account" size="22" />
         </div>
         <div>
-          <div class="step-title">Клиент</div>
-          <div class="step-subtitle">Укажите данные клиента или найдите в системе</div>
+          <div class="step-title">Клиент и поручитель</div>
+          <div class="step-subtitle">Найдите клиента в базе или создайте нового</div>
         </div>
       </div>
 
-      <!-- Toggle -->
-      <div class="chip-group mb-5">
-        <button class="chip-option chip-option--wide" :class="{ active: clientMode === 'external' }" @click="clientMode = 'external'">
-          <v-icon icon="mdi-account-plus" size="16" /> Ввести вручную
-        </button>
-        <button class="chip-option chip-option--wide" :class="{ active: clientMode === 'search' }" @click="clientMode = 'search'">
-          <v-icon icon="mdi-account-search" size="16" /> Найти в системе
-        </button>
-      </div>
-
-      <!-- External client -->
-      <v-card v-if="clientMode === 'external'" rounded="lg" elevation="0" border class="pa-5">
-        <div class="form-grid">
-          <div class="form-field full-width">
-            <label class="field-label">ФИО клиента <span class="required">*</span></label>
-            <input v-model="externalName" type="text" class="field-input" placeholder="Иванов Иван Иванович" />
-          </div>
-          <div class="form-field full-width">
-            <label class="field-label">Телефон <span class="required">*</span></label>
-            <input v-model="externalPhone" type="tel" class="field-input" placeholder="+7 (999) 123-45-67" />
-          </div>
+      <!-- Client -->
+      <v-card rounded="lg" elevation="0" border class="pa-5 mb-4">
+        <div class="text-subtitle-2 font-weight-bold mb-3">
+          <v-icon icon="mdi-account-outline" size="18" class="mr-1" />
+          Клиент <span class="text-error">*</span>
         </div>
-        <div class="info-banner mt-4">
-          <v-icon icon="mdi-information-outline" size="18" />
-          <span>Клиент не зарегистрирован на платформе. Вы сможете отправлять напоминания через WhatsApp/Telegram.</span>
-        </div>
+        <ClientPicker
+          ref="clientPickerRef"
+          v-model="selectedClientProfileId"
+          label="Поиск клиента по телефону или имени..."
+          @selected="onClientSelected"
+        />
       </v-card>
 
-      <!-- Search client -->
-      <v-card v-else rounded="lg" elevation="0" border class="pa-5">
-        <div class="filter-input-wrap mb-4">
-          <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-          <input
-            v-model="clientSearch"
-            type="text"
-            class="filter-input"
-            placeholder="Поиск по имени или телефону..."
-          />
+      <!-- Guarantor -->
+      <v-card rounded="lg" elevation="0" border class="pa-5 mb-4">
+        <div class="text-subtitle-2 font-weight-bold mb-3">
+          <v-icon icon="mdi-shield-account-outline" size="18" class="mr-1" />
+          Поручитель <span class="text-caption text-medium-emphasis font-weight-regular">(необязательно)</span>
         </div>
-
-        <div v-if="searching" class="text-center pa-6">
-          <v-progress-circular indeterminate size="32" color="primary" />
-        </div>
-
-        <div v-else-if="searchResults.length" class="client-grid">
-          <div
-            v-for="client in searchResults"
-            :key="client.id"
-            class="client-card"
-            :class="{ active: selectedClientId === client.id }"
-            @click="selectedClientId = client.id"
-          >
-            <div class="client-avatar" :style="{ background: selectedClientId === client.id ? '#047857' : 'rgba(var(--v-theme-on-surface), 0.08)' }">
-              {{ client.firstName.charAt(0) }}{{ client.lastName.charAt(0) }}
-            </div>
-            <div class="client-info">
-              <div class="client-name">{{ client.firstName }} {{ client.lastName }}</div>
-              <div class="client-meta">
-                <span v-if="client.city"><v-icon icon="mdi-map-marker" size="12" /> {{ client.city }}</span>
-                <span><v-icon icon="mdi-star" size="12" /> {{ client.rating }}</span>
-              </div>
-            </div>
-            <div v-if="selectedClientId === client.id" class="client-check">
-              <v-icon icon="mdi-check-circle" size="22" color="primary" />
-            </div>
-          </div>
-        </div>
-
-        <div v-else-if="clientSearch.length >= 2" class="text-center pa-8">
-          <v-icon icon="mdi-account-search" size="40" color="grey-lighten-1" class="mb-2" />
-          <div class="text-body-2 text-medium-emphasis">Клиенты не найдены</div>
-        </div>
-
-        <div v-else class="text-center pa-8">
-          <div class="text-body-2 text-medium-emphasis">Введите минимум 2 символа для поиска</div>
-        </div>
+        <ClientPicker
+          v-model="selectedGuarantorProfileId"
+          label="Поиск поручителя по телефону или имени..."
+          @selected="onGuarantorSelected"
+        />
       </v-card>
+
+      <!-- Create new client button -->
+      <button class="create-client-btn" type="button" @click="openCreateDialog">
+        <v-icon icon="mdi-account-plus-outline" size="20" />
+        <div>
+          <div class="create-client-btn__title">Создать нового клиента</div>
+          <div class="create-client-btn__sub">Если клиента нет в базе — добавьте его с паспортными данными</div>
+        </div>
+      </button>
+
+      <!-- Create client dialog -->
+      <CreateClientDialog v-model="showCreateDialog" @created="onClientCreated" />
     </div>
 
     <!-- Step 4: Review -->
@@ -633,28 +587,32 @@ watch(clientSearch, () => {
       </div>
 
       <!-- Client card -->
-      <div class="review-client-card">
+      <div v-if="selectedClientProfile" class="review-client-card">
         <div class="review-client-card__icon">
-          <div class="review-client-card__avatar" :style="{ background: clientMode === 'external' ? '#6366f1' : '#047857' }">
-            <template v-if="clientMode === 'external'">{{ externalName.charAt(0).toUpperCase() }}</template>
-            <template v-else-if="selectedClient">{{ selectedClient.firstName.charAt(0) }}{{ selectedClient.lastName.charAt(0) }}</template>
+          <div class="review-client-card__avatar" style="background: #047857;">
+            {{ selectedClientProfile.firstName?.[0] }}{{ selectedClientProfile.lastName?.[0] }}
           </div>
         </div>
         <div class="review-client-card__info">
-          <div class="review-client-card__name">
-            <template v-if="clientMode === 'external'">{{ externalName }}</template>
-            <template v-else-if="selectedClient">{{ selectedClient.firstName }} {{ selectedClient.lastName }}</template>
-          </div>
+          <div class="review-client-card__name">{{ selectedClientProfile.lastName }} {{ selectedClientProfile.firstName }} {{ selectedClientProfile.patronymic || '' }}</div>
           <div class="review-client-card__meta">
-            <template v-if="clientMode === 'external'">
-              <v-icon icon="mdi-phone" size="12" /> {{ externalPhone }}
-              <span class="review-client-card__badge review-client-card__badge--external">Внешний клиент</span>
-            </template>
-            <template v-else-if="selectedClient">
-              <v-icon icon="mdi-map-marker" size="12" /> {{ selectedClient.city }}
-              <v-icon icon="mdi-star" size="12" class="ml-2" /> {{ selectedClient.rating }}
-              <span class="review-client-card__badge review-client-card__badge--platform">На платформе</span>
-            </template>
+            <v-icon icon="mdi-phone" size="12" /> {{ selectedClientProfile.phone }}
+            <span v-if="selectedClientProfile.passportSeries" class="review-client-card__badge review-client-card__badge--platform">Паспорт заполнен</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Guarantor card -->
+      <div v-if="selectedGuarantorProfile" class="review-client-card mt-3">
+        <div class="review-client-card__icon">
+          <div class="review-client-card__avatar" style="background: #6366f1;">
+            {{ selectedGuarantorProfile.firstName?.[0] }}{{ selectedGuarantorProfile.lastName?.[0] }}
+          </div>
+        </div>
+        <div class="review-client-card__info">
+          <div class="review-client-card__name">{{ selectedGuarantorProfile.lastName }} {{ selectedGuarantorProfile.firstName }} {{ selectedGuarantorProfile.patronymic || '' }}</div>
+          <div class="review-client-card__meta">
+            <v-icon icon="mdi-shield-account-outline" size="12" /> Поручитель · {{ selectedGuarantorProfile.phone }}
           </div>
         </div>
       </div>
@@ -1226,4 +1184,54 @@ watch(clientSearch, () => {
 .dark .review-hero__payment { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); }
 .dark .review-client-card { background: #1e1e2e; border-color: #2e2e42; }
 .dark .review-confirm-banner { background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.2); }
+
+/* Create client button */
+.create-client-btn {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 16px 20px;
+  border-radius: 12px;
+  border: 1px dashed rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.03);
+  color: rgb(var(--v-theme-primary));
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+}
+.create-client-btn:hover {
+  background: rgba(var(--v-theme-primary), 0.08);
+  border-color: rgba(var(--v-theme-primary), 0.5);
+}
+.create-client-btn__title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.create-client-btn__sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 2px;
+}
+.form-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 12px;
+}
+.form-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dark .create-client-btn {
+  background: rgba(var(--v-theme-primary), 0.05);
+  border-color: rgba(var(--v-theme-primary), 0.2);
+}
+@media (max-width: 600px) {
+  .form-row-2 { grid-template-columns: 1fr; }
+}
 </style>
