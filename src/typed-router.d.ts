@@ -32,6 +32,7 @@ declare module 'vue-router/auto-routes' {
     '/deals/': RouteRecordInfo<'/deals/', '/deals', Record<never, never>, Record<never, never>>,
     '/deals/[id]': RouteRecordInfo<'/deals/[id]', '/deals/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/finance': RouteRecordInfo<'/finance', '/finance', Record<never, never>, Record<never, never>>,
+    '/forgot-password': RouteRecordInfo<'/forgot-password', '/forgot-password', Record<never, never>, Record<never, never>>,
     '/import': RouteRecordInfo<'/import', '/import', Record<never, never>, Record<never, never>>,
     '/login': RouteRecordInfo<'/login', '/login', Record<never, never>, Record<never, never>>,
     '/notifications': RouteRecordInfo<'/notifications', '/notifications', Record<never, never>, Record<never, never>>,
@@ -41,6 +42,7 @@ declare module 'vue-router/auto-routes' {
     '/products/[id]': RouteRecordInfo<'/products/[id]', '/products/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/registry': RouteRecordInfo<'/registry', '/registry', Record<never, never>, Record<never, never>>,
     '/requests': RouteRecordInfo<'/requests', '/requests', Record<never, never>, Record<never, never>>,
+    '/reset-password': RouteRecordInfo<'/reset-password', '/reset-password', Record<never, never>, Record<never, never>>,
     '/settings': RouteRecordInfo<'/settings', '/settings', Record<never, never>, Record<never, never>>,
     '/staff': RouteRecordInfo<'/staff', '/staff', Record<never, never>, Record<never, never>>,
   }
@@ -112,6 +114,10 @@ declare module 'vue-router/auto-routes' {
       routes: '/finance'
       views: never
     }
+    'src/pages/forgot-password.vue': {
+      routes: '/forgot-password'
+      views: never
+    }
     'src/pages/import.vue': {
       routes: '/import'
       views: never
@@ -146,6 +152,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/requests.vue': {
       routes: '/requests'
+      views: never
+    }
+    'src/pages/reset-password.vue': {
+      routes: '/reset-password'
       views: never
     }
     'src/pages/settings.vue': {

@@ -1250,7 +1250,7 @@ const plans = [
         <v-icon icon="mdi-chart-bar" size="18" />
         <span>
           Активных сделок: <strong>{{ Math.max(0, authStore.user.activeDeals || 0) }}</strong>
-          из <strong>{{ authStore.user.planLimits.maxActiveDeals === Infinity ? '∞' : authStore.user.planLimits.maxActiveDeals }}</strong>
+          из <strong>{{ authStore.user.planLimits.maxActiveDeals === -1 ? '∞' : authStore.user.planLimits.maxActiveDeals }}</strong>
         </span>
       </div>
 

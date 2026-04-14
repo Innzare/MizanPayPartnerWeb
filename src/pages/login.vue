@@ -159,6 +159,10 @@ const handleLogin = async () => {
             />
           </div>
 
+          <div class="d-flex justify-end mb-4">
+            <router-link to="/forgot-password" class="forgot-link">Забыли пароль?</router-link>
+          </div>
+
           <v-btn
             type="submit"
             color="primary"
@@ -339,5 +343,16 @@ const handleLogin = async () => {
   letter-spacing: 0;
   text-transform: none;
   font-size: 0.95rem;
+}
+
+.forgot-link {
+  font-size: 0.8rem;
+  color: #047857;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.forgot-link:hover {
+  text-decoration: underline;
 }
 </style>

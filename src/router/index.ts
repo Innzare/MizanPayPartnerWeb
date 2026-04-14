@@ -20,7 +20,7 @@ const router = createRouter({
   routes: setupLayouts(routes),
 });
 
-const publicRoutes = ["/login"];
+const publicRoutes = ["/login", "/forgot-password", "/reset-password"];
 
 let authChecked = false;
 
