@@ -19,6 +19,8 @@ const selectedFile = ref<File | null>(null)
 // Step 2: Mapping
 const headers = ref<string[]>([])
 const totalRows = ref(0)
+const uniqueDeals = ref(0)
+const detectedFormat = ref<'horizontal' | 'vertical'>('horizontal')
 const mapping = ref<Record<string, string>>({})
 const paymentColumns = ref<any[]>([])
 const preview = ref<any[]>([])
@@ -41,11 +43,12 @@ function togglePaymentDateCol(header: string) {
 
 // Step 3: Result
 const result = ref<{
-  imported: number; skipped: number; total: number; errors: string[];
+  imported: number; skipped: number; total: number; totalRows?: number; errors: string[];
   limitReached?: boolean; remainingSlots?: number | null; maxDeals?: number | null;
+  format?: string;
 } | null>(null)
 
-const FIELD_OPTIONS = [
+const BASE_FIELD_OPTIONS = [
   { key: 'dealDate', label: 'Дата сделки', icon: 'mdi-calendar' },
   { key: 'clientName', label: 'ФИО клиента', icon: 'mdi-account' },
   { key: 'clientPhone', label: 'Телефон клиента', icon: 'mdi-phone' },
@@ -59,6 +62,33 @@ const FIELD_OPTIONS = [
   { key: 'monthlyPayment', label: 'Ежемесячный платёж', icon: 'mdi-calendar-month' },
   { key: 'remainingAmount', label: 'Остаток долга', icon: 'mdi-scale-balance' },
 ]
+
+const VERTICAL_FIELD_OPTIONS = [
+  { key: 'groupId', label: 'ID группировки (TaskId)', icon: 'mdi-identifier' },
+  { key: 'dealDate', label: 'Дата сделки', icon: 'mdi-calendar' },
+  { key: 'clientName', label: 'ФИО клиента', icon: 'mdi-account' },
+  { key: 'clientPhone', label: 'Телефон клиента', icon: 'mdi-phone' },
+  { key: 'guarantorName', label: 'ФИО поручителя', icon: 'mdi-account-supervisor' },
+  { key: 'guarantorPhone', label: 'Телефон поручителя', icon: 'mdi-phone-outline' },
+  { key: 'noGuarantor', label: 'Без поручителя (Yes/No)', icon: 'mdi-account-off' },
+  { key: 'productName', label: 'Название товара', icon: 'mdi-package-variant' },
+  { key: 'purchasePrice', label: 'Себестоимость', icon: 'mdi-cash' },
+  { key: 'totalPrice', label: 'Цена в рассрочку', icon: 'mdi-cash-multiple' },
+  { key: 'numberOfPayments', label: 'Срок (мес)', icon: 'mdi-timer-sand' },
+  { key: 'hasDownPayment', label: 'С взносом (Yes/No)', icon: 'mdi-cash-check' },
+  { key: 'downPayment', label: 'Сколько взнос', icon: 'mdi-cash-check' },
+  { key: 'paymentDay', label: 'День оплаты', icon: 'mdi-calendar-clock' },
+  { key: 'monthlyPayment', label: 'Ежемесячный платёж', icon: 'mdi-calendar-month' },
+  { key: 'paymentDate', label: 'Дата поступления', icon: 'mdi-calendar-arrow-right' },
+  { key: 'paymentAmount', label: 'Сумма поступления', icon: 'mdi-bank-transfer-in' },
+  { key: 'remainingAmount', label: 'Сколько должен', icon: 'mdi-scale-balance' },
+  { key: 'balance', label: 'Остаток', icon: 'mdi-calculator' },
+  { key: 'status', label: 'Статус', icon: 'mdi-flag' },
+]
+
+const FIELD_OPTIONS = computed(() =>
+  detectedFormat.value === 'vertical' ? VERTICAL_FIELD_OPTIONS : BASE_FIELD_OPTIONS
+)
 
 function onFileSelect(event: Event) {
   const input = event.target as HTMLInputElement
@@ -91,6 +121,8 @@ async function uploadPreview() {
     const data = await response.json()
     headers.value = data.headers
     totalRows.value = data.totalRows
+    uniqueDeals.value = data.uniqueDeals || data.totalRows
+    detectedFormat.value = data.format || 'horizontal'
     mapping.value = data.mapping
     paymentColumns.value = data.paymentColumns
     preview.value = data.preview
@@ -155,7 +187,7 @@ function getUnmappedHeaders() {
 }
 
 function getMappedFieldLabel(key: string) {
-  return FIELD_OPTIONS.find(f => f.key === key)?.label || key
+  return FIELD_OPTIONS.value.find(f => f.key === key)?.label || key
 }
 
 const mappedCount = computed(() => Object.keys(mapping.value).length)
@@ -319,8 +351,13 @@ const mappedCount = computed(() => Object.keys(mapping.value).length)
         <div>
           <span class="text-h6 font-weight-bold">Сопоставление колонок</span>
           <div class="text-caption text-medium-emphasis">
-            Найдено {{ totalRows }} строк · {{ headers.length }} колонок · {{ mappedCount }} сопоставлено
-            <span v-if="paymentColumns.length"> · {{ paymentColumns.length }} колонок платежей</span>
+            <template v-if="detectedFormat === 'vertical'">
+              {{ totalRows }} строк · {{ uniqueDeals }} сделок · {{ headers.length }} колонок · {{ mappedCount }} сопоставлено
+            </template>
+            <template v-else>
+              Найдено {{ totalRows }} строк · {{ headers.length }} колонок · {{ mappedCount }} сопоставлено
+              <span v-if="paymentColumns.length"> · {{ paymentColumns.length }} колонок платежей</span>
+            </template>
           </div>
         </div>
         <div class="d-flex ga-2">
@@ -353,14 +390,20 @@ const mappedCount = computed(() => Object.keys(mapping.value).length)
         </div>
       </v-card>
 
-      <!-- Payment columns info -->
-      <div v-if="paymentColumns.length" class="info-banner info-banner--success mb-4">
+      <!-- Vertical format banner -->
+      <div v-if="detectedFormat === 'vertical'" class="info-banner info-banner--success mb-4">
+        <v-icon icon="mdi-check-circle" size="18" />
+        <span>Обнаружен формат с вертикальными платежами (несколько строк на сделку). Найдено <strong>{{ uniqueDeals }}</strong> уникальных сделок из {{ totalRows }} строк. Платежи будут извлечены автоматически.</span>
+      </div>
+
+      <!-- Payment columns info (horizontal only) -->
+      <div v-if="detectedFormat === 'horizontal' && paymentColumns.length" class="info-banner info-banner--success mb-4">
         <v-icon icon="mdi-check-circle" size="18" />
         <span>Обнаружено {{ paymentColumns.length }} колонок с платежами — они будут импортированы автоматически.</span>
       </div>
 
-      <!-- Payment columns mapping -->
-      <v-card rounded="lg" elevation="0" border class="pa-5 mb-4">
+      <!-- Payment columns mapping (horizontal format only) -->
+      <v-card v-if="detectedFormat === 'horizontal'" rounded="lg" elevation="0" border class="pa-5 mb-4">
         <div class="d-flex align-center ga-2 mb-3">
           <v-icon icon="mdi-cash-multiple" size="18" style="opacity: 0.5;" />
           <span class="font-weight-bold" style="font-size: 14px;">Колонки платежей</span>
@@ -414,14 +457,21 @@ const mappedCount = computed(() => Object.keys(mapping.value).length)
       <div class="mapping-header">
         <div>
           <span class="text-h6 font-weight-bold">Предварительный просмотр</span>
-          <div class="text-caption text-medium-emphasis">Первые {{ preview.length }} из {{ totalRows }} строк</div>
+          <div class="text-caption text-medium-emphasis">
+            <template v-if="detectedFormat === 'vertical'">
+              Первые {{ preview.length }} из {{ uniqueDeals }} сделок ({{ totalRows }} строк в файле)
+            </template>
+            <template v-else>
+              Первые {{ preview.length }} из {{ totalRows }} строк
+            </template>
+          </div>
         </div>
         <div class="d-flex ga-2">
           <button class="btn-secondary" @click="step = 'mapping'">Назад</button>
           <button class="btn-primary btn-primary--success" :disabled="loading" @click="confirmImport">
             <v-progress-circular v-if="loading" indeterminate size="16" width="2" color="white" class="mr-1" />
             <v-icon v-else icon="mdi-check" size="18" />
-            {{ loading ? 'Импорт...' : `Импортировать ${totalRows} сделок` }}
+            {{ loading ? 'Импорт...' : `Импортировать ${uniqueDeals} сделок` }}
           </button>
         </div>
       </div>
@@ -449,6 +499,18 @@ const mappedCount = computed(() => Object.keys(mapping.value).length)
             <div v-if="row.mapped.dealDate" class="preview-detail">
               <span class="preview-detail-label">Дата</span>
               <span class="preview-detail-value">{{ row.mapped.dealDate }}</span>
+            </div>
+            <div v-if="row.paymentsCount !== undefined" class="preview-detail">
+              <span class="preview-detail-label">Платежей</span>
+              <span class="preview-detail-value">{{ row.paymentsCount }}</span>
+            </div>
+            <div v-if="row.mapped.guarantorName" class="preview-detail">
+              <span class="preview-detail-label">Поручитель</span>
+              <span class="preview-detail-value">{{ row.mapped.guarantorName }}</span>
+            </div>
+            <div v-if="row.mapped.status" class="preview-detail">
+              <span class="preview-detail-label">Статус</span>
+              <span class="preview-detail-value">{{ row.mapped.status }}</span>
             </div>
           </div>
         </v-card>
@@ -491,7 +553,7 @@ const mappedCount = computed(() => Object.keys(mapping.value).length)
           </div>
           <div class="result-stat">
             <div class="result-stat-value">{{ result.total }}</div>
-            <div class="result-stat-label">Всего строк</div>
+            <div class="result-stat-label">Всего сделок</div>
           </div>
           <div v-if="result.limitReached" class="result-stat">
             <div class="result-stat-value" style="color: #ef4444;">{{ result.total - result.imported - result.skipped }}</div>
