@@ -213,6 +213,7 @@ const editForm = ref({
   patronymic: '',
   phone: '',
   city: '',
+  birthDate: '',
 })
 const profileSaving = ref(false)
 const profileSaved = ref(false)
@@ -225,6 +226,7 @@ function startEditing() {
     patronymic: authStore.user.patronymic || '',
     phone: authStore.user.phone,
     city: authStore.user.city,
+    birthDate: (authStore.user as any).birthDate?.slice(0, 10) || '',
   }
   removeAvatarFile()
   isEditing.value = true
@@ -248,6 +250,7 @@ async function saveProfile() {
       patronymic: editForm.value.patronymic || undefined,
       phone: editForm.value.phone,
       city: editForm.value.city,
+      birthDate: editForm.value.birthDate || undefined,
       ...(avatarUrl ? { avatar: avatarUrl } : {}),
     } as any)
     removeAvatarFile()
@@ -627,6 +630,10 @@ const plans = [
                   <option value="" disabled>Выберите город</option>
                   <option v-for="c in CITIES" :key="c" :value="c">{{ c }}</option>
                 </select>
+              </div>
+              <div class="form-field">
+                <label class="field-label">Дата рождения</label>
+                <input v-model="editForm.birthDate" type="date" class="field-input" />
               </div>
             </div>
           </v-card>

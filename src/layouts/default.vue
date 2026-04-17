@@ -87,6 +87,7 @@ const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?:
 ];
 
 const allSecondaryNavRoutes = [
+  { path: "/contract-builder", title: "Конструктор договора", icon: "mdi-file-cog-outline" },
   { path: "/settings", title: "Настройки", icon: "mdi-cog" },
 ];
 

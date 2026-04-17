@@ -522,22 +522,19 @@ function getAvatarColor(name?: string) {
 
 /* KPI Row (horizontal) */
 .kpi-row {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
 }
 
 .kpi-card {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 18px;
+  padding: 14px 16px;
   border-radius: 12px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   background: rgba(var(--v-theme-surface), 1);
-  flex: 1;
-  min-width: 150px;
 }
 
 .kpi-icon-wrap {

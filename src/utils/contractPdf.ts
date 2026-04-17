@@ -23,7 +23,13 @@ function fullName(user: Partial<User>): string {
 }
 
 export function generateContract(deal: Deal, payments: Payment[], investor: Partial<User>) {
-  const client = deal.client || {}
+  // Resolve client data: prefer clientProfile, fallback to legacy client, then external
+  const cp = deal.clientProfile
+  const client = cp
+    ? { firstName: cp.firstName, lastName: cp.lastName, patronymic: cp.patronymic, phone: cp.phone, email: (cp as any).email }
+    : deal.client
+      ? deal.client
+      : { firstName: deal.externalClientName || '', lastName: '', phone: deal.externalClientPhone || '' }
   const contractNumber = deal.id.slice(0, 8).toUpperCase()
   const today = formatDate(new Date().toISOString())
 

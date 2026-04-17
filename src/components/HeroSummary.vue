@@ -46,11 +46,6 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
           <span class="hs-metric-label">Прибыль</span>
         </div>
         <div class="hs-metric-divider" />
-        <div class="hs-metric hs-clickable" @click="emit('metric', 'roi')">
-          <span class="hs-metric-value">{{ canView ? formatPercent(dealsStore.roi) : '—' }}</span>
-          <span class="hs-metric-label">ROI</span>
-        </div>
-        <div class="hs-metric-divider" />
         <div class="hs-metric hs-clickable" @click="emit('metric', 'monthly')">
           <span class="hs-metric-value">{{ canView ? formatCurrencyShort(dealsStore.monthlyIncome) : '—' }}</span>
           <span class="hs-metric-label">Доход / мес</span>

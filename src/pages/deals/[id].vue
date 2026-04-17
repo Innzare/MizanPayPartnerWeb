@@ -7,6 +7,8 @@ import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { userName, clientProfileName, type Deal } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import { generateContract } from '@/utils/contractPdf'
+import { generateReceipt } from '@/utils/receiptPdf'
+import { exportTemplatePdf } from '@/utils/templatePdfExport'
 import { generateDealSummary } from '@/utils/dealSummaryPdf'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
@@ -212,7 +214,7 @@ async function unlinkCoInvestor(ci: CoInvestorInfo) {
 }
 
 // Load co-investors on mount
-onMounted(() => { loadCoInvestors() })
+onMounted(() => { loadCoInvestors(); loadCustomTemplate() })
 
 async function restoreDeal() {
   deleting.value = true
@@ -535,6 +537,54 @@ function downloadSummary() {
   generateDealSummary(deal.value, payments.value, investor)
 }
 
+
+// Custom template contract
+// Change client
+const showChangeClient = ref(false)
+const changingClient = ref(false)
+
+async function onChangeClient(profile: import('@/types').ClientProfile | null) {
+  if (!profile || !deal.value) return
+  changingClient.value = true
+  try {
+    const updated = await api.patch<Deal>(`/deals/${deal.value.id}/client`, { clientProfileId: profile.id })
+    deal.value = updated
+    showChangeClient.value = false
+    toast.success('Клиент изменён')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка смены клиента')
+  } finally {
+    changingClient.value = false
+  }
+}
+
+const customTemplate = ref<string | null>(null)
+const customTemplateMargins = ref<{ top: number; bottom: number; left: number; right: number } | null>(null)
+const customTemplateLoading = ref(false)
+
+async function loadCustomTemplate() {
+  try {
+    const data = await api.get<{ template: any }>('/auth/investor/contract-template')
+    if (data.template?.html) {
+      customTemplate.value = data.template.html
+      customTemplateMargins.value = data.template.margins || null
+    }
+  } catch { /* silent */ }
+}
+
+async function downloadCustomContract() {
+  if (!deal.value || !customTemplate.value) return
+  customTemplateLoading.value = true
+  try {
+    const investor = authStore.user || {} as Partial<import('@/types').User>
+    await exportTemplatePdf(customTemplate.value, deal.value, payments.value, investor, customTemplateMargins.value || undefined)
+  } catch (e: any) {
+    toast.error('Ошибка генерации PDF')
+  } finally {
+    customTemplateLoading.value = false
+  }
+}
+
 // Deal timeline events
 const timeline = computed(() => {
   if (!deal.value) return []
@@ -766,7 +816,25 @@ const timeline = computed(() => {
         <v-col cols="12" lg="4">
           <!-- Client profile card -->
           <v-card v-if="deal.clientProfile" rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="section-title mb-4">Клиент</div>
+            <div class="d-flex align-center justify-space-between mb-4">
+              <div class="section-title mb-0">Клиент</div>
+              <button v-if="!deal.deletedAt && !showChangeClient" class="ci-add-btn" style="background: rgba(4,120,87,0.1); color: #047857;" @click="showChangeClient = true">
+                <v-icon icon="mdi-swap-horizontal" size="14" />
+                Сменить
+              </button>
+            </div>
+
+            <!-- Change client picker -->
+            <div v-if="showChangeClient" class="mb-4">
+              <ClientPicker
+                :model-value="null"
+                label="Выберите нового клиента..."
+                @selected="onChangeClient"
+              />
+              <button class="btn-secondary mt-2" style="font-size: 12px; height: 32px; padding: 0 12px;" @click="showChangeClient = false">
+                Отмена
+              </button>
+            </div>
 
             <router-link :to="`/clients/${deal.clientProfileId}`" class="profile-card-link">
               <div class="d-flex align-center ga-3 mb-4">
@@ -1172,61 +1240,51 @@ const timeline = computed(() => {
             </div>
           </v-card>
 
-          <!-- Contract download -->
-          <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="d-flex align-center justify-space-between">
-              <div class="d-flex align-center ga-3">
+          <!-- Documents: PDF downloads -->
+          <v-card rounded="lg" elevation="0" border class="pdf-docs-card mb-6">
+            <div class="pdf-docs-header">
+              <div class="pdf-docs-header-left">
                 <div class="contract-icon">
-                  <v-icon icon="mdi-file-document-outline" size="22" color="#3b82f6" />
+                  <v-icon icon="mdi-file-pdf-box" size="22" color="#3b82f6" />
                 </div>
                 <div>
-                  <div class="font-weight-bold" style="font-size: 14px;">Договор мурабаха</div>
-                  <div class="text-caption text-medium-emphasis">PDF с условиями и графиком</div>
+                  <div class="font-weight-bold" style="font-size: 14px;">PDF документы</div>
+                  <div class="text-caption text-medium-emphasis">Договоры и отчёты по сделке</div>
                 </div>
               </div>
-              <v-tooltip :text="canAccessFeature('pdfContract') ? 'Скачать PDF' : 'Доступно с плана Стандарт'" location="top">
-                <template #activator="{ props: tip }">
-                  <button
-                    class="contract-download-btn"
-                    :class="{ 'contract-download-btn--disabled': !canAccessFeature('pdfContract') }"
-                    :disabled="!canAccessFeature('pdfContract')"
-                    v-bind="tip"
-                    @click="canAccessFeature('pdfContract') && downloadContract()"
-                  >
-                    <v-icon :icon="canAccessFeature('pdfContract') ? 'mdi-download' : 'mdi-lock-outline'" size="18" />
-                    Скачать
-                  </button>
-                </template>
-              </v-tooltip>
             </div>
-          </v-card>
 
-          <!-- Deal summary PDF -->
-          <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="d-flex align-center justify-space-between">
-              <div class="d-flex align-center ga-3">
-                <div class="contract-icon" style="background: rgba(139, 92, 246, 0.1);">
-                  <v-icon icon="mdi-file-chart-outline" size="22" color="#8b5cf6" />
+            <div class="pdf-docs-list">
+              <!-- Contract -->
+              <button class="pdf-doc-item" :disabled="!canAccessFeature('pdfContract')" @click="canAccessFeature('pdfContract') && downloadContract()">
+                <v-icon icon="mdi-file-document-outline" size="20" color="#3b82f6" />
+                <div class="pdf-doc-item-info">
+                  <div class="pdf-doc-item-name">Договор мурабаха</div>
+                  <div class="pdf-doc-item-desc">Полный договор с условиями и графиком</div>
                 </div>
-                <div>
-                  <div class="font-weight-bold" style="font-size: 14px;">Сводка по сделке</div>
-                  <div class="text-caption text-medium-emphasis">PDF с деталями и графиком платежей</div>
+                <v-icon :icon="canAccessFeature('pdfContract') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
+              </button>
+
+              <!-- Custom template -->
+              <button v-if="customTemplate" class="pdf-doc-item" :disabled="customTemplateLoading" @click="downloadCustomContract">
+                <v-icon icon="mdi-file-cog-outline" size="20" color="#047857" />
+                <div class="pdf-doc-item-info">
+                  <div class="pdf-doc-item-name">Мой договор</div>
+                  <div class="pdf-doc-item-desc">Из вашего шаблона</div>
                 </div>
-              </div>
-              <v-tooltip :text="canAccessFeature('pdfExport') ? 'Скачать PDF' : 'Доступно с плана Стандарт'" location="top">
-                <template #activator="{ props: tip }">
-                  <button
-                    class="contract-download-btn"
-                    :class="{ 'contract-download-btn--disabled': !canAccessFeature('pdfExport') }"
-                    :disabled="!canAccessFeature('pdfExport')"
-                    v-bind="tip"
-                    @click="canAccessFeature('pdfExport') && downloadSummary()"
-                  >
-                    <v-icon :icon="canAccessFeature('pdfExport') ? 'mdi-download' : 'mdi-lock-outline'" size="18" />
-                    Скачать
-                  </button>
-                </template>
-              </v-tooltip>
+                <v-progress-circular v-if="customTemplateLoading" indeterminate size="14" width="2" />
+                <v-icon v-else icon="mdi-download" size="16" class="pdf-doc-item-action" />
+              </button>
+
+              <!-- Summary -->
+              <button class="pdf-doc-item" :disabled="!canAccessFeature('pdfExport')" @click="canAccessFeature('pdfExport') && downloadSummary()">
+                <v-icon icon="mdi-file-chart-outline" size="20" color="#8b5cf6" />
+                <div class="pdf-doc-item-info">
+                  <div class="pdf-doc-item-name">Сводка по сделке</div>
+                  <div class="pdf-doc-item-desc">Детали и график платежей</div>
+                </div>
+                <v-icon :icon="canAccessFeature('pdfExport') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
+              </button>
             </div>
           </v-card>
 
@@ -1504,6 +1562,18 @@ const timeline = computed(() => {
             <div v-if="markPaidTarget && markPaidAmount && markPaidAmount !== markPaidTarget.amount" class="text-caption mt-1" :style="{ color: markPaidAmount > markPaidTarget.amount ? '#10b981' : '#f59e0b' }">
               {{ markPaidAmount > markPaidTarget.amount ? `Переплата ${formatCurrency(markPaidAmount - markPaidTarget.amount)} — оставшиеся платежи будут пересчитаны` : `Недоплата ${formatCurrency(markPaidTarget.amount - markPaidAmount)}` }}
             </div>
+          </div>
+
+          <!-- Receipt PDF -->
+          <div class="mb-5">
+            <button class="receipt-btn" @click="markPaidTarget && deal && generateReceipt(deal, markPaidTarget, authStore.user || {})">
+              <v-icon icon="mdi-file-document-outline" size="18" />
+              <div class="receipt-btn-text">
+                <span class="receipt-btn-title">Квитанция об оплате</span>
+                <span class="receipt-btn-sub">Скачать PDF</span>
+              </div>
+              <v-icon icon="mdi-download" size="16" class="receipt-btn-arrow" />
+            </button>
           </div>
 
           <!-- Proof screenshot upload -->
@@ -2375,6 +2445,63 @@ const timeline = computed(() => {
   border-color: rgba(4, 120, 87, 0.3);
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
+/* PDF documents card */
+.pdf-docs-card { padding: 0 !important; overflow: hidden; }
+.pdf-docs-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.pdf-docs-header-left { display: flex; align-items: center; gap: 12px; }
+.pdf-docs-list { display: flex; flex-direction: column; }
+.pdf-doc-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 20px; border: none; background: none;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.04);
+  cursor: pointer; transition: background 0.12s; text-align: left;
+  width: 100%; color: inherit;
+}
+.pdf-doc-item:last-child { border-bottom: none; }
+.pdf-doc-item:hover { background: rgba(var(--v-theme-on-surface), 0.02); }
+.pdf-doc-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.pdf-doc-item:disabled:hover { background: none; }
+.pdf-doc-item-info { flex: 1; min-width: 0; }
+.pdf-doc-item-name {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.pdf-doc-item-desc {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+.pdf-doc-item-action {
+  color: rgba(var(--v-theme-on-surface), 0.2); flex-shrink: 0;
+  transition: color 0.12s;
+}
+.pdf-doc-item:hover .pdf-doc-item-action { color: rgba(var(--v-theme-on-surface), 0.5); }
+
+.dark .pdf-docs-header { border-color: rgba(255,255,255,0.06); }
+.dark .pdf-doc-item { border-color: rgba(255,255,255,0.04); }
+.dark .pdf-doc-item:hover { background: rgba(255,255,255,0.02); }
+
+/* Receipt button */
+.receipt-btn {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; padding: 12px 16px; border-radius: 12px;
+  border: 1px solid rgba(4, 120, 87, 0.15);
+  background: rgba(4, 120, 87, 0.04);
+  cursor: pointer; transition: all 0.15s; text-align: left;
+  color: #047857;
+}
+.receipt-btn:hover {
+  background: rgba(4, 120, 87, 0.08);
+  border-color: rgba(4, 120, 87, 0.25);
+}
+.receipt-btn-text { flex: 1; display: flex; flex-direction: column; }
+.receipt-btn-title { font-size: 13px; font-weight: 600; }
+.receipt-btn-sub { font-size: 11px; color: rgba(4, 120, 87, 0.6); }
+.receipt-btn-arrow { color: rgba(4, 120, 87, 0.4); }
+
 .proof-upload-btn {
   display: flex; align-items: center; gap: 8px;
   width: 100%; padding: 14px; border-radius: 10px;

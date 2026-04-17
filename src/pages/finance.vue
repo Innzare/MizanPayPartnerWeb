@@ -65,6 +65,7 @@ interface CapitalDeal {
 const capitalDetails = ref<{ deals: CapitalDeal[]; operations: CapitalOperation[]; coInvestors: any[] } | null>(null)
 const detailsTab = ref<'operations' | 'deals'>('operations')
 const showAllOps = ref(false)
+const wfExpanded = ref<string | null>(null)
 
 async function fetchCapitalDetails() {
   try {
@@ -501,70 +502,7 @@ function formatTransactionAmount(t: Transaction) {
         </div>
       </div>
 
-      <div v-else-if="capital" class="cap-hero mb-6">
-        <div class="cap-hero-header">
-          <div class="cap-hero-header-left">
-            <div class="cap-hero-icon">
-              <v-icon icon="mdi-wallet-outline" size="22" />
-            </div>
-            <div>
-              <div class="cap-hero-title">Капитал</div>
-              <div class="cap-hero-sub">Учёт средств по сделкам</div>
-            </div>
-          </div>
-          <button class="cap-edit-btn" @click="openCapitalDialog">
-            <v-icon icon="mdi-pencil-outline" size="16" />
-          </button>
-        </div>
-
-        <div class="cap-metrics">
-          <div class="cap-metric">
-            <div class="cap-metric-value">{{ formatCurrencyShort(capital.totalCapital) }}</div>
-            <div class="cap-metric-label">Общий капитал</div>
-            <div v-if="capital.coInvestorCapital > 0" class="cap-metric-hint">
-              {{ formatCurrencyShort(capital.initialCapital || 0) }} свои + {{ formatCurrencyShort(capital.coInvestorCapital) }} со-инвесторов
-            </div>
-          </div>
-          <div class="cap-metric-divider" />
-          <div class="cap-metric">
-            <div class="cap-metric-value" style="color: #f59e0b;">{{ formatCurrencyShort(capital.deployed) }}</div>
-            <div class="cap-metric-label">В сделках</div>
-          </div>
-          <div class="cap-metric-divider" />
-          <div class="cap-metric">
-            <div class="cap-metric-value" style="color: #10b981;">{{ formatCurrencyShort(capital.received) }}</div>
-            <div class="cap-metric-label">Получено</div>
-          </div>
-          <div class="cap-metric-divider" />
-          <div class="cap-metric cap-metric--main">
-            <div class="cap-metric-value cap-metric-value--big">{{ formatCurrencyShort(capital.availableCapital) }}</div>
-            <div class="cap-metric-label">Доступно</div>
-          </div>
-        </div>
-
-        <!-- Utilization bar -->
-        <div class="cap-utilization">
-          <div class="cap-utilization-header">
-            <span class="cap-utilization-label">
-              Капитал в работе
-              <v-tooltip location="top" max-width="280">
-                <template #activator="{ props: tipProps }">
-                  <v-icon v-bind="tipProps" icon="mdi-information-outline" size="13" class="cap-info-icon" />
-                </template>
-                Процент вашего капитала, задействованный в активных сделках. Чем выше — тем больше средств работает, но меньше свободных для новых сделок.
-              </v-tooltip>
-            </span>
-            <span class="cap-utilization-percent">{{ capitalUtilization }}%</span>
-          </div>
-          <div class="cap-utilization-bar">
-            <div class="cap-utilization-fill" :style="{ width: capitalUtilization + '%' }" />
-          </div>
-          <div v-if="capital.coInvestorPayout > 0" class="cap-payout-hint">
-            <v-icon icon="mdi-account-group-outline" size="13" />
-            Доля со-инвесторов: {{ formatCurrency(capital.coInvestorPayout) }}
-          </div>
-        </div>
-      </div>
+      <!-- (cap-hero removed — merged into waterfall below) -->
 
       <!-- Capital Edit Dialog -->
       <v-dialog v-model="showCapitalDialog" max-width="420">
@@ -596,6 +534,137 @@ function formatTransactionAmount(t: Transaction) {
           </div>
         </v-card>
       </v-dialog>
+
+      <!-- Waterfall Flow (unified capital view) -->
+      <div v-if="isCapitalSet && capitalDetails" class="wf mb-6">
+        <div class="wf-title-row">
+          <div class="wf-title">Капитал</div>
+          <button class="cap-edit-btn" @click="openCapitalDialog">
+            <v-icon icon="mdi-pencil-outline" size="16" />
+          </button>
+        </div>
+
+        <div class="wf-flow">
+          <!-- Total Capital -->
+          <div class="wf-node wf-node--start" @click="wfExpanded === 'capital' ? wfExpanded = null : wfExpanded = 'capital'">
+            <div class="wf-node-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
+              <v-icon icon="mdi-safe" size="20" />
+            </div>
+            <div class="wf-node-info">
+              <div class="wf-node-value">{{ formatCurrency(capitalDetails.totalCapital) }}</div>
+              <div class="wf-node-label">Общий капитал</div>
+            </div>
+            <v-icon :icon="wfExpanded === 'capital' ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" class="wf-node-chevron" />
+          </div>
+          <div v-if="wfExpanded === 'capital'" class="wf-expand">
+            <div class="wf-expand-row">
+              <span>Собственный капитал</span>
+              <span class="wf-expand-val">{{ formatCurrency(capitalDetails.initialCapital || 0) }}</span>
+            </div>
+            <div v-if="capitalDetails.coInvestorCapital > 0" class="wf-expand-row">
+              <span>Капитал со-инвесторов</span>
+              <span class="wf-expand-val">{{ formatCurrency(capitalDetails.coInvestorCapital) }}</span>
+            </div>
+            <div v-for="ci in capitalDetails.coInvestors" :key="ci.id" class="wf-expand-row wf-expand-row--sub">
+              <span>{{ ci.name }}</span>
+              <span class="wf-expand-val">{{ formatCurrency(ci.capital) }}</span>
+            </div>
+          </div>
+
+          <div class="wf-connector" />
+
+          <!-- Deployed -->
+          <div class="wf-node wf-node--expense" @click="wfExpanded === 'deployed' ? wfExpanded = null : wfExpanded = 'deployed'">
+            <div class="wf-node-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+              <v-icon icon="mdi-arrow-top-right" size="20" />
+            </div>
+            <div class="wf-node-info">
+              <div class="wf-node-value" style="color: #ef4444;">-{{ formatCurrency(capitalDetails.deployed) }}</div>
+              <div class="wf-node-label">В сделках · {{ capitalDetails.deals?.length || 0 }} сделок</div>
+            </div>
+            <v-icon :icon="wfExpanded === 'deployed' ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" class="wf-node-chevron" />
+          </div>
+          <div v-if="wfExpanded === 'deployed' && capitalDetails.deals" class="wf-expand">
+            <div v-for="d in capitalDetails.deals" :key="d.id" class="wf-expand-row">
+              <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
+                {{ d.productName }}
+                <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
+              </router-link>
+              <span class="wf-expand-val" style="color: #ef4444;">{{ formatCurrency(d.purchasePrice) }}</span>
+            </div>
+          </div>
+
+          <div class="wf-connector" />
+
+          <!-- Received -->
+          <div class="wf-node wf-node--income" @click="wfExpanded === 'received' ? wfExpanded = null : wfExpanded = 'received'">
+            <div class="wf-node-icon" style="background: rgba(16, 185, 129, 0.1); color: #10b981;">
+              <v-icon icon="mdi-arrow-bottom-left" size="20" />
+            </div>
+            <div class="wf-node-info">
+              <div class="wf-node-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.received) }}</div>
+              <div class="wf-node-label">Получено от клиентов</div>
+            </div>
+            <v-icon :icon="wfExpanded === 'received' ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" class="wf-node-chevron" />
+          </div>
+          <div v-if="wfExpanded === 'received' && capitalDetails.deals" class="wf-expand">
+            <div v-for="d in capitalDetails.deals.filter(x => x.received > 0)" :key="d.id" class="wf-expand-row">
+              <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
+                {{ d.productName }}
+                <span class="wf-expand-dim"> · {{ d.progress }}%</span>
+              </router-link>
+              <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(d.received) }}</span>
+            </div>
+            <div v-if="capitalDetails.deals.every(x => x.received === 0)" class="wf-expand-empty">Оплат пока нет</div>
+          </div>
+
+          <!-- Co-investor payout -->
+          <template v-if="capitalDetails.coInvestorPayout > 0">
+            <div class="wf-connector" />
+            <div class="wf-node wf-node--payout">
+              <div class="wf-node-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
+                <v-icon icon="mdi-account-arrow-right" size="20" />
+              </div>
+              <div class="wf-node-info">
+                <div class="wf-node-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.coInvestorPayout) }}</div>
+                <div class="wf-node-label">Доля со-инвесторов</div>
+              </div>
+            </div>
+          </template>
+
+          <div class="wf-connector wf-connector--final" />
+
+          <!-- Available -->
+          <div class="wf-node wf-node--result">
+            <div class="wf-node-icon wf-node-icon--big" style="background: rgba(4, 120, 87, 0.12); color: #047857;">
+              <v-icon icon="mdi-wallet-outline" size="22" />
+            </div>
+            <div class="wf-node-info">
+              <div class="wf-node-value wf-node-value--big" style="color: #047857;">{{ formatCurrency(capitalDetails.availableCapital) }}</div>
+              <div class="wf-node-label">Доступный капитал</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Utilization bar -->
+        <div class="wf-utilization">
+          <div class="wf-utilization-header">
+            <span class="wf-utilization-label">
+              Капитал в работе
+              <v-tooltip location="top" max-width="280">
+                <template #activator="{ props: tipProps }">
+                  <v-icon v-bind="tipProps" icon="mdi-information-outline" size="13" class="cap-info-icon" />
+                </template>
+                Процент вашего капитала, задействованный в активных сделках. Чем выше — тем больше средств работает, но меньше свободных для новых сделок.
+              </v-tooltip>
+            </span>
+            <span class="wf-utilization-percent">{{ capitalUtilization }}%</span>
+          </div>
+          <div class="wf-utilization-bar">
+            <div class="wf-utilization-fill" :style="{ width: capitalUtilization + '%' }" />
+          </div>
+        </div>
+      </div>
 
       <!-- Capital Movement Summary -->
       <div v-if="isCapitalSet && capitalDetails" class="cap-movement mb-6">
@@ -738,16 +807,16 @@ function formatTransactionAmount(t: Transaction) {
                 </div>
                 <div class="cap-deal-numbers">
                   <div class="cap-deal-num">
-                    <span class="cap-deal-num-label">Закупка</span>
-                    <span class="cap-deal-num-value" style="color: #ef4444;">{{ formatCurrency(deal.purchasePrice) }}</span>
+                    <div class="cap-deal-num-label">Закупка</div>
+                    <div class="cap-deal-num-value" style="color: #ef4444;">{{ formatCurrency(deal.purchasePrice) }}</div>
                   </div>
                   <div class="cap-deal-num">
-                    <span class="cap-deal-num-label">Получено</span>
-                    <span class="cap-deal-num-value" style="color: #10b981;">{{ formatCurrency(deal.received) }}</span>
+                    <div class="cap-deal-num-label">Получено</div>
+                    <div class="cap-deal-num-value" style="color: #10b981;">{{ formatCurrency(deal.received) }}</div>
                   </div>
                   <div class="cap-deal-num">
-                    <span class="cap-deal-num-label">Наценка</span>
-                    <span class="cap-deal-num-value">{{ formatCurrency(deal.markup) }}</span>
+                    <div class="cap-deal-num-label">Наценка</div>
+                    <div class="cap-deal-num-value">{{ formatCurrency(deal.markup) }}</div>
                   </div>
                 </div>
               </div>
@@ -1848,16 +1917,25 @@ function formatTransactionAmount(t: Transaction) {
   font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
 }
 .cap-deal-numbers {
-  display: flex; gap: 20px; flex-shrink: 0;
+  display: flex; gap: 0; flex-shrink: 0;
 }
-.cap-deal-num { text-align: right; }
+.cap-deal-num {
+  display: flex; flex-direction: column; align-items: flex-end;
+  padding: 4px 16px;
+  border-left: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  min-width: 90px;
+}
+.cap-deal-num:first-child { border-left: none; }
 .cap-deal-num-label {
-  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: rgba(var(--v-theme-on-surface), 0.3);
+  margin-bottom: 2px;
 }
 .cap-deal-num-value {
   font-size: 13px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.7);
+  white-space: nowrap;
 }
 
 /* Dark overrides */
@@ -1869,5 +1947,121 @@ function formatTransactionAmount(t: Transaction) {
   .cap-movement-cards { flex-direction: column; }
   .cap-deal-row { flex-direction: column; align-items: flex-start; }
   .cap-deal-numbers { width: 100%; justify-content: space-between; margin-top: 8px; }
+}
+
+/* ─── Waterfall Flow ─── */
+.wf {
+  border-radius: 16px; overflow: hidden;
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  padding: 20px 24px;
+}
+.wf-title-row {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 20px;
+}
+.wf-title {
+  font-size: 16px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.wf-flow {
+  display: flex; flex-direction: column; align-items: center;
+}
+.wf-node {
+  display: flex; align-items: center; gap: 14px;
+  width: 100%; max-width: 480px;
+  padding: 14px 18px; border-radius: 14px;
+  cursor: pointer; transition: all 0.15s;
+  border: 1px solid transparent;
+}
+.wf-node:hover { background: rgba(var(--v-theme-on-surface), 0.02); }
+.wf-node--start { background: rgba(124, 58, 237, 0.04); border-color: rgba(124, 58, 237, 0.1); }
+.wf-node--start:hover { background: rgba(124, 58, 237, 0.07); }
+.wf-node--expense { background: rgba(239, 68, 68, 0.03); border-color: rgba(239, 68, 68, 0.08); }
+.wf-node--expense:hover { background: rgba(239, 68, 68, 0.06); }
+.wf-node--income { background: rgba(16, 185, 129, 0.03); border-color: rgba(16, 185, 129, 0.08); }
+.wf-node--income:hover { background: rgba(16, 185, 129, 0.06); }
+.wf-node--payout { background: rgba(245, 158, 11, 0.03); border-color: rgba(245, 158, 11, 0.08); }
+.wf-node--result {
+  background: linear-gradient(135deg, rgba(4, 120, 87, 0.08) 0%, rgba(4, 120, 87, 0.03) 100%);
+  border-color: rgba(4, 120, 87, 0.15); cursor: default;
+}
+.wf-node-icon {
+  width: 42px; height: 42px; min-width: 42px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+}
+.wf-node-icon--big { width: 48px; height: 48px; min-width: 48px; border-radius: 14px; }
+.wf-node-info { flex: 1; min-width: 0; }
+.wf-node-value { font-size: 18px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
+.wf-node-value--big { font-size: 22px; }
+.wf-node-label { font-size: 12px; font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.4); margin-top: 1px; }
+.wf-node-chevron { color: rgba(var(--v-theme-on-surface), 0.2); flex-shrink: 0; }
+.wf-connector { width: 2px; height: 20px; background: rgba(var(--v-theme-on-surface), 0.08); }
+.wf-connector--final { height: 24px; background: linear-gradient(to bottom, rgba(var(--v-theme-on-surface), 0.08), rgba(4, 120, 87, 0.2)); }
+.wf-expand {
+  width: 100%; max-width: 480px; padding: 8px 16px 12px;
+  border-left: 2px solid rgba(var(--v-theme-on-surface), 0.06);
+  animation: wfSlide 0.15s ease;
+}
+@keyframes wfSlide {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.wf-expand-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 10px; border-radius: 8px; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+.wf-expand-row:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.wf-expand-row--sub { padding-left: 24px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45); }
+.wf-expand-val { font-weight: 700; font-size: 13px; flex-shrink: 0; }
+.wf-expand-link {
+  color: rgba(var(--v-theme-on-surface), 0.65); text-decoration: none;
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wf-expand-link:hover { color: rgb(var(--v-theme-primary)); }
+.wf-expand-dim { color: rgba(var(--v-theme-on-surface), 0.35); }
+.wf-expand-empty { padding: 8px 10px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.3); font-style: italic; }
+
+.wf-utilization {
+  padding: 16px 24px 0;
+  margin-top: 8px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.wf-utilization-header {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 8px;
+}
+.wf-utilization-label { display: flex; align-items: center; gap: 4px; }
+.wf-utilization-percent { font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.6); }
+.wf-utilization-bar {
+  height: 6px; border-radius: 3px;
+  background: rgba(var(--v-theme-on-surface), 0.06); overflow: hidden;
+}
+.wf-utilization-fill {
+  height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #7c3aed, #a855f7);
+  transition: width 0.5s ease;
+}
+
+.dark .wf { background: #1e1e2e; border-color: #2e2e42; }
+.dark .wf-utilization { border-top-color: rgba(255,255,255,0.06); }
+.dark .wf-node:hover { background: rgba(255,255,255,0.03); }
+.dark .wf-node--start { background: rgba(124, 58, 237, 0.08); border-color: rgba(124, 58, 237, 0.15); }
+.dark .wf-node--expense { background: rgba(239, 68, 68, 0.06); border-color: rgba(239, 68, 68, 0.12); }
+.dark .wf-node--income { background: rgba(16, 185, 129, 0.06); border-color: rgba(16, 185, 129, 0.12); }
+.dark .wf-node--payout { background: rgba(245, 158, 11, 0.06); border-color: rgba(245, 158, 11, 0.12); }
+.dark .wf-node--result { background: linear-gradient(135deg, rgba(4, 120, 87, 0.12) 0%, rgba(4, 120, 87, 0.06) 100%); border-color: rgba(4, 120, 87, 0.2); }
+.dark .wf-connector { background: rgba(255,255,255,0.06); }
+.dark .wf-expand { border-left-color: rgba(255,255,255,0.06); }
+
+@media (max-width: 600px) {
+  .wf { padding: 16px; }
+  .wf-node { padding: 12px 14px; gap: 10px; }
+  .wf-node-value { font-size: 16px; }
+  .wf-node-value--big { font-size: 18px; }
+  .wf-node-icon { width: 36px; height: 36px; min-width: 36px; }
 }
 </style>

@@ -581,44 +581,86 @@ const doughnutOptions = {
 // ── Metric breakdown dialog ──
 const breakdownOpen = ref(false)
 const breakdownTitle = ref('')
-const breakdownDeals = ref<{ deal: any; value: number; label?: string }[]>([])
+const breakdownHint = ref('')
+const breakdownIcon = ref('')
+const breakdownColor = ref('')
+const breakdownDeals = ref<{ deal: any; value: number; extra?: string; progress?: number }[]>([])
 const breakdownTotal = ref(0)
 const breakdownSuffix = ref('')
 
 function openBreakdown(metric: string) {
-  let deals: { deal: any; value: number; label?: string }[] = []
+  let deals: { deal: any; value: number; extra?: string; progress?: number }[] = []
   let title = ''
+  let hint = ''
+  let icon = ''
+  let color = ''
   let suffix = ''
 
   switch (metric) {
     case 'invested':
       title = 'Инвестировано'
-      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.purchasePrice }))
+      hint = 'Сумма закупочных цен по всем сделкам'
+      icon = 'mdi-cash-multiple'
+      color = '#047857'
+      deals = dealsStore.investorDeals.map(d => ({
+        deal: d, value: d.purchasePrice,
+        extra: `Наценка ${d.markupPercent}% · итого ${formatCurrency(d.totalPrice)}`,
+        progress: d.numberOfPayments > 0 ? Math.round((d.paidPayments / d.numberOfPayments) * 100) : 0,
+      }))
       break
     case 'revenue':
       title = 'Общий оборот'
-      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.totalPrice }))
+      hint = 'Закупочная цена + наценка по всем сделкам'
+      icon = 'mdi-chart-arc'
+      color = '#3b82f6'
+      deals = dealsStore.investorDeals.map(d => ({
+        deal: d, value: d.totalPrice,
+        extra: `${formatCurrency(d.purchasePrice)} закупка + ${formatCurrency(d.markup)} наценка`,
+      }))
       break
     case 'profit':
       title = 'Прибыль'
-      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.markup, label: `${d.markupPercent}%` }))
+      hint = 'Наценка по каждой сделке (totalPrice - purchasePrice)'
+      icon = 'mdi-trending-up'
+      color = '#10b981'
+      deals = dealsStore.investorDeals.map(d => ({
+        deal: d, value: d.markup,
+        extra: `${d.markupPercent}% от ${formatCurrency(d.purchasePrice)}`,
+      }))
       break
     case 'remaining':
       title = 'Ожидается к получению'
-      deals = dealsStore.activeDeals.map(d => ({ deal: d, value: d.remainingAmount }))
+      hint = 'Остаток по активным сделкам (неоплаченные платежи)'
+      icon = 'mdi-clock-outline'
+      color = '#f59e0b'
+      deals = dealsStore.activeDeals.map(d => ({
+        deal: d, value: d.remainingAmount,
+        extra: `${d.paidPayments} из ${d.numberOfPayments} платежей`,
+        progress: d.numberOfPayments > 0 ? Math.round((d.paidPayments / d.numberOfPayments) * 100) : 0,
+      }))
       break
     case 'monthly':
       title = 'Доход / мес'
+      hint = 'Средний ежемесячный платёж по активным сделкам'
+      icon = 'mdi-calendar-month'
+      color = '#047857'
       deals = dealsStore.activeDeals
         .filter(d => d.numberOfPayments > 0)
-        .map(d => ({ deal: d, value: Math.round(d.totalPrice / d.numberOfPayments), label: `${d.numberOfPayments} мес` }))
+        .map(d => ({
+          deal: d, value: Math.round(d.totalPrice / d.numberOfPayments),
+          extra: `${formatCurrency(d.totalPrice)} ÷ ${d.numberOfPayments} мес`,
+        }))
       break
-    case 'roi':
-      title = 'ROI'
-      suffix = '%'
-      deals = dealsStore.investorDeals
-        .filter(d => d.purchasePrice > 0)
-        .map(d => ({ deal: d, value: Math.round((d.markup / d.purchasePrice) * 1000) / 10, label: `${formatCurrency(d.markup)} / ${formatCurrency(d.purchasePrice)}` }))
+    case 'overdue':
+      title = 'Просрочено'
+      hint = 'Сумма просроченных платежей'
+      icon = 'mdi-alert-circle'
+      color = '#ef4444'
+      deals = paymentsStore.overduePayments.map(p => ({
+        deal: { productName: p.deal?.productName || 'Сделка', id: p.dealId },
+        value: p.amount,
+        extra: `Срок: ${formatDate(p.dueDate)}`,
+      }))
       break
     default:
       return
@@ -627,6 +669,9 @@ function openBreakdown(metric: string) {
   breakdownDeals.value = deals.sort((a, b) => b.value - a.value)
   breakdownTotal.value = deals.reduce((s, d) => s + d.value, 0)
   breakdownTitle.value = title
+  breakdownHint.value = hint
+  breakdownIcon.value = icon
+  breakdownColor.value = color
   breakdownSuffix.value = suffix
   breakdownOpen.value = true
 }
@@ -678,16 +723,6 @@ function bdColor(name?: string) {
           <div class="kpi-info">
             <div class="kpi-value">{{ formatCurrencyShort(thisMonthProfit) }}</div>
             <div class="kpi-label">Доход за месяц</div>
-          </div>
-        </div>
-
-        <div class="kpi-card">
-          <div class="kpi-icon-wrap" style="background: rgba(139, 92, 246, 0.1); color: #8b5cf6;">
-            <v-icon icon="mdi-percent" size="20" />
-          </div>
-          <div class="kpi-info">
-            <div class="kpi-value">{{ formatPercent(dealsStore.roi) }}</div>
-            <div class="kpi-label">ROI</div>
           </div>
         </div>
 
@@ -1179,41 +1214,66 @@ function bdColor(name?: string) {
     </v-dialog>
 
     <!-- Metric Breakdown Dialog -->
-    <v-dialog v-model="breakdownOpen" max-width="560" scrollable>
-      <v-card rounded="lg">
-        <v-card-title class="d-flex align-center justify-space-between pa-5 pb-3">
-          <span class="text-h6">{{ breakdownTitle }}</span>
-          <v-btn icon variant="text" size="small" @click="breakdownOpen = false">
-            <v-icon icon="mdi-close" />
-          </v-btn>
-        </v-card-title>
-        <v-divider />
-        <v-card-text class="pa-0" style="max-height: 400px;">
-          <div v-if="!breakdownDeals.length" class="pa-8 text-center text-medium-emphasis">
-            Нет данных
+    <v-dialog v-model="breakdownOpen" max-width="580" scrollable>
+      <v-card rounded="xl" class="bd-dialog">
+        <!-- Header -->
+        <div class="bd-header">
+          <div class="bd-header-left">
+            <div class="bd-header-icon" :style="{ background: breakdownColor + '15', color: breakdownColor }">
+              <v-icon :icon="breakdownIcon" size="20" />
+            </div>
+            <div>
+              <div class="bd-header-title">{{ breakdownTitle }}</div>
+              <div class="bd-header-hint">{{ breakdownHint }}</div>
+            </div>
           </div>
-          <div v-for="(item, i) in breakdownDeals" :key="i" class="bd-row">
+          <button class="bd-close" @click="breakdownOpen = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+        </div>
+
+        <!-- Total hero -->
+        <div class="bd-total-hero" :style="{ background: breakdownColor + '08' }">
+          <div class="bd-total-value" :style="{ color: breakdownColor }">
+            {{ breakdownSuffix ? (Math.round(breakdownTotal * 10) / 10) + breakdownSuffix : formatCurrency(breakdownTotal) }}
+          </div>
+          <div class="bd-total-label">{{ breakdownDeals.length }} {{ breakdownDeals.length === 1 ? 'сделка' : breakdownDeals.length < 5 ? 'сделки' : 'сделок' }}</div>
+        </div>
+
+        <!-- Deals list -->
+        <div class="bd-list" style="max-height: 400px; overflow-y: auto;">
+          <div v-if="!breakdownDeals.length" class="bd-empty">
+            <v-icon icon="mdi-package-variant-closed" size="36" color="grey-lighten-1" />
+            <div>Нет данных</div>
+          </div>
+
+          <router-link
+            v-for="(item, i) in breakdownDeals" :key="i"
+            :to="`/deals/${item.deal?.id}`"
+            class="bd-row"
+          >
             <div class="bd-avatar" :style="{ background: bdColor(item.deal?.productName) }">
               {{ bdInitial(item.deal?.productName) }}
             </div>
             <div class="bd-info">
               <div class="bd-product">{{ item.deal?.productName || 'Товар' }}</div>
-              <div class="bd-meta">{{ userName(item.deal?.client) || item.deal?.externalClientName || '—' }}</div>
+              <div class="bd-extra">{{ item.extra }}</div>
+              <!-- Progress bar -->
+              <div v-if="item.progress !== undefined" class="bd-progress">
+                <div class="bd-progress-bar">
+                  <div class="bd-progress-fill" :style="{ width: item.progress + '%', background: breakdownColor }" />
+                </div>
+                <span class="bd-progress-text">{{ item.progress }}%</span>
+              </div>
             </div>
             <div class="bd-right">
-              <div class="bd-value">
+              <div class="bd-value" :style="{ color: breakdownColor }">
                 {{ breakdownSuffix ? item.value + breakdownSuffix : formatCurrency(item.value) }}
               </div>
-              <div v-if="item.label" class="bd-label">{{ item.label }}</div>
+              <!-- Share of total -->
+              <div class="bd-share">{{ breakdownTotal > 0 ? Math.round((item.value / breakdownTotal) * 100) : 0 }}%</div>
             </div>
-          </div>
-        </v-card-text>
-        <v-divider />
-        <div class="bd-footer">
-          <span class="text-body-2 text-medium-emphasis">Итого ({{ breakdownDeals.length }} {{ breakdownDeals.length === 1 ? 'сделка' : breakdownDeals.length < 5 ? 'сделки' : 'сделок' }})</span>
-          <span class="text-h6 font-weight-bold">
-            {{ breakdownSuffix ? (Math.round(breakdownTotal * 10) / 10) + breakdownSuffix : formatCurrency(breakdownTotal) }}
-          </span>
+          </router-link>
         </div>
       </v-card>
     </v-dialog>
@@ -1326,22 +1386,19 @@ function bdColor(name?: string) {
 
 /* KPI Row */
 .kpi-row {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
 }
 
 .kpi-card {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 18px;
+  padding: 14px 16px;
   border-radius: 12px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   background: rgba(var(--v-theme-surface), 1);
-  flex: 1;
-  min-width: 150px;
 }
 
 .kpi-icon-wrap {
@@ -1847,33 +1904,65 @@ function bdColor(name?: string) {
 }
 
 /* Breakdown dialog */
+/* ─── Breakdown Dialog ─── */
+.bd-dialog { overflow: hidden; }
+.bd-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 24px 16px;
+}
+.bd-header-left { display: flex; align-items: center; gap: 12px; }
+.bd-header-icon {
+  width: 42px; height: 42px; min-width: 42px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+}
+.bd-header-title { font-size: 17px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
+.bd-header-hint { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4); margin-top: 1px; }
+.bd-close {
+  width: 32px; height: 32px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.12s;
+}
+.bd-close:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
+.bd-total-hero {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 16px 24px; margin: 0 16px; border-radius: 12px;
+}
+.bd-total-value { font-size: 26px; font-weight: 800; }
+.bd-total-label { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.4); }
+.bd-list { padding: 8px 12px 12px; }
+.bd-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 32px; color: rgba(var(--v-theme-on-surface), 0.3); font-size: 13px;
+}
 .bd-row {
   display: flex; align-items: center; gap: 12px;
-  padding: 12px 20px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-  transition: background 0.1s;
+  padding: 12px; border-radius: 12px;
+  text-decoration: none; color: inherit; transition: background 0.12s;
 }
 .bd-row:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
 .bd-avatar {
-  width: 36px; height: 36px; border-radius: 10px;
+  width: 38px; height: 38px; min-width: 38px; border-radius: 10px;
   display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 700; font-size: 14px; flex-shrink: 0;
+  font-size: 14px; font-weight: 700; color: #fff;
 }
 .bd-info { flex: 1; min-width: 0; }
 .bd-product {
-  font-size: 13px; font-weight: 600;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.85);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.bd-meta {
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.bd-extra { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4); margin-top: 2px; }
+.bd-progress { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+.bd-progress-bar {
+  flex: 1; height: 4px; border-radius: 2px;
+  background: rgba(var(--v-theme-on-surface), 0.06); overflow: hidden;
 }
+.bd-progress-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+.bd-progress-text { font-size: 10px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.35); }
 .bd-right { text-align: right; flex-shrink: 0; }
 .bd-value { font-size: 14px; font-weight: 700; }
-.bd-label {
-  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.bd-footer {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 20px;
-}
+.bd-share { font-size: 10px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.3); margin-top: 1px; }
+
+
 </style>

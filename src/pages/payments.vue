@@ -58,6 +58,37 @@ watch(tab, (v) => {
 const search = ref('')
 const viewMode = ref<'table' | 'calendar'>('table')
 
+// Month filter
+const filterMonth = ref<string | null>(null) // format: 'YYYY-MM' or null = all
+const filterYear = ref(new Date().getFullYear())
+
+const availableYears = computed(() => {
+  const years = new Set<number>()
+  paymentsStore.allPaymentsFlat.forEach(p => {
+    years.add(parseInt(p.dueDate.slice(0, 4)))
+  })
+  years.add(new Date().getFullYear())
+  return Array.from(years).sort((a, b) => b - a)
+})
+
+// Count payments per month for the selected year
+const monthPaymentCounts = computed(() => {
+  const counts: Record<string, number> = {}
+  paymentsStore.allPaymentsFlat.forEach(p => {
+    const ym = p.dueDate.slice(0, 7)
+    if (ym.startsWith(String(filterYear.value))) {
+      counts[ym] = (counts[ym] || 0) + 1
+    }
+  })
+  return counts
+})
+
+const filterMonthLabel = computed(() => {
+  if (!filterMonth.value) return 'Все'
+  const [, m] = filterMonth.value.split('-')
+  return MONTH_NAMES[parseInt(m) - 1]
+})
+
 // Calendar
 const calendarMonth = ref(new Date().getMonth())
 const calendarYear = ref(new Date().getFullYear())
@@ -396,6 +427,11 @@ const displayedPayments = computed(() => {
   else if (tab.value === 2) payments = [...paymentsStore.overduePayments]
   else if (tab.value === 3) payments = [...paymentsStore.paidPayments]
   else payments = [...paymentsStore.allPaymentsFlat]
+
+  // Month filter
+  if (filterMonth.value) {
+    payments = payments.filter(p => p.dueDate.slice(0, 7) === filterMonth.value)
+  }
 
   if (search.value) {
     const s = search.value.toLowerCase()
@@ -994,6 +1030,57 @@ const rescheduleReasonOptions = [
           </div>
 
           <v-spacer class="d-none d-md-block" />
+
+          <v-menu :close-on-content-click="false">
+            <template #activator="{ props: menuProps }">
+              <button v-bind="menuProps" class="month-filter-btn">
+                <v-icon icon="mdi-calendar-month-outline" size="16" />
+                {{ filterMonth ? filterMonthLabel + ' ' + filterMonth.split('-')[0] : 'Все месяцы' }}
+                <span v-if="filterMonth" class="month-filter-clear" @click.stop="filterMonth = null">
+                  <v-icon icon="mdi-close" size="12" />
+                </span>
+                <v-icon v-else icon="mdi-chevron-down" size="14" />
+              </button>
+            </template>
+            <v-card rounded="xl" elevation="4" class="month-menu">
+              <!-- Year selector -->
+              <div class="month-menu-year">
+                <button class="month-menu-year-btn" @click="filterYear--">
+                  <v-icon icon="mdi-chevron-left" size="18" />
+                </button>
+                <span class="month-menu-year-label">{{ filterYear }}</span>
+                <button class="month-menu-year-btn" @click="filterYear++">
+                  <v-icon icon="mdi-chevron-right" size="18" />
+                </button>
+              </div>
+
+              <!-- Month grid -->
+              <div class="month-menu-grid">
+                <button
+                  v-for="(name, i) in MONTH_NAMES"
+                  :key="i"
+                  class="month-menu-cell"
+                  :class="{
+                    active: filterMonth === `${filterYear}-${String(i + 1).padStart(2, '0')}`,
+                    'has-data': monthPaymentCounts[`${filterYear}-${String(i + 1).padStart(2, '0')}`] > 0,
+                  }"
+                  @click="filterMonth = `${filterYear}-${String(i + 1).padStart(2, '0')}`"
+                >
+                  <span class="month-menu-cell-name">{{ name.slice(0, 3) }}</span>
+                  <span v-if="monthPaymentCounts[`${filterYear}-${String(i + 1).padStart(2, '0')}`]" class="month-menu-cell-count">
+                    {{ monthPaymentCounts[`${filterYear}-${String(i + 1).padStart(2, '0')}`] }}
+                  </span>
+                </button>
+              </div>
+
+              <!-- Reset -->
+              <div class="month-menu-footer">
+                <button class="month-menu-reset" @click="filterMonth = null">
+                  Сбросить фильтр
+                </button>
+              </div>
+            </v-card>
+          </v-menu>
 
           <div class="filter-input-wrap" style="max-width: 280px; min-width: 160px;">
             <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
@@ -2204,4 +2291,84 @@ const rescheduleReasonOptions = [
   font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
   margin-left: 4px; vertical-align: middle;
 }
+
+/* Month filter */
+.month-filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 10px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 0.12s; white-space: nowrap;
+}
+.month-filter-btn:hover { background: rgba(var(--v-theme-on-surface), 0.08); }
+.month-filter-clear {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.12s; margin-left: 2px;
+}
+.month-filter-clear:hover { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+
+.month-menu { padding: 0; width: 320px; overflow: hidden; }
+.month-menu-year {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.month-menu-year-label { font-size: 16px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.8); }
+.month-menu-year-btn {
+  width: 32px; height: 32px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.12s;
+}
+.month-menu-year-btn:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
+
+.month-menu-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 6px; padding: 12px;
+}
+.month-menu-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 10px 4px; border-radius: 10px; border: none;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 0.12s;
+}
+.month-menu-cell.has-data { color: rgba(var(--v-theme-on-surface), 0.7); }
+.month-menu-cell:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+.month-menu-cell.active {
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary)); font-weight: 700;
+}
+.month-menu-cell-name { font-size: 13px; }
+.month-menu-cell-count {
+  font-size: 10px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.3);
+}
+.month-menu-cell.active .month-menu-cell-count { color: rgb(var(--v-theme-primary)); }
+.month-menu-cell.has-data .month-menu-cell-count { color: rgba(var(--v-theme-on-surface), 0.45); }
+
+.month-menu-footer {
+  padding: 8px 12px 12px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.month-menu-reset {
+  width: 100%; padding: 8px; border-radius: 8px; border: none;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: all 0.12s;
+}
+.month-menu-reset:hover { background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.7); }
+
+.dark .month-filter-btn { background: rgba(255,255,255,0.06); }
+.dark .month-filter-btn:hover { background: rgba(255,255,255,0.1); }
+.dark .month-menu-year { border-color: rgba(255,255,255,0.06); }
+.dark .month-menu-year-btn { background: rgba(255,255,255,0.06); }
+.dark .month-menu-footer { border-color: rgba(255,255,255,0.06); }
 </style>
