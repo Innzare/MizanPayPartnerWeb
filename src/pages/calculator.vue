@@ -26,6 +26,31 @@ const downPaymentPercent = computed(() =>
     : '0'
 )
 
+// Total price ↔ markup sync
+const totalPriceInput = computed(() => result.value.totalPrice || '')
+
+function onTotalPriceInput(value: number) {
+  if (!value || inputs.value.purchasePrice <= 0) return
+  const markupAmount = value - inputs.value.purchasePrice
+  if (markupAmount < 0) return
+  if (inputs.value.markupType === 'percent') {
+    inputs.value.markupValue = Math.round((markupAmount / inputs.value.purchasePrice) * 100 * 100) / 100
+  } else {
+    inputs.value.markupValue = markupAmount
+  }
+}
+
+function switchMarkupType(type: 'percent' | 'fixed') {
+  if (inputs.value.markupType === type) return
+  const purchase = inputs.value.purchasePrice
+  if (type === 'fixed') {
+    inputs.value.markupValue = purchase > 0 ? Math.round(purchase * inputs.value.markupValue / 100) : 0
+  } else {
+    inputs.value.markupValue = purchase > 0 ? Math.round((inputs.value.markupValue / purchase) * 100) : 0
+  }
+  inputs.value.markupType = type
+}
+
 function reset() {
   inputs.value = {
     purchasePrice: 100000,
@@ -93,12 +118,12 @@ function reset() {
                 <button
                   class="toggle-btn"
                   :class="{ active: inputs.markupType === 'percent' }"
-                  @click="inputs.markupType = 'percent'"
+                  @click="switchMarkupType('percent')"
                 >%</button>
                 <button
                   class="toggle-btn"
                   :class="{ active: inputs.markupType === 'fixed' }"
-                  @click="inputs.markupType = 'fixed'"
+                  @click="switchMarkupType('fixed')"
                 >₽</button>
               </div>
             </div>
@@ -120,6 +145,27 @@ function reset() {
                 min="0"
               />
               <span class="input-suffix">{{ inputs.markupType === 'percent' ? '%' : '₽' }}</span>
+            </div>
+          </div>
+
+          <!-- Total price (only in fixed/₽ mode) -->
+          <div v-if="inputs.markupType === 'fixed'" class="form-field mb-4">
+            <label class="field-label">Итоговая цена</label>
+            <div class="input-with-suffix">
+              <input
+                :value="totalPriceInput"
+                v-maska="CURRENCY_MASK"
+                @maska="(e: any) => onTotalPriceInput(parseMasked(e))"
+                type="text"
+                inputmode="numeric"
+                class="field-input"
+                placeholder="115 000"
+              />
+              <span class="input-suffix">₽</span>
+            </div>
+            <div class="field-hint-styled">
+              <v-icon icon="mdi-information-outline" size="14" />
+              Наценка рассчитается автоматически
             </div>
           </div>
 
@@ -167,34 +213,7 @@ function reset() {
             </div>
           </div>
 
-          <!-- Payment type -->
-          <div class="form-field">
-            <label class="field-label">Тип платежей</label>
-            <div class="payment-type-options">
-              <button
-                class="payment-type-btn"
-                :class="{ active: inputs.paymentType === 'equal' }"
-                @click="inputs.paymentType = 'equal'"
-              >
-                <v-icon icon="mdi-equal" size="18" />
-                <div>
-                  <div class="payment-type-title">Равные</div>
-                  <div class="payment-type-desc">Одинаковая сумма каждый месяц</div>
-                </div>
-              </button>
-              <button
-                class="payment-type-btn"
-                :class="{ active: inputs.paymentType === 'decreasing' }"
-                @click="inputs.paymentType = 'decreasing'"
-              >
-                <v-icon icon="mdi-trending-down" size="18" />
-                <div>
-                  <div class="payment-type-title">Убывающие</div>
-                  <div class="payment-type-desc">Уменьшаются к концу срока</div>
-                </div>
-              </button>
-            </div>
-          </div>
+          <!-- Payment type (fixed: equal) -->
         </v-card>
       </v-col>
 
@@ -327,6 +346,14 @@ function reset() {
 }
 .field-hint {
   font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.field-hint-styled {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 8px; padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.06);
+  color: rgb(var(--v-theme-primary));
+  font-size: 12px; font-weight: 500;
 }
 
 .input-with-suffix { position: relative; }

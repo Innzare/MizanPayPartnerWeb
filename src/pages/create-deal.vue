@@ -78,7 +78,8 @@ function removeContract(index: number) {
 
 // Step 2: Terms
 const purchasePrice = ref<number | null>(null)
-const markupPercent = ref(15)
+const markupType = ref<'percent' | 'fixed'>('percent')
+const markupValue = ref(15)
 const downPayment = ref<number | null>(null)
 const termMonths = ref(6)
 const paymentType = ref<PaymentType>('EQUAL')
@@ -89,8 +90,46 @@ const customFirstPayment = ref('')
 const markupOptions = [10, 15, 20, 25]
 const termOptions = [3, 4, 6, 9, 12, 18, 24]
 
+// Markup type switch with value conversion
+function switchMarkupType(type: 'percent' | 'fixed') {
+  if (markupType.value === type) return
+  const purchase = purchasePrice.value || 0
+  if (type === 'fixed') {
+    markupValue.value = purchase > 0 ? Math.round(purchase * markupValue.value / 100) : 0
+  } else {
+    markupValue.value = purchase > 0 ? Math.round((markupValue.value / purchase) * 100) : 0
+  }
+  markupType.value = type
+}
+
+// Total price ↔ markup sync
+const totalPriceInput = computed(() => totalPrice.value || '')
+
+function onTotalPriceInput(value: number) {
+  const purchase = purchasePrice.value || 0
+  if (!value || purchase <= 0) return
+  const markupAmount = value - purchase
+  if (markupAmount < 0) return
+  if (markupType.value === 'percent') {
+    markupValue.value = Math.round((markupAmount / purchase) * 100 * 100) / 100
+  } else {
+    markupValue.value = markupAmount
+  }
+}
+
 // Computed deal preview
-const markup = computed(() => Math.round((purchasePrice.value || 0) * markupPercent.value / 100))
+const markup = computed(() => {
+  const purchase = purchasePrice.value || 0
+  return markupType.value === 'percent'
+    ? Math.round(purchase * markupValue.value / 100)
+    : markupValue.value
+})
+const markupPercent = computed(() => {
+  const purchase = purchasePrice.value || 0
+  return markupType.value === 'percent'
+    ? markupValue.value
+    : (purchase > 0 ? Math.round((markupValue.value / purchase) * 100 * 100) / 100 : 0)
+})
 const totalPrice = computed(() => (purchasePrice.value || 0) + markup.value)
 const downPaymentAmount = computed(() => downPayment.value || 0)
 const remainingAmount = computed(() => totalPrice.value - downPaymentAmount.value)
@@ -348,17 +387,43 @@ async function submitDeal() {
               </div>
 
               <div class="form-field full-width">
-                <label class="field-label">Наценка</label>
-                <div class="chip-group">
+                <div class="field-label-row">
+                  <label class="field-label">Наценка</label>
+                  <div class="markup-type-toggle">
+                    <button class="toggle-btn" :class="{ active: markupType === 'percent' }" @click="switchMarkupType('percent')">%</button>
+                    <button class="toggle-btn" :class="{ active: markupType === 'fixed' }" @click="switchMarkupType('fixed')">₽</button>
+                  </div>
+                </div>
+                <div v-if="markupType === 'percent'" class="chip-group">
                   <button
                     v-for="opt in markupOptions" :key="opt"
-                    class="chip-option" :class="{ active: markupPercent === opt }"
-                    @click="markupPercent = opt"
+                    class="chip-option" :class="{ active: markupValue === opt }"
+                    @click="markupValue = opt"
                   >{{ opt }}%</button>
                 </div>
                 <div class="input-with-suffix mt-2">
-                  <input v-model.number="markupPercent" type="number" class="field-input" placeholder="15" min="1" />
-                  <span class="input-suffix">%</span>
+                  <input v-model.number="markupValue" type="number" class="field-input" :placeholder="markupType === 'percent' ? '15' : '15000'" min="0" />
+                  <span class="input-suffix">{{ markupType === 'percent' ? '%' : '₽' }}</span>
+                </div>
+              </div>
+
+              <div v-if="markupType === 'fixed'" class="form-field full-width">
+                <label class="field-label">Итоговая цена</label>
+                <div class="input-with-suffix">
+                  <input
+                    :value="totalPriceInput"
+                    v-maska="CURRENCY_MASK"
+                    @maska="(e: any) => onTotalPriceInput(parseMasked(e))"
+                    type="text"
+                    inputmode="numeric"
+                    class="field-input"
+                    placeholder="115 000"
+                  />
+                  <span class="input-suffix">₽</span>
+                </div>
+                <div class="field-hint-styled">
+                  <v-icon icon="mdi-information-outline" size="14" />
+                  Наценка рассчитается автоматически
                 </div>
               </div>
 
@@ -385,17 +450,7 @@ async function submitDeal() {
                 </div>
               </div>
 
-              <div class="form-field full-width">
-                <label class="field-label">Тип платежей</label>
-                <div class="chip-group">
-                  <button class="chip-option chip-option--wide" :class="{ active: paymentType === 'EQUAL' }" @click="paymentType = 'EQUAL'">
-                    <v-icon icon="mdi-equal" size="16" /> Равные
-                  </button>
-                  <button class="chip-option chip-option--wide" :class="{ active: paymentType === 'DECREASING' }" @click="paymentType = 'DECREASING'">
-                    <v-icon icon="mdi-trending-down" size="16" /> Убывающие
-                  </button>
-                </div>
-              </div>
+              <!-- Payment type fixed: EQUAL -->
 
               <div class="form-field full-width">
                 <label class="field-label">Дата заключения сделки</label>
@@ -422,40 +477,55 @@ async function submitDeal() {
         <!-- Live preview -->
         <v-col cols="12" lg="5">
           <div class="preview-card">
-            <div class="preview-header">
-              <v-icon icon="mdi-calculator" size="18" />
-              <span>Расчёт сделки</span>
+            <!-- Hero: Monthly payment -->
+            <div class="preview-hero">
+              <div class="preview-hero-label">Ежемесячный платёж</div>
+              <div class="preview-hero-value">~{{ formatCurrency(monthlyPayment) }}</div>
+              <div class="preview-hero-sub">{{ termMonths }} месяцев · равные платежи</div>
             </div>
-            <div class="preview-row">
-              <span>Закупочная цена</span>
-              <span class="preview-value">{{ formatCurrency(purchasePrice || 0) }}</span>
-            </div>
-            <div class="preview-row">
-              <span>Наценка {{ markupPercent }}%</span>
-              <span class="preview-value" style="color: #047857;">+{{ formatCurrency(markup) }}</span>
-            </div>
+
             <div class="preview-divider" />
-            <div class="preview-row preview-row--total">
-              <span>Итоговая цена</span>
-              <span>{{ formatCurrency(totalPrice) }}</span>
+
+            <!-- Metrics -->
+            <div class="preview-rows">
+              <div class="preview-row">
+                <span>Закупочная цена</span>
+                <span class="preview-value">{{ formatCurrency(purchasePrice || 0) }}</span>
+              </div>
+              <div class="preview-row">
+                <span>Наценка {{ markupPercent }}%</span>
+                <span class="preview-value" style="color: #047857;">+{{ formatCurrency(markup) }}</span>
+              </div>
+              <div class="preview-row preview-row--highlight-bg">
+                <span>Итоговая цена</span>
+                <span class="preview-value preview-value--bold">{{ formatCurrency(totalPrice) }}</span>
+              </div>
+              <div v-if="downPaymentAmount > 0" class="preview-row">
+                <span>Первоначальный взнос</span>
+                <span class="preview-value">-{{ formatCurrency(downPaymentAmount) }}</span>
+              </div>
+              <div v-if="downPaymentAmount > 0" class="preview-row">
+                <span>Остаток к выплате</span>
+                <span class="preview-value">{{ formatCurrency(remainingAmount) }}</span>
+              </div>
             </div>
-            <div v-if="downPaymentAmount > 0" class="preview-row">
-              <span>Первоначальный взнос</span>
-              <span class="preview-value">-{{ formatCurrency(downPaymentAmount) }}</span>
-            </div>
-            <div v-if="downPaymentAmount > 0" class="preview-row">
-              <span>Остаток к выплате</span>
-              <span class="preview-value">{{ formatCurrency(remainingAmount) }}</span>
-            </div>
+
             <div class="preview-divider" />
-            <div class="preview-row preview-row--highlight">
-              <span>Ежемесячный платёж</span>
-              <span>~{{ formatCurrency(monthlyPayment) }}</span>
+
+            <!-- Profit -->
+            <div class="preview-profit">
+              <div class="preview-profit-item">
+                <div class="preview-profit-label">Прибыль</div>
+                <div class="preview-profit-value preview-profit-value--green">{{ formatCurrency(markup) }}</div>
+              </div>
+              <div class="preview-profit-item">
+                <div class="preview-profit-label">ROI</div>
+                <div class="preview-profit-value">{{ (purchasePrice || 0) > 0 ? ((markup / (purchasePrice || 1)) * 100).toFixed(1) : '0' }}%</div>
+              </div>
             </div>
+
             <div class="preview-footer">
-              {{ termMonths }} платежей · {{ paymentType === 'EQUAL' ? 'Равные' : 'Убывающие' }}
-            </div>
-            <div class="preview-footer" style="margin-top: 4px;">
+              <v-icon icon="mdi-calendar-clock" size="14" />
               Первый платёж: {{ firstPaymentDate }}
             </div>
           </div>
@@ -577,7 +647,7 @@ async function submitDeal() {
         <div class="review-hero__payment">
           <div class="review-hero__payment-amount">~{{ formatCurrency(monthlyPayment) }}</div>
           <div class="review-hero__payment-label">
-            ежемесячный платёж · {{ termMonths }} мес · {{ paymentType === 'EQUAL' ? 'равные' : 'убывающие' }}
+            ежемесячный платёж · {{ termMonths }} мес · равные платежи
           </div>
           <div class="review-hero__payment-date">
             <v-icon icon="mdi-calendar-clock" size="14" />
@@ -728,6 +798,34 @@ async function submitDeal() {
   font-size: 13px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.6);
 }
+.field-label-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px;
+}
+.markup-type-toggle {
+  display: flex; gap: 2px; padding: 2px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+.toggle-btn {
+  padding: 4px 12px; border-radius: 5px; border: none;
+  font-size: 12px; font-weight: 600;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  cursor: pointer; transition: all 0.15s;
+}
+.toggle-btn.active {
+  background: #fff; color: rgba(var(--v-theme-on-surface), 0.8);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+.field-hint-styled {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 8px; padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.06);
+  color: rgb(var(--v-theme-primary));
+  font-size: 12px; font-weight: 500;
+}
 .required { color: #ef4444; }
 .field-input {
   width: 100%; height: 44px; padding: 0 14px;
@@ -866,40 +964,73 @@ async function submitDeal() {
 
 /* Preview card */
 .preview-card {
-  padding: 20px; border-radius: 14px;
+  border-radius: 14px; overflow: hidden;
   background: linear-gradient(135deg, rgba(4, 120, 87, 0.06) 0%, rgba(4, 120, 87, 0.02) 100%);
   border: 1px solid rgba(4, 120, 87, 0.12);
   position: sticky; top: 80px;
 }
-.preview-header {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 14px; font-weight: 700;
-  color: #047857; margin-bottom: 16px;
+.preview-hero {
+  padding: 28px 24px 20px; text-align: center;
 }
+.preview-hero-label {
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-bottom: 4px;
+}
+.preview-hero-value {
+  font-size: 32px; font-weight: 800;
+  color: #047857; line-height: 1.2;
+}
+.preview-hero-sub {
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 4px;
+}
+.preview-rows { padding: 16px 24px; }
 .preview-row {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 6px 0; font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.6);
+  padding: 7px 0; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
-.preview-value { font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.85); }
-.preview-row--total {
-  font-weight: 700; font-size: 15px;
-  color: rgba(var(--v-theme-on-surface), 0.85);
+.preview-value {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
-.preview-row--total span:last-child { color: #047857; }
-.preview-row--highlight {
-  font-weight: 700; font-size: 16px;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  padding: 8px 0;
+.preview-value--bold {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
 }
-.preview-row--highlight span:last-child { color: #047857; }
+.preview-row--highlight-bg {
+  margin: 4px -8px; padding: 8px 8px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
 .preview-divider {
-  height: 1px; margin: 8px 0;
-  background: rgba(var(--v-theme-on-surface), 0.08);
+  height: 1px; margin: 0 24px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
 }
+.preview-profit {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  padding: 16px 24px 20px;
+}
+.preview-profit-item {
+  padding: 12px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  text-align: center;
+}
+.preview-profit-label {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 4px;
+}
+.preview-profit-value {
+  font-size: 18px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.preview-profit-value--green { color: #047857; }
 .preview-footer {
-  text-align: center; margin-top: 12px; padding-top: 12px;
-  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.1);
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 12px 24px 16px;
   font-size: 12px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.4);
 }
@@ -1021,6 +1152,11 @@ async function submitDeal() {
 .btn-secondary:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
 
 /* Dark mode */
+.dark .toggle-btn.active {
+  background: #252538; color: #e4e4e7;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+.dark .markup-type-toggle { background: #1e1e2e; }
 .dark .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
 .dark .field-input:focus {
   border-color: #047857; background: #1e1e2e;
@@ -1032,6 +1168,9 @@ async function submitDeal() {
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 .dark .preview-card { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); border-color: rgba(4, 120, 87, 0.2); }
+.dark .preview-row--highlight-bg { background: rgba(0,0,0,0.15); }
+.dark .preview-profit-item { background: rgba(0,0,0,0.15); }
+.dark .preview-divider { background: rgba(255,255,255,0.06); }
 .dark .client-card { background: #1e1e2e; }
 .dark .client-card.active { background: rgba(4, 120, 87, 0.08); }
 .dark .photo-drop-zone { border-color: #2e2e42; }

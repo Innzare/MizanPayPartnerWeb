@@ -45,6 +45,7 @@ interface ClientProfile {
   status: 'reliable' | 'delayed' | 'unreliable' | 'blacklisted'
   isOnPlatform: boolean
   platformUserId?: string
+  isPublic: boolean
   blacklisted: boolean
   blacklistReasons: BlacklistReason[]
   reviews: ClientReview[]
@@ -72,6 +73,51 @@ const blacklistForm = ref({ phone: '', name: '', reason: '' })
 const showReviewDialog = ref(false)
 const reviewLoading = ref(false)
 const reviewForm = ref({ phone: '', name: '', rating: 5, comment: '' })
+
+// Delete client
+const deleteLoading = ref<string | null>(null)
+const showDeleteDialog = ref(false)
+const clientToDelete = ref<ClientProfile | null>(null)
+
+function confirmDeleteClient(client: ClientProfile) {
+  clientToDelete.value = client
+  showDeleteDialog.value = true
+}
+
+async function doDelete() {
+  if (!clientToDelete.value) return
+  deleteLoading.value = clientToDelete.value.id
+  try {
+    await api.delete(`/client-profiles/${clientToDelete.value.id}`)
+    allClients.value = allClients.value.filter((c) => c.id !== clientToDelete.value!.id)
+    toast.success('Клиент удалён')
+    showDeleteDialog.value = false
+    clientToDelete.value = null
+  } catch (e: any) {
+    toast.error(e.response?.data?.message || e.message || 'Ошибка удаления')
+  } finally {
+    deleteLoading.value = null
+  }
+}
+
+// Publish to global
+const publishLoading = ref<string | null>(null)
+
+async function togglePublish(client: ClientProfile) {
+  publishLoading.value = client.id
+  try {
+    const endpoint = client.isPublic
+      ? `/registry/unpublish/${client.id}`
+      : `/registry/publish/${client.id}`
+    await api.patch(endpoint)
+    client.isPublic = !client.isPublic
+    toast.success(client.isPublic ? 'Клиент добавлен в глобальный реестр' : 'Клиент убран из глобального реестра')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка')
+  } finally {
+    publishLoading.value = null
+  }
+}
 
 // ── Colors ──
 
@@ -501,6 +547,9 @@ function renderStars(rating: number): string[] {
                     <v-icon icon="mdi-open-in-new" size="10" class="mr-1" /> На платформе
                   </span>
                   <span v-else class="rg-external-badge">Внешний</span>
+                  <span v-if="client.isPublic" class="rg-public-badge">
+                    <v-icon icon="mdi-earth" size="10" class="mr-1" /> Глобальный
+                  </span>
                   <span class="rg-meta-sep">·</span>
                   {{ client.totalDeals }} {{ pluralDeals(client.totalDeals) }}
                   <span class="rg-meta-sep">·</span>
@@ -668,6 +717,31 @@ function renderStars(rating: number): string[] {
                 <!-- Actions -->
                 <div class="rg-actions">
                   <button
+                    class="rg-btn rg-btn--outline"
+                    @click.stop="router.push(`/clients/${client.id}`)"
+                  >
+                    <v-icon icon="mdi-account-details-outline" size="16" class="mr-1" />
+                    Профиль клиента
+                  </button>
+                  <button
+                    v-if="registryMode === 'my' && !client.isPublic"
+                    class="rg-btn rg-btn--success"
+                    :disabled="publishLoading === client.id"
+                    @click.stop="togglePublish(client)"
+                  >
+                    <v-icon icon="mdi-earth-plus" size="16" class="mr-1" />
+                    {{ publishLoading === client.id ? 'Публикация...' : 'В глобальный реестр' }}
+                  </button>
+                  <button
+                    v-if="registryMode === 'my' && client.isPublic"
+                    class="rg-btn rg-btn--ghost"
+                    :disabled="publishLoading === client.id"
+                    @click.stop="togglePublish(client)"
+                  >
+                    <v-icon icon="mdi-earth-minus" size="16" class="mr-1" />
+                    {{ publishLoading === client.id ? 'Снятие...' : 'Убрать из глобального' }}
+                  </button>
+                  <button
                     v-if="!client.blacklisted"
                     class="rg-btn rg-btn--dark"
                     @click.stop="openBlacklistDialog(client)"
@@ -686,6 +760,15 @@ function renderStars(rating: number): string[] {
                   <button class="rg-btn rg-btn--primary" @click.stop="openReviewDialog(client)">
                     <v-icon icon="mdi-star-plus-outline" size="16" class="mr-1" />
                     Оставить отзыв
+                  </button>
+                  <button
+                    v-if="registryMode === 'my' && !client.isOnPlatform && !client.isPublic"
+                    class="rg-btn rg-btn--danger"
+                    :disabled="deleteLoading === client.id"
+                    @click.stop="confirmDeleteClient(client)"
+                  >
+                    <v-icon icon="mdi-delete-outline" size="16" class="mr-1" />
+                    {{ deleteLoading === client.id ? 'Удаление...' : 'Удалить клиента' }}
                   </button>
                 </div>
               </div>
@@ -829,6 +912,40 @@ function renderStars(rating: number): string[] {
           <button class="rg-btn rg-btn--primary" @click="submitReview" :disabled="reviewLoading">
             <v-progress-circular v-if="reviewLoading" indeterminate size="16" width="2" color="white" class="mr-2" />
             Отправить отзыв
+          </button>
+        </div>
+      </v-card>
+    </v-dialog>
+
+    <!-- Delete Confirmation Dialog -->
+    <v-dialog v-model="showDeleteDialog" max-width="420" persistent>
+      <v-card rounded="lg">
+        <div class="rg-dialog-header">
+          <span class="rg-dialog-title">Удалить клиента</span>
+          <button class="rg-dialog-close" @click="showDeleteDialog = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+        </div>
+
+        <div class="pa-5">
+          <div class="rg-dialog-warning mb-4">
+            <v-icon icon="mdi-alert-circle-outline" size="20" class="mr-2" />
+            Профиль клиента будет удалён безвозвратно. Все отзывы и записи в чёрном списке, связанные с этим клиентом, также будут удалены.
+          </div>
+
+          <div v-if="clientToDelete" style="font-size: 15px; color: rgba(var(--v-theme-on-surface), 0.7);">
+            Вы уверены, что хотите удалить профиль <strong>{{ clientToDelete.firstName }} {{ clientToDelete.lastName }}</strong>?
+          </div>
+        </div>
+
+        <div class="rg-dialog-actions">
+          <button class="rg-btn rg-btn--ghost" @click="showDeleteDialog = false" :disabled="!!deleteLoading">
+            Отмена
+          </button>
+          <button class="rg-btn rg-btn--danger" @click="doDelete" :disabled="!!deleteLoading">
+            <v-progress-circular v-if="deleteLoading" indeterminate size="16" width="2" color="white" class="mr-2" />
+            <v-icon v-else icon="mdi-delete-outline" size="16" class="mr-1" />
+            Удалить
           </button>
         </div>
       </v-card>
@@ -1192,6 +1309,12 @@ function renderStars(rating: number): string[] {
   font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
   margin-left: 4px;
 }
+.rg-public-badge {
+  display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 4px;
+  background: rgba(59, 130, 246, 0.1); color: #3b82f6;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  margin-left: 4px;
+}
 
 /* Rating */
 .rg-rating {
@@ -1420,6 +1543,32 @@ function renderStars(rating: number): string[] {
 }
 .rg-btn--ghost:hover:not(:disabled) {
   background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.rg-btn--success {
+  background: #3b82f6;
+  color: #fff;
+}
+.rg-btn--success:hover:not(:disabled) {
+  background: #2563eb;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25);
+}
+.rg-btn--danger {
+  background: #ef4444;
+  color: #fff;
+}
+.rg-btn--danger:hover:not(:disabled) {
+  background: #dc2626;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25);
+}
+.rg-btn--outline {
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+}
+.rg-btn--outline:hover:not(:disabled) {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  border-color: rgba(var(--v-theme-on-surface), 0.25);
 }
 
 /* ── Dialog ── */

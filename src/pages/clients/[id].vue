@@ -110,6 +110,9 @@ function cleanPhone(phone: string) {
   return phone.replace(/\D/g, '')
 }
 
+// Only external clients (no userId) can be edited by investor
+const canEdit = computed(() => profile.value && !profile.value.userId)
+
 function startEditing() {
   if (!profile.value) return
   form.value = {
@@ -251,11 +254,12 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
               </div>
             </div>
 
-            <!-- Edit button -->
-            <div class="pa-4 pt-0">
-              <v-btn block variant="outlined" size="small" prepend-icon="mdi-pencil" @click="startEditing">
+            <!-- Edit button (only for external clients) -->
+            <div v-if="canEdit" class="px-4 pb-4">
+              <button class="edit-profile-btn" @click="startEditing">
+                <v-icon icon="mdi-pencil-outline" size="16" />
                 Редактировать профиль
-              </v-btn>
+              </button>
             </div>
           </v-card>
 
@@ -416,11 +420,20 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
 
             <!-- Edit mode -->
             <template v-else>
-              <div class="d-flex align-center justify-space-between mb-4">
-                <div class="text-subtitle-1 font-weight-bold">Редактирование</div>
-                <div class="d-flex ga-2">
-                  <v-btn size="small" variant="text" @click="editing = false">Отмена</v-btn>
-                  <v-btn size="small" variant="flat" color="primary" :loading="saving" @click="saveProfile">Сохранить</v-btn>
+              <div class="edit-header">
+                <div class="edit-header-title">
+                  <v-icon icon="mdi-pencil-outline" size="18" class="mr-2" />
+                  Редактирование
+                </div>
+                <div class="edit-header-actions">
+                  <button class="edit-btn edit-btn--cancel" @click="editing = false" :disabled="saving">
+                    Отмена
+                  </button>
+                  <button class="edit-btn edit-btn--save" @click="saveProfile" :disabled="saving">
+                    <v-progress-circular v-if="saving" indeterminate size="14" width="2" color="white" class="mr-1" />
+                    <v-icon v-else icon="mdi-check" size="16" class="mr-1" />
+                    Сохранить
+                  </button>
                 </div>
               </div>
 
@@ -729,10 +742,83 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
   justify-content: center; padding: 40px 20px;
 }
 
+/* ── Edit profile button ── */
+.edit-profile-btn {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 11px 16px;
+  border-radius: 12px;
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  cursor: pointer; transition: all 0.15s;
+}
+.edit-profile-btn:hover {
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  border-color: rgba(var(--v-theme-on-surface), 0.2);
+}
+
+/* ── Edit mode header ── */
+.edit-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.edit-header-title {
+  display: flex; align-items: center;
+  font-size: 16px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.edit-header-actions {
+  display: flex; gap: 8px;
+}
+.edit-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 8px 18px;
+  border-radius: 10px;
+  font-size: 13px; font-weight: 600;
+  border: none; cursor: pointer;
+  transition: all 0.15s;
+}
+.edit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.edit-btn--cancel {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.edit-btn--cancel:hover:not(:disabled) {
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.edit-btn--save {
+  background: #10b981;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2);
+}
+.edit-btn--save:hover:not(:disabled) {
+  background: #059669;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
 /* ── Dark mode ── */
 .dark .stat-card { background: #1e1e2e; border-color: #2e2e42; }
 .dark .tab-item.active { background: #1e1e2e; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); }
 .dark .tab-bar { background: rgba(255, 255, 255, 0.04); }
 .dark .data-item { background: rgba(255, 255, 255, 0.03); }
 .dark .deal-row:hover { background: rgba(255, 255, 255, 0.04); }
+.dark .edit-profile-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.dark .edit-profile-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.dark .edit-btn--cancel {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.1);
+}
 </style>
