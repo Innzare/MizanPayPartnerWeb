@@ -155,6 +155,65 @@ async function removeGuarantor() {
   }
 }
 
+// ── Co-Investors ──
+interface CoInvestorInfo {
+  id: string
+  name: string
+  phone: string | null
+  profitPercent: number
+  capital: number
+}
+
+const dealCoInvestors = ref<CoInvestorInfo[]>([])
+const allCoInvestors = ref<CoInvestorInfo[]>([])
+const coInvestorLoading = ref(false)
+const showCoInvestorMenu = ref(false)
+
+async function loadCoInvestors() {
+  try {
+    const [linked, all] = await Promise.all([
+      api.get<CoInvestorInfo[]>(`/co-investors/deal/${dealId.value}`),
+      api.get<any[]>('/co-investors'),
+    ])
+    dealCoInvestors.value = linked
+    allCoInvestors.value = all.map(ci => ({ id: ci.id, name: ci.name, phone: ci.phone, profitPercent: ci.profitPercent, capital: ci.capital }))
+  } catch { /* ignore */ }
+}
+
+const availableCoInvestors = computed(() =>
+  allCoInvestors.value.filter(ci => !dealCoInvestors.value.some(d => d.id === ci.id))
+)
+
+async function linkCoInvestor(ci: CoInvestorInfo) {
+  coInvestorLoading.value = true
+  try {
+    await api.post(`/co-investors/${ci.id}/deals/${dealId.value}`)
+    dealCoInvestors.value.push(ci)
+    showCoInvestorMenu.value = false
+    toast.success(`${ci.name} привязан к сделке`)
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось привязать со-инвестора')
+  } finally {
+    coInvestorLoading.value = false
+  }
+}
+
+async function unlinkCoInvestor(ci: CoInvestorInfo) {
+  coInvestorLoading.value = true
+  try {
+    await api.delete(`/co-investors/${ci.id}/deals/${dealId.value}`)
+    dealCoInvestors.value = dealCoInvestors.value.filter(d => d.id !== ci.id)
+    toast.success(`${ci.name} отвязан от сделки`)
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось отвязать со-инвестора')
+  } finally {
+    coInvestorLoading.value = false
+  }
+}
+
+// Load co-investors on mount
+onMounted(() => { loadCoInvestors() })
+
 async function restoreDeal() {
   deleting.value = true
   try {
@@ -1011,6 +1070,106 @@ const timeline = computed(() => {
             </template>
 
             <div v-else class="text-body-2 text-medium-emphasis">Не назначен</div>
+          </v-card>
+
+          <!-- Co-Investors -->
+          <v-card v-if="!deal.deletedAt" rounded="lg" elevation="0" border class="ci-section mb-6">
+            <!-- Header -->
+            <div class="ci-header">
+              <div class="ci-header-left">
+                <div class="ci-header-icon">
+                  <v-icon icon="mdi-account-group-outline" size="20" />
+                </div>
+                <div>
+                  <div class="ci-header-title">Со-инвесторы</div>
+                  <div class="ci-header-sub">
+                    <template v-if="dealCoInvestors.length > 0">
+                      {{ dealCoInvestors.length }} {{ dealCoInvestors.length === 1 ? 'партнёр' : 'партнёра' }}
+                      <template v-if="deal.markup">
+                        · {{ formatCurrency(dealCoInvestors.reduce((sum, ci) => sum + Math.round((deal?.markup || 0) * ci.profitPercent / 100), 0)) }} распределено
+                      </template>
+                    </template>
+                    <template v-else>Не привязаны</template>
+                  </div>
+                </div>
+              </div>
+              <v-menu v-model="showCoInvestorMenu" :close-on-content-click="false" location="bottom end">
+                <template #activator="{ props: menuProps }">
+                  <button
+                    v-if="availableCoInvestors.length > 0"
+                    v-bind="menuProps"
+                    class="ci-add-btn"
+                    :disabled="coInvestorLoading"
+                  >
+                    <v-icon icon="mdi-plus" size="16" />
+                    Добавить
+                  </button>
+                </template>
+                <v-card min-width="300" rounded="xl" elevation="4" class="ci-menu">
+                  <div class="ci-menu-header">
+                    <v-icon icon="mdi-account-plus-outline" size="16" />
+                    Выберите со-инвестора
+                  </div>
+                  <div class="ci-menu-list">
+                    <button
+                      v-for="ci in availableCoInvestors"
+                      :key="ci.id"
+                      class="ci-menu-item"
+                      @click="linkCoInvestor(ci)"
+                    >
+                      <div class="ci-avatar ci-avatar--sm">
+                        {{ ci.name.split(' ').map((w: string) => w[0]).join('').slice(0, 2) }}
+                      </div>
+                      <div class="ci-menu-item-info">
+                        <div class="ci-menu-item-name">{{ ci.name }}</div>
+                        <div class="ci-menu-item-meta">{{ ci.profitPercent }}% от прибыли</div>
+                      </div>
+                      <v-icon icon="mdi-plus-circle-outline" size="20" class="ci-menu-item-action" />
+                    </button>
+                  </div>
+                </v-card>
+              </v-menu>
+            </div>
+
+            <!-- Cards -->
+            <div v-if="dealCoInvestors.length > 0" class="ci-cards">
+              <div v-for="ci in dealCoInvestors" :key="ci.id" class="ci-card">
+                <div class="ci-card-top">
+                  <div class="ci-avatar">
+                    {{ ci.name.split(' ').map((w: string) => w[0]).join('').slice(0, 2) }}
+                  </div>
+                  <div class="ci-card-info">
+                    <div class="ci-card-name">{{ ci.name }}</div>
+                    <div v-if="ci.phone" class="ci-card-phone">
+                      <v-icon icon="mdi-phone-outline" size="11" />
+                      {{ ci.phone }}
+                    </div>
+                  </div>
+                  <button class="ci-card-remove" :disabled="coInvestorLoading" @click="unlinkCoInvestor(ci)">
+                    <v-icon icon="mdi-link-variant-off" size="14" />
+                  </button>
+                </div>
+                <div class="ci-card-stats">
+                  <div class="ci-card-stat">
+                    <span class="ci-card-stat-label">Доля прибыли</span>
+                    <span class="ci-card-stat-value">{{ ci.profitPercent }}%</span>
+                  </div>
+                  <div v-if="deal.markup" class="ci-card-stat">
+                    <span class="ci-card-stat-label">Сумма</span>
+                    <span class="ci-card-stat-value ci-card-stat-value--accent">{{ formatCurrency(Math.round(deal.markup * ci.profitPercent / 100)) }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty state -->
+            <div v-else class="ci-empty">
+              <div class="ci-empty-icon">
+                <v-icon icon="mdi-account-group-outline" size="24" />
+              </div>
+              <div class="ci-empty-text">Со-инвесторы не привязаны к сделке</div>
+              <div class="ci-empty-hint">Добавьте партнёров, чтобы распределить прибыль</div>
+            </div>
           </v-card>
 
           <!-- Contract download -->
@@ -2276,6 +2435,155 @@ const timeline = computed(() => {
 }
 .profile-avatar--client { background: #047857; }
 .profile-avatar--guarantor { background: #6366f1; }
+.profile-avatar--coinvestor { background: #f59e0b; }
+
+/* ─── Co-Investors Section ─── */
+.ci-section { padding: 0 !important; overflow: hidden; }
+
+.ci-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.ci-header-left { display: flex; align-items: center; gap: 12px; }
+.ci-header-icon {
+  width: 40px; height: 40px; min-width: 40px; border-radius: 10px;
+  background: rgba(245, 158, 11, 0.1); color: #f59e0b;
+  display: flex; align-items: center; justify-content: center;
+}
+.ci-header-title {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.ci-header-sub {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 1px;
+}
+
+.ci-add-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 14px; border-radius: 8px; border: none;
+  background: rgba(245, 158, 11, 0.1); color: #f59e0b;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.ci-add-btn:hover { background: rgba(245, 158, 11, 0.18); }
+.ci-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Menu dropdown */
+.ci-menu { overflow: hidden; }
+.ci-menu-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 16px; font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.ci-menu-list { padding: 6px; }
+.ci-menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 12px; border-radius: 10px; border: none;
+  background: transparent; cursor: pointer; transition: all 0.12s;
+  text-align: left;
+}
+.ci-menu-item:hover { background: rgba(245, 158, 11, 0.06); }
+.ci-menu-item-info { flex: 1; min-width: 0; }
+.ci-menu-item-name {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.ci-menu-item-meta {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+.ci-menu-item-action { color: rgba(245, 158, 11, 0.5); transition: color 0.12s; }
+.ci-menu-item:hover .ci-menu-item-action { color: #f59e0b; }
+
+/* Avatar */
+.ci-avatar {
+  width: 38px; height: 38px; min-width: 38px; border-radius: 10px;
+  background: #f59e0b; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
+}
+.ci-avatar--sm { width: 32px; height: 32px; min-width: 32px; border-radius: 8px; font-size: 11px; }
+
+/* Cards */
+.ci-cards {
+  display: flex; flex-direction: column; gap: 0;
+}
+.ci-card {
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+  transition: background 0.12s;
+}
+.ci-card:last-child { border-bottom: none; }
+.ci-card:hover { background: rgba(var(--v-theme-on-surface), 0.015); }
+.ci-card-top {
+  display: flex; align-items: center; gap: 12px;
+}
+.ci-card-info { flex: 1; min-width: 0; }
+.ci-card-name {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.ci-card-phone {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+.ci-card-remove {
+  width: 30px; height: 30px; border-radius: 8px; border: none;
+  background: rgba(239, 68, 68, 0.06); color: rgba(239, 68, 68, 0.5);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s; flex-shrink: 0;
+}
+.ci-card-remove:hover { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+.ci-card-remove:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.ci-card-stats {
+  display: flex; gap: 24px;
+  margin-top: 10px; margin-left: 50px;
+}
+.ci-card-stat {
+  display: flex; flex-direction: column; gap: 1px;
+}
+.ci-card-stat-label {
+  font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.03em;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
+.ci-card-stat-value {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.ci-card-stat-value--accent { color: #f59e0b; }
+
+/* Empty state */
+.ci-empty {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 28px 20px; text-align: center;
+}
+.ci-empty-icon {
+  width: 48px; height: 48px; border-radius: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgba(var(--v-theme-on-surface), 0.2);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 12px;
+}
+.ci-empty-text {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.ci-empty-hint {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.3);
+  margin-top: 2px;
+}
+
+/* Dark overrides */
+.dark .ci-header { border-color: rgba(255,255,255,0.06); }
+.dark .ci-card { border-color: rgba(255,255,255,0.05); }
+.dark .ci-card:hover { background: rgba(255,255,255,0.02); }
+.dark .ci-menu-header { border-color: rgba(255,255,255,0.06); }
+.dark .ci-card-remove { background: rgba(239, 68, 68, 0.1); }
 
 .profile-details-list {
   display: flex; flex-direction: column; gap: 10px;

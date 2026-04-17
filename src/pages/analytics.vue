@@ -7,6 +7,7 @@ import { userName, clientProfileName } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
+import { useCapital } from '@/composables/useCapital'
 import HeroSummary from '@/components/HeroSummary.vue'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
 import {
@@ -25,6 +26,12 @@ const hasCharts = computed(() => canAccessFeature('analyticsCharts'))
 
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
+const { capital, isCapitalSet, fetchCapital } = useCapital()
+
+const capitalUtilization = computed(() => {
+  if (!capital.value || capital.value.totalCapital <= 0) return 0
+  return Math.min(Math.round((capital.value.deployed / capital.value.totalCapital) * 100), 100)
+})
 
 const pageLoading = ref(true)
 
@@ -33,6 +40,7 @@ onMounted(async () => {
     await Promise.all([
       dealsStore.fetchDeals(),
       paymentsStore.fetchPayments(),
+      fetchCapital(),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки данных')
@@ -700,6 +708,26 @@ function bdColor(name?: string) {
           <div class="kpi-info">
             <div class="kpi-value" style="color: #ef4444;">{{ formatCurrencyShort(overdueAmount) }}</div>
             <div class="kpi-label">Просрочено</div>
+          </div>
+        </div>
+
+        <div class="kpi-card" v-if="isCapitalSet && capital" @click="router.push('/finance')" style="cursor: pointer;">
+          <div class="kpi-icon-wrap" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
+            <v-icon icon="mdi-wallet-outline" size="20" />
+          </div>
+          <div class="kpi-info">
+            <div class="kpi-value" style="color: #7c3aed;">{{ formatCurrencyShort(capital.availableCapital) }}</div>
+            <div class="kpi-label">Доступный капитал</div>
+          </div>
+        </div>
+
+        <div class="kpi-card" v-if="isCapitalSet && capital">
+          <div class="kpi-icon-wrap" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
+            <v-icon icon="mdi-chart-donut" size="20" />
+          </div>
+          <div class="kpi-info">
+            <div class="kpi-value">{{ capitalUtilization }}%</div>
+            <div class="kpi-label">В работе</div>
           </div>
         </div>
       </div>

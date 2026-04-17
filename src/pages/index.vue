@@ -11,10 +11,12 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { api } from '@/api/client'
 import HeroSummary from '@/components/HeroSummary.vue'
+import { useCapital } from '@/composables/useCapital'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+const { capital, isCapitalSet, fetchCapital } = useCapital()
 
 
 const sendingBulk = ref(false)
@@ -70,6 +72,7 @@ onMounted(async () => {
       paymentsStore.fetchPayments(),
       requestsStore.fetchRequests(),
       notificationsStore.fetchNotifications(),
+      fetchCapital(),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки данных')
@@ -171,6 +174,18 @@ function getAvatarColor(name?: string) {
     </div>
 
     <template v-else>
+    <!-- Capital banner -->
+    <div v-if="!isCapitalSet" class="dash-capital-banner mb-4" @click="router.push('/finance')">
+      <div class="dash-capital-banner-icon">
+        <v-icon icon="mdi-wallet-outline" size="20" />
+      </div>
+      <div class="dash-capital-banner-content">
+        <div class="dash-capital-banner-title">Настройте учёт капитала</div>
+        <div class="dash-capital-banner-text">Укажите начальный капитал для контроля доступных средств</div>
+      </div>
+      <v-icon icon="mdi-chevron-right" size="20" style="color: rgba(var(--v-theme-on-surface), 0.3);" />
+    </div>
+
     <!-- Hero + Quick Actions -->
     <div class="hero-row mb-6">
       <div class="qa-sidebar">
@@ -271,6 +286,16 @@ function getAvatarColor(name?: string) {
         <div class="kpi-info">
           <div class="kpi-value" style="color: #ef4444;">{{ formatCurrencyShort(overdueAmount) }}</div>
           <div class="kpi-label">Просрочено</div>
+        </div>
+      </div>
+
+      <div v-if="isCapitalSet && capital" class="kpi-card kpi-clickable" @click="router.push('/finance')">
+        <div class="kpi-icon-wrap" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
+          <v-icon icon="mdi-wallet-outline" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value" style="color: #7c3aed;">{{ formatCurrencyShort(capital.availableCapital) }}</div>
+          <div class="kpi-label">Доступный капитал</div>
         </div>
       </div>
     </div>
@@ -832,5 +857,36 @@ function getAvatarColor(name?: string) {
 @media (max-width: 960px) {
   .hero-card { min-width: 0; }
   .deal-progress-col, .deal-amount { display: none; }
+}
+
+/* Capital banner */
+.dash-capital-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px; border-radius: 12px;
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.06) 0%, rgba(124, 58, 237, 0.02) 100%);
+  border: 1px solid rgba(124, 58, 237, 0.12);
+  cursor: pointer; transition: all 0.15s;
+}
+.dash-capital-banner:hover {
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.1) 0%, rgba(124, 58, 237, 0.04) 100%);
+  border-color: rgba(124, 58, 237, 0.2);
+}
+.dash-capital-banner-icon {
+  width: 40px; height: 40px; min-width: 40px; border-radius: 10px;
+  background: rgba(124, 58, 237, 0.1); color: #7c3aed;
+  display: flex; align-items: center; justify-content: center;
+}
+.dash-capital-banner-content { flex: 1; }
+.dash-capital-banner-title {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.dash-capital-banner-text {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+.dark .dash-capital-banner {
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.1) 0%, rgba(124, 58, 237, 0.04) 100%);
+  border-color: rgba(124, 58, 237, 0.2);
 }
 </style>

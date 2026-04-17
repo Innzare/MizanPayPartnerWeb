@@ -3,6 +3,7 @@ import { api } from '@/api/client'
 import { formatCurrency, formatCurrencyShort, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useCapital } from '@/composables/useCapital'
 import { Bar } from 'vue-chartjs'
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend } from 'chart.js'
 
@@ -10,6 +11,88 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
 const { isDark } = useIsDark()
 const toast = useToast()
+const { capital, isCapitalSet, fetchCapital, setInitialCapital } = useCapital()
+
+// Capital setup
+const showCapitalDialog = ref(false)
+const capitalInput = ref(0)
+
+function openCapitalDialog() {
+  capitalInput.value = capital.value?.initialCapital || 0
+  showCapitalDialog.value = true
+}
+
+async function saveCapital() {
+  try {
+    await setInitialCapital(capitalInput.value)
+    showCapitalDialog.value = false
+    toast.success('Капитал установлен')
+    fetchCapitalDetails()
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка сохранения')
+  }
+}
+
+const capitalUtilization = computed(() => {
+  if (!capital.value || capital.value.totalCapital <= 0) return 0
+  return Math.min(Math.round((capital.value.deployed / capital.value.totalCapital) * 100), 100)
+})
+
+// Capital details (operations, deals breakdown)
+interface CapitalOperation {
+  type: 'EXPENSE' | 'INCOME' | 'PAYOUT'
+  amount: number
+  date: string
+  description: string
+  dealId: string | null
+  productName: string | null
+  transactionId?: string
+  category?: { id: string; name: string; icon?: string; color?: string }
+  isManual?: boolean
+}
+interface CapitalDeal {
+  id: string
+  productName: string
+  client: string | null
+  purchasePrice: number
+  totalPrice: number
+  markup: number
+  received: number
+  status: string
+  progress: number
+}
+
+const capitalDetails = ref<{ deals: CapitalDeal[]; operations: CapitalOperation[]; coInvestors: any[] } | null>(null)
+const detailsTab = ref<'operations' | 'deals'>('operations')
+const showAllOps = ref(false)
+
+async function fetchCapitalDetails() {
+  try {
+    const data = await api.get<any>('/finance/capital/details')
+    capitalDetails.value = data
+  } catch { /* silent */ }
+}
+
+const operationsIncome = computed(() => {
+  if (!capitalDetails.value) return 0
+  return capitalDetails.value.operations
+    .filter(o => o.type === 'INCOME')
+    .reduce((s, o) => s + o.amount, 0)
+})
+
+const operationsExpense = computed(() => {
+  if (!capitalDetails.value) return 0
+  return capitalDetails.value.operations
+    .filter(o => o.type === 'EXPENSE')
+    .reduce((s, o) => s + o.amount, 0)
+})
+
+const operationsPayout = computed(() => {
+  if (!capitalDetails.value) return 0
+  return capitalDetails.value.operations
+    .filter(o => o.type === 'PAYOUT')
+    .reduce((s, o) => s + o.amount, 0)
+})
 
 // ── Types ──
 
@@ -152,7 +235,7 @@ async function loadMore() {
   loadingMore.value = false
 }
 
-onMounted(fetchAll)
+onMounted(() => { fetchAll(); fetchCapital(); fetchCapitalDetails() })
 
 // ── Watchers ──
 
@@ -293,8 +376,7 @@ async function saveTransaction() {
       toast.success('Операция добавлена')
     }
     showDialog.value = false
-    pageLoading.value = true
-    await fetchAll()
+    await Promise.all([fetchAll(), fetchCapitalDetails()])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка сохранения')
   } finally {
@@ -314,8 +396,7 @@ async function deleteTransaction() {
     await api.delete(`/finance/transactions/${deletingId.value}`)
     toast.success('Операция удалена')
     deleteDialog.value = false
-    pageLoading.value = true
-    await fetchAll()
+    await Promise.all([fetchAll(), fetchCapitalDetails()])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка удаления')
   } finally {
@@ -391,102 +472,174 @@ function formatTransactionAmount(t: Transaction) {
     </div>
 
     <template v-else>
-      <!-- Balance Hero Card -->
-      <div
-        class="fn-balance-hero mb-6"
-        :class="balanceIsPositive ? 'fn-balance-hero--positive' : 'fn-balance-hero--negative'"
-      >
-        <div class="fn-balance-hero-inner">
-          <div class="fn-balance-label">Текущий баланс</div>
-          <div
-            class="fn-balance-amount"
-            :style="{ color: balanceIsPositive ? INCOME_COLOR : EXPENSE_COLOR }"
-          >
-            {{ formatCurrency(balanceData.balance) }}
+      <!-- Capital Section -->
+      <div v-if="!isCapitalSet" class="cap-setup mb-6">
+        <div class="cap-setup-icon">
+          <v-icon icon="mdi-wallet-outline" size="28" />
+        </div>
+        <div class="cap-setup-content">
+          <div class="cap-setup-title">Укажите начальный капитал</div>
+          <div class="cap-setup-text">Для контроля доступных средств и автоматической проверки при создании сделок</div>
+          <div class="cap-setup-form">
+            <div class="cap-setup-input-wrap">
+              <input
+                v-maska="CURRENCY_MASK"
+                :value="capitalInput || ''"
+                class="cap-setup-input"
+                type="text"
+                inputmode="numeric"
+                placeholder="1 000 000"
+                @maska="capitalInput = parseMasked($event)"
+              />
+              <span class="cap-setup-suffix">₽</span>
+            </div>
+            <button class="cap-setup-btn" :disabled="capitalInput <= 0" @click="saveCapital">
+              <v-icon icon="mdi-check" size="18" />
+              Установить
+            </button>
           </div>
-          <div class="fn-balance-stats">
-            <div class="fn-balance-stat">
-              <div class="fn-balance-stat-value" style="color: #10b981;">
-                {{ formatCurrency(balanceData.totalIncome) }}
-              </div>
-              <div class="fn-balance-stat-label">Всего доходов</div>
+        </div>
+      </div>
+
+      <div v-else-if="capital" class="cap-hero mb-6">
+        <div class="cap-hero-header">
+          <div class="cap-hero-header-left">
+            <div class="cap-hero-icon">
+              <v-icon icon="mdi-wallet-outline" size="22" />
             </div>
-            <div class="fn-balance-stat-divider"></div>
-            <div class="fn-balance-stat">
-              <div class="fn-balance-stat-value" style="color: #ef4444;">
-                {{ formatCurrency(balanceData.totalExpense) }}
-              </div>
-              <div class="fn-balance-stat-label">Всего расходов</div>
+            <div>
+              <div class="cap-hero-title">Капитал</div>
+              <div class="cap-hero-sub">Учёт средств по сделкам</div>
             </div>
-            <div class="fn-balance-stat-divider"></div>
-            <div class="fn-balance-stat">
-              <div class="fn-balance-stat-value" style="color: #10b981;">
-                {{ formatCurrency(balanceData.monthIncome) }}
-              </div>
-              <div class="fn-balance-stat-label">Доход за месяц</div>
+          </div>
+          <button class="cap-edit-btn" @click="openCapitalDialog">
+            <v-icon icon="mdi-pencil-outline" size="16" />
+          </button>
+        </div>
+
+        <div class="cap-metrics">
+          <div class="cap-metric">
+            <div class="cap-metric-value">{{ formatCurrencyShort(capital.totalCapital) }}</div>
+            <div class="cap-metric-label">Общий капитал</div>
+            <div v-if="capital.coInvestorCapital > 0" class="cap-metric-hint">
+              {{ formatCurrencyShort(capital.initialCapital || 0) }} свои + {{ formatCurrencyShort(capital.coInvestorCapital) }} со-инвесторов
             </div>
-            <div class="fn-balance-stat-divider"></div>
-            <div class="fn-balance-stat">
-              <div class="fn-balance-stat-value" style="color: #ef4444;">
-                {{ formatCurrency(balanceData.monthExpense) }}
-              </div>
-              <div class="fn-balance-stat-label">Расход за месяц</div>
+          </div>
+          <div class="cap-metric-divider" />
+          <div class="cap-metric">
+            <div class="cap-metric-value" style="color: #f59e0b;">{{ formatCurrencyShort(capital.deployed) }}</div>
+            <div class="cap-metric-label">В сделках</div>
+          </div>
+          <div class="cap-metric-divider" />
+          <div class="cap-metric">
+            <div class="cap-metric-value" style="color: #10b981;">{{ formatCurrencyShort(capital.received) }}</div>
+            <div class="cap-metric-label">Получено</div>
+          </div>
+          <div class="cap-metric-divider" />
+          <div class="cap-metric cap-metric--main">
+            <div class="cap-metric-value cap-metric-value--big">{{ formatCurrencyShort(capital.availableCapital) }}</div>
+            <div class="cap-metric-label">Доступно</div>
+          </div>
+        </div>
+
+        <!-- Utilization bar -->
+        <div class="cap-utilization">
+          <div class="cap-utilization-header">
+            <span class="cap-utilization-label">
+              Капитал в работе
+              <v-tooltip location="top" max-width="280">
+                <template #activator="{ props: tipProps }">
+                  <v-icon v-bind="tipProps" icon="mdi-information-outline" size="13" class="cap-info-icon" />
+                </template>
+                Процент вашего капитала, задействованный в активных сделках. Чем выше — тем больше средств работает, но меньше свободных для новых сделок.
+              </v-tooltip>
+            </span>
+            <span class="cap-utilization-percent">{{ capitalUtilization }}%</span>
+          </div>
+          <div class="cap-utilization-bar">
+            <div class="cap-utilization-fill" :style="{ width: capitalUtilization + '%' }" />
+          </div>
+          <div v-if="capital.coInvestorPayout > 0" class="cap-payout-hint">
+            <v-icon icon="mdi-account-group-outline" size="13" />
+            Доля со-инвесторов: {{ formatCurrency(capital.coInvestorPayout) }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Capital Edit Dialog -->
+      <v-dialog v-model="showCapitalDialog" max-width="420">
+        <v-card rounded="xl" class="pa-6">
+          <div class="d-flex align-center ga-3 mb-4">
+            <div class="cap-hero-icon">
+              <v-icon icon="mdi-wallet-outline" size="20" />
+            </div>
+            <div>
+              <div style="font-size: 16px; font-weight: 700;">Начальный капитал</div>
+              <div style="font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);">Ваши собственные средства</div>
+            </div>
+          </div>
+          <div class="cap-setup-input-wrap mb-4">
+            <input
+              v-maska="CURRENCY_MASK"
+              :value="capitalInput || ''"
+              class="cap-setup-input"
+              type="text"
+              inputmode="numeric"
+              placeholder="0"
+              @maska="capitalInput = parseMasked($event)"
+            />
+            <span class="cap-setup-suffix">₽</span>
+          </div>
+          <div class="d-flex ga-2 justify-end">
+            <v-btn variant="text" @click="showCapitalDialog = false">Отмена</v-btn>
+            <v-btn color="primary" variant="flat" @click="saveCapital">Сохранить</v-btn>
+          </div>
+        </v-card>
+      </v-dialog>
+
+      <!-- Capital Movement Summary -->
+      <div v-if="isCapitalSet && capitalDetails" class="cap-movement mb-6">
+        <div class="cap-movement-header">
+          <div class="cap-movement-title">Движение средств</div>
+          <div class="cap-movement-sub">Автоматически из сделок и платежей</div>
+        </div>
+        <div class="cap-movement-cards">
+          <div class="cap-movement-card">
+            <v-icon icon="mdi-arrow-bottom-left" size="18" style="color: #10b981;" />
+            <div class="cap-movement-card-info">
+              <div class="cap-movement-card-value" style="color: #10b981;">+{{ formatCurrency(operationsIncome) }}</div>
+              <div class="cap-movement-card-label">Поступления</div>
+            </div>
+          </div>
+          <div class="cap-movement-card">
+            <v-icon icon="mdi-arrow-top-right" size="18" style="color: #ef4444;" />
+            <div class="cap-movement-card-info">
+              <div class="cap-movement-card-value" style="color: #ef4444;">-{{ formatCurrency(operationsExpense) }}</div>
+              <div class="cap-movement-card-label">Закупки</div>
+            </div>
+          </div>
+          <div v-if="operationsPayout > 0" class="cap-movement-card">
+            <v-icon icon="mdi-account-arrow-right" size="18" style="color: #f59e0b;" />
+            <div class="cap-movement-card-info">
+              <div class="cap-movement-card-value" style="color: #f59e0b;">-{{ formatCurrency(operationsPayout) }}</div>
+              <div class="cap-movement-card-label">Со-инвесторам</div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Chart -->
-      <v-card v-if="chartData.length > 0" rounded="lg" elevation="0" border class="pa-5 mb-6">
-        <div class="d-flex align-center justify-space-between mb-4">
-          <div>
-            <div class="chart-title">Доходы и расходы</div>
-            <div class="chart-subtitle">За последние 6 месяцев</div>
-          </div>
-        </div>
-        <div style="height: 280px;">
-          <Bar :data="barChartData" :options="barOptions" />
-        </div>
-      </v-card>
-
-      <!-- Transactions Card -->
-      <v-card rounded="lg" elevation="0" border>
+      <!-- Operations & Deals -->
+      <v-card v-if="isCapitalSet && capitalDetails" rounded="lg" elevation="0" border class="mb-6">
         <div class="pa-4">
-          <!-- Header -->
+          <!-- Header with tabs and actions -->
           <div class="d-flex align-center ga-3 mb-4 flex-wrap">
-            <!-- Filter tabs -->
             <div class="fn-tabs">
-              <button
-                class="fn-tab"
-                :class="{ 'fn-tab--active': activeTab === 'ALL' }"
-                @click="activeTab = 'ALL'"
-              >
-                Все
+              <button class="fn-tab" :class="{ 'fn-tab--active': detailsTab === 'operations' }" @click="detailsTab = 'operations'">
+                Все операции
               </button>
-              <button
-                class="fn-tab"
-                :class="{ 'fn-tab--active': activeTab === 'INCOME', 'fn-tab--income': activeTab === 'INCOME' }"
-                @click="activeTab = 'INCOME'"
-              >
-                Доходы
+              <button class="fn-tab" :class="{ 'fn-tab--active': detailsTab === 'deals' }" @click="detailsTab = 'deals'">
+                По сделкам
               </button>
-              <button
-                class="fn-tab"
-                :class="{ 'fn-tab--active': activeTab === 'EXPENSE', 'fn-tab--expense': activeTab === 'EXPENSE' }"
-                @click="activeTab = 'EXPENSE'"
-              >
-                Расходы
-              </button>
-            </div>
-
-            <div class="filter-input-wrap" style="max-width: 300px;">
-              <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-              <input
-                v-model="searchQuery"
-                type="text"
-                placeholder="Поиск по описанию..."
-                class="filter-input"
-              />
             </div>
 
             <v-spacer />
@@ -503,80 +656,108 @@ function formatTransactionAmount(t: Transaction) {
             </button>
           </div>
 
-          <!-- Transactions list -->
-          <div v-if="!filteredTransactions.length" class="fn-empty">
-            <div class="fn-empty-icon">
-              <v-icon icon="mdi-wallet-outline" size="48" color="grey" />
+          <!-- Operations list (unified: auto + manual) -->
+          <template v-if="detailsTab === 'operations'">
+            <div v-if="capitalDetails.operations.length === 0" class="fn-empty">
+              <div class="fn-empty-icon"><v-icon icon="mdi-wallet-outline" size="48" color="grey" /></div>
+              <div class="fn-empty-title">Нет операций</div>
+              <div class="fn-empty-subtitle">Создайте сделку или добавьте операцию вручную</div>
             </div>
-            <div class="fn-empty-title">Нет операций</div>
-            <div class="fn-empty-subtitle">
-              Добавьте первую операцию для учёта доходов и расходов
-            </div>
-            <button class="fn-add-btn mt-4" @click="openCreateTransaction">
-              <v-icon icon="mdi-plus" size="18" />
-              Добавить первую операцию
-            </button>
-          </div>
 
-          <div v-else class="fn-transactions-list">
-            <div
-              v-for="t in filteredTransactions"
-              :key="t.id"
-              class="fn-transaction-row"
-            >
-              <!-- Color dot -->
-              <div
-                class="fn-transaction-dot"
-                :style="{ background: getCategoryColor(t) }"
-              ></div>
+            <div v-else class="fn-transactions-list">
+              <div v-for="(op, i) in capitalDetails.operations.slice(0, showAllOps ? undefined : 30)" :key="op.transactionId || `auto-${i}`" class="fn-transaction-row">
+                <!-- Color dot -->
+                <div class="fn-transaction-dot" :style="{
+                  background: op.isManual
+                    ? (op.category?.color || (op.type === 'INCOME' ? '#10b981' : '#ef4444'))
+                    : op.type === 'INCOME' ? '#10b981' : op.type === 'PAYOUT' ? '#f59e0b' : '#ef4444'
+                }" />
 
-              <!-- Info -->
-              <div class="fn-transaction-info">
-                <div class="fn-transaction-title">
-                  {{ t.description || (t.type === 'INCOME' ? 'Доход' : 'Расход') }}
+                <!-- Info -->
+                <div class="fn-transaction-info">
+                  <div class="fn-transaction-title">
+                    {{ op.description }}
+                    <span v-if="op.isManual" class="fn-op-badge fn-op-badge--manual">Вручную</span>
+                    <span v-else-if="op.type === 'PAYOUT'" class="fn-op-badge fn-op-badge--payout">Со-инвестор</span>
+                  </div>
+                  <div class="fn-transaction-meta">
+                    <span v-if="op.isManual && op.category">{{ op.category.name }} · </span>
+                    <span>{{ formatDate(op.date) }}</span>
+                  </div>
                 </div>
-                <div class="fn-transaction-meta">
-                  <span v-if="t.category" class="fn-transaction-category">
-                    {{ t.category.name }}
-                  </span>
-                  <span v-if="t.category"> &middot; </span>
-                  <span>{{ formatDate(t.date || t.createdAt) }}</span>
+
+                <!-- Amount -->
+                <div class="fn-transaction-amount" :class="{
+                  'fn-transaction-amount--income': op.type === 'INCOME',
+                  'fn-transaction-amount--expense': op.type !== 'INCOME',
+                }">
+                  {{ op.type === 'INCOME' ? '+' : '-' }}{{ formatCurrency(op.amount) }}
                 </div>
-              </div>
 
-              <!-- Amount -->
-              <div
-                class="fn-transaction-amount"
-                :class="t.type === 'INCOME' ? 'fn-transaction-amount--income' : 'fn-transaction-amount--expense'"
-              >
-                {{ formatTransactionAmount(t) }}
-              </div>
-
-              <!-- Actions -->
-              <div class="fn-transaction-actions">
-                <button class="fn-icon-btn" @click="openEditTransaction(t)">
-                  <v-icon icon="mdi-pencil-outline" size="16" />
-                </button>
-                <button class="fn-icon-btn fn-icon-btn--danger" @click="confirmDelete(t.id)">
-                  <v-icon icon="mdi-delete-outline" size="16" />
-                </button>
+                <!-- Actions -->
+                <template v-if="op.isManual && op.transactionId">
+                  <div class="fn-transaction-actions">
+                    <button class="fn-icon-btn" @click="openEditTransaction({ id: op.transactionId, type: op.type, amount: op.amount, description: op.description, date: op.date, categoryId: op.category?.id } as any)">
+                      <v-icon icon="mdi-pencil-outline" size="16" />
+                    </button>
+                    <button class="fn-icon-btn fn-icon-btn--danger" @click="confirmDelete(op.transactionId)">
+                      <v-icon icon="mdi-delete-outline" size="16" />
+                    </button>
+                  </div>
+                </template>
+                <template v-else-if="op.dealId">
+                  <router-link :to="`/deals/${op.dealId}`" class="fn-op-link">
+                    <v-icon icon="mdi-open-in-new" size="14" />
+                  </router-link>
+                </template>
               </div>
             </div>
-          </div>
+            <div v-if="!showAllOps && capitalDetails.operations.length > 30" class="fn-load-more">
+              <button class="fn-load-more-btn" @click="showAllOps = true">
+                Показать все ({{ capitalDetails.operations.length }})
+              </button>
+            </div>
+          </template>
 
-          <!-- Load more -->
-          <div v-if="hasMore && filteredTransactions.length" class="fn-load-more">
-            <button
-              class="fn-load-more-btn"
-              :disabled="loadingMore"
-              @click="loadMore"
-            >
-              <v-progress-circular v-if="loadingMore" indeterminate size="16" width="2" class="mr-2" />
-              {{ loadingMore ? 'Загрузка...' : 'Показать ещё' }}
-            </button>
-          </div>
+          <!-- Deals breakdown -->
+          <template v-if="detailsTab === 'deals'">
+            <div v-if="capitalDetails.deals.length === 0" class="fn-empty">
+              <div class="fn-empty-icon"><v-icon icon="mdi-handshake-outline" size="48" color="grey" /></div>
+              <div class="fn-empty-title">Нет сделок</div>
+            </div>
+            <div v-else class="cap-deals-list">
+              <div v-for="deal in capitalDetails.deals" :key="deal.id" class="cap-deal-row">
+                <div class="cap-deal-info">
+                  <div class="cap-deal-name">
+                    <router-link :to="`/deals/${deal.id}`" class="cap-deal-link">{{ deal.productName }}</router-link>
+                  </div>
+                  <div class="cap-deal-meta">
+                    <span v-if="deal.client">{{ deal.client }}</span>
+                    <span>{{ deal.progress }}% оплачено</span>
+                  </div>
+                </div>
+                <div class="cap-deal-numbers">
+                  <div class="cap-deal-num">
+                    <span class="cap-deal-num-label">Закупка</span>
+                    <span class="cap-deal-num-value" style="color: #ef4444;">{{ formatCurrency(deal.purchasePrice) }}</span>
+                  </div>
+                  <div class="cap-deal-num">
+                    <span class="cap-deal-num-label">Получено</span>
+                    <span class="cap-deal-num-value" style="color: #10b981;">{{ formatCurrency(deal.received) }}</span>
+                  </div>
+                  <div class="cap-deal-num">
+                    <span class="cap-deal-num-label">Наценка</span>
+                    <span class="cap-deal-num-value">{{ formatCurrency(deal.markup) }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
       </v-card>
+
+      <!-- Empty state when no capital and no operations -->
+      <div v-if="!isCapitalSet && !capitalDetails" /><!-- nothing -->
     </template>
 
     <!-- ── Create/Edit Transaction Dialog ── -->
@@ -1423,5 +1604,270 @@ function formatTransactionAmount(t: Transaction) {
 
 .dark .fn-type-toggle {
   background: rgba(255, 255, 255, 0.04);
+}
+
+/* ─── Capital Setup ─── */
+.cap-setup {
+  display: flex; gap: 20px; padding: 24px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.06) 0%, rgba(124, 58, 237, 0.02) 100%);
+  border: 1px solid rgba(124, 58, 237, 0.12);
+}
+.cap-setup-icon {
+  width: 56px; height: 56px; min-width: 56px; border-radius: 16px;
+  background: rgba(124, 58, 237, 0.1); color: #7c3aed;
+  display: flex; align-items: center; justify-content: center;
+}
+.cap-setup-content { flex: 1; }
+.cap-setup-title {
+  font-size: 17px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  margin-bottom: 4px;
+}
+.cap-setup-text {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-bottom: 16px; line-height: 1.4;
+}
+.cap-setup-form { display: flex; gap: 10px; align-items: center; }
+.cap-setup-input-wrap { position: relative; flex: 1; max-width: 280px; }
+.cap-setup-input {
+  width: 100%; height: 44px; padding: 0 36px 0 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px; font-size: 15px; font-weight: 600;
+  color: inherit; background: rgba(var(--v-theme-on-surface), 0.03);
+  outline: none; transition: all 0.15s;
+}
+.cap-setup-input:focus {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1);
+}
+.cap-setup-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.25); font-weight: 400; }
+.cap-setup-suffix {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.3);
+  pointer-events: none;
+}
+.cap-setup-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 44px; padding: 0 20px; border-radius: 10px; border: none;
+  background: #7c3aed; color: #fff;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s; white-space: nowrap;
+}
+.cap-setup-btn:hover { background: #6d28d9; }
+.cap-setup-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ─── Capital Hero ─── */
+.cap-hero {
+  border-radius: 16px; overflow: hidden;
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.cap-hero-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.cap-hero-header-left { display: flex; align-items: center; gap: 12px; }
+.cap-hero-icon {
+  width: 42px; height: 42px; min-width: 42px; border-radius: 12px;
+  background: rgba(124, 58, 237, 0.1); color: #7c3aed;
+  display: flex; align-items: center; justify-content: center;
+}
+.cap-hero-title {
+  font-size: 16px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.cap-hero-sub {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+.cap-edit-btn {
+  width: 34px; height: 34px; border-radius: 9px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+}
+.cap-edit-btn:hover { background: rgba(124, 58, 237, 0.1); color: #7c3aed; }
+
+.cap-metrics {
+  display: flex; align-items: stretch;
+  padding: 20px 24px;
+}
+.cap-metric {
+  flex: 1; text-align: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.cap-metric--main { background: rgba(124, 58, 237, 0.04); border-radius: 12px; padding: 12px; margin: -8px 0; }
+.cap-metric-value {
+  font-size: 18px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.cap-metric-value--big { font-size: 22px; color: #7c3aed; }
+.cap-metric-label {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  margin-top: 2px;
+}
+.cap-metric-hint {
+  font-size: 10px; color: rgba(var(--v-theme-on-surface), 0.3);
+  margin-top: 3px;
+}
+.cap-metric-divider {
+  width: 1px; background: rgba(var(--v-theme-on-surface), 0.06);
+  margin: 0 12px; align-self: stretch;
+}
+
+.cap-utilization {
+  padding: 14px 24px 18px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.cap-utilization-header {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 8px;
+}
+.cap-utilization-label { display: flex; align-items: center; gap: 4px; }
+.cap-info-icon {
+  color: rgba(var(--v-theme-on-surface), 0.25);
+  cursor: help; transition: color 0.12s;
+}
+.cap-info-icon:hover { color: rgba(var(--v-theme-on-surface), 0.5); }
+.cap-utilization-percent { font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.6); }
+.cap-utilization-bar {
+  height: 6px; border-radius: 3px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  overflow: hidden;
+}
+.cap-utilization-fill {
+  height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #7c3aed, #a855f7);
+  transition: width 0.5s ease;
+}
+.cap-payout-hint {
+  display: flex; align-items: center; gap: 5px;
+  margin-top: 10px; font-size: 11px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
+
+/* Dark overrides */
+.dark .cap-setup {
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.1) 0%, rgba(124, 58, 237, 0.04) 100%);
+  border-color: rgba(124, 58, 237, 0.2);
+}
+.dark .cap-setup-input { background: #1e1e2e; border-color: #2e2e42; color: #e4e4e7; }
+.dark .cap-setup-input:focus { border-color: #7c3aed; background: #252538; }
+.dark .cap-hero { background: #1e1e2e; border-color: #2e2e42; }
+.dark .cap-hero-header { border-color: rgba(255,255,255,0.06); }
+.dark .cap-utilization { border-color: rgba(255,255,255,0.06); }
+.dark .cap-utilization-bar { background: rgba(255,255,255,0.06); }
+.dark .cap-metric-divider { background: rgba(255,255,255,0.06); }
+.dark .cap-metric--main { background: rgba(124, 58, 237, 0.08); }
+
+@media (max-width: 700px) {
+  .cap-setup { flex-direction: column; }
+  .cap-setup-form { flex-direction: column; }
+  .cap-setup-input-wrap { max-width: 100%; }
+  .cap-metrics { flex-wrap: wrap; gap: 12px; }
+  .cap-metric-divider { display: none; }
+  .cap-metric { min-width: 40%; }
+}
+
+/* ─── Capital Movement Summary ─── */
+.cap-movement {
+  border-radius: 14px; padding: 20px;
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.cap-movement-header { margin-bottom: 16px; }
+.cap-movement-title {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.cap-movement-sub {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+.cap-movement-cards {
+  display: flex; gap: 12px;
+}
+.cap-movement-card {
+  flex: 1; display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.cap-movement-card-info { flex: 1; }
+.cap-movement-card-value {
+  font-size: 16px; font-weight: 700;
+}
+.cap-movement-card-label {
+  font-size: 11px; font-weight: 500; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  margin-top: 1px;
+}
+
+/* ─── Operation badges ─── */
+.fn-op-badge {
+  display: inline-flex; padding: 1px 6px; border-radius: 4px;
+  font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.03em; margin-left: 6px; vertical-align: middle;
+}
+.fn-op-badge--manual { background: rgba(99, 102, 241, 0.1); color: #6366f1; }
+.fn-op-badge--payout { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
+
+/* ─── Auto Operations ─── */
+.fn-op-link {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; min-width: 28px; border-radius: 7px;
+  color: rgba(var(--v-theme-on-surface), 0.25);
+  transition: all 0.12s;
+}
+.fn-op-link:hover { background: rgba(var(--v-theme-primary), 0.08); color: rgb(var(--v-theme-primary)); }
+
+/* ─── Deals breakdown ─── */
+.cap-deals-list { display: flex; flex-direction: column; gap: 0; }
+.cap-deal-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+  gap: 16px;
+}
+.cap-deal-row:last-child { border-bottom: none; }
+.cap-deal-info { flex: 1; min-width: 0; }
+.cap-deal-name {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.cap-deal-link { color: inherit; text-decoration: none; }
+.cap-deal-link:hover { color: rgb(var(--v-theme-primary)); }
+.cap-deal-meta {
+  display: flex; gap: 8px; margin-top: 2px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.cap-deal-numbers {
+  display: flex; gap: 20px; flex-shrink: 0;
+}
+.cap-deal-num { text-align: right; }
+.cap-deal-num-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.3);
+}
+.cap-deal-num-value {
+  font-size: 13px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+
+/* Dark overrides */
+.dark .cap-movement { background: #1e1e2e; border-color: #2e2e42; }
+.dark .cap-movement-card { background: rgba(255,255,255,0.04); }
+.dark .cap-deal-row { border-color: rgba(255,255,255,0.05); }
+
+@media (max-width: 600px) {
+  .cap-movement-cards { flex-direction: column; }
+  .cap-deal-row { flex-direction: column; align-items: flex-start; }
+  .cap-deal-numbers { width: 100%; justify-content: space-between; margin-top: 8px; }
 }
 </style>

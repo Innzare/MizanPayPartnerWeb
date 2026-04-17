@@ -7,12 +7,26 @@ import { useRouter } from 'vue-router'
 import type { PaymentType, ClientProfile } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useCapital } from '@/composables/useCapital'
 import { api } from '@/api/client'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
 
 const { isDark } = useIsDark()
 const toast = useToast()
+const { capital, isCapitalSet, fetchCapital } = useCapital()
+
+// Capital is fetched in the co-investors onMounted below
+
+const capitalInsufficient = computed(() => {
+  if (!isCapitalSet.value || !capital.value) return false
+  return (purchasePrice.value || 0) > capital.value.availableCapital
+})
+
+const capitalAfterDeal = computed(() => {
+  if (!capital.value) return 0
+  return capital.value.availableCapital - (purchasePrice.value || 0)
+})
 const dealsStore = useDealsStore()
 const router = useRouter()
 
@@ -89,6 +103,39 @@ const customFirstPayment = ref('')
 
 const markupOptions = [10, 15, 20, 25]
 const termOptions = [3, 4, 6, 9, 12, 18, 24]
+
+// Co-investors
+interface CoInvestorOption {
+  id: string
+  name: string
+  phone: string | null
+  profitPercent: number
+}
+const allCoInvestors = ref<CoInvestorOption[]>([])
+const selectedCoInvestorIds = ref<string[]>([])
+
+onMounted(async () => {
+  try {
+    const [data] = await Promise.all([
+      api.get<any[]>('/co-investors'),
+      fetchCapital(),
+    ])
+    allCoInvestors.value = data.map(ci => ({ id: ci.id, name: ci.name, phone: ci.phone, profitPercent: ci.profitPercent }))
+  } catch { /* ignore */ }
+})
+
+const selectedCoInvestors = computed(() =>
+  allCoInvestors.value.filter(ci => selectedCoInvestorIds.value.includes(ci.id))
+)
+
+function toggleCoInvestor(id: string) {
+  const idx = selectedCoInvestorIds.value.indexOf(id)
+  if (idx >= 0) {
+    selectedCoInvestorIds.value.splice(idx, 1)
+  } else {
+    selectedCoInvestorIds.value.push(id)
+  }
+}
 
 // Markup type switch with value conversion
 function switchMarkupType(type: 'percent' | 'fixed') {
@@ -184,7 +231,7 @@ function prevStep() { if (step.value > 1) step.value-- }
 
 function canProceed() {
   if (step.value === 1) return step1Valid.value
-  if (step.value === 2) return step2Valid.value
+  if (step.value === 2) return step2Valid.value && isCapitalSet.value && !capitalInsufficient.value
   if (step.value === 3) return step3Valid.value
   return true
 }
@@ -206,7 +253,7 @@ async function submitDeal() {
       contractUrls = await api.uploadMultiple(contractFiles.value, 'contracts')
     }
 
-    await dealsStore.createDirectDeal({
+    const deal = await dealsStore.createDirectDeal({
       clientProfileId: selectedClientProfileId.value || undefined,
       guarantorProfileId: selectedGuarantorProfileId.value || undefined,
       productName: productName.value,
@@ -221,6 +268,15 @@ async function submitDeal() {
       dealDate: dealDate.value,
       firstPaymentDate: customFirstPayment.value || undefined,
     })
+
+    // Link selected co-investors
+    if (deal?.id && selectedCoInvestorIds.value.length > 0) {
+      await Promise.allSettled(
+        selectedCoInvestorIds.value.map(ciId =>
+          api.post(`/co-investors/${ciId}/deals/${deal.id}`)
+        )
+      )
+    }
 
     toast.success('Сделка создана')
     router.push('/deals')
@@ -374,6 +430,21 @@ async function submitDeal() {
         </div>
       </div>
 
+      <!-- Capital block -->
+      <div v-if="!isCapitalSet" class="capital-block-banner mb-4">
+        <div class="capital-block-banner-icon">
+          <v-icon icon="mdi-lock-outline" size="22" />
+        </div>
+        <div class="capital-block-banner-content">
+          <div class="capital-block-banner-title">Установите начальный капитал</div>
+          <div class="capital-block-banner-text">Для создания сделки необходимо указать каким капиталом вы располагаете</div>
+        </div>
+        <button class="capital-block-banner-btn" @click="$router.push('/finance')">
+          Настроить
+          <v-icon icon="mdi-arrow-right" size="16" />
+        </button>
+      </div>
+
       <v-row>
         <v-col cols="12" lg="7">
           <v-card rounded="lg" elevation="0" border class="pa-5">
@@ -381,8 +452,18 @@ async function submitDeal() {
               <div class="form-field full-width">
                 <label class="field-label">Закупочная цена <span class="required">*</span></label>
                 <div class="input-with-suffix">
-                  <input :value="purchasePrice || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => purchasePrice = parseMasked(e)" type="text" inputmode="numeric" class="field-input" placeholder="0" />
+                  <input :value="purchasePrice || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => purchasePrice = parseMasked(e)" type="text" inputmode="numeric" class="field-input" :class="{ 'field-input--error': capitalInsufficient }" placeholder="0" />
                   <span class="input-suffix">₽</span>
+                </div>
+                <!-- Capital hint -->
+                <div v-if="isCapitalSet && capital" class="capital-hint" :class="{ 'capital-hint--error': capitalInsufficient }">
+                  <v-icon :icon="capitalInsufficient ? 'mdi-alert-circle' : 'mdi-wallet-outline'" size="14" />
+                  <template v-if="capitalInsufficient">
+                    Недостаточно капитала. Доступно: {{ formatCurrency(capital.availableCapital) }}
+                  </template>
+                  <template v-else>
+                    Доступно: {{ formatCurrency(capital.availableCapital) }}
+                  </template>
                 </div>
               </div>
 
@@ -472,6 +553,36 @@ async function submitDeal() {
               </div>
             </div>
           </v-card>
+
+          <!-- Co-investors -->
+          <v-card v-if="allCoInvestors.length > 0" rounded="lg" elevation="0" border class="pa-5 mt-4">
+            <div class="section-header-sm">
+              <v-icon icon="mdi-account-group-outline" size="18" />
+              <span>Со-инвесторы</span>
+              <span class="text-caption text-medium-emphasis ml-1">(необязательно)</span>
+            </div>
+            <div class="coinvestor-list">
+              <button
+                v-for="ci in allCoInvestors"
+                :key="ci.id"
+                type="button"
+                class="coinvestor-option"
+                :class="{ active: selectedCoInvestorIds.includes(ci.id) }"
+                @click="toggleCoInvestor(ci.id)"
+              >
+                <div class="coinvestor-option-check">
+                  <v-icon :icon="selectedCoInvestorIds.includes(ci.id) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline'" size="20" />
+                </div>
+                <div class="coinvestor-option-info">
+                  <div class="coinvestor-option-name">{{ ci.name }}</div>
+                  <div class="coinvestor-option-meta">{{ ci.profitPercent }}% от прибыли</div>
+                </div>
+                <div v-if="selectedCoInvestorIds.includes(ci.id)" class="coinvestor-option-share">
+                  {{ formatCurrency(Math.round(markup * ci.profitPercent / 100)) }}
+                </div>
+              </button>
+            </div>
+          </v-card>
         </v-col>
 
         <!-- Live preview -->
@@ -522,6 +633,11 @@ async function submitDeal() {
                 <div class="preview-profit-label">ROI</div>
                 <div class="preview-profit-value">{{ (purchasePrice || 0) > 0 ? ((markup / (purchasePrice || 1)) * 100).toFixed(1) : '0' }}%</div>
               </div>
+            </div>
+
+            <div v-if="isCapitalSet && capital" class="preview-footer" style="color: #7c3aed;">
+              <v-icon icon="mdi-wallet-outline" size="14" />
+              Капитал после сделки: {{ formatCurrency(capitalAfterDeal) }}
             </div>
 
             <div class="preview-footer">
@@ -683,6 +799,23 @@ async function submitDeal() {
           <div class="review-client-card__name">{{ selectedGuarantorProfile.lastName }} {{ selectedGuarantorProfile.firstName }} {{ selectedGuarantorProfile.patronymic || '' }}</div>
           <div class="review-client-card__meta">
             <v-icon icon="mdi-shield-account-outline" size="12" /> Поручитель · {{ selectedGuarantorProfile.phone }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Co-investors -->
+      <div v-if="selectedCoInvestors.length > 0" class="review-coinvestors">
+        <div class="review-coinvestors__title">
+          <v-icon icon="mdi-account-group-outline" size="16" />
+          Со-инвесторы ({{ selectedCoInvestors.length }})
+        </div>
+        <div class="review-coinvestors__list">
+          <div v-for="ci in selectedCoInvestors" :key="ci.id" class="review-coinvestor-chip">
+            <div class="review-coinvestor-chip__avatar">{{ ci.name[0] }}</div>
+            <div class="review-coinvestor-chip__info">
+              <span class="review-coinvestor-chip__name">{{ ci.name }}</span>
+              <span class="review-coinvestor-chip__share">{{ ci.profitPercent }}% · {{ formatCurrency(Math.round(markup * ci.profitPercent / 100)) }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1373,4 +1506,145 @@ async function submitDeal() {
 @media (max-width: 600px) {
   .form-row-2 { grid-template-columns: 1fr; }
 }
+
+/* ─── Capital validation ─── */
+.capital-block-banner {
+  display: flex; align-items: center; gap: 16px;
+  padding: 18px 20px; border-radius: 14px;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.06) 0%, rgba(239, 68, 68, 0.02) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+}
+.capital-block-banner-icon {
+  width: 44px; height: 44px; min-width: 44px; border-radius: 12px;
+  background: rgba(239, 68, 68, 0.1); color: #ef4444;
+  display: flex; align-items: center; justify-content: center;
+}
+.capital-block-banner-content { flex: 1; }
+.capital-block-banner-title {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.capital-block-banner-text {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 2px;
+}
+.capital-block-banner-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 8px; border: none;
+  background: #ef4444; color: #fff;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s; white-space: nowrap;
+}
+.capital-block-banner-btn:hover { background: #dc2626; }
+
+.capital-hint {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 6px; font-size: 12px; font-weight: 500;
+  color: #7c3aed;
+}
+.capital-hint--error { color: #ef4444; }
+
+.field-input--error {
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08) !important;
+}
+
+.dark .capital-block-banner {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.04) 100%);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+/* ─── Co-investor selection (Step 2) ─── */
+.section-header-sm {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  margin-bottom: 14px;
+}
+.coinvestor-list {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.coinvestor-option {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: 10px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  cursor: pointer; transition: all 0.15s;
+  width: 100%; text-align: left;
+}
+.coinvestor-option:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+.coinvestor-option.active {
+  background: rgba(4, 120, 87, 0.06);
+  box-shadow: inset 0 0 0 2px rgba(4, 120, 87, 0.2);
+}
+.coinvestor-option-check {
+  flex-shrink: 0;
+  color: rgba(var(--v-theme-on-surface), 0.25);
+}
+.coinvestor-option.active .coinvestor-option-check {
+  color: #047857;
+}
+.coinvestor-option-info {
+  flex: 1; min-width: 0;
+}
+.coinvestor-option-name {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.coinvestor-option-meta {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 1px;
+}
+.coinvestor-option-share {
+  font-size: 13px; font-weight: 700;
+  color: #047857; flex-shrink: 0;
+}
+
+/* ─── Co-investors in Review (Step 4) ─── */
+.review-coinvestors {
+  padding: 16px 20px; border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: #fff;
+  margin-bottom: 16px;
+}
+.review-coinvestors__title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  margin-bottom: 12px;
+}
+.review-coinvestors__list {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.review-coinvestor-chip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px 8px 8px; border-radius: 10px;
+  background: rgba(4, 120, 87, 0.05);
+  border: 1px solid rgba(4, 120, 87, 0.12);
+}
+.review-coinvestor-chip__avatar {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: #047857; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; flex-shrink: 0;
+}
+.review-coinvestor-chip__info {
+  display: flex; flex-direction: column;
+}
+.review-coinvestor-chip__name {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.review-coinvestor-chip__share {
+  font-size: 11px; font-weight: 500;
+  color: #047857;
+}
+
+/* Dark overrides for co-investors */
+.dark .coinvestor-option { background: #1e1e2e; }
+.dark .coinvestor-option.active { background: rgba(4, 120, 87, 0.1); }
+.dark .review-coinvestors { background: #1e1e2e; border-color: #2e2e42; }
+.dark .review-coinvestor-chip { background: rgba(4, 120, 87, 0.1); border-color: rgba(4, 120, 87, 0.2); }
 </style>

@@ -5,6 +5,7 @@ import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatCurrencyShort, formatPhone, PHONE_MASK, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useCapital } from '@/composables/useCapital'
 import type { Deal } from '@/types'
 import { Bar } from 'vue-chartjs'
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend } from 'chart.js'
@@ -15,6 +16,12 @@ const router = useRouter()
 const { isDark } = useIsDark()
 const toast = useToast()
 const dealsStore = useDealsStore()
+const { capital, isCapitalSet, fetchCapital } = useCapital()
+
+const poolContribution = computed(() => {
+  if (!capital.value || capital.value.totalCapital <= 0) return 0
+  return Math.round((capital.value.coInvestorCapital / capital.value.totalCapital) * 100)
+})
 
 // ── Types ──
 
@@ -108,7 +115,7 @@ async function fetchData() {
   }
 }
 
-onMounted(fetchData)
+onMounted(() => { fetchData(); fetchCapital() })
 
 // ── Computed ──
 
@@ -426,6 +433,15 @@ function pluralDeals(n: number) {
           <div>
             <div class="stat-value">{{ summaryStats.count }}</div>
             <div class="stat-label">Со-инвесторов</div>
+          </div>
+        </div>
+        <div v-if="isCapitalSet && capital" class="stat-card" @click="router.push('/finance')" style="cursor: pointer;">
+          <div class="stat-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
+            <v-icon icon="mdi-chart-pie" size="20" />
+          </div>
+          <div>
+            <div class="stat-value" style="color: #7c3aed;">{{ poolContribution }}%</div>
+            <div class="stat-label">Вклад в пул капитала</div>
           </div>
         </div>
       </div>

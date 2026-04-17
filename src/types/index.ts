@@ -36,6 +36,7 @@ export interface User {
   isBlocked: boolean
   subscriptionPlan: SubscriptionPlan
   subscriptionExpiry?: string
+  initialCapital?: number | null
   planLimits?: { maxActiveDeals: number; responseCost: number }
   planFeatures?: PlanFeatures
   daysUntilExpiry?: number | null
@@ -362,6 +363,17 @@ export interface ActivityLog {
   entityId?: string
   meta?: Record<string, any>
   createdAt: string
+}
+
+// Capital
+export interface CapitalSummary {
+  initialCapital: number | null
+  coInvestorCapital: number
+  totalCapital: number
+  deployed: number
+  received: number
+  coInvestorPayout: number
+  availableCapital: number
 }
 
 // Helpers
