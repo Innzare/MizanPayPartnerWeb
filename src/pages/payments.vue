@@ -8,6 +8,7 @@ import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
+import { useFolders } from '@/composables/useFolders'
 import { api } from '@/api/client'
 
 const router = useRouter()
@@ -16,6 +17,8 @@ const toast = useToast()
 const subscription = useSubscription()
 const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
+const { folders, fetchFolders } = useFolders()
+const filterFolder = ref<string | null>(null)
 
 const pageLoading = ref(true)
 
@@ -42,6 +45,7 @@ onMounted(async () => {
     await Promise.all([
       paymentsStore.fetchPayments(),
       dealsStore.fetchDeals(),
+      fetchFolders(),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки платежей')
@@ -434,6 +438,14 @@ const displayedPayments = computed(() => {
     payments = payments.filter(p => p.dueDate.slice(0, 7) === filterMonth.value)
   }
 
+  // Folder filter
+  if (filterFolder.value) {
+    payments = payments.filter(p => {
+      const deal = getDealForPayment(p)
+      return deal?.folderId === filterFolder.value
+    })
+  }
+
   if (search.value) {
     const s = search.value.toLowerCase()
     payments = payments.filter((p) => {
@@ -476,7 +488,7 @@ const displayedPayments = computed(() => {
 })
 
 function getDealForPayment(payment: Payment): Deal | undefined {
-  return payment.deal || dealsStore.getDeal(payment.dealId)
+  return dealsStore.getDeal(payment.dealId) || payment.deal
 }
 
 function getDealName(payment: Payment) {
@@ -658,6 +670,45 @@ const rescheduleReasonOptions = [
         {{ sendingBulk ? 'Рассылка...' : 'Напомнить всем' }}
       </button>
       <v-spacer />
+      <!-- Folder filter -->
+      <v-menu :close-on-content-click="false">
+        <template #activator="{ props: fp }">
+          <button v-bind="fp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterFolder }">
+            <v-icon icon="mdi-folder-outline" size="15" />
+            <template v-if="filterFolder">
+              <span class="pf-folder-dot" :style="{ background: folders.find(f => f.id === filterFolder)?.color || '#6366f1' }" />
+              {{ folders.find(f => f.id === filterFolder)?.name || 'Папка' }}
+            </template>
+            <template v-else>Папки</template>
+            <v-icon icon="mdi-chevron-down" size="13" style="opacity: 0.4;" />
+          </button>
+        </template>
+        <v-card rounded="lg" elevation="4" class="pf-folder-menu">
+          <div class="pf-folder-header">
+            <span>Папки</span>
+          </div>
+          <div class="pf-folder-body">
+            <button class="pf-folder-item" :class="{ 'pf-folder-item--active': !filterFolder }" @click="filterFolder = null">
+              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
+              <span class="pf-folder-item-name">Все платежи</span>
+            </button>
+            <div v-if="folders.length" class="pf-folder-divider" />
+            <button
+              v-for="f in folders" :key="f.id"
+              class="pf-folder-item" :class="{ 'pf-folder-item--active': filterFolder === f.id }"
+              @click="filterFolder = filterFolder === f.id ? null : f.id"
+            >
+              <span class="pf-folder-dot" :style="{ background: f.color }" />
+              <span class="pf-folder-item-name">{{ f.name }}</span>
+            </button>
+            <div class="pf-folder-divider" />
+            <router-link to="/deals" class="pf-folder-hint">
+              <v-icon icon="mdi-folder-cog-outline" size="13" />
+              Управление папками
+            </router-link>
+          </div>
+        </v-card>
+      </v-menu>
       <div class="view-toggle">
         <button class="view-toggle-btn" :class="{ active: viewMode === 'table' }" @click="viewMode = 'table'">
           <v-icon icon="mdi-table" size="16" />
@@ -2401,6 +2452,56 @@ const rescheduleReasonOptions = [
   background: rgba(var(--v-theme-on-surface), 0.1);
   color: rgba(var(--v-theme-on-surface), 0.7);
 }
+
+/* Folder filter */
+.pf-folder-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 8px 14px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: #fff; color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 0.12s;
+}
+.pf-folder-btn:hover { border-color: rgba(var(--v-theme-on-surface), 0.2); color: rgba(var(--v-theme-on-surface), 0.8); }
+.pf-folder-btn--active {
+  border-color: rgba(var(--v-theme-on-surface), 0.15);
+  color: rgba(var(--v-theme-on-surface), 0.8); font-weight: 600;
+}
+.pf-folder-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.pf-folder-menu { width: 220px; padding: 0; overflow: hidden; }
+.pf-folder-header {
+  display: flex; align-items: center; padding: 12px 14px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  font-size: 13px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.pf-folder-body { padding: 6px; }
+.pf-folder-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border-radius: 8px; border: none; background: none;
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  cursor: pointer; text-align: left; transition: background 0.1s;
+}
+.pf-folder-item:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+.pf-folder-item--active {
+  background: rgba(var(--v-theme-primary), 0.06);
+  color: rgb(var(--v-theme-primary)); font-weight: 600;
+}
+.pf-folder-item-name { flex: 1; }
+.pf-folder-divider { height: 1px; background: rgba(var(--v-theme-on-surface), 0.06); margin: 4px 6px; }
+.pf-folder-hint {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px; font-size: 11px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  text-decoration: none; transition: color 0.12s;
+}
+.pf-folder-hint:hover { color: rgb(var(--v-theme-primary)); }
+
+.dark .pf-folder-header { border-bottom-color: rgba(255,255,255,0.06); }
+.dark .pf-folder-btn { background: #252538; border-color: #2e2e42; }
+.dark .pf-folder-btn:hover { border-color: #3e3e52; }
+.dark .pf-folder-item:hover { background: rgba(255,255,255,0.04); }
+.dark .pf-folder-item--active { background: rgba(var(--v-theme-primary), 0.1); }
 
 .dark .month-filter-btn { background: rgba(255,255,255,0.06); }
 .dark .month-filter-btn:hover { background: rgba(255,255,255,0.1); }

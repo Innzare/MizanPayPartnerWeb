@@ -3,10 +3,11 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { type Deal, userName, clientProfileName } from '@/types'
+import { type Deal, type DealFolder, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useFolders } from '@/composables/useFolders'
 import { api } from '@/api/client'
 
 const router = useRouter()
@@ -14,6 +15,75 @@ const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
+const { folders, fetchFolders, createFolder, updateFolder, deleteFolder, moveDeal, moveBatch } = useFolders()
+
+// Folders
+const activeFolder = ref<string | null>(null) // null = all
+const showFolderDialog = ref(false)
+const editingFolder = ref<DealFolder | null>(null)
+const folderForm = ref({ name: '', color: '#6366f1', icon: 'mdi-folder' })
+const folderSaving = ref(false)
+const showMoveMenu = ref(false)
+
+const FOLDER_COLORS = ['#6366f1', '#3b82f6', '#0ea5e9', '#10b981', '#047857', '#f59e0b', '#ef4444', '#ec4899', '#8b5cf6', '#64748b']
+
+function openCreateFolder() {
+  editingFolder.value = null
+  folderForm.value = { name: '', color: '#6366f1', icon: 'mdi-folder' }
+  showFolderDialog.value = true
+}
+
+function openEditFolder(folder: DealFolder) {
+  editingFolder.value = folder
+  folderForm.value = { name: folder.name, color: folder.color, icon: folder.icon }
+  showFolderDialog.value = true
+}
+
+async function saveFolder() {
+  if (!folderForm.value.name.trim()) return toast.error('Укажите название')
+  folderSaving.value = true
+  try {
+    if (editingFolder.value) {
+      await updateFolder(editingFolder.value.id, folderForm.value)
+      toast.success('Папка обновлена')
+    } else {
+      await createFolder(folderForm.value)
+      toast.success('Папка создана')
+    }
+    showFolderDialog.value = false
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка')
+  } finally { folderSaving.value = false }
+}
+
+async function handleDeleteFolder(folder: DealFolder) {
+  if (!confirm(`Удалить папку «${folder.name}»? Сделки не удалятся.`)) return
+  try {
+    await deleteFolder(folder.id)
+    if (activeFolder.value === folder.id) activeFolder.value = null
+    toast.success('Папка удалена')
+  } catch (e: any) { toast.error(e.message || 'Ошибка') }
+}
+
+async function moveSelectedToFolder(folderId: string | null) {
+  const ids = Array.from(selectedIds.value)
+  if (!ids.length) return
+  try {
+    await moveBatch(ids, folderId)
+    await dealsStore.fetchDeals()
+    selectedIds.value = new Set()
+    showMoveMenu.value = false
+    toast.success(`${ids.length} сделок перемещено`)
+  } catch (e: any) { toast.error(e.message || 'Ошибка') }
+}
+
+async function handleMoveSingle(dealId: string, folderId: string | null) {
+  try {
+    await moveDeal(dealId, folderId)
+    await Promise.all([dealsStore.fetchDeals(), fetchFolders()])
+    toast.success(folderId ? 'Сделка перемещена' : 'Сделка убрана из папки')
+  } catch (e: any) { toast.error(e.message || 'Ошибка') }
+}
 
 const pageLoading = ref(true)
 
@@ -23,6 +93,7 @@ onMounted(async () => {
       dealsStore.fetchDeals(),
       paymentsStore.fetchPayments(),
       dealsStore.fetchTrash(),
+      fetchFolders(),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки сделок')
@@ -177,6 +248,11 @@ watch(tab, (v) => {
 const displayedDeals = computed(() => {
   let result = [...baseDeals.value]
 
+  // Folder filter
+  if (activeFolder.value) {
+    result = result.filter(d => d.folderId === activeFolder.value)
+  }
+
   if (search.value) {
     const s = search.value.toLowerCase()
     result = result.filter(d =>
@@ -285,6 +361,65 @@ const selectedDealPaidTotal = computed(() =>
       </div>
     </div>
 
+    <!-- Folder button (top right, above main card) -->
+    <div v-if="!isTrashTab" class="d-flex justify-end mb-3">
+      <v-menu :close-on-content-click="false">
+        <template #activator="{ props: mp }">
+          <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeFolder }">
+            <v-icon icon="mdi-folder-outline" size="16" />
+            <template v-if="activeFolder">
+              <span class="fb-dot" :style="{ background: folders.find(f => f.id === activeFolder)?.color || '#6366f1' }" />
+              {{ folders.find(f => f.id === activeFolder)?.name || 'Папка' }}
+            </template>
+            <template v-else>
+              Папки
+            </template>
+            <v-icon icon="mdi-chevron-down" size="14" style="opacity: 0.4;" />
+          </button>
+        </template>
+        <v-card rounded="lg" elevation="4" class="fb-dropdown">
+          <div class="fb-dropdown-header">
+            <span>Папки</span>
+            <button class="fb-dropdown-add" @click="openCreateFolder">
+              <v-icon icon="mdi-plus" size="14" />
+              Создать
+            </button>
+          </div>
+
+          <div class="fb-dropdown-body">
+            <!-- All deals -->
+            <button class="fb-item" :class="{ 'fb-item--active': !activeFolder }" @click="activeFolder = null">
+              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
+              <span class="fb-item-name">Все сделки</span>
+              <span class="fb-item-count">{{ dealsStore.investorDeals.length }}</span>
+            </button>
+
+            <div v-if="folders.length" class="fb-divider" />
+
+            <!-- Folder list -->
+            <button
+              v-for="f in folders" :key="f.id"
+              class="fb-item" :class="{ 'fb-item--active': activeFolder === f.id }"
+              @click="activeFolder = activeFolder === f.id ? null : f.id"
+            >
+              <span class="fb-item-dot" :style="{ background: f.color }" />
+              <span class="fb-item-name">{{ f.name }}</span>
+              <button class="fb-item-edit" @click.stop="openEditFolder(f)" title="Редактировать">
+                <v-icon icon="mdi-pencil-outline" size="12" />
+              </button>
+              <span class="fb-item-count">{{ f._count?.deals || 0 }}</span>
+            </button>
+
+            <!-- No folders hint -->
+            <div v-if="!folders.length" class="fb-empty">
+              <div style="font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.35);">Нет папок</div>
+              <div style="font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.25);">Создайте папку для группировки</div>
+            </div>
+          </div>
+        </v-card>
+      </v-menu>
+    </div>
+
     <!-- Main card -->
     <v-card rounded="lg" elevation="0" border>
       <div class="pa-4">
@@ -304,6 +439,27 @@ const selectedDealPaidTotal = computed(() =>
           </div>
 
           <v-spacer class="d-none d-md-block" />
+
+          <!-- Move to folder (batch) -->
+          <v-menu v-if="selectedIds.size > 0" v-model="showMoveMenu" location="bottom">
+            <template #activator="{ props: menuProps }">
+              <button v-bind="menuProps" class="folder-move-btn">
+                <v-icon icon="mdi-folder-arrow-right" size="16" />
+                В папку
+              </button>
+            </template>
+            <v-card rounded="lg" elevation="3" min-width="200" class="pa-1">
+              <button class="folder-menu-item" @click="moveSelectedToFolder(null)">
+                <v-icon icon="mdi-folder-remove-outline" size="16" color="grey" />
+                Без папки
+              </button>
+              <div v-if="folders.length" style="height: 1px; background: rgba(var(--v-theme-on-surface), 0.06); margin: 4px 8px;" />
+              <button v-for="f in folders" :key="f.id" class="folder-menu-item" @click="moveSelectedToFolder(f.id)">
+                <span class="folder-chip-dot" :style="{ background: f.color }" />
+                {{ f.name }}
+              </button>
+            </v-card>
+          </v-menu>
 
           <div class="d-flex flex-wrap ga-2 align-center">
             <div class="filter-input-wrap" style="max-width: 240px; min-width: 160px;">
@@ -506,6 +662,10 @@ const selectedDealPaidTotal = computed(() =>
                     <v-icon v-else icon="mdi-package-variant-closed" size="22" color="grey" />
                   </v-avatar>
                   <span class="font-weight-medium table-product-name">{{ deal.productName }}</span>
+                  <span v-if="deal.folder" class="deal-folder-badge" :style="{ background: deal.folder.color + '18', color: deal.folder.color }">
+                    <span class="folder-chip-dot" :style="{ background: deal.folder.color }" />
+                    {{ deal.folder.name }}
+                  </span>
                 </div>
               </td>
               <td>
@@ -686,6 +846,69 @@ const selectedDealPaidTotal = computed(() =>
       </v-card>
     </v-dialog>
     </template>
+
+    <!-- Folder dialog -->
+    <v-dialog v-model="showFolderDialog" max-width="420">
+      <v-card rounded="xl" class="fd-dialog">
+        <div class="fd-header">
+          <div class="fd-header-icon" :style="{ background: folderForm.color + '18', color: folderForm.color }">
+            <v-icon icon="mdi-folder" size="22" />
+          </div>
+          <div>
+            <div class="fd-title">{{ editingFolder ? 'Редактировать папку' : 'Новая папка' }}</div>
+            <div class="fd-subtitle">Группируйте сделки для удобства</div>
+          </div>
+          <button class="fd-close" @click="showFolderDialog = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+        </div>
+
+        <div class="fd-body">
+          <div class="fd-field">
+            <label class="fd-label">Название</label>
+            <input v-model="folderForm.name" class="fd-input" placeholder="Например: Телефоны" autofocus />
+          </div>
+
+          <div class="fd-field">
+            <label class="fd-label">Цвет</label>
+            <div class="fd-colors">
+              <button
+                v-for="c in FOLDER_COLORS" :key="c"
+                class="fd-color"
+                :class="{ active: folderForm.color === c }"
+                :style="{ background: c }"
+                @click="folderForm.color = c"
+              >
+                <v-icon v-if="folderForm.color === c" icon="mdi-check" size="14" color="white" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Preview -->
+          <div class="fd-preview">
+            <span class="fd-preview-label">Предпросмотр:</span>
+            <span class="fd-preview-chip" :style="{ background: folderForm.color + '18', color: folderForm.color }">
+              <span class="fd-preview-dot" :style="{ background: folderForm.color }" />
+              {{ folderForm.name || 'Название папки' }}
+            </span>
+          </div>
+        </div>
+
+        <div class="fd-footer">
+          <button v-if="editingFolder" class="fd-delete" @click="handleDeleteFolder(editingFolder!); showFolderDialog = false">
+            <v-icon icon="mdi-delete-outline" size="16" />
+            Удалить
+          </button>
+          <v-spacer />
+          <button class="fd-cancel" @click="showFolderDialog = false">Отмена</button>
+          <button class="fd-save" :disabled="folderSaving || !folderForm.name.trim()" @click="saveFolder">
+            <v-progress-circular v-if="folderSaving" indeterminate size="14" width="2" color="white" />
+            <v-icon v-else icon="mdi-check" size="16" />
+            {{ editingFolder ? 'Сохранить' : 'Создать' }}
+          </button>
+        </div>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -1243,4 +1466,223 @@ const selectedDealPaidTotal = computed(() =>
 .dark :deep(.filter-select .v-field .v-field__prepend-inner),
 .dark :deep(.filter-select .v-field .v-field__append-inner) { color: #71717a; }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
+
+/* Folders */
+.folder-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: all 0.12s; white-space: nowrap;
+}
+.folder-chip:hover { background: rgba(var(--v-theme-on-surface), 0.08); }
+.folder-chip.active {
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary)); font-weight: 600;
+}
+.folder-chip--add {
+  padding: 5px 8px;
+  color: rgba(var(--v-theme-on-surface), 0.3);
+}
+.folder-chip--add:hover { color: rgb(var(--v-theme-primary)); }
+.folder-chip-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.folder-chip-count {
+  font-size: 10px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.3);
+  margin-left: 1px;
+}
+
+.folder-move-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 14px; border-radius: 8px; border: none;
+  background: rgba(99, 102, 241, 0.1); color: #6366f1;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all 0.12s;
+}
+.folder-move-btn:hover { background: rgba(99, 102, 241, 0.18); }
+
+.folder-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 12px; border-radius: 8px; border: none;
+  background: none; font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; text-align: left;
+}
+.folder-menu-item:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+
+/* Folder button & dropdown */
+.fb-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: #fff;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 0.12s;
+}
+.fb-btn:hover { border-color: rgba(var(--v-theme-on-surface), 0.2); color: rgba(var(--v-theme-on-surface), 0.8); }
+.fb-btn--active {
+  border-color: rgba(var(--v-theme-on-surface), 0.15);
+  background: #fff;
+  color: rgba(var(--v-theme-on-surface), 0.8); font-weight: 600;
+}
+
+.fb-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+.fb-dropdown { width: 240px; padding: 0; overflow: hidden; }
+.fb-dropdown-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  font-size: 13px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.fb-dropdown-add {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 4px 10px; border-radius: 6px; border: none;
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
+  font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.fb-dropdown-add:hover { background: rgba(var(--v-theme-primary), 0.15); }
+.fb-dropdown-body { padding: 6px; }
+
+.fb-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border-radius: 8px; border: none; background: none;
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  cursor: pointer; text-align: left; transition: background 0.1s;
+}
+.fb-item:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+.fb-item--active {
+  background: rgba(var(--v-theme-primary), 0.06);
+  color: rgb(var(--v-theme-primary)); font-weight: 600;
+}
+.fb-item-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.fb-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-item-count {
+  font-size: 11px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.2);
+  flex-shrink: 0;
+}
+.fb-item-edit {
+  width: 20px; height: 20px; border-radius: 5px; border: none;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.15);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: 0; transition: all 0.12s; flex-shrink: 0;
+}
+.fb-item:hover .fb-item-edit { opacity: 1; }
+.fb-item-edit:hover { background: rgba(var(--v-theme-on-surface), 0.1); color: rgba(var(--v-theme-on-surface), 0.6); }
+.fb-divider { height: 1px; background: rgba(var(--v-theme-on-surface), 0.06); margin: 4px 6px; }
+.fb-empty { padding: 12px; text-align: center; }
+
+.dark .fb-dropdown-header { border-bottom-color: rgba(255,255,255,0.06); }
+.dark .fb-btn { background: #252538; border-color: #2e2e42; }
+.dark .fb-btn:hover { border-color: #3e3e52; }
+.dark .fb-btn--active { background: rgba(var(--v-theme-primary), 0.1); border-color: rgba(var(--v-theme-primary), 0.2); }
+.dark .fb-item:hover { background: rgba(255,255,255,0.04); }
+.dark .fb-item--active { background: rgba(var(--v-theme-primary), 0.1); }
+
+.folder-menu-item--active { background: rgba(var(--v-theme-primary), 0.06); }
+
+.deal-folder-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 5px;
+  font-size: 10px; font-weight: 600; margin-left: 6px;
+}
+
+/* Folder dialog */
+.fd-dialog { padding: 0 !important; overflow: hidden; }
+.fd-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 20px 24px 16px;
+}
+.fd-header-icon {
+  width: 44px; height: 44px; min-width: 44px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.2s;
+}
+.fd-title { font-size: 17px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
+.fd-subtitle { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4); margin-top: 1px; }
+.fd-close {
+  width: 32px; height: 32px; border-radius: 8px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; margin-left: auto;
+}
+.fd-close:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
+.fd-body { padding: 0 24px 16px; }
+.fd-field { margin-bottom: 16px; }
+.fd-label {
+  display: block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; color: rgba(var(--v-theme-on-surface), 0.35);
+  margin-bottom: 8px;
+}
+.fd-input {
+  width: 100%; height: 44px; padding: 0 14px;
+  border: 1.5px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px; font-size: 14px; color: inherit;
+  background: rgba(var(--v-theme-on-surface), 0.02); outline: none;
+}
+.fd-input:focus { border-color: #047857; box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.08); }
+.fd-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.25); }
+.fd-colors { display: flex; gap: 8px; flex-wrap: wrap; }
+.fd-color {
+  width: 32px; height: 32px; border-radius: 50%; border: 3px solid transparent;
+  cursor: pointer; transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.fd-color:hover { transform: scale(1.15); }
+.fd-color.active { border-color: rgba(var(--v-theme-on-surface), 0.15); transform: scale(1.1); }
+.fd-preview {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.fd-preview-label { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.35); }
+.fd-preview-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 12px; border-radius: 7px;
+  font-size: 12px; font-weight: 600;
+}
+.fd-preview-dot { width: 8px; height: 8px; border-radius: 50%; }
+.fd-footer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 24px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.fd-delete {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 7px 14px; border-radius: 8px; border: none;
+  background: rgba(239, 68, 68, 0.08); color: #ef4444;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.fd-delete:hover { background: rgba(239, 68, 68, 0.15); }
+.fd-cancel {
+  padding: 8px 18px; border-radius: 9px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.fd-cancel:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
+.fd-save {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 20px; border-radius: 9px; border: none;
+  background: #047857; color: #fff;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.fd-save:hover { background: #065f46; }
+.fd-save:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.dark .folder-chip { background: rgba(255,255,255,0.06); }
+.dark .folder-chip.active { background: rgba(var(--v-theme-primary), 0.15); }
+.dark .fd-input { background: #1e1e2e; border-color: #2e2e42; }
+.dark .fd-preview { background: rgba(255,255,255,0.04); }
+.dark .fd-footer { border-top-color: rgba(255,255,255,0.06); }
+.dark .fd-color.active { border-color: rgba(255,255,255,0.2); }
 </style>

@@ -126,11 +126,24 @@ export interface Deal {
   paymentType: PaymentType
   firstPaymentDate?: string
   status: DealStatus
+  folderId?: string | null
+  folder?: DealFolder | null
   createdAt: string
   completedAt?: string
   deletedAt?: string
   updatedAt: string
   payments?: Payment[]
+}
+
+// Deal Folder
+export interface DealFolder {
+  id: string
+  name: string
+  color: string
+  icon: string
+  order: number
+  _count?: { deals: number }
+  createdAt: string
 }
 
 // Payment
