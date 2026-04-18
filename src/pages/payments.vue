@@ -59,7 +59,8 @@ const search = ref('')
 const viewMode = ref<'table' | 'calendar'>('table')
 
 // Month filter
-const filterMonth = ref<string | null>(null) // format: 'YYYY-MM' or null = all
+const now = new Date()
+const filterMonth = ref<string | null>(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
 const filterYear = ref(new Date().getFullYear())
 
 const availableYears = computed(() => {
@@ -1091,6 +1092,17 @@ const rescheduleReasonOptions = [
               class="filter-input"
             />
           </div>
+        </div>
+
+        <!-- Month filter notice -->
+        <div v-if="filterMonth" class="month-filter-notice">
+          <v-icon icon="mdi-filter-outline" size="15" />
+          <span>Показаны платежи за <strong>{{ filterMonthLabel }} {{ filterMonth.split('-')[0] }}</strong></span>
+          <span class="month-filter-notice-count">{{ displayedPayments.length }} из {{ paymentsStore.allPaymentsFlat.length }}</span>
+          <button class="month-filter-notice-clear" @click="filterMonth = null">
+            Показать все
+            <v-icon icon="mdi-close" size="12" />
+          </button>
         </div>
 
         <!-- Table -->
@@ -2365,6 +2377,30 @@ const rescheduleReasonOptions = [
   cursor: pointer; transition: all 0.12s;
 }
 .month-menu-reset:hover { background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.7); }
+
+.month-filter-notice {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px; margin-bottom: 12px; border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.06);
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.month-filter-notice strong { color: rgba(var(--v-theme-on-surface), 0.8); }
+.month-filter-notice-count {
+  margin-left: auto; font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
+.month-filter-notice-clear {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 3px 10px; border-radius: 6px; border: none;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-size: 11px; font-weight: 500; cursor: pointer;
+  transition: all 0.12s; margin-left: 8px;
+}
+.month-filter-notice-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
 
 .dark .month-filter-btn { background: rgba(255,255,255,0.06); }
 .dark .month-filter-btn:hover { background: rgba(255,255,255,0.1); }

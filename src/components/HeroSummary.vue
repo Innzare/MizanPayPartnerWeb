@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useDealsStore } from '@/stores/deals'
 import { useSubscription } from '@/composables/useSubscription'
+import { useCapital } from '@/composables/useCapital'
 import { formatCurrency, formatCurrencyShort, formatPercent } from '@/utils/formatters'
 import { useRouter } from 'vue-router'
 
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 
 const dealsStore = useDealsStore()
 const subscription = useSubscription()
+const { capital, isCapitalSet } = useCapital()
 const router = useRouter()
 
 const canView = computed(() => subscription.canAccess('analytics'))
@@ -25,6 +27,16 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
 
 <template>
   <div class="hero-summary" style="position: relative;">
+    <!-- Capital badge top-right -->
+    <router-link v-if="isCapitalSet && capital && canView" to="/finance" class="hs-capital-badge">
+      <v-icon icon="mdi-wallet-outline" size="18" />
+      <div class="hs-capital-info">
+        <div class="hs-capital-value">{{ formatCurrencyShort(capital.availableCapital) }}</div>
+        <div class="hs-capital-label">Доступный капитал</div>
+      </div>
+      <v-icon icon="mdi-arrow-right" size="16" class="hs-capital-arrow" />
+    </router-link>
+
     <div :style="!canView && showLockedOverlay ? { filter: 'blur(5px)', opacity: 0.7, pointerEvents: 'none', userSelect: 'none' } : {}">
       <div class="hs-main hs-clickable" @click="emit('metric', 'remaining')">
         <div class="hs-label">Общая сводка</div>
@@ -89,6 +101,26 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
   background: linear-gradient(135deg, #047857 0%, #065f46 50%, #064e3b 100%);
   border-radius: 16px; padding: 24px 28px; color: #fff;
 }
+
+/* Capital badge */
+.hs-capital-badge {
+  position: absolute; top: 16px; right: 16px; z-index: 3;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.12); backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff; text-decoration: none;
+  transition: all 0.15s;
+}
+.hs-capital-badge:hover {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.hs-capital-info { display: flex; flex-direction: column; }
+.hs-capital-value { font-size: 18px; font-weight: 800; line-height: 1.1; }
+.hs-capital-label { font-size: 10px; font-weight: 500; opacity: 0.55; }
+.hs-capital-arrow { opacity: 0.4; transition: transform 0.15s; }
+.hs-capital-badge:hover .hs-capital-arrow { opacity: 0.8; transform: translateX(3px); }
 
 .hs-main { cursor: default; }
 .hs-clickable { cursor: pointer; }

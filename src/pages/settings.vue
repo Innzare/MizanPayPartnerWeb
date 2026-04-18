@@ -17,7 +17,7 @@ const settingsPlanLabels: Record<string, string> = { PRO: 'Стандарт', BU
 
 // Tabs
 const route = useRoute()
-const validTabs = ['profile', 'security', 'whatsapp', 'export', 'subscription'] as const
+const validTabs = ['profile', 'security', 'whatsapp', 'export', 'contract', 'subscription'] as const
 type TabId = typeof validTabs[number]
 const initTab = validTabs.includes(route.query.tab as TabId) ? route.query.tab as TabId : 'profile'
 const activeTab = ref<TabId>(initTab)
@@ -202,6 +202,7 @@ const tabs = [
   { id: 'security' as const, label: 'Безопасность', icon: 'mdi-shield-lock-outline' },
   { id: 'whatsapp' as const, label: 'WhatsApp', icon: 'mdi-whatsapp' },
   { id: 'export' as const, label: 'Экспорт', icon: 'mdi-download-outline' },
+  { id: 'contract' as const, label: 'Договор', icon: 'mdi-file-cog-outline' },
   { id: 'subscription' as const, label: 'Подписка', icon: 'mdi-crown-outline' },
 ]
 
@@ -592,6 +593,10 @@ const plans = [
                 <span class="profile-row-label">Город</span>
                 <span class="profile-row-value">{{ authStore.user?.city }}</span>
               </div>
+              <div v-if="(authStore.user as any)?.birthDate" class="profile-row">
+                <span class="profile-row-label">Дата рождения</span>
+                <span class="profile-row-value">{{ formatDate((authStore.user as any).birthDate) }}</span>
+              </div>
               <div class="profile-row">
                 <span class="profile-row-label">Роль</span>
                 <span class="profile-row-value">
@@ -908,9 +913,9 @@ const plans = [
       </template>
 
       <template v-else>
-      <v-card rounded="lg" elevation="0" border class="pa-6">
+      <v-card v-if="waStatus === 'connected'" rounded="lg" elevation="0" border class="pa-6">
         <!-- Connected state -->
-        <div v-if="waStatus === 'connected'">
+        <div>
           <!-- Status banner -->
           <div class="wa-connected-banner">
             <div class="wa-connected-icon">
@@ -1093,34 +1098,68 @@ const plans = [
         </div>
 
         <!-- Disconnected state -->
-        <div v-if="waStatus === 'disconnected'" class="text-center">
-          <div class="wa-status-icon">
-            <v-icon icon="mdi-whatsapp" size="40" />
-          </div>
-          <div class="text-h6 font-weight-bold mt-3">Подключите WhatsApp</div>
-          <div class="text-body-2 text-medium-emphasis mt-1 mb-2" style="max-width: 420px; margin: 0 auto;">
-            Отправляйте напоминания о платежах клиентам прямо в WhatsApp одной кнопкой — без открытия приложения
-          </div>
+        <div v-if="waStatus === 'disconnected'">
+          <div class="wa-disc">
+            <!-- Hero -->
+            <div class="wa-disc-hero">
+              <div class="wa-disc-icon">
+                <v-icon icon="mdi-whatsapp" size="36" />
+              </div>
+              <div class="wa-disc-title">WhatsApp для бизнеса</div>
+              <div class="wa-disc-desc">Автоматизируйте общение с клиентами — напоминания, уведомления и рассылки прямо через ваш WhatsApp</div>
+              <button class="wa-disc-connect-btn" @click="connectWhatsApp">
+                <v-icon icon="mdi-qrcode-scan" size="18" />
+                Подключить WhatsApp
+              </button>
+              <div class="wa-disc-hint">Сканируйте QR-код с телефона · подключение за 30 секунд</div>
+            </div>
 
-          <div class="wa-features">
-            <div class="wa-feature">
-              <v-icon icon="mdi-send" size="16" color="primary" />
-              <span>Напоминания от вашего номера</span>
+            <!-- Features grid -->
+            <div class="wa-disc-grid">
+              <div class="wa-disc-card">
+                <div class="wa-disc-card-icon" style="background: rgba(37, 211, 102, 0.1); color: #25d366;">
+                  <v-icon icon="mdi-bell-ring-outline" size="22" />
+                </div>
+                <div class="wa-disc-card-title">Авто-напоминания</div>
+                <div class="wa-disc-card-desc">Система сама отправит напоминание за 1–3 дня до платежа. Настройте расписание под себя.</div>
+              </div>
+              <div class="wa-disc-card">
+                <div class="wa-disc-card-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
+                  <v-icon icon="mdi-send-check" size="22" />
+                </div>
+                <div class="wa-disc-card-title">Отправка в один клик</div>
+                <div class="wa-disc-card-desc">На странице сделки нажмите «Напомнить» — клиент получит сообщение за секунду.</div>
+              </div>
+              <div class="wa-disc-card">
+                <div class="wa-disc-card-icon" style="background: rgba(139, 92, 246, 0.1); color: #8b5cf6;">
+                  <v-icon icon="mdi-account-group" size="22" />
+                </div>
+                <div class="wa-disc-card-title">Массовая рассылка</div>
+                <div class="wa-disc-card-desc">«Напомнить всем» — одна кнопка отправит напоминания всем клиентам с просрочкой.</div>
+              </div>
+              <div class="wa-disc-card">
+                <div class="wa-disc-card-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
+                  <v-icon icon="mdi-file-document-edit-outline" size="22" />
+                </div>
+                <div class="wa-disc-card-title">Шаблоны сообщений</div>
+                <div class="wa-disc-card-desc">Настройте свой текст напоминания с переменными: имя клиента, сумма, дата, товар.</div>
+              </div>
             </div>
-            <div class="wa-feature">
-              <v-icon icon="mdi-clock-fast" size="16" color="primary" />
-              <span>Отправка в один клик</span>
-            </div>
-            <div class="wa-feature">
-              <v-icon icon="mdi-account-group" size="16" color="primary" />
-              <span>Массовая рассылка</span>
+
+            <!-- Message template preview -->
+            <div class="wa-disc-preview">
+              <div class="wa-disc-preview-title">
+                <v-icon icon="mdi-message-text-outline" size="16" />
+                Пример сообщения
+              </div>
+              <div class="wa-disc-bubble">
+                <div class="wa-disc-bubble-text">
+                  Здравствуйте, <strong>Амирхан</strong>! Напоминаем, что <strong>01.05.2026</strong> наступает срок платежа по товару <strong>«Ipad 11»</strong> на сумму <strong>6 400 ₽</strong>. Просим оплатить вовремя. Спасибо!
+                </div>
+                <div class="wa-disc-bubble-time">14:30 ✓✓</div>
+              </div>
             </div>
           </div>
-
-          <button class="btn-whatsapp-connect" @click="connectWhatsApp">
-            <v-icon icon="mdi-qrcode-scan" size="18" />
-            Подключить WhatsApp
-          </button>
         </div>
       </v-card>
       </template>
@@ -1228,6 +1267,46 @@ const plans = [
           </button>
         </div>
       </template>
+    </div>
+
+    <!-- Contract Template Tab -->
+    <div v-if="activeTab === 'contract'" class="tab-content">
+      <v-card rounded="lg" elevation="0" border class="pa-6">
+        <div class="d-flex align-center ga-4 mb-4">
+          <div style="width: 48px; height: 48px; min-width: 48px; border-radius: 14px; background: rgba(4, 120, 87, 0.1); color: #047857; display: flex; align-items: center; justify-content: center;">
+            <v-icon icon="mdi-file-cog-outline" size="24" />
+          </div>
+          <div>
+            <div style="font-size: 17px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85);">Конструктор договора</div>
+            <div style="font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 2px;">Создайте свой шаблон договора для сделок</div>
+          </div>
+        </div>
+
+        <div style="font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6); line-height: 1.6; margin-bottom: 20px;">
+          В конструкторе вы можете собрать шаблон договора под свой бизнес — как в Word. Добавьте свои тексты, условия, юридические пункты. Используйте переменные (имя клиента, товар, цена, график) — они подставятся автоматически из данных сделки при скачивании PDF.
+        </div>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px;">
+          <div v-for="feature in [
+            { icon: 'mdi-format-text', text: 'Форматирование как в Word' },
+            { icon: 'mdi-code-braces', text: '21 переменная для подстановки' },
+            { icon: 'mdi-file-document-multiple-outline', text: '3 готовых шаблона' },
+            { icon: 'mdi-card-outline', text: 'Рамки, таблицы, изображения' },
+            { icon: 'mdi-page-layout-sidebar-right', text: 'Настройка отступов страницы' },
+          ]" :key="feature.text" style="display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 8px; background: rgba(var(--v-theme-on-surface), 0.03); font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);">
+            <v-icon :icon="feature.icon" size="14" color="primary" />
+            {{ feature.text }}
+          </div>
+        </div>
+
+        <button
+          style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 24px; border-radius: 10px; border: none; background: #047857; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s;"
+          @click="$router.push('/contract-builder')"
+        >
+          <v-icon icon="mdi-pencil-ruler" size="18" />
+          Открыть конструктор
+        </button>
+      </v-card>
     </div>
 
     <!-- Subscription Tab -->
@@ -2096,6 +2175,102 @@ const plans = [
   display: flex; align-items: center; gap: 8px;
   font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6);
 }
+/* WhatsApp Disconnected */
+.wa-disc {
+  border-radius: 16px; overflow: hidden;
+  border: 1px solid rgba(37, 211, 102, 0.15);
+  background: #fff;
+}
+.wa-disc-hero {
+  background: linear-gradient(135deg, rgba(37, 211, 102, 0.1) 0%, rgba(37, 211, 102, 0.03) 100%);
+  padding: 36px 32px 28px; text-align: center;
+}
+.wa-disc-icon {
+  width: 68px; height: 68px; border-radius: 50%; margin: 0 auto 18px;
+  background: rgba(37, 211, 102, 0.15); color: #25d366;
+  display: flex; align-items: center; justify-content: center;
+}
+.wa-disc-title {
+  font-size: 22px; font-weight: 800;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  margin-bottom: 8px;
+}
+.wa-disc-desc {
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
+  max-width: 460px; margin: 0 auto 20px; line-height: 1.6;
+}
+.wa-disc-connect-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 48px; padding: 0 28px; border-radius: 14px; border: none;
+  background: #25d366; color: #fff;
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  transition: background 0.15s;
+  box-shadow: 0 4px 14px rgba(37, 211, 102, 0.3);
+}
+.wa-disc-connect-btn:hover { background: #1da851; }
+.wa-disc-hint {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.3);
+  margin-top: 12px;
+}
+
+/* Features grid */
+.wa-disc-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 12px; padding: 20px 24px;
+}
+.wa-disc-card {
+  padding: 18px; border-radius: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+}
+.wa-disc-card-icon {
+  width: 42px; height: 42px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 12px;
+}
+.wa-disc-card-title {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+  margin-bottom: 4px;
+}
+.wa-disc-card-desc {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);
+  line-height: 1.5;
+}
+
+/* Message preview */
+.wa-disc-preview {
+  padding: 0 24px 24px;
+}
+.wa-disc-preview-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 10px;
+}
+.wa-disc-bubble {
+  max-width: 380px;
+  background: #dcf8c6; border-radius: 0 12px 12px 12px;
+  padding: 12px 14px 6px; position: relative;
+}
+.wa-disc-bubble-text {
+  font-size: 13px; color: #111; line-height: 1.5;
+}
+.wa-disc-bubble-time {
+  font-size: 10px; color: rgba(0,0,0,0.35);
+  text-align: right; margin-top: 4px;
+}
+
+.dark .wa-disc { background: #1e1e2e; border-color: rgba(37, 211, 102, 0.1); }
+.dark .wa-disc-hero { background: rgba(37, 211, 102, 0.08); }
+.dark .wa-disc-card { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.05); }
+.dark .wa-disc-bubble { background: #1a3a2a; }
+.dark .wa-disc-bubble-text { color: #e4e4e7; }
+
+@media (max-width: 600px) {
+  .wa-disc-grid { grid-template-columns: 1fr; }
+}
+
 .btn-whatsapp-connect {
   display: inline-flex; align-items: center; gap: 8px;
   height: 48px; padding: 0 28px; border-radius: 14px; border: none;

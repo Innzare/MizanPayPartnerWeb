@@ -635,9 +635,9 @@ const timeline = computed(() => {
       </div>
 
       <!-- Hero -->
-      <div class="detail-hero mb-6">
-        <v-img :src="deal.productPhotos[0]" height="220" cover class="detail-hero-img" />
-        <div class="detail-hero-overlay" />
+      <div class="detail-hero mb-6" :class="{ 'detail-hero--no-photo': !deal.productPhotos?.length }">
+        <v-img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" height="220" cover class="detail-hero-img" />
+        <div v-if="deal.productPhotos?.length" class="detail-hero-overlay" />
         <div class="detail-hero-content">
           <div
             class="detail-hero-status"
@@ -1252,6 +1252,10 @@ const timeline = computed(() => {
                   <div class="text-caption text-medium-emphasis">Договоры и отчёты по сделке</div>
                 </div>
               </div>
+              <router-link to="/contract-builder" class="pdf-docs-builder-link">
+                <v-icon icon="mdi-pencil-ruler" size="14" />
+                Конструктор
+              </router-link>
             </div>
 
             <div class="pdf-docs-list">
@@ -1664,6 +1668,10 @@ const timeline = computed(() => {
 /* Hero */
 .detail-hero {
   position: relative; border-radius: 16px; overflow: hidden;
+}
+.detail-hero--no-photo {
+  background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+  min-height: 140px;
 }
 .detail-hero-img { display: block; }
 .detail-hero-overlay {
@@ -2453,6 +2461,14 @@ const timeline = computed(() => {
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
 }
 .pdf-docs-header-left { display: flex; align-items: center; gap: 12px; }
+.pdf-docs-builder-link {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 7px;
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  text-decoration: none; transition: all 0.12s;
+}
+.pdf-docs-builder-link:hover { background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.7); }
 .pdf-docs-list { display: flex; flex-direction: column; }
 .pdf-doc-item {
   display: flex; align-items: center; gap: 12px;

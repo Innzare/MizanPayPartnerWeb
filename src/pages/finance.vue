@@ -535,7 +535,7 @@ function formatTransactionAmount(t: Transaction) {
         </v-card>
       </v-dialog>
 
-      <!-- Waterfall Flow (unified capital view) -->
+      <!-- Capital metrics (horizontal) -->
       <div v-if="isCapitalSet && capitalDetails" class="wf mb-6">
         <div class="wf-title-row">
           <div class="wf-title">Капитал</div>
@@ -544,105 +544,85 @@ function formatTransactionAmount(t: Transaction) {
           </button>
         </div>
 
-        <div class="wf-flow">
-          <!-- Total Capital -->
-          <div class="wf-node wf-node--start" @click="wfExpanded === 'capital' ? wfExpanded = null : wfExpanded = 'capital'">
-            <div class="wf-node-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
-              <v-icon icon="mdi-safe" size="20" />
-            </div>
-            <div class="wf-node-info">
-              <div class="wf-node-value">{{ formatCurrency(capitalDetails.totalCapital) }}</div>
-              <div class="wf-node-label">Общий капитал</div>
-            </div>
-            <v-icon :icon="wfExpanded === 'capital' ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" class="wf-node-chevron" />
-          </div>
-          <div v-if="wfExpanded === 'capital'" class="wf-expand">
-            <div class="wf-expand-row">
-              <span>Собственный капитал</span>
-              <span class="wf-expand-val">{{ formatCurrency(capitalDetails.initialCapital || 0) }}</span>
-            </div>
-            <div v-if="capitalDetails.coInvestorCapital > 0" class="wf-expand-row">
-              <span>Капитал со-инвесторов</span>
-              <span class="wf-expand-val">{{ formatCurrency(capitalDetails.coInvestorCapital) }}</span>
-            </div>
-            <div v-for="ci in capitalDetails.coInvestors" :key="ci.id" class="wf-expand-row wf-expand-row--sub">
-              <span>{{ ci.name }}</span>
-              <span class="wf-expand-val">{{ formatCurrency(ci.capital) }}</span>
-            </div>
-          </div>
-
-          <div class="wf-connector" />
-
-          <!-- Deployed -->
-          <div class="wf-node wf-node--expense" @click="wfExpanded === 'deployed' ? wfExpanded = null : wfExpanded = 'deployed'">
-            <div class="wf-node-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
-              <v-icon icon="mdi-arrow-top-right" size="20" />
-            </div>
-            <div class="wf-node-info">
-              <div class="wf-node-value" style="color: #ef4444;">-{{ formatCurrency(capitalDetails.deployed) }}</div>
-              <div class="wf-node-label">В сделках · {{ capitalDetails.deals?.length || 0 }} сделок</div>
-            </div>
-            <v-icon :icon="wfExpanded === 'deployed' ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" class="wf-node-chevron" />
-          </div>
-          <div v-if="wfExpanded === 'deployed' && capitalDetails.deals" class="wf-expand">
-            <div v-for="d in capitalDetails.deals" :key="d.id" class="wf-expand-row">
-              <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
-                {{ d.productName }}
-                <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
-              </router-link>
-              <span class="wf-expand-val" style="color: #ef4444;">{{ formatCurrency(d.purchasePrice) }}</span>
-            </div>
-          </div>
-
-          <div class="wf-connector" />
-
-          <!-- Received -->
-          <div class="wf-node wf-node--income" @click="wfExpanded === 'received' ? wfExpanded = null : wfExpanded = 'received'">
-            <div class="wf-node-icon" style="background: rgba(16, 185, 129, 0.1); color: #10b981;">
-              <v-icon icon="mdi-arrow-bottom-left" size="20" />
-            </div>
-            <div class="wf-node-info">
-              <div class="wf-node-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.received) }}</div>
-              <div class="wf-node-label">Получено от клиентов</div>
-            </div>
-            <v-icon :icon="wfExpanded === 'received' ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" class="wf-node-chevron" />
-          </div>
-          <div v-if="wfExpanded === 'received' && capitalDetails.deals" class="wf-expand">
-            <div v-for="d in capitalDetails.deals.filter(x => x.received > 0)" :key="d.id" class="wf-expand-row">
-              <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
-                {{ d.productName }}
-                <span class="wf-expand-dim"> · {{ d.progress }}%</span>
-              </router-link>
-              <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(d.received) }}</span>
-            </div>
-            <div v-if="capitalDetails.deals.every(x => x.received === 0)" class="wf-expand-empty">Оплат пока нет</div>
-          </div>
-
-          <!-- Co-investor payout -->
-          <template v-if="capitalDetails.coInvestorPayout > 0">
-            <div class="wf-connector" />
-            <div class="wf-node wf-node--payout">
-              <div class="wf-node-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
-                <v-icon icon="mdi-account-arrow-right" size="20" />
+        <!-- Two-column layout: metrics left, details right -->
+        <div class="wf-split">
+          <!-- Left: vertical list -->
+          <div class="wf-left">
+            <button class="wf-item" :class="{ 'wf-item--active': wfExpanded === 'capital' }" @click="wfExpanded = wfExpanded === 'capital' ? null : 'capital'">
+              <div class="wf-item-value">{{ formatCurrency(capitalDetails.totalCapital) }}</div>
+              <div class="wf-item-label">Общий капитал</div>
+            </button>
+            <button class="wf-item" :class="{ 'wf-item--active': wfExpanded === 'deployed' }" @click="wfExpanded = wfExpanded === 'deployed' ? null : 'deployed'">
+              <div class="wf-item-value" style="color: #ef4444;">-{{ formatCurrency(capitalDetails.deployed) }}</div>
+              <div class="wf-item-label">В сделках · {{ capitalDetails.deals?.length || 0 }}</div>
+            </button>
+            <button class="wf-item" :class="{ 'wf-item--active': wfExpanded === 'received' }" @click="wfExpanded = wfExpanded === 'received' ? null : 'received'">
+              <div class="wf-item-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.received) }}</div>
+              <div class="wf-item-label">Получено от клиентов</div>
+            </button>
+            <button v-if="capitalDetails.coInvestorPayout > 0" class="wf-item" @click="wfExpanded = null">
+              <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.coInvestorPayout) }}</div>
+              <div class="wf-item-label">Доля со-инвесторов</div>
+            </button>
+            <button v-if="capitalDetails.manualBalance !== 0" class="wf-item" @click="wfExpanded = null">
+              <div class="wf-item-value" :style="{ color: capitalDetails.manualBalance > 0 ? '#3b82f6' : '#ef4444' }">
+                {{ capitalDetails.manualBalance > 0 ? '+' : '' }}{{ formatCurrency(capitalDetails.manualBalance) }}
               </div>
-              <div class="wf-node-info">
-                <div class="wf-node-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.coInvestorPayout) }}</div>
-                <div class="wf-node-label">Доля со-инвесторов</div>
+              <div class="wf-item-label">Ручные операции</div>
+            </button>
+            <div class="wf-item wf-item--result">
+              <div class="wf-item-value wf-item-value--big" style="color: #047857;">{{ formatCurrency(capitalDetails.availableCapital) }}</div>
+              <div class="wf-item-label">Доступный капитал</div>
+            </div>
+          </div>
+
+          <!-- Right: details panel -->
+          <div class="wf-right">
+            <template v-if="wfExpanded === 'capital'">
+              <div class="wf-panel-title">Состав капитала</div>
+              <div class="wf-expand-row">
+                <span>Собственный капитал</span>
+                <span class="wf-expand-val">{{ formatCurrency(capitalDetails.initialCapital || 0) }}</span>
               </div>
-            </div>
-          </template>
+              <div v-if="capitalDetails.coInvestorCapital > 0" class="wf-expand-row">
+                <span>Капитал со-инвесторов</span>
+                <span class="wf-expand-val">{{ formatCurrency(capitalDetails.coInvestorCapital) }}</span>
+              </div>
+              <div v-for="ci in capitalDetails.coInvestors" :key="ci.id" class="wf-expand-row wf-expand-row--sub">
+                <span>{{ ci.name }}</span>
+                <span class="wf-expand-val">{{ formatCurrency(ci.capital) }}</span>
+              </div>
+            </template>
 
-          <div class="wf-connector wf-connector--final" />
+            <template v-else-if="wfExpanded === 'deployed' && capitalDetails.deals">
+              <div class="wf-panel-title">Сделки ({{ capitalDetails.deals.length }})</div>
+              <div v-for="d in capitalDetails.deals" :key="d.id" class="wf-expand-row">
+                <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
+                  {{ d.productName }}
+                  <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
+                </router-link>
+                <span class="wf-expand-val" style="color: #ef4444;">{{ formatCurrency(d.purchasePrice) }}</span>
+              </div>
+            </template>
 
-          <!-- Available -->
-          <div class="wf-node wf-node--result">
-            <div class="wf-node-icon wf-node-icon--big" style="background: rgba(4, 120, 87, 0.12); color: #047857;">
-              <v-icon icon="mdi-wallet-outline" size="22" />
-            </div>
-            <div class="wf-node-info">
-              <div class="wf-node-value wf-node-value--big" style="color: #047857;">{{ formatCurrency(capitalDetails.availableCapital) }}</div>
-              <div class="wf-node-label">Доступный капитал</div>
-            </div>
+            <template v-else-if="wfExpanded === 'received' && capitalDetails.deals">
+              <div class="wf-panel-title">Поступления по сделкам</div>
+              <div v-for="d in capitalDetails.deals.filter(x => x.received > 0)" :key="d.id" class="wf-expand-row">
+                <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
+                  {{ d.productName }}
+                  <span class="wf-expand-dim"> · {{ d.progress }}%</span>
+                </router-link>
+                <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(d.received) }}</span>
+              </div>
+              <div v-if="capitalDetails.deals.every(x => x.received === 0)" class="wf-expand-empty">Оплат пока нет</div>
+            </template>
+
+            <template v-else>
+              <div class="wf-panel-empty">
+                <v-icon icon="mdi-cursor-default-click-outline" size="28" color="grey-lighten-2" />
+                <div>Нажмите на строку слева для просмотра деталей</div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -666,36 +646,6 @@ function formatTransactionAmount(t: Transaction) {
         </div>
       </div>
 
-      <!-- Capital Movement Summary -->
-      <div v-if="isCapitalSet && capitalDetails" class="cap-movement mb-6">
-        <div class="cap-movement-header">
-          <div class="cap-movement-title">Движение средств</div>
-          <div class="cap-movement-sub">Автоматически из сделок и платежей</div>
-        </div>
-        <div class="cap-movement-cards">
-          <div class="cap-movement-card">
-            <v-icon icon="mdi-arrow-bottom-left" size="18" style="color: #10b981;" />
-            <div class="cap-movement-card-info">
-              <div class="cap-movement-card-value" style="color: #10b981;">+{{ formatCurrency(operationsIncome) }}</div>
-              <div class="cap-movement-card-label">Поступления</div>
-            </div>
-          </div>
-          <div class="cap-movement-card">
-            <v-icon icon="mdi-arrow-top-right" size="18" style="color: #ef4444;" />
-            <div class="cap-movement-card-info">
-              <div class="cap-movement-card-value" style="color: #ef4444;">-{{ formatCurrency(operationsExpense) }}</div>
-              <div class="cap-movement-card-label">Закупки</div>
-            </div>
-          </div>
-          <div v-if="operationsPayout > 0" class="cap-movement-card">
-            <v-icon icon="mdi-account-arrow-right" size="18" style="color: #f59e0b;" />
-            <div class="cap-movement-card-info">
-              <div class="cap-movement-card-value" style="color: #f59e0b;">-{{ formatCurrency(operationsPayout) }}</div>
-              <div class="cap-movement-card-label">Со-инвесторам</div>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <!-- Operations & Deals -->
       <v-card v-if="isCapitalSet && capitalDetails" rounded="lg" elevation="0" border class="mb-6">
@@ -1964,44 +1914,56 @@ function formatTransactionAmount(t: Transaction) {
   font-size: 16px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
-.wf-flow {
-  display: flex; flex-direction: column; align-items: center;
+/* Split layout: left metrics + right details */
+.wf-split {
+  display: grid; grid-template-columns: 300px 1fr; gap: 0;
 }
-.wf-node {
-  display: flex; align-items: center; gap: 14px;
-  width: 100%; max-width: 480px;
-  padding: 14px 18px; border-radius: 14px;
-  cursor: pointer; transition: all 0.15s;
-  border: 1px solid transparent;
+.wf-left {
+  display: flex; flex-direction: column; gap: 0;
+  border-right: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  position: sticky; top: 80px; align-self: start;
 }
-.wf-node:hover { background: rgba(var(--v-theme-on-surface), 0.02); }
-.wf-node--start { background: rgba(124, 58, 237, 0.04); border-color: rgba(124, 58, 237, 0.1); }
-.wf-node--start:hover { background: rgba(124, 58, 237, 0.07); }
-.wf-node--expense { background: rgba(239, 68, 68, 0.03); border-color: rgba(239, 68, 68, 0.08); }
-.wf-node--expense:hover { background: rgba(239, 68, 68, 0.06); }
-.wf-node--income { background: rgba(16, 185, 129, 0.03); border-color: rgba(16, 185, 129, 0.08); }
-.wf-node--income:hover { background: rgba(16, 185, 129, 0.06); }
-.wf-node--payout { background: rgba(245, 158, 11, 0.03); border-color: rgba(245, 158, 11, 0.08); }
-.wf-node--result {
-  background: linear-gradient(135deg, rgba(4, 120, 87, 0.08) 0%, rgba(4, 120, 87, 0.03) 100%);
-  border-color: rgba(4, 120, 87, 0.15); cursor: default;
+.wf-item {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 14px 24px; border: none; background: none;
+  text-align: left; cursor: pointer; transition: all 0.12s;
+  border-left: 3px solid transparent;
 }
-.wf-node-icon {
-  width: 42px; height: 42px; min-width: 42px; border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
+.wf-item:hover { background: rgba(var(--v-theme-on-surface), 0.02); }
+.wf-item--active {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-left-color: rgb(var(--v-theme-primary));
 }
-.wf-node-icon--big { width: 48px; height: 48px; min-width: 48px; border-radius: 14px; }
-.wf-node-info { flex: 1; min-width: 0; }
-.wf-node-value { font-size: 18px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
-.wf-node-value--big { font-size: 22px; }
-.wf-node-label { font-size: 12px; font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.4); margin-top: 1px; }
-.wf-node-chevron { color: rgba(var(--v-theme-on-surface), 0.2); flex-shrink: 0; }
-.wf-connector { width: 2px; height: 20px; background: rgba(var(--v-theme-on-surface), 0.08); }
-.wf-connector--final { height: 24px; background: linear-gradient(to bottom, rgba(var(--v-theme-on-surface), 0.08), rgba(4, 120, 87, 0.2)); }
-.wf-expand {
-  width: 100%; max-width: 480px; padding: 8px 16px 12px;
-  border-left: 2px solid rgba(var(--v-theme-on-surface), 0.06);
-  animation: wfSlide 0.15s ease;
+.wf-item--result {
+  cursor: default;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  padding: 16px 24px;
+  background: rgba(4, 120, 87, 0.03);
+}
+.wf-item-value {
+  font-size: 20px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.wf-item-value--big { font-size: 22px; }
+.wf-item-label {
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
+
+/* Right panel */
+.wf-right {
+  padding: 16px 20px; overflow-y: auto;
+}
+.wf-panel-title {
+  font-size: 13px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  margin-bottom: 12px; padding-bottom: 8px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.wf-panel-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; gap: 8px; text-align: center;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.25);
 }
 @keyframes wfSlide {
   from { opacity: 0; transform: translateY(-6px); }
@@ -2048,20 +2010,16 @@ function formatTransactionAmount(t: Transaction) {
 
 .dark .wf { background: #1e1e2e; border-color: #2e2e42; }
 .dark .wf-utilization { border-top-color: rgba(255,255,255,0.06); }
-.dark .wf-node:hover { background: rgba(255,255,255,0.03); }
-.dark .wf-node--start { background: rgba(124, 58, 237, 0.08); border-color: rgba(124, 58, 237, 0.15); }
-.dark .wf-node--expense { background: rgba(239, 68, 68, 0.06); border-color: rgba(239, 68, 68, 0.12); }
-.dark .wf-node--income { background: rgba(16, 185, 129, 0.06); border-color: rgba(16, 185, 129, 0.12); }
-.dark .wf-node--payout { background: rgba(245, 158, 11, 0.06); border-color: rgba(245, 158, 11, 0.12); }
-.dark .wf-node--result { background: linear-gradient(135deg, rgba(4, 120, 87, 0.12) 0%, rgba(4, 120, 87, 0.06) 100%); border-color: rgba(4, 120, 87, 0.2); }
-.dark .wf-connector { background: rgba(255,255,255,0.06); }
-.dark .wf-expand { border-left-color: rgba(255,255,255,0.06); }
+.dark .wf-left { border-right-color: rgba(255,255,255,0.06); }
+.dark .wf-item:hover { background: rgba(255,255,255,0.03); }
+.dark .wf-item--active { background: rgba(255,255,255,0.05); }
+.dark .wf-item--result { border-top-color: rgba(255,255,255,0.06); background: rgba(4, 120, 87, 0.06); }
+.dark .wf-panel-title { border-bottom-color: rgba(255,255,255,0.06); }
 
-@media (max-width: 600px) {
-  .wf { padding: 16px; }
-  .wf-node { padding: 12px 14px; gap: 10px; }
-  .wf-node-value { font-size: 16px; }
-  .wf-node-value--big { font-size: 18px; }
-  .wf-node-icon { width: 36px; height: 36px; min-width: 36px; }
+@media (max-width: 700px) {
+  .wf { padding: 12px; }
+  .wf-split { grid-template-columns: 1fr; }
+  .wf-left { border-right: none; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06); }
+  .wf-right { min-height: 120px; }
 }
 </style>

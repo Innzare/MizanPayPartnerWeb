@@ -373,6 +373,7 @@ export interface CapitalSummary {
   deployed: number
   received: number
   coInvestorPayout: number
+  manualBalance: number
   availableCapital: number
 }
 

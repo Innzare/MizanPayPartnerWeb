@@ -582,12 +582,9 @@ const selectedDealPaidTotal = computed(() =>
     <v-dialog v-model="showDialog" max-width="680" scrollable>
       <v-card v-if="selectedDeal" rounded="lg">
         <!-- Header with photo -->
-        <div class="dialog-hero">
+        <div class="dialog-hero" :class="{ 'dialog-hero--no-photo': !selectedDeal.productPhotos?.length }">
           <v-img v-if="selectedDeal.productPhotos?.[0]" :src="selectedDeal.productPhotos[0]" height="180" cover class="dialog-hero-img" />
-          <div v-else class="deal-card-placeholder dialog-hero-img" style="height: 180px;">
-            <v-icon icon="mdi-package-variant-closed" size="48" />
-          </div>
-          <div class="dialog-hero-overlay" />
+          <div v-if="selectedDeal.productPhotos?.length" class="dialog-hero-overlay" />
           <button class="dialog-close" @click="showDialog = false">
             <v-icon icon="mdi-close" size="20" />
           </button>
@@ -1120,6 +1117,7 @@ const selectedDealPaidTotal = computed(() =>
 
 /* Dialog */
 .dialog-hero { position: relative; overflow: hidden; }
+.dialog-hero--no-photo { background: linear-gradient(135deg, #047857 0%, #065f46 100%); min-height: 100px; }
 .dialog-hero-img { display: block; }
 .dialog-hero-overlay {
   position: absolute; inset: 0;
