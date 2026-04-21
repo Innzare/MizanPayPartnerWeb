@@ -247,7 +247,7 @@ async function permanentDeleteDeal() {
 const paidTotal = computed(() =>
   payments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
 )
-const totalPaid = computed(() => paidTotal.value)
+const totalPaid = computed(() => paidTotal.value + (deal.value?.downPayment || 0))
 const progress = computed(() =>
   deal.value && deal.value.numberOfPayments > 0
     ? (deal.value.paidPayments / deal.value.numberOfPayments) * 100 : 0
@@ -266,7 +266,10 @@ const paymentChartData = computed(() => {
       backgroundColor: 'rgba(4, 120, 87, 0.06)',
       borderWidth: 2.5,
       pointBackgroundColor: payments.value.map(p =>
-        p.status === 'PAID' ? '#047857' : p.status === 'OVERDUE' ? '#ef4444' : '#f59e0b'
+        p.status === 'PAID' ? '#047857'
+        : p.status === 'CLOSED_EARLY' ? '#6366f1'
+        : p.status === 'OVERDUE' ? '#ef4444'
+        : '#f59e0b'
       ),
       pointBorderColor: '#fff',
       pointBorderWidth: 2,
@@ -686,6 +689,10 @@ const timeline = computed(() => {
               <div class="finance-label">Наценка</div>
               <div class="finance-value" style="color: #047857;">+{{ formatCurrency(deal.markup) }} ({{ formatPercent(deal.markupPercent) }})</div>
             </div>
+            <div v-if="deal.downPayment" class="finance-card">
+              <div class="finance-label">Первоначальный взнос</div>
+              <div class="finance-value" style="color: #6366f1;">{{ formatCurrency(deal.downPayment) }}</div>
+            </div>
             <div class="finance-card">
               <div class="finance-label">Оплачено</div>
               <div class="finance-value" style="color: #047857;">{{ formatCurrency(totalPaid) }}</div>
@@ -786,7 +793,7 @@ const timeline = computed(() => {
                     </div>
                   </td>
                   <td class="text-center">
-                    <div v-if="p.status !== 'PAID'" class="d-flex align-center justify-center ga-1">
+                    <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
                       <button class="action-btn action-btn--success" title="Отметить оплаченным" @click="openMarkPaid(p)">
                         <v-icon icon="mdi-check" size="16" />
                       </button>
@@ -794,7 +801,7 @@ const timeline = computed(() => {
                         <v-icon icon="mdi-calendar-clock" size="16" />
                       </button>
                     </div>
-                    <div v-else class="d-flex align-center justify-center">
+                    <div v-else-if="p.status === 'PAID'" class="d-flex align-center justify-center">
                       <button
                         class="action-btn action-btn--danger"
                         title="Отменить оплату"

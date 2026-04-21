@@ -147,7 +147,7 @@ export interface DealFolder {
 }
 
 // Payment
-export type PaymentStatus = 'PENDING' | 'PAID' | 'OVERDUE'
+export type PaymentStatus = 'PENDING' | 'PAID' | 'OVERDUE' | 'CLOSED_EARLY'
 export type PaymentMethod = 'TRANSFER' | 'CARD' | 'CASH' | 'AUTO'
 
 export interface Payment {
@@ -385,6 +385,8 @@ export interface CapitalSummary {
   totalCapital: number
   deployed: number
   received: number
+  netProfit: number
+  inProgress: number
   coInvestorPayout: number
   manualBalance: number
   availableCapital: number

@@ -404,9 +404,9 @@ const selectedDealPaidTotal = computed(() =>
             >
               <span class="fb-item-dot" :style="{ background: f.color }" />
               <span class="fb-item-name">{{ f.name }}</span>
-              <button class="fb-item-edit" @click.stop="openEditFolder(f)" title="Редактировать">
+              <span class="fb-item-edit" role="button" @click.stop="openEditFolder(f)" title="Редактировать">
                 <v-icon icon="mdi-pencil-outline" size="12" />
-              </button>
+              </span>
               <span class="fb-item-count">{{ f._count?.deals || 0 }}</span>
             </button>
 

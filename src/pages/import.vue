@@ -50,6 +50,7 @@ const result = ref<{
 
 const BASE_FIELD_OPTIONS = [
   { key: 'dealDate', label: 'Дата сделки', icon: 'mdi-calendar' },
+  { key: 'firstPaymentDate', label: 'Дата первого платежа', icon: 'mdi-calendar-arrow-right' },
   { key: 'clientName', label: 'ФИО клиента', icon: 'mdi-account' },
   { key: 'clientPhone', label: 'Телефон клиента', icon: 'mdi-phone' },
   { key: 'productName', label: 'Название товара', icon: 'mdi-package-variant' },
@@ -66,6 +67,7 @@ const BASE_FIELD_OPTIONS = [
 const VERTICAL_FIELD_OPTIONS = [
   { key: 'groupId', label: 'ID группировки (TaskId)', icon: 'mdi-identifier' },
   { key: 'dealDate', label: 'Дата сделки', icon: 'mdi-calendar' },
+  { key: 'firstPaymentDate', label: 'Дата первого платежа', icon: 'mdi-calendar-arrow-right' },
   { key: 'clientName', label: 'ФИО клиента', icon: 'mdi-account' },
   { key: 'clientPhone', label: 'Телефон клиента', icon: 'mdi-phone' },
   { key: 'guarantorName', label: 'ФИО поручителя', icon: 'mdi-account-supervisor' },

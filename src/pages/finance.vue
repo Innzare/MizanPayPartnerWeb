@@ -35,7 +35,7 @@ async function saveCapital() {
 
 const capitalUtilization = computed(() => {
   if (!capital.value || capital.value.totalCapital <= 0) return 0
-  return Math.min(Math.round((capital.value.deployed / capital.value.totalCapital) * 100), 100)
+  return Math.min(Math.round((capital.value.inProgress / capital.value.totalCapital) * 100), 100)
 })
 
 // Capital details (operations, deals breakdown)
@@ -552,13 +552,13 @@ function formatTransactionAmount(t: Transaction) {
               <div class="wf-item-value">{{ formatCurrency(capitalDetails.totalCapital) }}</div>
               <div class="wf-item-label">Общий капитал</div>
             </button>
-            <button class="wf-item" :class="{ 'wf-item--active': wfExpanded === 'deployed' }" @click="wfExpanded = wfExpanded === 'deployed' ? null : 'deployed'">
-              <div class="wf-item-value" style="color: #ef4444;">-{{ formatCurrency(capitalDetails.deployed) }}</div>
-              <div class="wf-item-label">В сделках · {{ capitalDetails.deals?.length || 0 }}</div>
+            <button class="wf-item" :class="{ 'wf-item--active': wfExpanded === 'profit' }" @click="wfExpanded = wfExpanded === 'profit' ? null : 'profit'">
+              <div class="wf-item-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.netProfit) }}</div>
+              <div class="wf-item-label">Чистая прибыль</div>
             </button>
-            <button class="wf-item" :class="{ 'wf-item--active': wfExpanded === 'received' }" @click="wfExpanded = wfExpanded === 'received' ? null : 'received'">
-              <div class="wf-item-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.received) }}</div>
-              <div class="wf-item-label">Получено от клиентов</div>
+            <button class="wf-item" :class="{ 'wf-item--active': wfExpanded === 'deployed' }" @click="wfExpanded = wfExpanded === 'deployed' ? null : 'deployed'">
+              <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.inProgress) }}</div>
+              <div class="wf-item-label">В работе · {{ capitalDetails.deals?.filter(d => d.status === 'ACTIVE').length || 0 }}</div>
             </button>
             <button v-if="capitalDetails.coInvestorPayout > 0" class="wf-item" @click="wfExpanded = null">
               <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.coInvestorPayout) }}</div>
@@ -594,27 +594,30 @@ function formatTransactionAmount(t: Transaction) {
               </div>
             </template>
 
-            <template v-else-if="wfExpanded === 'deployed' && capitalDetails.deals">
-              <div class="wf-panel-title">Сделки ({{ capitalDetails.deals.length }})</div>
-              <div v-for="d in capitalDetails.deals" :key="d.id" class="wf-expand-row">
+            <template v-else-if="wfExpanded === 'profit' && capitalDetails.deals">
+              <div class="wf-panel-title">Прибыль по сделкам</div>
+              <div v-for="d in capitalDetails.deals.filter(x => x.markup > 0)" :key="d.id" class="wf-expand-row">
                 <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
                   {{ d.productName }}
                   <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
+                  <span class="wf-expand-dim"> · {{ d.status === 'COMPLETED' ? '✓' : d.progress + '%' }}</span>
                 </router-link>
-                <span class="wf-expand-val" style="color: #ef4444;">{{ formatCurrency(d.purchasePrice) }}</span>
+                <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(d.status === 'COMPLETED' ? d.markup : Math.round(d.received / (d.totalPrice || 1) * d.markup)) }}</span>
               </div>
+              <div v-if="capitalDetails.deals.every(x => x.markup === 0)" class="wf-expand-empty">Прибыли пока нет</div>
             </template>
 
-            <template v-else-if="wfExpanded === 'received' && capitalDetails.deals">
-              <div class="wf-panel-title">Поступления по сделкам</div>
-              <div v-for="d in capitalDetails.deals.filter(x => x.received > 0)" :key="d.id" class="wf-expand-row">
+            <template v-else-if="wfExpanded === 'deployed' && capitalDetails.deals">
+              <div class="wf-panel-title">Активные сделки</div>
+              <div v-for="d in capitalDetails.deals.filter(x => x.status === 'ACTIVE')" :key="d.id" class="wf-expand-row">
                 <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
                   {{ d.productName }}
+                  <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
                   <span class="wf-expand-dim"> · {{ d.progress }}%</span>
                 </router-link>
-                <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(d.received) }}</span>
+                <span class="wf-expand-val" style="color: #f59e0b;">{{ formatCurrency(Math.max(d.purchasePrice - d.received, 0)) }}</span>
               </div>
-              <div v-if="capitalDetails.deals.every(x => x.received === 0)" class="wf-expand-empty">Оплат пока нет</div>
+              <div v-if="capitalDetails.deals.every(x => x.status !== 'ACTIVE')" class="wf-expand-empty">Нет активных сделок</div>
             </template>
 
             <template v-else>

@@ -18,6 +18,7 @@ export const PAYMENT_STATUS_CONFIG: Record<PaymentStatus, StatusConfig> = {
   PENDING: { label: 'Ожидается', color: '#f59e0b', bgLight: '#fffbeb', bgDark: '#451a03' },
   PAID: { label: 'Оплачено', color: '#047857', bgLight: '#f0fdf4', bgDark: '#052e16' },
   OVERDUE: { label: 'Просрочено', color: '#ef4444', bgLight: '#fef2f2', bgDark: '#450a0a' },
+  CLOSED_EARLY: { label: 'Закрыто досрочно', color: '#6366f1', bgLight: '#eef2ff', bgDark: '#1e1b4b' },
 }
 
 export const REQUEST_STATUS_CONFIG: Record<RequestStatus, StatusConfig> = {
