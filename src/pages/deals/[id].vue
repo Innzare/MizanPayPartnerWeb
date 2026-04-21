@@ -527,6 +527,7 @@ async function confirmStatusChange() {
   }
 }
 
+
 function downloadContract() {
   console.log('downloadContract called', { deal: !!deal.value, user: !!authStore.user })
   if (!deal.value) return
@@ -641,6 +642,15 @@ const timeline = computed(() => {
       <div class="detail-hero mb-6" :class="{ 'detail-hero--no-photo': !deal.productPhotos?.length }">
         <v-img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" height="220" cover class="detail-hero-img" />
         <div v-if="deal.productPhotos?.length" class="detail-hero-overlay" />
+        <button
+          class="detail-hero-edit"
+          :class="{ 'detail-hero-edit--no-photo': !deal.productPhotos?.length }"
+          title="Редактировать сделку"
+          @click="$router.push(`/create-deal?edit=${dealId}`)"
+        >
+          <v-icon icon="mdi-pencil-outline" size="16" />
+          <span>Редактировать</span>
+        </button>
         <div class="detail-hero-content">
           <div
             class="detail-hero-status"
@@ -1698,6 +1708,33 @@ const timeline = computed(() => {
 .detail-hero-meta {
   font-size: 14px; opacity: 0.8;
   display: flex; align-items: center; gap: 4px;
+}
+.detail-hero-edit {
+  position: absolute; top: 16px; right: 16px; z-index: 3;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #111; font-size: 13px; font-weight: 600;
+  border: none; cursor: pointer;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 0.15s ease;
+}
+.detail-hero-edit:hover {
+  background: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.detail-hero-edit:active {
+  transform: translateY(0);
+}
+.detail-hero-edit--no-photo {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+.detail-hero-edit--no-photo:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 /* Finance grid */

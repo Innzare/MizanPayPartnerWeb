@@ -3,7 +3,7 @@ import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import type { PaymentType, ClientProfile } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -29,6 +29,10 @@ const capitalAfterDeal = computed(() => {
 })
 const dealsStore = useDealsStore()
 const router = useRouter()
+const route = useRoute()
+
+const editId = computed(() => (route.query.edit as string) || null)
+const isEditMode = computed(() => !!editId.value)
 
 const step = ref(1)
 const steps = [
@@ -122,6 +126,36 @@ onMounted(async () => {
     ])
     allCoInvestors.value = data.map(ci => ({ id: ci.id, name: ci.name, phone: ci.phone, profitPercent: ci.profitPercent }))
   } catch { /* ignore */ }
+
+  // Load deal data for edit mode
+  if (editId.value) {
+    try {
+      const deal = await dealsStore.fetchDeal(editId.value)
+      if (!deal) {
+        toast.error('Сделка не найдена')
+        router.push('/deals')
+        return
+      }
+      // Populate form
+      productName.value = deal.productName || ''
+      purchasePrice.value = deal.purchasePrice
+      markupType.value = 'percent'
+      markupValue.value = Math.round(deal.markupPercent * 100) / 100
+      downPayment.value = deal.downPayment || null
+      termMonths.value = deal.numberOfPayments
+      paymentType.value = deal.paymentType as PaymentType
+      paymentInterval.value = deal.paymentInterval || 'MONTHLY'
+      dealDate.value = deal.dealDate ? new Date(deal.dealDate).toISOString().slice(0, 10) : dealDate.value
+      customFirstPayment.value = deal.firstPaymentDate ? new Date(deal.firstPaymentDate).toISOString().slice(0, 10) : ''
+      selectedClientProfileId.value = deal.clientProfileId || null
+      selectedGuarantorProfileId.value = deal.guarantorProfileId || null
+      if (deal.clientProfile) selectedClientProfile.value = deal.clientProfile
+      if (deal.guarantorProfile) selectedGuarantorProfile.value = deal.guarantorProfile
+    } catch (e: any) {
+      toast.error(e.message || 'Не удалось загрузить сделку')
+      router.push('/deals')
+    }
+  }
 })
 
 const selectedCoInvestors = computed(() =>
@@ -221,6 +255,23 @@ function onClientCreated(profile: ClientProfile) {
   clientPickerRef.value?.selectProfile(profile)
 }
 
+// Preview helpers
+const categoryOption = computed(() => CATEGORIES.find((c) => c.id === category.value))
+
+function formatDateRU(dateStr: string) {
+  if (!dateStr) return ''
+  try {
+    return new Date(dateStr).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  } catch {
+    return dateStr
+  }
+}
+
+function getClientDisplayName(p: ClientProfile | null): string {
+  if (!p) return ''
+  return [p.lastName, p.firstName, p.patronymic].filter(Boolean).join(' ')
+}
+
 // Validation
 const step1Valid = computed(() => !!productName.value)
 const step2Valid = computed(() => (purchasePrice.value ?? 0) > 0 && termMonths.value > 0)
@@ -242,7 +293,23 @@ async function submitDeal() {
   try {
     submitting.value = true
 
-    // Upload photos
+    if (isEditMode.value && editId.value) {
+      // Edit flow — update fields, regenerate schedule if needed
+      await dealsStore.updateDeal(editId.value, {
+        productName: productName.value,
+        purchasePrice: purchasePrice.value || 0,
+        markupPercent: markupPercent.value,
+        downPayment: downPaymentAmount.value || undefined,
+        numberOfPayments: termMonths.value,
+        dealDate: dealDate.value,
+        firstPaymentDate: customFirstPayment.value || undefined,
+      })
+      toast.success('Сделка обновлена')
+      router.push(`/deals/${editId.value}`)
+      return
+    }
+
+    // Create flow
     let photoUrls: string[] = []
     if (photoFiles.value.length > 0) {
       photoUrls = await api.uploadMultiple(photoFiles.value, 'deals')
@@ -281,7 +348,7 @@ async function submitDeal() {
     toast.success('Сделка создана')
     router.push('/deals')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка создания сделки')
+    toast.error(e.message || (isEditMode.value ? 'Ошибка обновления сделки' : 'Ошибка создания сделки'))
   } finally {
     submitting.value = false
   }
@@ -312,6 +379,9 @@ async function submitDeal() {
         <div v-if="i < steps.length - 1" class="stepper-line" :class="{ done: step > s.num }" />
       </div>
     </div>
+
+    <div class="wizard-layout">
+    <div class="wizard-main">
 
     <!-- Step 1: Product -->
     <div v-if="step === 1" class="step-content">
@@ -445,8 +515,6 @@ async function submitDeal() {
         </button>
       </div>
 
-      <v-row>
-        <v-col cols="12" lg="7">
           <v-card rounded="lg" elevation="0" border class="pa-5">
             <div class="form-grid">
               <div class="form-field full-width">
@@ -583,70 +651,6 @@ async function submitDeal() {
               </button>
             </div>
           </v-card>
-        </v-col>
-
-        <!-- Live preview -->
-        <v-col cols="12" lg="5">
-          <div class="preview-card">
-            <!-- Hero: Monthly payment -->
-            <div class="preview-hero">
-              <div class="preview-hero-label">Ежемесячный платёж</div>
-              <div class="preview-hero-value">~{{ formatCurrency(monthlyPayment) }}</div>
-              <div class="preview-hero-sub">{{ termMonths }} месяцев · равные платежи</div>
-            </div>
-
-            <div class="preview-divider" />
-
-            <!-- Metrics -->
-            <div class="preview-rows">
-              <div class="preview-row">
-                <span>Закупочная цена</span>
-                <span class="preview-value">{{ formatCurrency(purchasePrice || 0) }}</span>
-              </div>
-              <div class="preview-row">
-                <span>Наценка {{ markupPercent }}%</span>
-                <span class="preview-value" style="color: #047857;">+{{ formatCurrency(markup) }}</span>
-              </div>
-              <div class="preview-row preview-row--highlight-bg">
-                <span>Итоговая цена</span>
-                <span class="preview-value preview-value--bold">{{ formatCurrency(totalPrice) }}</span>
-              </div>
-              <div v-if="downPaymentAmount > 0" class="preview-row">
-                <span>Первоначальный взнос</span>
-                <span class="preview-value">-{{ formatCurrency(downPaymentAmount) }}</span>
-              </div>
-              <div v-if="downPaymentAmount > 0" class="preview-row">
-                <span>Остаток к выплате</span>
-                <span class="preview-value">{{ formatCurrency(remainingAmount) }}</span>
-              </div>
-            </div>
-
-            <div class="preview-divider" />
-
-            <!-- Profit -->
-            <div class="preview-profit">
-              <div class="preview-profit-item">
-                <div class="preview-profit-label">Прибыль</div>
-                <div class="preview-profit-value preview-profit-value--green">{{ formatCurrency(markup) }}</div>
-              </div>
-              <div class="preview-profit-item">
-                <div class="preview-profit-label">ROI</div>
-                <div class="preview-profit-value">{{ (purchasePrice || 0) > 0 ? ((markup / (purchasePrice || 1)) * 100).toFixed(1) : '0' }}%</div>
-              </div>
-            </div>
-
-            <div v-if="isCapitalSet && capital" class="preview-footer" style="color: #7c3aed;">
-              <v-icon icon="mdi-wallet-outline" size="14" />
-              Капитал после сделки: {{ formatCurrency(capitalAfterDeal) }}
-            </div>
-
-            <div class="preview-footer">
-              <v-icon icon="mdi-calendar-clock" size="14" />
-              Первый платёж: {{ firstPaymentDate }}
-            </div>
-          </div>
-        </v-col>
-      </v-row>
     </div>
 
     <!-- Step 3: Client & Guarantor -->
@@ -847,13 +851,490 @@ async function submitDeal() {
       <button v-else class="btn-primary btn-primary--success" :disabled="submitting" @click="submitDeal">
         <v-progress-circular v-if="submitting" indeterminate size="16" width="2" color="white" class="mr-1" />
         <v-icon v-else icon="mdi-check" size="18" />
-        {{ submitting ? 'Создание...' : 'Создать сделку' }}
+        {{ submitting ? (isEditMode ? 'Сохранение...' : 'Создание...') : (isEditMode ? 'Сохранить изменения' : 'Создать сделку') }}
       </button>
     </div>
+
+    </div><!-- /wizard-main -->
+
+    <!-- Live preview -->
+    <aside class="wizard-preview">
+      <div class="preview-card">
+        <div class="preview-header">
+          <v-icon icon="mdi-file-document-check-outline" size="18" />
+          <span>Превью сделки</span>
+        </div>
+
+        <!-- Product hero -->
+        <div class="preview-product">
+          <div v-if="photoPreviewUrls.length" class="preview-product-photo">
+            <img :src="photoPreviewUrls[0]" alt="" />
+          </div>
+          <div v-else class="preview-product-photo preview-product-photo--empty">
+            <v-icon :icon="categoryOption?.icon || 'mdi-package-variant-closed'" size="32" color="#d1d5db" />
+          </div>
+          <div class="preview-product-info">
+            <div class="preview-product-name" :class="{ 'preview-product-name--empty': !productName }">
+              {{ productName || 'Название товара' }}
+            </div>
+            <div class="preview-product-meta">
+              <span v-if="categoryOption">
+                <v-icon :icon="categoryOption.icon" size="12" />
+                {{ categoryOption.label }}
+              </span>
+              <span v-if="city">
+                <v-icon icon="mdi-map-marker-outline" size="12" />
+                {{ city }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Financial breakdown -->
+        <div class="preview-finance">
+          <div class="preview-row">
+            <span class="preview-row-label">Закупочная цена</span>
+            <span class="preview-row-value">{{ formatCurrency(purchasePrice || 0) }}</span>
+          </div>
+          <div class="preview-row">
+            <span class="preview-row-label">Наценка</span>
+            <span class="preview-row-value preview-row-value--accent">
+              +{{ formatCurrency(markup) }}
+              <small v-if="markupPercent">({{ markupPercent.toFixed(1) }}%)</small>
+            </span>
+          </div>
+          <div class="preview-divider" />
+          <div class="preview-row preview-row--total">
+            <span class="preview-row-label">Итоговая цена</span>
+            <span class="preview-row-value">{{ formatCurrency(totalPrice) }}</span>
+          </div>
+        </div>
+
+        <!-- Down payment -->
+        <div v-if="downPaymentAmount > 0" class="preview-finance preview-finance--secondary">
+          <div class="preview-row">
+            <span class="preview-row-label">Первоначальный взнос</span>
+            <span class="preview-row-value preview-row-value--down">−{{ formatCurrency(downPaymentAmount) }}</span>
+          </div>
+          <div class="preview-row preview-row--remaining">
+            <span class="preview-row-label">Остаток к выплате</span>
+            <span class="preview-row-value">{{ formatCurrency(remainingAmount) }}</span>
+          </div>
+        </div>
+
+        <!-- Schedule highlight -->
+        <div v-if="monthlyPayment > 0 && termMonths > 0" class="preview-schedule">
+          <div class="preview-schedule-top">Ежемесячный платёж</div>
+          <div class="preview-schedule-value">~{{ formatCurrency(Math.round(monthlyPayment)) }}</div>
+          <div class="preview-schedule-label">× {{ termMonths }} {{ termMonths === 1 ? 'месяц' : termMonths < 5 ? 'месяца' : 'месяцев' }} · равные платежи</div>
+        </div>
+
+        <!-- Profit / ROI -->
+        <div v-if="markup > 0" class="preview-metrics">
+          <div class="preview-metric">
+            <div class="preview-metric-label">Прибыль</div>
+            <div class="preview-metric-value preview-metric-value--green">{{ formatCurrency(markup) }}</div>
+          </div>
+          <div class="preview-metric">
+            <div class="preview-metric-label">ROI</div>
+            <div class="preview-metric-value">{{ (purchasePrice || 0) > 0 ? ((markup / (purchasePrice || 1)) * 100).toFixed(1) : '0' }}%</div>
+          </div>
+        </div>
+
+        <!-- Capital after deal -->
+        <div v-if="isCapitalSet && capital && (purchasePrice || 0) > 0" class="preview-capital">
+          <v-icon icon="mdi-wallet-outline" size="14" />
+          <span class="preview-capital-label">Капитал после сделки</span>
+          <span class="preview-capital-value">{{ formatCurrency(capitalAfterDeal) }}</span>
+        </div>
+
+        <!-- Dates -->
+        <div class="preview-dates">
+          <div class="preview-date">
+            <v-icon icon="mdi-calendar-start-outline" size="14" />
+            <span class="preview-date-label">Дата сделки</span>
+            <span class="preview-date-value">{{ formatDateRU(dealDate) || '—' }}</span>
+          </div>
+          <div class="preview-date">
+            <v-icon icon="mdi-calendar-arrow-right" size="14" />
+            <span class="preview-date-label">Первый платёж</span>
+            <span class="preview-date-value">{{ firstPaymentDate }}</span>
+          </div>
+        </div>
+
+        <!-- Client -->
+        <div v-if="selectedClientProfile" class="preview-client">
+          <div class="preview-section-label">
+            <v-icon icon="mdi-account-outline" size="14" />
+            Клиент
+          </div>
+          <div class="preview-client-name">{{ getClientDisplayName(selectedClientProfile) }}</div>
+          <div v-if="selectedClientProfile.phone" class="preview-client-phone">{{ selectedClientProfile.phone }}</div>
+        </div>
+
+        <!-- Guarantor -->
+        <div v-if="selectedGuarantorProfile" class="preview-client">
+          <div class="preview-section-label">
+            <v-icon icon="mdi-account-supervisor-outline" size="14" />
+            Поручитель
+          </div>
+          <div class="preview-client-name">{{ getClientDisplayName(selectedGuarantorProfile) }}</div>
+          <div v-if="selectedGuarantorProfile.phone" class="preview-client-phone">{{ selectedGuarantorProfile.phone }}</div>
+        </div>
+
+        <!-- Co-investors -->
+        <div v-if="selectedCoInvestors.length" class="preview-coinvestors">
+          <div class="preview-section-label">
+            <v-icon icon="mdi-account-group-outline" size="14" />
+            Со-инвесторы ({{ selectedCoInvestors.length }})
+          </div>
+          <div class="preview-coinvestor-list">
+            <div v-for="ci in selectedCoInvestors" :key="ci.id" class="preview-coinvestor">
+              <span class="preview-coinvestor-name">{{ ci.name }}</span>
+              <span class="preview-coinvestor-share">{{ ci.profitPercent }}%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    </div><!-- /wizard-layout -->
   </div>
 </template>
 
 <style scoped>
+/* Wizard two-column layout */
+.wizard-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(480px, 560px);
+  gap: 24px;
+  align-items: start;
+}
+.wizard-main {
+  min-width: 0;
+}
+.wizard-preview {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+}
+
+@media (max-width: 1439px) {
+  .wizard-layout {
+    grid-template-columns: minmax(0, 1fr) 440px;
+  }
+}
+
+@media (max-width: 1279px) {
+  .wizard-layout {
+    grid-template-columns: 1fr;
+  }
+  .wizard-preview {
+    position: static;
+    order: -1;
+  }
+}
+
+/* Preview card */
+.preview-card {
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 14px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.preview-product {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.preview-product-photo {
+  width: 84px;
+  height: 84px;
+  border-radius: 12px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.preview-product-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.preview-product-photo--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.15);
+}
+.preview-product-info {
+  min-width: 0;
+  flex: 1;
+}
+.preview-product-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  line-height: 1.3;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+.preview-product-name--empty {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  font-weight: 500;
+  font-style: italic;
+}
+.preview-product-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.preview-product-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.preview-finance {
+  background: rgba(var(--v-theme-on-surface), 0.025);
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.preview-finance--secondary {
+  background: transparent;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.1);
+}
+.preview-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 14px;
+}
+.preview-row-label {
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  flex-shrink: 0;
+}
+.preview-row-value {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  text-align: right;
+}
+.preview-row-value small {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.preview-row-value--accent {
+  color: #10b981;
+}
+.preview-row-value--down {
+  color: #ef4444;
+}
+.preview-row--total .preview-row-label {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.preview-row--total .preview-row-value {
+  font-size: 18px;
+  color: rgba(var(--v-theme-on-surface), 1);
+}
+.preview-row--remaining .preview-row-value {
+  color: #f59e0b;
+  font-size: 14px;
+}
+.preview-divider {
+  height: 1px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  margin: 2px 0;
+}
+
+.preview-schedule {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #fff;
+  border-radius: 12px;
+  padding: 20px 20px 22px;
+  text-align: center;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.2);
+}
+.preview-schedule-top {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+.preview-schedule-value {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+.preview-schedule-label {
+  font-size: 13px;
+  opacity: 0.9;
+  margin-top: 6px;
+}
+
+/* Profit / ROI metrics */
+.preview-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.preview-metric {
+  background: rgba(var(--v-theme-on-surface), 0.025);
+  border-radius: 10px;
+  padding: 12px 14px;
+  text-align: center;
+}
+.preview-metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-bottom: 4px;
+}
+.preview-metric-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.preview-metric-value--green {
+  color: #059669;
+}
+
+/* Capital after deal */
+.preview-capital {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f5f3ff;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #7c3aed;
+}
+.preview-capital-label {
+  flex: 1;
+  font-weight: 500;
+}
+.preview-capital-value {
+  font-weight: 700;
+}
+.dark .preview-capital {
+  background: rgba(124, 58, 237, 0.12);
+}
+.dark .preview-metric {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.preview-dates {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.preview-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.preview-date-label {
+  flex: 1;
+}
+.preview-date-value {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+.preview-client,
+.preview-coinvestors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.preview-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.preview-client-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.preview-client-phone {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.preview-coinvestor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.preview-coinvestor {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.preview-coinvestor-name {
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  font-weight: 500;
+}
+.preview-coinvestor-share {
+  font-weight: 600;
+  color: #10b981;
+}
+
+.dark .preview-card {
+  background: #1a1f2e;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.dark .preview-finance {
+  background: rgba(255, 255, 255, 0.03);
+}
+.dark .preview-finance--secondary {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.dark .preview-coinvestor {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 /* Stepper header */
 .stepper-header {
   display: flex; align-items: center;

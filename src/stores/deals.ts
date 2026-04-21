@@ -104,6 +104,24 @@ export const useDealsStore = defineStore('deals', () => {
     }
   }
 
+  async function updateDeal(id: string, data: {
+    productName?: string
+    externalClientName?: string
+    externalClientPhone?: string
+    purchasePrice?: number
+    totalPrice?: number
+    markupPercent?: number
+    downPayment?: number
+    dealDate?: string
+    firstPaymentDate?: string
+    numberOfPayments?: number
+  }) {
+    const updated = await api.patch<Deal>(`/deals/${id}`, data)
+    const index = deals.value.findIndex((d) => d.id === id)
+    if (index >= 0) deals.value[index] = updated
+    return updated
+  }
+
   async function fetchAnalytics(): Promise<DealAnalytics | null> {
     try {
       return await api.get<DealAnalytics>('/deals/analytics')
@@ -196,7 +214,7 @@ export const useDealsStore = defineStore('deals', () => {
   return {
     deals, isLoading, error, investorDeals, activeDeals, completedDeals,
     totalInvested, totalRevenue, totalProfit, totalRemaining, monthlyIncome, roi,
-    fetchDeals, getDeal, fetchDeal, updateDealStatus, fetchAnalytics, createDirectDeal,
+    fetchDeals, getDeal, fetchDeal, updateDealStatus, updateDeal, fetchAnalytics, createDirectDeal,
     trash, trashLoading, fetchTrash, restoreDeal, restoreBatch, permanentDelete, emptyTrash,
     updateGuarantor,
   }
