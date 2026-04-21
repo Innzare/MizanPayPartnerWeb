@@ -3,7 +3,7 @@ import { useClientsStore } from '@/stores/clients'
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { useClientProfilesStore } from '@/stores/clientProfiles'
-import { formatCurrency, formatDate, formatDateShort, formatPhone, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type ClientProfile, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
@@ -396,42 +396,37 @@ const selectedDealPaidTotal = computed(() =>
     <!-- Deal Detail Dialog -->
     <v-dialog v-model="showDialog" max-width="680" scrollable>
       <v-card v-if="selectedDeal" rounded="lg">
-        <!-- Header with photo -->
+        <!-- Header with photo on the left -->
         <div class="dialog-hero">
-          <v-img :src="selectedDeal.productPhotos[0]" height="180" cover class="dialog-hero-img" />
-          <div class="dialog-hero-overlay" />
           <button class="dialog-close" @click="showDialog = false">
-            <v-icon icon="mdi-close" size="20" />
+            <v-icon icon="mdi-close" size="18" />
           </button>
+          <div class="dialog-hero-photo" :class="{ 'dialog-hero-photo--empty': !selectedDeal.productPhotos?.length }">
+            <img v-if="selectedDeal.productPhotos?.[0]" :src="selectedDeal.productPhotos[0]" alt="" />
+            <div v-else class="dialog-hero-photo-placeholder">
+              <v-icon icon="mdi-image-off-outline" size="28" />
+              <span>Нет фото</span>
+            </div>
+          </div>
           <div class="dialog-hero-content">
             <div
               class="dialog-status"
-              :style="{ background: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }"
+              :style="{ color: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }"
             >
+              <span class="dialog-status-dot" :style="{ background: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }" />
               {{ DEAL_STATUS_CONFIG[selectedDeal.status]?.label }}
             </div>
             <div class="dialog-title">{{ selectedDeal.productName }}</div>
+            <div class="dialog-hero-meta">
+              <v-icon icon="mdi-account" size="14" />
+              {{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '—' }}
+              <span class="mx-1">·</span>
+              Создано {{ formatDate(selectedDeal.createdAt) }}
+            </div>
           </div>
         </div>
 
         <v-card-text class="pa-5">
-          <!-- Client & Date row -->
-          <div
-            class="d-flex align-center ga-3 mb-5"
-            style="cursor: pointer;"
-            @click="showDialog = false; router.push(`/clients/${selectedDeal.clientProfileId || selectedDeal.clientId}`)"
-          >
-            <div class="dialog-avatar" :style="{ background: '#3b82f6' }">
-              {{ (selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '?').charAt(0) }}
-            </div>
-            <div class="flex-grow-1">
-              <div class="font-weight-medium">{{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '—' }}</div>
-              <div class="text-caption text-medium-emphasis">
-                Рейтинг {{ selectedDeal.client?.rating ?? 0 }} · Создано {{ formatDate(selectedDeal.createdAt) }}
-              </div>
-            </div>
-            <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
-          </div>
 
           <!-- Financial grid -->
           <div class="dialog-finance-grid mb-5">
@@ -445,7 +440,7 @@ const selectedDealPaidTotal = computed(() =>
             </div>
             <div class="dialog-finance-item">
               <div class="dialog-finance-label">Наценка</div>
-              <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ selectedDeal.markupPercent }}%)</div>
+              <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ formatPercent(selectedDeal.markupPercent) }})</div>
             </div>
             <div class="dialog-finance-item">
               <div class="dialog-finance-label">Оплачено</div>
@@ -781,35 +776,64 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 /* Dialog */
-.dialog-hero { position: relative; overflow: hidden; }
-.dialog-hero-img { display: block; }
-.dialog-hero-overlay {
-  position: absolute; inset: 0;
-  background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 60%);
+.dialog-hero {
+  position: relative;
+  background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+  display: flex; gap: 16px; align-items: stretch;
+  padding: 20px 24px;
+  min-height: 160px;
 }
 .dialog-close {
-  position: absolute; top: 12px; right: 12px; z-index: 2;
-  width: 32px; height: 32px; border-radius: 8px;
-  background: rgba(0,0,0,0.4); border: none;
+  position: absolute; top: 12px; right: 12px; z-index: 3;
+  width: 30px; height: 30px; border-radius: 8px;
+  background: rgba(255, 255, 255, 0.2); border: 1px solid rgba(255, 255, 255, 0.25);
   color: #fff; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  transition: background 0.15s;
+  transition: all 0.15s;
+  backdrop-filter: blur(8px);
 }
-.dialog-close:hover { background: rgba(0,0,0,0.6); }
+.dialog-close:hover { background: rgba(255, 255, 255, 0.3); }
+.dialog-hero-photo {
+  flex-shrink: 0;
+  width: 120px; height: 120px;
+  border-radius: 12px; overflow: hidden;
+  align-self: center;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+.dialog-hero-photo img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.dialog-hero-photo--empty {
+  display: flex; align-items: center; justify-content: center;
+}
+.dialog-hero-photo-placeholder {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  color: rgba(255, 255, 255, 0.55); font-size: 10px;
+}
 .dialog-hero-content {
-  position: absolute; bottom: 16px; left: 20px; right: 20px; z-index: 2;
+  flex: 1; min-width: 0; color: #fff;
+  display: flex; flex-direction: column; justify-content: flex-start;
+  padding-right: 44px;
 }
 .dialog-status {
-  display: inline-block; font-size: 11px; font-weight: 600;
-  padding: 3px 10px; border-radius: 6px; color: #fff; margin-bottom: 6px;
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  font-size: 11px; font-weight: 600;
+  padding: 4px 10px; border-radius: 999px;
+  background: #fff; margin-bottom: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+.dialog-status-dot {
+  width: 6px; height: 6px; border-radius: 50%;
 }
 .dialog-title {
-  font-size: 20px; font-weight: 700; color: #fff; line-height: 1.2;
+  font-size: 20px; font-weight: 700; color: #fff; line-height: 1.25;
+  margin-bottom: 6px; word-break: break-word;
 }
-.dialog-avatar {
-  width: 36px; height: 36px; min-width: 36px; border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 600; font-size: 14px;
+.dialog-hero-meta {
+  font-size: 12px; opacity: 0.85;
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  margin-top: auto;
 }
 .dialog-finance-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;

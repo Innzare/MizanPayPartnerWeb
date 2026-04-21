@@ -639,23 +639,28 @@ const timeline = computed(() => {
       </div>
 
       <!-- Hero -->
-      <div class="detail-hero mb-6" :class="{ 'detail-hero--no-photo': !deal.productPhotos?.length }">
-        <v-img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" height="220" cover class="detail-hero-img" />
-        <div v-if="deal.productPhotos?.length" class="detail-hero-overlay" />
+      <div class="detail-hero mb-6">
         <button
           class="detail-hero-edit"
-          :class="{ 'detail-hero-edit--no-photo': !deal.productPhotos?.length }"
           title="Редактировать сделку"
           @click="$router.push(`/create-deal?edit=${dealId}`)"
         >
           <v-icon icon="mdi-pencil-outline" size="16" />
           <span>Редактировать</span>
         </button>
+        <div class="detail-hero-photo" :class="{ 'detail-hero-photo--empty': !deal.productPhotos?.length }">
+          <img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" alt="" />
+          <div v-else class="detail-hero-photo-placeholder">
+            <v-icon icon="mdi-image-off-outline" size="40" />
+            <span>Фото не добавлено</span>
+          </div>
+        </div>
         <div class="detail-hero-content">
           <div
             class="detail-hero-status"
-            :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.color }"
+            :style="{ color: DEAL_STATUS_CONFIG[deal.status]?.color }"
           >
+            <span class="detail-hero-status-dot" :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.color }" />
             {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
           </div>
           <h1 class="detail-hero-title">{{ deal.productName }}</h1>
@@ -699,9 +704,14 @@ const timeline = computed(() => {
               <div class="finance-label">Наценка</div>
               <div class="finance-value" style="color: #047857;">+{{ formatCurrency(deal.markup) }} ({{ formatPercent(deal.markupPercent) }})</div>
             </div>
-            <div v-if="deal.downPayment" class="finance-card">
+            <div class="finance-card">
               <div class="finance-label">Первоначальный взнос</div>
-              <div class="finance-value" style="color: #6366f1;">{{ formatCurrency(deal.downPayment) }}</div>
+              <div
+                class="finance-value"
+                :style="deal.downPayment ? 'color: #6366f1;' : 'opacity: 0.5; font-size: 15px; font-weight: 500;'"
+              >
+                {{ deal.downPayment ? formatCurrency(deal.downPayment) : 'Без взноса' }}
+              </div>
             </div>
             <div class="finance-card">
               <div class="finance-label">Оплачено</div>
@@ -1685,56 +1695,85 @@ const timeline = computed(() => {
 /* Hero */
 .detail-hero {
   position: relative; border-radius: 16px; overflow: hidden;
-}
-.detail-hero--no-photo {
   background: linear-gradient(135deg, #047857 0%, #065f46 100%);
-  min-height: 140px;
-}
-.detail-hero-img { display: block; }
-.detail-hero-overlay {
-  position: absolute; inset: 0;
-  background: linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.1) 50%, transparent 100%);
+  display: flex; align-items: stretch;
+  min-height: 180px;
+  padding: 28px 32px;
+  gap: 24px;
 }
 .detail-hero-content {
-  position: absolute; bottom: 24px; left: 28px; right: 28px; z-index: 2; color: #fff;
+  flex: 1; min-width: 0; z-index: 2; color: #fff;
+  display: flex; flex-direction: column; justify-content: flex-start;
 }
 .detail-hero-status {
-  display: inline-block; font-size: 12px; font-weight: 600;
-  padding: 4px 12px; border-radius: 6px; color: #fff; margin-bottom: 8px;
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  font-size: 12px; font-weight: 600;
+  padding: 5px 12px; border-radius: 999px;
+  background: #fff; margin-bottom: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+.detail-hero-status-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.3);
 }
 .detail-hero-title {
-  font-size: 28px; font-weight: 700; line-height: 1.2; margin-bottom: 6px;
+  font-size: 28px; font-weight: 700; line-height: 1.2; margin-bottom: 8px;
+  word-break: break-word;
 }
 .detail-hero-meta {
-  font-size: 14px; opacity: 0.8;
-  display: flex; align-items: center; gap: 4px;
+  font-size: 14px; opacity: 0.85;
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  margin-top: auto;
 }
 .detail-hero-edit {
   position: absolute; top: 16px; right: 16px; z-index: 3;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 8px 14px; border-radius: 10px;
-  background: rgba(255, 255, 255, 0.95);
-  color: #111; font-size: 13px; font-weight: 600;
-  border: none; cursor: pointer;
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  font-size: 13px; font-weight: 600;
+  cursor: pointer;
   backdrop-filter: blur(8px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   transition: all 0.15s ease;
 }
 .detail-hero-edit:hover {
-  background: #fff;
+  background: rgba(255, 255, 255, 0.3);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 .detail-hero-edit:active {
   transform: translateY(0);
 }
-.detail-hero-edit--no-photo {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.3);
+.detail-hero-photo {
+  flex-shrink: 0;
+  width: 180px; height: 140px;
+  border-radius: 12px; overflow: hidden;
+  align-self: center;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
-.detail-hero-edit--no-photo:hover {
-  background: rgba(255, 255, 255, 0.3);
+.detail-hero-photo img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.detail-hero-photo--empty {
+  display: flex; align-items: center; justify-content: center;
+}
+.detail-hero-photo-placeholder {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  color: rgba(255, 255, 255, 0.55); font-size: 11px; text-align: center;
+  padding: 0 12px;
+}
+@media (max-width: 599px) {
+  .detail-hero {
+    flex-direction: column; padding: 20px;
+  }
+  .detail-hero-photo {
+    width: 100%; height: 160px;
+  }
+  .detail-hero-title { font-size: 22px; }
+  .detail-hero-content {
+    margin-top: 16px;
+  }
 }
 
 /* Finance grid */
@@ -2598,7 +2637,7 @@ const timeline = computed(() => {
 
 @media (max-width: 960px) {
   .detail-hero-title { font-size: 22px; }
-  .detail-hero-content { bottom: 16px; left: 20px; right: 20px; }
+  .detail-hero-photo { width: 140px; height: 110px; }
 }
 
 /* Profile card (client & guarantor) */
