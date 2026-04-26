@@ -150,6 +150,7 @@ export const useDealsStore = defineStore('deals', () => {
     productUrl?: string
     purchasePrice: number
     markupPercent: number
+    totalPrice?: number
     downPayment?: number
     numberOfPayments: number
     paymentInterval?: string

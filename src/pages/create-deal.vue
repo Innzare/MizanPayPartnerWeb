@@ -183,7 +183,12 @@ function switchMarkupType(type: 'percent' | 'fixed') {
   markupType.value = type
 }
 
-// Total price ↔ markup sync
+// Total price ↔ markup sync.
+// `manualTotalPrice` keeps the exact value the partner typed into the totalPrice
+// field — without it, percent rounding would drop kopecks (e.g. 99 250 → 99 246).
+// Cleared automatically as soon as the partner edits any other related field.
+const manualTotalPrice = ref<number | null>(null)
+
 const totalPriceInput = computed(() => totalPrice.value || '')
 
 function onTotalPriceInput(value: number) {
@@ -191,6 +196,9 @@ function onTotalPriceInput(value: number) {
   if (!value || purchase <= 0) return
   const markupAmount = value - purchase
   if (markupAmount < 0) return
+  manualTotalPrice.value = value
+  // Sync markupValue for display in the markup field — but it's no longer
+  // the source of truth, manualTotalPrice is.
   if (markupType.value === 'percent') {
     markupValue.value = Math.round((markupAmount / purchase) * 100 * 100) / 100
   } else {
@@ -198,20 +206,36 @@ function onTotalPriceInput(value: number) {
   }
 }
 
+// Any change to purchase / markup / type drops the manual override —
+// from then on, totalPrice is derived from markup again.
+watch([purchasePrice, markupValue, markupType], () => {
+  manualTotalPrice.value = null
+})
+
 // Computed deal preview
 const markup = computed(() => {
   const purchase = purchasePrice.value || 0
+  if (manualTotalPrice.value !== null) {
+    return Math.max(0, manualTotalPrice.value - purchase)
+  }
   return markupType.value === 'percent'
     ? Math.round(purchase * markupValue.value / 100)
     : markupValue.value
 })
 const markupPercent = computed(() => {
   const purchase = purchasePrice.value || 0
+  if (manualTotalPrice.value !== null && purchase > 0) {
+    return Math.round((markup.value / purchase) * 100 * 100) / 100
+  }
   return markupType.value === 'percent'
     ? markupValue.value
     : (purchase > 0 ? Math.round((markupValue.value / purchase) * 100 * 100) / 100 : 0)
 })
-const totalPrice = computed(() => (purchasePrice.value || 0) + markup.value)
+const totalPrice = computed(() =>
+  manualTotalPrice.value !== null
+    ? manualTotalPrice.value
+    : (purchasePrice.value || 0) + markup.value,
+)
 const downPaymentAmount = computed(() => downPayment.value || 0)
 const remainingAmount = computed(() => totalPrice.value - downPaymentAmount.value)
 const monthlyPayment = computed(() => termMonths.value > 0 ? remainingAmount.value / termMonths.value : 0)
@@ -328,6 +352,9 @@ async function submitDeal() {
       contractPhotos: contractUrls.length ? contractUrls : undefined,
       purchasePrice: purchasePrice.value || 0,
       markupPercent: markupPercent.value,
+      // Send explicit totalPrice when partner typed it manually — backend
+      // prefers it over markupPercent to preserve the exact rubles.
+      totalPrice: manualTotalPrice.value !== null ? manualTotalPrice.value : undefined,
       downPayment: downPaymentAmount.value || undefined,
       numberOfPayments: termMonths.value,
       paymentInterval: paymentInterval.value,
