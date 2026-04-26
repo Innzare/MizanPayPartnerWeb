@@ -193,15 +193,6 @@ function getAvatarColor(name?: string) {
           <v-icon icon="mdi-handshake" size="18" style="color: #047857;" />
           <span>Сделка</span>
         </button>
-        <button class="qa-mini" @click="router.push('/create-product')">
-          <v-icon icon="mdi-package-variant-plus" size="18" style="color: #3b82f6;" />
-          <span>Товар</span>
-        </button>
-        <button class="qa-mini" @click="router.push('/requests')" style="position: relative;">
-          <v-icon icon="mdi-file-document-outline" size="18" style="color: #8b5cf6;" />
-          <span>Заявки</span>
-          <div v-if="requestsStore.activeRequests.length" class="qa-badge">{{ requestsStore.activeRequests.length }}</div>
-        </button>
         <button class="qa-mini" @click="router.push('/calculator')">
           <v-icon icon="mdi-calculator" size="18" style="color: #f59e0b;" />
           <span>Расчёт</span>

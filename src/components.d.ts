@@ -12,9 +12,13 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     ClientPicker: typeof import('./components/ClientPicker.vue')['default']
+    CoInvestorCreateDialog: typeof import('./components/CoInvestorCreateDialog.vue')['default']
     CreateClientDialog: typeof import('./components/CreateClientDialog.vue')['default']
+    FolderCreateDialog: typeof import('./components/FolderCreateDialog.vue')['default']
+    GlobalSearchDialog: typeof import('./components/GlobalSearchDialog.vue')['default']
     GlobalToast: typeof import('./components/GlobalToast.vue')['default']
     HeroSummary: typeof import('./components/HeroSummary.vue')['default']
+    QuickActionsDialog: typeof import('./components/QuickActionsDialog.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     UpgradePrompt: typeof import('./components/UpgradePrompt.vue')['default']

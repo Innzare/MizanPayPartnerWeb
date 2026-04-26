@@ -18,6 +18,10 @@ import { vMaska } from 'maska/vue'
 import 'unfonts.css'
 import '@/styles/admin-tables.css'
 
+// AG Grid — register community modules once for entire app
+import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community'
+ModuleRegistry.registerModules([AllCommunityModule])
+
 const app = createApp(App)
 
 registerPlugins(app)

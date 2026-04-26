@@ -99,6 +99,7 @@ export type PaymentType = 'EQUAL' | 'DECREASING' | 'CUSTOM'
 
 export interface Deal {
   id: string
+  dealNumber: number
   requestId?: string
   clientId: string
   investorId: string
@@ -143,6 +144,15 @@ export interface DealFolder {
   icon: string
   order: number
   _count?: { deals: number }
+  createdAt: string
+}
+
+export interface CoInvestor {
+  id: string
+  name: string
+  phone: string | null
+  capital: number
+  profitPercent: number
   createdAt: string
 }
 

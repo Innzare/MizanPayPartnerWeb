@@ -22,6 +22,9 @@ const router = createRouter({
 
 const publicRoutes = ["/login", "/forgot-password", "/reset-password"];
 
+// Routes intentionally hidden — accessing them via URL redirects to home
+const hiddenRoutes = ["/products", "/requests", "/create-product"];
+
 let authChecked = false;
 
 router.beforeEach(async (to, from, next) => {
@@ -43,6 +46,11 @@ router.beforeEach(async (to, from, next) => {
   }
 
   if (authStore.isAuthenticated && to.path === "/login") {
+    return next("/");
+  }
+
+  // Hidden routes — redirect to home
+  if (hiddenRoutes.some(r => to.path === r || to.path.startsWith(r + '/'))) {
     return next("/");
   }
 

@@ -10,6 +10,8 @@ import { useNotificationsStore } from "@/stores/notifications";
 import { useSubscription } from "@/composables/useSubscription";
 import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
+import QuickActionsDialog from "@/components/QuickActionsDialog.vue";
+import GlobalSearchDialog from "@/components/GlobalSearchDialog.vue";
 import type { PlanFeatures } from "@/types";
 
 const authStore = useAuthStore();
@@ -22,6 +24,18 @@ const router = useRouter();
 
 const quickActionsMenu = ref(false);
 const showCreateClientDialog = ref(false);
+const showQuickActions = ref(false);
+const showGlobalSearch = ref(false);
+const quickActionsMode = ref<'sale' | 'payment'>('sale');
+const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
+const shortcutModifier = computed(() => (isMac ? '⌘' : 'Ctrl'));
+
+function openQuickActions(mode: 'sale' | 'payment') {
+  quickActionsMenu.value = false;
+  quickActionsMode.value = mode;
+  localStorage.setItem('quickActionsLastMode', mode);
+  showQuickActions.value = true;
+}
 
 const planBadgeLabels: Record<string, string> = { PRO: 'Стандарт', BUSINESS: 'Бизнес', PREMIUM: 'Премиум' };
 const planBadgeLabel = computed(() => planBadgeLabels[subscription.plan.value] || '');
@@ -49,7 +63,30 @@ onMounted(() => {
     }
   };
   window.addEventListener("resize", onResize);
-  onUnmounted(() => window.removeEventListener("resize", onResize));
+
+  // Global hotkeys:
+  //  - Cmd/Ctrl+K → Global Search (industry standard)
+  //  - Alt+K → Quick Actions in last-used mode (no browser conflicts)
+  const onKey = (e: KeyboardEvent) => {
+    // ⌘K / Ctrl+K → Global Search
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      showGlobalSearch.value = true;
+      return;
+    }
+    // Alt+K → Quick Actions (use e.code so OS-level remap on Mac doesn't break it)
+    if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyK') {
+      e.preventDefault();
+      const lastMode = (localStorage.getItem('quickActionsLastMode') as 'sale' | 'payment') || 'payment';
+      openQuickActions(lastMode);
+    }
+  };
+  window.addEventListener('keydown', onKey);
+
+  onUnmounted(() => {
+    window.removeEventListener("resize", onResize);
+    window.removeEventListener('keydown', onKey);
+  });
 });
 
 // Dark mode
@@ -78,8 +115,6 @@ const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?:
   { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
   { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
-  { path: "/products", title: "Каталог", icon: "mdi-store" },
-  { path: "/requests", title: "Заявки", icon: "mdi-file-document-outline" },
   { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
   { path: "/finance", title: "Мой капитал", icon: "mdi-wallet-outline", requiredFeature: "finance" },
   { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account", requiredFeature: "registry" },
@@ -120,9 +155,10 @@ const routeTitles: Record<string, string> = {
   "/requests": "Заявки",
   "/calculator": "Калькулятор",
   "/notifications": "Уведомления",
+  "/zakat": "Закят",
   "/settings": "Настройки",
   "/create-deal": "Новая сделка",
-  "/import": "Импорт сделок",
+  "/import": "Импорт продаж",
   "/create-product": "Новый товар",
   "/co-investors": "Со-инвесторы",
   "/finance": "Мой капитал",
@@ -140,6 +176,7 @@ const routeSubtitles: Record<string, string> = {
   "/products": "Ваш каталог товаров",
   "/requests": "Заявки от клиентов",
   "/notifications": "Все уведомления",
+  "/zakat": "Расчёт и учёт ежегодной милостыни",
   "/calculator": "Расчёт условий рассрочки",
   "/settings": "Профиль и настройки",
   "/co-investors": "Управление капиталом партнёров",
@@ -363,18 +400,22 @@ const confirmLogout = async () => {
             </div>
 
             <div class="lyt-header-right">
-              <div v-if="!isMobile" class="lyt-header-search">
+              <button
+                v-if="!isMobile"
+                class="lyt-header-search-btn"
+                @click="showGlobalSearch = true"
+              >
                 <v-icon
                   icon="mdi-magnify"
                   size="18"
                   class="lyt-header-search-icon"
                 />
-                <input
-                  type="text"
-                  placeholder="Поиск..."
-                  class="lyt-header-search-input"
-                />
-              </div>
+                <span class="lyt-header-search-placeholder">Поиск...</span>
+                <span class="lyt-header-search-kbd">
+                  <span class="lyt-header-search-kbd-key">{{ shortcutModifier }}</span>
+                  <span class="lyt-header-search-kbd-key">K</span>
+                </span>
+              </button>
 
               <!-- Calculator -->
               <router-link to="/calculator" class="lyt-header-icon-btn" title="Калькулятор">
@@ -398,6 +439,11 @@ const confirmLogout = async () => {
                 </template>
               </v-tooltip>
 
+              <!-- Zakat -->
+              <router-link to="/zakat" class="lyt-header-icon-btn" title="Закят">
+                <v-icon icon="mdi-moon-waning-crescent" size="20" />
+              </router-link>
+
               <!-- Notifications -->
               <router-link to="/notifications" class="lyt-header-icon-btn" title="Уведомления">
                 <v-icon icon="mdi-bell-outline" size="20" />
@@ -407,23 +453,35 @@ const confirmLogout = async () => {
               <!-- Quick actions (accent) -->
               <v-menu v-model="quickActionsMenu" offset="8">
                 <template v-slot:activator="{ props }">
-                  <button class="lyt-header-add-btn" v-bind="props" title="Быстрые действия">
+                  <button
+                    class="lyt-header-add-btn"
+                    v-bind="props"
+                    :title="`Быстрые действия (${isMac ? '⌥' : 'Alt+'}K)`"
+                  >
                     <v-icon icon="mdi-plus" size="20" />
                     <span v-if="!isMobile" class="lyt-header-add-btn-label">Создать</span>
                   </button>
                 </template>
                 <div class="lyt-dropdown">
+                  <button
+                    class="lyt-dropdown-item lyt-dropdown-item--accent"
+                    @click="openQuickActions((localStorage.getItem('quickActionsLastMode') as 'sale' | 'payment') || 'payment')"
+                  >
+                    <v-icon icon="mdi-flash" size="18" />
+                    <span>Быстрые действия</span>
+                    <span class="lyt-dropdown-kbd">
+                      <kbd class="qa-kbd">{{ isMac ? '⌥' : 'Alt' }}</kbd>
+                      <kbd class="qa-kbd">K</kbd>
+                    </span>
+                  </button>
+                  <div class="lyt-dropdown-divider" />
                   <button class="lyt-dropdown-item" @click="quickActionsMenu = false; showCreateClientDialog = true">
                     <v-icon icon="mdi-account-plus-outline" size="18" />
                     <span>Создать клиента</span>
                   </button>
                   <button class="lyt-dropdown-item" @click="quickActionsMenu = false; router.push('/create-deal')">
                     <v-icon icon="mdi-handshake" size="18" />
-                    <span>Новая сделка</span>
-                  </button>
-                  <button class="lyt-dropdown-item" @click="quickActionsMenu = false; router.push('/create-product')">
-                    <v-icon icon="mdi-package-variant-plus" size="18" />
-                    <span>Новый товар</span>
+                    <span>Создать сделку</span>
                   </button>
                   <button
                     class="lyt-dropdown-item"
@@ -522,6 +580,8 @@ const confirmLogout = async () => {
     </v-app>
     <GlobalToast />
     <CreateClientDialog v-model="showCreateClientDialog" @created="router.push(`/clients/${$event.id}`)" />
+    <QuickActionsDialog v-model="showQuickActions" :initial-mode="quickActionsMode" />
+    <GlobalSearchDialog v-model="showGlobalSearch" />
   </v-responsive>
 </template>
 
@@ -927,41 +987,61 @@ const confirmLogout = async () => {
   gap: 8px;
 }
 
-.lyt-header-search {
-  position: relative;
-  margin-right: 8px;
-}
-
-.lyt-header-search-icon {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: #9ca3af;
-  pointer-events: none;
-}
-
-.lyt-header-search-input {
+.lyt-header-search-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   width: 240px;
   height: 40px;
-  padding: 0 16px 0 38px;
+  padding: 0 8px 0 12px;
+  margin-right: 8px;
   border-radius: 10px;
   border: 1px solid #f0f0f0;
   background: #f9fafb;
-  font-size: 13px;
-  color: #1a1a2e;
-  outline: none;
+  cursor: pointer;
+  font-family: inherit;
   transition: all 0.15s ease;
 }
-
-.lyt-header-search-input::placeholder {
-  color: #9ca3af;
-}
-
-.lyt-header-search-input:focus {
+.lyt-header-search-btn:hover {
   border-color: #047857;
   background: #fff;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 8%, transparent);
+}
+
+.lyt-header-search-icon {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.lyt-header-search-placeholder {
+  flex: 1;
+  text-align: left;
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.lyt-header-search-kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.lyt-header-search-kbd-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  color: #6b7280;
+  font-family: ui-monospace, SF Mono, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
 }
 
 .lyt-header-icon-btn {
@@ -1155,6 +1235,11 @@ const confirmLogout = async () => {
   margin: 4px 0;
 }
 
+.lyt-dropdown-kbd {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-left: auto;
+}
+
 .lyt-dropdown-item {
   display: flex;
   align-items: center;
@@ -1175,6 +1260,37 @@ const confirmLogout = async () => {
 .lyt-dropdown-item:hover {
   background: #f9f4f0;
 }
+
+.lyt-dropdown-item--accent {
+  color: #047857;
+  font-weight: 600;
+}
+.lyt-dropdown-item--accent :deep(.v-icon) { color: #047857; }
+.lyt-dropdown-item--accent:hover {
+  background: rgba(4, 120, 87, 0.08);
+}
+
+.lyt-dropdown-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.06);
+  margin: 4px 0;
+}
+
+.qa-kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  color: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+.dark .qa-kbd { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.6); border-color: rgba(255, 255, 255, 0.10); }
+.dark .lyt-dropdown-divider { background: rgba(255, 255, 255, 0.08); }
+.dark .lyt-dropdown-item--accent { color: rgb(74, 222, 128); }
+.dark .lyt-dropdown-item--accent :deep(.v-icon) { color: rgb(74, 222, 128); }
+.dark .lyt-dropdown-item--accent:hover { background: rgba(74, 222, 128, 0.10); }
 
 .lyt-dropdown-item--danger {
   color: #ef4444;
@@ -1375,20 +1491,22 @@ const confirmLogout = async () => {
   color: #71717a;
 }
 
-.dark .lyt-header-search-input {
+.dark .lyt-header-search-btn {
   background: #252538;
   border-color: #2e2e42;
-  color: #e4e4e7;
 }
-
-.dark .lyt-header-search-input::placeholder {
-  color: #71717a;
-}
-
-.dark .lyt-header-search-input:focus {
+.dark .lyt-header-search-btn:hover {
   border-color: #047857;
   background: #1e1e2e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
+}
+.dark .lyt-header-search-placeholder {
+  color: #71717a;
+}
+.dark .lyt-header-search-kbd-key {
+  background: #1e1e2e;
+  border-color: #2e2e42;
+  color: #a1a1aa;
 }
 
 .dark .lyt-header-icon-btn {

@@ -133,4 +133,12 @@ export const api = {
   deleteFile: async (url: string): Promise<void> => {
     await request<void>('DELETE', `/upload?url=${encodeURIComponent(url)}`);
   },
+  uploadTo: async <T>(path: string, file: File, extraFields?: Record<string, string>): Promise<T> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (extraFields) {
+      for (const [k, v] of Object.entries(extraFields)) formData.append(k, v);
+    }
+    return uploadRequest<T>(path, formData);
+  },
 };

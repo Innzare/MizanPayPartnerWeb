@@ -595,7 +595,10 @@ const selectedDealPaidTotal = computed(() =>
               </div>
 
               <div class="deal-card-body">
-                <div class="deal-card-title">{{ deal.productName }}</div>
+                <div class="deal-card-title">
+                  <span class="deal-card-num">#{{ deal.dealNumber }}</span>
+                  {{ deal.productName }}
+                </div>
                 <div class="deal-card-client">
                   <v-icon icon="mdi-account" size="14" /> {{ dealClientName(deal) }}
                   <span v-if="!deal.client && deal.clientProfile && !deal.clientProfile.userId" class="external-badge">Внешний</span>
@@ -661,6 +664,7 @@ const selectedDealPaidTotal = computed(() =>
                     <v-img v-if="deal.productPhotos?.[0]" :src="deal.productPhotos[0]" cover />
                     <v-icon v-else icon="mdi-package-variant-closed" size="22" color="grey" />
                   </v-avatar>
+                  <span class="table-deal-num">#{{ deal.dealNumber }}</span>
                   <span class="font-weight-medium table-product-name">{{ deal.productName }}</span>
                   <span v-if="deal.folder" class="deal-folder-badge" :style="{ background: deal.folder.color + '18', color: deal.folder.color }">
                     <span class="folder-chip-dot" :style="{ background: deal.folder.color }" />
@@ -1072,6 +1076,19 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 .deal-card-body { padding: 16px; }
+.deal-card-num,
+.table-deal-num {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  padding: 3px 8px;
+  border-radius: 6px;
+  margin-right: 6px;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
+}
 .deal-card-title {
   font-size: 15px; font-weight: 600; line-height: 1.3; margin-bottom: 4px;
   color: rgba(var(--v-theme-on-surface), 0.9);

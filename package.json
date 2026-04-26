@@ -29,6 +29,8 @@
     "@tiptap/extension-underline": "^3.22.3",
     "@tiptap/starter-kit": "^3.22.3",
     "@tiptap/vue-3": "^3.22.3",
+    "ag-grid-community": "^35.2.1",
+    "ag-grid-vue3": "^35.2.1",
     "chart.js": "^4.5.1",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",

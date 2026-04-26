@@ -91,9 +91,16 @@ export const useDealsStore = defineStore('deals', () => {
     }
   }
 
-  async function updateDealStatus(id: string, status: Deal['status']) {
+  async function updateDealStatus(
+    id: string,
+    status: Deal['status'],
+    closeMode?: 'paid_early' | 'forgive' | 'force',
+  ) {
     try {
-      const updated = await api.patch<Deal>(`/deals/${id}/status`, { status })
+      const updated = await api.patch<Deal>(`/deals/${id}/status`, {
+        status,
+        ...(closeMode ? { closeMode } : {}),
+      })
       const index = deals.value.findIndex((d) => d.id === id)
       if (index >= 0) {
         deals.value[index] = updated

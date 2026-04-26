@@ -66,8 +66,15 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
 
       <div class="hs-progress">
         <div class="hs-progress-header">
-          <span>Получено {{ canView ? formatCurrencyShort(received) : '—' }}</span>
-          <span>{{ canView ? progress : 0 }}%</span>
+          <span>
+            Получено {{ canView ? formatCurrencyShort(received) : '—' }}
+            <span class="hs-progress-pct">· {{ canView ? progress : 0 }}%</span>
+          </span>
+          <button v-if="showAnalyticsLink && canView" class="hs-analytics-btn" @click="router.push('/analytics')">
+            <v-icon icon="mdi-chart-line" size="14" />
+            Аналитика
+            <v-icon icon="mdi-arrow-right" size="13" />
+          </button>
         </div>
         <div class="hs-progress-bar">
           <div class="hs-progress-fill" :style="{ width: canView ? progressWidth : '0%' }" />
@@ -86,13 +93,6 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
         </button>
       </div>
     </div>
-
-    <!-- Analytics link -->
-    <button v-if="showAnalyticsLink && canView" class="hs-analytics-btn" @click="router.push('/analytics')">
-      <v-icon icon="mdi-chart-line" size="16" />
-      Аналитика
-      <v-icon icon="mdi-arrow-right" size="14" />
-    </button>
   </div>
 </template>
 
@@ -164,8 +164,14 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
 
 .hs-progress { margin-top: 14px; }
 .hs-progress-header {
-  display: flex; justify-content: space-between;
-  font-size: 12px; color: rgba(255, 255, 255, 0.55); margin-bottom: 6px;
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; color: rgba(255, 255, 255, 0.65); margin-bottom: 8px;
+  gap: 12px;
+}
+.hs-progress-pct {
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 600;
+  margin-left: 2px;
 }
 .hs-progress-bar {
   height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden;
@@ -176,14 +182,16 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
   transition: width 0.5s ease;
 }
 
-/* Analytics button */
+/* Analytics button — sits inline in progress header */
 .hs-analytics-btn {
-  position: absolute; bottom: 14px; right: 16px;
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 14px; border-radius: 8px; border: none;
-  background: rgba(255, 255, 255, 0.15); color: rgba(255, 255, 255, 0.85);
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 11px; border-radius: 8px; border: none;
+  background: rgba(255, 255, 255, 0.15); color: rgba(255, 255, 255, 0.9);
   font-size: 12px; font-weight: 600; cursor: pointer;
   transition: all 0.15s; backdrop-filter: blur(4px);
+  flex-shrink: 0;
+  font-family: inherit;
+  white-space: nowrap;
 }
 .hs-analytics-btn:hover {
   background: rgba(255, 255, 255, 0.25); color: #fff;

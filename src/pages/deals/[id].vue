@@ -508,8 +508,23 @@ const STATUS_ACTIONS: Record<string, { nextStatus: Deal['status']; label: string
 const statusAction = computed(() => deal.value ? STATUS_ACTIONS[deal.value.status] : null)
 const statusDialog = ref(false)
 const statusUpdating = ref(false)
+const closeMode = ref<'paid_early' | 'forgive' | 'force'>('paid_early')
+
+const unpaidCount = computed(() =>
+  payments.value.filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE').length,
+)
+const hasUnpaidPayments = computed(() => unpaidCount.value > 0 || (deal.value?.remainingAmount ?? 0) > 0)
+
+function pluralizeRu(n: number, one: string, few: string, many: string) {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return one
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few
+  return many
+}
 
 function openStatusDialog() {
+  closeMode.value = 'paid_early'
   statusDialog.value = true
 }
 
@@ -517,9 +532,13 @@ async function confirmStatusChange() {
   if (!deal.value || !statusAction.value) return
   statusUpdating.value = true
   try {
-    await dealsStore.updateDealStatus(deal.value.id, statusAction.value.nextStatus)
-    toast.success('Статус сделки обновлён')
+    // Pass closeMode only when closing with unpaid remainder
+    const mode = hasUnpaidPayments.value ? closeMode.value : undefined
+    await dealsStore.updateDealStatus(deal.value.id, statusAction.value.nextStatus, mode)
+    toast.success('Сделка завершена')
     statusDialog.value = false
+    // Refresh payments to reflect new statuses
+    await dealsStore.fetchDeal(deal.value.id).catch(() => {})
   } catch (e: any) {
     toast.error(e.message || 'Ошибка обновления статуса')
   } finally {
@@ -663,7 +682,10 @@ const timeline = computed(() => {
             <span class="detail-hero-status-dot" :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.color }" />
             {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
           </div>
-          <h1 class="detail-hero-title">{{ deal.productName }}</h1>
+          <h1 class="detail-hero-title">
+            <span class="detail-hero-num">#{{ deal.dealNumber }}</span>
+            {{ deal.productName }}
+          </h1>
           <div class="detail-hero-meta">
             <v-icon icon="mdi-account" size="16" /> {{ deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—' }}
             <span class="mx-2">·</span>
@@ -1530,16 +1552,67 @@ const timeline = computed(() => {
       </v-dialog>
 
       <!-- Status change dialog -->
-      <v-dialog v-model="statusDialog" max-width="420">
-        <v-card rounded="lg" class="pa-6 text-center">
-          <div v-if="statusAction" class="status-dialog-icon mb-4" :style="{ background: statusAction.color + '18' }">
-            <v-icon :icon="statusAction.icon" size="28" :color="statusAction.color" />
+      <v-dialog v-model="statusDialog" max-width="520">
+        <v-card rounded="lg" class="pa-6">
+          <div v-if="statusAction" class="d-flex align-start ga-4 mb-4">
+            <div class="status-dialog-icon" :style="{ background: statusAction.color + '18' }">
+              <v-icon :icon="statusAction.icon" size="24" :color="statusAction.color" />
+            </div>
+            <div class="flex-grow-1">
+              <h3 class="text-h6 font-weight-bold mb-1">{{ statusAction.label }}</h3>
+              <p v-if="!hasUnpaidPayments" class="text-body-2 text-medium-emphasis ma-0">
+                Все платежи оплачены — сделка будет зафиксирована как завершённая.
+              </p>
+              <p v-else class="text-body-2 text-medium-emphasis ma-0">
+                <strong>Остаток: {{ formatCurrency(deal?.remainingAmount || 0) }}</strong>
+                · {{ unpaidCount }} {{ pluralizeRu(unpaidCount, 'неоплаченный платёж', 'неоплаченных платежа', 'неоплаченных платежей') }}.
+                Выберите как поступить с ними:
+              </p>
+            </div>
           </div>
-          <h3 class="text-h6 font-weight-bold mb-2">Подтвердите действие</h3>
-          <p class="text-body-2 text-medium-emphasis mb-6">
-            {{ statusAction?.label }}? Статус сделки изменится на
-            <strong>{{ statusAction ? DEAL_STATUS_CONFIG[statusAction.nextStatus]?.label : '' }}</strong>.
-          </p>
+
+          <!-- Close mode options — only when there's unpaid -->
+          <div v-if="hasUnpaidPayments" class="close-modes mb-5">
+            <label class="close-mode-card" :class="{ active: closeMode === 'paid_early' }">
+              <input v-model="closeMode" type="radio" value="paid_early" />
+              <div class="close-mode-content">
+                <div class="d-flex align-center ga-2">
+                  <v-icon icon="mdi-check-circle-outline" size="18" color="success" />
+                  <span class="close-mode-title">Клиент полностью рассчитался</span>
+                </div>
+                <div class="close-mode-desc">
+                  Долг покрыт ранее (например, переплатой). Платежи получат статус «Закрыт заранее».
+                </div>
+              </div>
+            </label>
+
+            <label class="close-mode-card" :class="{ active: closeMode === 'forgive' }">
+              <input v-model="closeMode" type="radio" value="forgive" />
+              <div class="close-mode-content">
+                <div class="d-flex align-center ga-2">
+                  <v-icon icon="mdi-hand-heart-outline" size="18" color="info" />
+                  <span class="close-mode-title">Списать долг</span>
+                </div>
+                <div class="close-mode-desc">
+                  Прощаете остаток. Платежи закрываются с пометкой «Долг прощён».
+                </div>
+              </div>
+            </label>
+
+            <label class="close-mode-card" :class="{ active: closeMode === 'force' }">
+              <input v-model="closeMode" type="radio" value="force" />
+              <div class="close-mode-content">
+                <div class="d-flex align-center ga-2">
+                  <v-icon icon="mdi-alert-circle-outline" size="18" color="error" />
+                  <span class="close-mode-title">Закрыть с долгом</span>
+                </div>
+                <div class="close-mode-desc">
+                  Сделка закрывается, неоплаченные платежи остаются как просрочка. Учитывается в аналитике как убыток.
+                </div>
+              </div>
+            </label>
+          </div>
+
           <div class="d-flex ga-3">
             <button class="btn-secondary flex-grow-1" @click="statusDialog = false">Отмена</button>
             <button
@@ -1549,7 +1622,7 @@ const timeline = computed(() => {
               @click="confirmStatusChange"
             >
               <v-progress-circular v-if="statusUpdating" indeterminate size="16" width="2" color="white" class="mr-2" />
-              Подтвердить
+              Завершить сделку
             </button>
           </div>
         </v-card>
@@ -1719,6 +1792,14 @@ const timeline = computed(() => {
 .detail-hero-title {
   font-size: 28px; font-weight: 700; line-height: 1.2; margin-bottom: 8px;
   word-break: break-word;
+  display: inline-flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.detail-hero-num {
+  font-size: 18px;
+  font-weight: 700;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 .detail-hero-meta {
   font-size: 14px; opacity: 0.85;
@@ -2493,9 +2574,53 @@ const timeline = computed(() => {
 
 /* Status dialog */
 .status-dialog-icon {
-  width: 56px; height: 56px; border-radius: 14px;
+  width: 48px; height: 48px; min-width: 48px; border-radius: 12px;
   display: flex; align-items: center; justify-content: center;
-  margin: 0 auto;
+}
+
+/* Close mode picker */
+.close-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.close-mode-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.close-mode-card:hover {
+  border-color: rgba(var(--v-theme-primary), 0.4);
+}
+.close-mode-card.active {
+  border-color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.05);
+}
+.close-mode-card input[type="radio"] {
+  margin-top: 4px;
+  accent-color: rgb(var(--v-theme-primary));
+  cursor: pointer;
+}
+.close-mode-content {
+  flex: 1;
+  min-width: 0;
+}
+.close-mode-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+.close-mode-desc {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-top: 4px;
+  line-height: 1.45;
 }
 
 @media (max-width: 600px) {

@@ -34,7 +34,8 @@ declare module 'vue-router/auto-routes' {
     '/deals/[id]': RouteRecordInfo<'/deals/[id]', '/deals/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/finance': RouteRecordInfo<'/finance', '/finance', Record<never, never>, Record<never, never>>,
     '/forgot-password': RouteRecordInfo<'/forgot-password', '/forgot-password', Record<never, never>, Record<never, never>>,
-    '/import': RouteRecordInfo<'/import', '/import', Record<never, never>, Record<never, never>>,
+    '/import/': RouteRecordInfo<'/import/', '/import', Record<never, never>, Record<never, never>>,
+    '/import/drafts/[id]': RouteRecordInfo<'/import/drafts/[id]', '/import/drafts/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/login': RouteRecordInfo<'/login', '/login', Record<never, never>, Record<never, never>>,
     '/notifications': RouteRecordInfo<'/notifications', '/notifications', Record<never, never>, Record<never, never>>,
     '/payments': RouteRecordInfo<'/payments', '/payments', Record<never, never>, Record<never, never>>,
@@ -46,6 +47,7 @@ declare module 'vue-router/auto-routes' {
     '/reset-password': RouteRecordInfo<'/reset-password', '/reset-password', Record<never, never>, Record<never, never>>,
     '/settings': RouteRecordInfo<'/settings', '/settings', Record<never, never>, Record<never, never>>,
     '/staff': RouteRecordInfo<'/staff', '/staff', Record<never, never>, Record<never, never>>,
+    '/zakat': RouteRecordInfo<'/zakat', '/zakat', Record<never, never>, Record<never, never>>,
   }
 
   /**
@@ -123,8 +125,12 @@ declare module 'vue-router/auto-routes' {
       routes: '/forgot-password'
       views: never
     }
-    'src/pages/import.vue': {
-      routes: '/import'
+    'src/pages/import/index.vue': {
+      routes: '/import/'
+      views: never
+    }
+    'src/pages/import/drafts/[id].vue': {
+      routes: '/import/drafts/[id]'
       views: never
     }
     'src/pages/login.vue': {
@@ -169,6 +175,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/staff.vue': {
       routes: '/staff'
+      views: never
+    }
+    'src/pages/zakat.vue': {
+      routes: '/zakat'
       views: never
     }
   }
