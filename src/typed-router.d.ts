@@ -25,7 +25,9 @@ declare module 'vue-router/auto-routes' {
     '/clients': RouteRecordInfo<'/clients', '/clients', Record<never, never>, Record<never, never>, '/clients/' | '/clients/[id]'>,
     '/clients/': RouteRecordInfo<'/clients/', '/clients', Record<never, never>, Record<never, never>>,
     '/clients/[id]': RouteRecordInfo<'/clients/[id]', '/clients/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
-    '/co-investors': RouteRecordInfo<'/co-investors', '/co-investors', Record<never, never>, Record<never, never>>,
+    '/co-investors': RouteRecordInfo<'/co-investors', '/co-investors', Record<never, never>, Record<never, never>, '/co-investors/' | '/co-investors/[id]'>,
+    '/co-investors/': RouteRecordInfo<'/co-investors/', '/co-investors', Record<never, never>, Record<never, never>>,
+    '/co-investors/[id]': RouteRecordInfo<'/co-investors/[id]', '/co-investors/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/contract-builder': RouteRecordInfo<'/contract-builder', '/contract-builder', Record<never, never>, Record<never, never>>,
     '/create-deal': RouteRecordInfo<'/create-deal', '/create-deal', Record<never, never>, Record<never, never>>,
     '/create-product': RouteRecordInfo<'/create-product', '/create-product', Record<never, never>, Record<never, never>>,
@@ -37,6 +39,7 @@ declare module 'vue-router/auto-routes' {
     '/import/': RouteRecordInfo<'/import/', '/import', Record<never, never>, Record<never, never>>,
     '/import/drafts/[id]': RouteRecordInfo<'/import/drafts/[id]', '/import/drafts/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/login': RouteRecordInfo<'/login', '/login', Record<never, never>, Record<never, never>>,
+    '/messages': RouteRecordInfo<'/messages', '/messages', Record<never, never>, Record<never, never>>,
     '/notifications': RouteRecordInfo<'/notifications', '/notifications', Record<never, never>, Record<never, never>>,
     '/payments': RouteRecordInfo<'/payments', '/payments', Record<never, never>, Record<never, never>>,
     '/products': RouteRecordInfo<'/products', '/products', Record<never, never>, Record<never, never>, '/products/' | '/products/[id]'>,
@@ -90,7 +93,15 @@ declare module 'vue-router/auto-routes' {
       views: never
     }
     'src/pages/co-investors.vue': {
-      routes: '/co-investors'
+      routes: '/co-investors' | '/co-investors/' | '/co-investors/[id]'
+      views: 'default'
+    }
+    'src/pages/co-investors/index.vue': {
+      routes: '/co-investors/'
+      views: never
+    }
+    'src/pages/co-investors/[id].vue': {
+      routes: '/co-investors/[id]'
       views: never
     }
     'src/pages/contract-builder.vue': {
@@ -135,6 +146,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/login.vue': {
       routes: '/login'
+      views: never
+    }
+    'src/pages/messages.vue': {
+      routes: '/messages'
       views: never
     }
     'src/pages/notifications.vue': {

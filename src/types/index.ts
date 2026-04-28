@@ -2,6 +2,7 @@
 export type VerificationLevel = 'NONE' | 'BASIC' | 'VERIFIED' | 'FULL'
 export type SubscriptionPlan = 'FREE' | 'PRO' | 'BUSINESS' | 'PREMIUM'
 export type StaffRole = 'MANAGER' | 'OPERATOR'
+export type DealsAccessMode = 'ALL' | 'ASSIGNED_ONLY'
 
 export interface PlanFeatures {
   analytics: boolean
@@ -42,6 +43,8 @@ export interface User {
   daysUntilExpiry?: number | null
   staffId?: string
   staffRole?: StaffRole
+  accessOverrides?: string[]
+  canCreateDeals?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -54,6 +57,14 @@ export interface StaffMember {
   role: StaffRole
   investorId: string
   isActive: boolean
+  // Per-staff visibility for deals/payments. ALL = sees everything (default),
+  // ASSIGNED_ONLY = sees only deals explicitly assigned to them.
+  dealsAccessMode?: DealsAccessMode
+  // Routes disabled by the partner on top of the role's base set.
+  // Effective access = ROLE_ROUTE_ACCESS[role] - accessOverrides.
+  accessOverrides?: string[]
+  // Whether the partner allows this staff to create deals/imports.
+  canCreateDeals?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -63,11 +74,26 @@ export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
   OPERATOR: 'Оператор',
 }
 
-// Routes accessible per role (owner = all routes)
+// Routes accessible per role (owner = all routes). The home page `/` is
+// owner-only — staff is redirected to /deals (or first accessible route).
 export const ROLE_ROUTE_ACCESS: Record<StaffRole, string[]> = {
-  MANAGER: ['/', '/analytics', '/deals', '/clients', '/payments', '/products', '/requests', '/co-investors', '/finance', '/registry', '/notifications', '/activity', '/calculator', '/create-deal', '/create-product', '/import'],
-  OPERATOR: ['/', '/analytics', '/deals', '/clients', '/payments', '/notifications', '/activity', '/calculator'],
+  MANAGER: ['/analytics', '/deals', '/clients', '/payments', '/products', '/requests', '/co-investors', '/finance', '/registry', '/notifications', '/activity', '/calculator', '/create-deal', '/create-product', '/import', '/messages'],
+  OPERATOR: ['/analytics', '/deals', '/clients', '/payments', '/notifications', '/activity', '/calculator', '/messages'],
 }
+
+// Sections that the partner can disable per-staff via accessOverrides.
+// Excludes always-on stuff (`/`, `/calculator`, `/notifications`, `/messages`)
+// and action shortcuts (`/create-deal`, `/import`) — those follow their parent.
+export const STAFF_TOGGLEABLE_ROUTES: { path: string; label: string; icon: string }[] = [
+  { path: '/analytics', label: 'Аналитика', icon: 'mdi-chart-line' },
+  { path: '/deals', label: 'Сделки', icon: 'mdi-briefcase' },
+  { path: '/clients', label: 'Клиенты', icon: 'mdi-account-group' },
+  { path: '/payments', label: 'Платежи', icon: 'mdi-cash-multiple' },
+  { path: '/co-investors', label: 'Со-инвесторы', icon: 'mdi-account-group-outline' },
+  { path: '/finance', label: 'Мой капитал', icon: 'mdi-wallet-outline' },
+  { path: '/registry', label: 'Реестр клиентов', icon: 'mdi-shield-account' },
+  { path: '/activity', label: 'История действий', icon: 'mdi-history' },
+]
 
 // Category
 export type Category =
@@ -129,6 +155,11 @@ export interface Deal {
   status: DealStatus
   folderId?: string | null
   folder?: DealFolder | null
+  // Linked co-investors (only id+name as returned by findMyDeals)
+  coInvestors?: { coInvestor: { id: string; name: string } }[]
+  // Staff member assigned as the responsible party for this deal
+  assignedStaffId?: string | null
+  assignedStaff?: { id: string; firstName: string; lastName: string } | null
   createdAt: string
   completedAt?: string
   deletedAt?: string
@@ -147,13 +178,72 @@ export interface DealFolder {
   createdAt: string
 }
 
+export type PayoutSchedule = 'MONTHLY' | 'QUARTERLY' | 'SEMIANNUAL' | 'ANNUAL'
+
+export const PAYOUT_SCHEDULE_LABELS: Record<PayoutSchedule, string> = {
+  MONTHLY: 'Ежемесячно',
+  QUARTERLY: 'Раз в квартал',
+  SEMIANNUAL: 'Раз в полгода',
+  ANNUAL: 'Раз в год',
+}
+
+export type CoInvestorMode = 'PER_DEAL' | 'POOL'
+export type PoolModel = 'PARTICIPATING' | 'MANAGING'
+
+export const CO_INVESTOR_MODE_LABELS: Record<CoInvestorMode, string> = {
+  PER_DEAL: 'По сделкам',
+  POOL: 'Общий пул',
+}
+
+export const POOL_MODEL_LABELS: Record<PoolModel, string> = {
+  PARTICIPATING: 'Совместная мудараба',
+  MANAGING: 'Управление с комиссией',
+}
+
 export interface CoInvestor {
   id: string
   name: string
   phone: string | null
   capital: number
   profitPercent: number
+  payoutSchedule?: PayoutSchedule
+  mode?: CoInvestorMode
   createdAt: string
+}
+
+export type CoInvestorEntryType = 'CAPITAL_IN' | 'CAPITAL_OUT' | 'PROFIT_ACCRUED' | 'DIVIDEND_PAID'
+
+export interface CoInvestorJournalEntry {
+  id: string
+  type: CoInvestorEntryType
+  date: string
+  amount: number
+  note: string | null
+  dealId: string | null
+  dealNumber: number | null
+  dealProductName: string | null
+  paymentId: string | null
+  paymentNumber: number | null
+  meta: Record<string, unknown> | null
+}
+
+export interface CoInvestorJournal {
+  total: number
+  limit: number
+  offset: number
+  entries: CoInvestorJournalEntry[]
+}
+
+export interface CoInvestorSummary {
+  coInvestor: { id: string; name: string; phone: string | null; profitPercent: number; payoutSchedule?: PayoutSchedule; mode?: CoInvestorMode }
+  currentCapital: number
+  capitalIn: number
+  capitalOut: number
+  realizedProfit: number
+  totalPayout: number
+  balanceOwed: number
+  activeDeployment: number
+  activeDealsCount: number
 }
 
 // Payment
@@ -385,6 +475,48 @@ export interface ActivityLog {
   entityType?: string
   entityId?: string
   meta?: Record<string, any>
+  createdAt: string
+}
+
+// ==================== CHATS (partner ↔ staff messaging) ====================
+
+export type ChatAuthorType = 'OWNER' | 'STAFF'
+
+export interface ChatCounterpart {
+  id: string
+  firstName: string
+  lastName: string
+  role?: StaffRole
+  isActive?: boolean
+}
+
+export interface ChatLastMessage {
+  text: string
+  createdAt: string
+  authorType: ChatAuthorType
+}
+
+export interface ChatThread {
+  id: string
+  counterpart: ChatCounterpart
+  lastMessage: ChatLastMessage | null
+  unreadCount: number
+  updatedAt: string
+}
+
+export interface DealMention {
+  dealId: string
+  dealNumber: number
+  productName: string
+}
+
+export interface ChatMessage {
+  id: string
+  chatId: string
+  authorType: ChatAuthorType
+  authorId: string
+  text: string
+  dealMentions: DealMention[] | null
   createdAt: string
 }
 

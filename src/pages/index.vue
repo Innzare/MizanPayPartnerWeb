@@ -9,8 +9,8 @@ import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
-import { api } from '@/api/client'
 import HeroSummary from '@/components/HeroSummary.vue'
+import SendRemindersDialog from '@/components/SendRemindersDialog.vue'
 import { useCapital } from '@/composables/useCapital'
 
 const router = useRouter()
@@ -19,23 +19,8 @@ const toast = useToast()
 const { capital, isCapitalSet, fetchCapital } = useCapital()
 
 
-const sendingBulk = ref(false)
-
-async function sendBulkReminders() {
-  if (!confirm('Отправить напоминания всем клиентам с просроченными или приближающимися платежами?')) return
-  sendingBulk.value = true
-  try {
-    const result = await api.post<{ sent: number; failed: number; total: number }>('/whatsapp/remind-all')
-    toast.success(`Отправлено ${result.sent} из ${result.total} напоминаний`)
-    if (result.failed > 0) {
-      toast.error(`${result.failed} не удалось отправить`)
-    }
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка рассылки')
-  } finally {
-    sendingBulk.value = false
-  }
-}
+// WhatsApp reminders dialog — preview + per-row selection (shared with /payments).
+const showRemindersDialog = ref(false)
 
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
@@ -202,7 +187,7 @@ function getAvatarColor(name?: string) {
           <span>Уведомл.</span>
           <div v-if="notificationsStore.unreadCount" class="qa-badge">{{ notificationsStore.unreadCount }}</div>
         </button>
-        <button class="qa-mini" @click="sendBulkReminders" :disabled="sendingBulk" title="Напомнить всем">
+        <button class="qa-mini" @click="showRemindersDialog = true" title="Напомнить о платежах">
           <v-icon icon="mdi-whatsapp" size="18" style="color: #25d366;" />
           <span>WhatsApp</span>
         </button>
@@ -441,6 +426,9 @@ function getAvatarColor(name?: string) {
         </div>
       </v-card>
     </v-dialog>
+
+    <!-- WhatsApp bulk reminders dialog (preview + per-row selection) -->
+    <SendRemindersDialog v-model="showRemindersDialog" />
   </div>
 </template>
 

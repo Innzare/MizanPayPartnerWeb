@@ -11,8 +11,11 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    CashflowJournal: typeof import('./components/CashflowJournal.vue')['default']
+    ChatPanel: typeof import('./components/ChatPanel.vue')['default']
     ClientPicker: typeof import('./components/ClientPicker.vue')['default']
     CoInvestorCreateDialog: typeof import('./components/CoInvestorCreateDialog.vue')['default']
+    CoInvestorJournalEmbed: typeof import('./components/CoInvestorJournalEmbed.vue')['default']
     CreateClientDialog: typeof import('./components/CreateClientDialog.vue')['default']
     FolderCreateDialog: typeof import('./components/FolderCreateDialog.vue')['default']
     GlobalSearchDialog: typeof import('./components/GlobalSearchDialog.vue')['default']
@@ -21,6 +24,7 @@ declare module 'vue' {
     QuickActionsDialog: typeof import('./components/QuickActionsDialog.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SendRemindersDialog: typeof import('./components/SendRemindersDialog.vue')['default']
     UpgradePrompt: typeof import('./components/UpgradePrompt.vue')['default']
   }
 }

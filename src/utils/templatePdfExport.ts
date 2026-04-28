@@ -100,7 +100,8 @@ export async function exportTemplatePdf(
   payments: Payment[],
   investor: Partial<User>,
   margins?: { top: number; bottom: number; left: number; right: number },
-) {
+  opts: { returnBlob?: boolean } = {},
+): Promise<Blob | void> {
   const m = margins || { top: 20, bottom: 20, left: 25, right: 15 }
   const finalHtml = replaceVariables(html, deal, payments, investor)
 
@@ -188,6 +189,9 @@ export async function exportTemplatePdf(
       pageNum++
     }
 
+    if (opts.returnBlob) {
+      return pdf.output('blob') as Blob
+    }
     const blobUrl = pdf.output('bloburl')
     window.open(blobUrl as unknown as string, '_blank')
   } finally {

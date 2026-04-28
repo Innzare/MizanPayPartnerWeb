@@ -48,7 +48,12 @@ function clientPhone(deal: Deal): string {
   return deal.clientProfile?.phone || deal.client?.phone || deal.externalClientPhone || '—'
 }
 
-export function generateDealSummary(deal: Deal, payments: Payment[], investor: Partial<User>) {
+export function generateDealSummary(
+  deal: Deal,
+  payments: Payment[],
+  investor: Partial<User>,
+  opts: { returnBlob?: boolean } = {},
+): Promise<Blob> | void {
   const paidPayments = payments.filter(p => p.status === 'PAID')
   const overduePayments = payments.filter(p => p.status === 'OVERDUE')
   const pendingPayments = payments.filter(p => p.status === 'PENDING')
@@ -256,6 +261,10 @@ export function generateDealSummary(deal: Deal, payments: Payment[], investor: P
     ],
   }
 
-  const name = clientName(deal).replace(/\s+/g, '_')
+  const _name = clientName(deal).replace(/\s+/g, '_')
+  void _name
+  if (opts.returnBlob) {
+    return new Promise<Blob>((resolve) => pdfMake.createPdf(docDefinition).getBlob(resolve))
+  }
   pdfMake.createPdf(docDefinition).open()
 }

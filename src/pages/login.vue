@@ -31,7 +31,7 @@ const handleLogin = async () => {
 
   try {
     await authStore.login(email.value, password.value);
-    const redirect = (router.currentRoute.value.query.redirect as string) || "/";
+    const redirect = (router.currentRoute.value.query.redirect as string) || authStore.defaultRoute;
     router.push(redirect);
   } catch (e: any) {
     error.value = e?.message || "Ошибка авторизации";

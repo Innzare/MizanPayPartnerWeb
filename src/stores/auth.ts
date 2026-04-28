@@ -43,8 +43,35 @@ export const useAuthStore = defineStore('auth', () => {
     const role = staffRole.value
     if (!role) return false
     const allowed = ROLE_ROUTE_ACCESS[role] || []
-    return allowed.some((r) => path === r || path.startsWith(r + '/'))
+    const overrides = user.value?.accessOverrides || []
+    // Match against the longest applicable base route, then deny if it's been
+    // disabled per-staff. e.g. /co-investors/123 matches /co-investors.
+    const matched = allowed.find((r) => path === r || path.startsWith(r + '/'))
+    if (!matched) return false
+    if (overrides.some((r) => matched === r)) return false
+    return true
   }
+
+  /** Where to send the user after login or when a route is denied. Owner → `/`,
+   *  staff → /deals if accessible, otherwise the first allowed non-subscription-
+   *  gated route. Avoiding subscription-gated paths here prevents redirect
+   *  loops if the partner is on the free plan and their staff would otherwise
+   *  land on e.g. /co-investors and bounce to /settings (which staff can't see). */
+  const defaultRoute = computed(() => {
+    if (!isStaff.value) return '/'
+    const role = staffRole.value
+    if (!role) return '/login'
+    const overrides = user.value?.accessOverrides || []
+    const SUBSCRIPTION_GATED = new Set([
+      '/analytics', '/import', '/activity', '/registry', '/co-investors', '/finance',
+    ])
+    const allowed = (ROLE_ROUTE_ACCESS[role] || []).filter((r) => !overrides.includes(r))
+    const ungated = allowed.filter((r) => !SUBSCRIPTION_GATED.has(r))
+    if (ungated.includes('/deals')) return '/deals'
+    if (ungated.includes('/payments')) return '/payments'
+    if (ungated.includes('/clients')) return '/clients'
+    return ungated[0] || allowed[0] || '/calculator'
+  })
 
   async function login(email: string, password: string) {
     isLoading.value = true
@@ -147,5 +174,5 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  return { user, accessToken, refreshToken, isLoading, error, isAuthenticated, isStaff, staffRole, isOwner, userName, canAccess, login, logout, checkAuth, updateProfile, changePassword }
+  return { user, accessToken, refreshToken, isLoading, error, isAuthenticated, isStaff, staffRole, isOwner, userName, canAccess, defaultRoute, login, logout, checkAuth, updateProfile, changePassword }
 })

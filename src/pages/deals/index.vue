@@ -8,17 +8,44 @@ import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useFolders } from '@/composables/useFolders'
+import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const dealsStore = useDealsStore()
+const authStore = useAuthStore()
 const paymentsStore = usePaymentsStore()
 const { folders, fetchFolders, createFolder, updateFolder, deleteFolder, moveDeal, moveBatch } = useFolders()
 
 // Folders
 const activeFolder = ref<string | null>(null) // null = all
+
+// Co-investor filter — null = all deals (regardless of CI link)
+const activeCoInvestor = ref<string | null>(null)
+const { coInvestors: ciList, fetchCoInvestors } = useCoInvestors()
+fetchCoInvestors()
+const activeCoInvestorObj = computed(() =>
+  activeCoInvestor.value ? ciList.value.find((c) => c.id === activeCoInvestor.value) ?? null : null,
+)
+
+// Staff assignee filter — partner-only. null = all deals.
+interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
+const staffList = ref<StaffOption[]>([])
+const activeStaff = ref<string | null>(null)
+async function loadStaffList() {
+  if (!authStore.isOwner) return
+  try {
+    const list = await api.get<StaffOption[]>('/auth/investor/staff')
+    staffList.value = list.filter((s) => s.isActive)
+  } catch { /* ignore */ }
+}
+loadStaffList()
+const activeStaffObj = computed(() =>
+  activeStaff.value ? staffList.value.find((s) => s.id === activeStaff.value) ?? null : null,
+)
 const showFolderDialog = ref(false)
 const editingFolder = ref<DealFolder | null>(null)
 const folderForm = ref({ name: '', color: '#6366f1', icon: 'mdi-folder' })
@@ -253,6 +280,18 @@ const displayedDeals = computed(() => {
     result = result.filter(d => d.folderId === activeFolder.value)
   }
 
+  // Co-investor filter
+  if (activeCoInvestor.value) {
+    result = result.filter(d =>
+      d.coInvestors?.some(link => link.coInvestor.id === activeCoInvestor.value),
+    )
+  }
+
+  // Staff assignee filter
+  if (activeStaff.value) {
+    result = result.filter(d => (d as any).assignedStaffId === activeStaff.value)
+  }
+
   if (search.value) {
     const s = search.value.toLowerCase()
     result = result.filter(d =>
@@ -361,8 +400,86 @@ const selectedDealPaidTotal = computed(() =>
       </div>
     </div>
 
-    <!-- Folder button (top right, above main card) -->
-    <div v-if="!isTrashTab" class="d-flex justify-end mb-3">
+    <!-- Filters row (top right, above main card): folder + co-investor -->
+    <div v-if="!isTrashTab" class="d-flex justify-end ga-2 mb-3 flex-wrap">
+      <!-- Co-investor filter -->
+      <v-menu v-if="ciList.length > 0" :close-on-content-click="true">
+        <template #activator="{ props: mp }">
+          <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeCoInvestor }">
+            <v-icon icon="mdi-account-group-outline" size="16" />
+            <template v-if="activeCoInvestorObj">
+              {{ activeCoInvestorObj.name }}
+            </template>
+            <template v-else>
+              Со-инвестор
+            </template>
+            <v-icon icon="mdi-chevron-down" size="14" style="opacity: 0.4;" />
+          </button>
+        </template>
+        <v-card rounded="lg" elevation="4" class="fb-dropdown">
+          <div class="fb-dropdown-header">
+            <span>Со-инвесторы</span>
+          </div>
+          <div class="fb-dropdown-body">
+            <button class="fb-item" :class="{ 'fb-item--active': !activeCoInvestor }" @click="activeCoInvestor = null">
+              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
+              <span class="fb-item-name">Все сделки</span>
+            </button>
+            <div class="fb-divider" />
+            <button
+              v-for="ci in ciList"
+              :key="ci.id"
+              class="fb-item"
+              :class="{ 'fb-item--active': activeCoInvestor === ci.id }"
+              @click="activeCoInvestor = activeCoInvestor === ci.id ? null : ci.id"
+            >
+              <v-icon icon="mdi-account-outline" size="14" style="color: rgba(var(--v-theme-on-surface), 0.45);" />
+              <span class="fb-item-name">{{ ci.name }}</span>
+              <span class="fb-item-count">{{ ci.profitPercent }}%</span>
+            </button>
+          </div>
+        </v-card>
+      </v-menu>
+
+      <!-- Staff assignee filter -->
+      <v-menu v-if="authStore.isOwner && staffList.length > 0" :close-on-content-click="true">
+        <template #activator="{ props: mp }">
+          <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeStaff }">
+            <v-icon icon="mdi-account-tie-outline" size="16" />
+            <template v-if="activeStaffObj">
+              {{ activeStaffObj.firstName }} {{ activeStaffObj.lastName }}
+            </template>
+            <template v-else>
+              Сотрудник
+            </template>
+            <v-icon icon="mdi-chevron-down" size="14" style="opacity: 0.4;" />
+          </button>
+        </template>
+        <v-card rounded="lg" elevation="4" class="fb-dropdown">
+          <div class="fb-dropdown-header">
+            <span>Ответственные</span>
+          </div>
+          <div class="fb-dropdown-body">
+            <button class="fb-item" :class="{ 'fb-item--active': !activeStaff }" @click="activeStaff = null">
+              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
+              <span class="fb-item-name">Все сделки</span>
+            </button>
+            <div class="fb-divider" />
+            <button
+              v-for="s in staffList"
+              :key="s.id"
+              class="fb-item"
+              :class="{ 'fb-item--active': activeStaff === s.id }"
+              @click="activeStaff = activeStaff === s.id ? null : s.id"
+            >
+              <v-icon icon="mdi-account-outline" size="14" style="color: rgba(var(--v-theme-on-surface), 0.45);" />
+              <span class="fb-item-name">{{ s.firstName }} {{ s.lastName }}</span>
+            </button>
+          </div>
+        </v-card>
+      </v-menu>
+
+      <!-- Folder filter -->
       <v-menu :close-on-content-click="false">
         <template #activator="{ props: mp }">
           <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeFolder }">

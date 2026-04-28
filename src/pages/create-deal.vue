@@ -4,10 +4,11 @@ import { formatCurrency, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter, useRoute } from 'vue-router'
-import type { PaymentType, ClientProfile } from '@/types'
+import type { PaymentType, ClientProfile, DealFolder } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useCapital } from '@/composables/useCapital'
+import { useFolders } from '@/composables/useFolders'
 import { api } from '@/api/client'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
@@ -118,11 +119,16 @@ interface CoInvestorOption {
 const allCoInvestors = ref<CoInvestorOption[]>([])
 const selectedCoInvestorIds = ref<string[]>([])
 
+// Folder (single — a deal lives in at most one folder, or none)
+const { folders: allFolders, fetchFolders } = useFolders()
+const selectedFolderId = ref<string | null>(null)
+
 onMounted(async () => {
   try {
     const [data] = await Promise.all([
       api.get<any[]>('/co-investors'),
       fetchCapital(),
+      fetchFolders(),
     ])
     allCoInvestors.value = data.map(ci => ({ id: ci.id, name: ci.name, phone: ci.phone, profitPercent: ci.profitPercent }))
   } catch { /* ignore */ }
@@ -151,6 +157,7 @@ onMounted(async () => {
       selectedGuarantorProfileId.value = deal.guarantorProfileId || null
       if (deal.clientProfile) selectedClientProfile.value = deal.clientProfile
       if (deal.guarantorProfile) selectedGuarantorProfile.value = deal.guarantorProfile
+      selectedFolderId.value = (deal as any).folderId || null
     } catch (e: any) {
       toast.error(e.message || 'Не удалось загрузить сделку')
       router.push('/deals')
@@ -160,6 +167,12 @@ onMounted(async () => {
 
 const selectedCoInvestors = computed(() =>
   allCoInvestors.value.filter(ci => selectedCoInvestorIds.value.includes(ci.id))
+)
+
+const selectedFolder = computed<DealFolder | null>(() =>
+  selectedFolderId.value
+    ? allFolders.value.find(f => f.id === selectedFolderId.value) ?? null
+    : null
 )
 
 function toggleCoInvestor(id: string) {
@@ -370,6 +383,18 @@ async function submitDeal() {
           api.post(`/co-investors/${ciId}/deals/${deal.id}`)
         )
       )
+    }
+
+    // Place into folder (or unfile if user cleared it). The /deal-folders/move
+    // endpoint accepts null to detach. Best-effort — failure here doesn't
+    // invalidate the just-created deal.
+    if (deal?.id) {
+      try {
+        await api.post('/deal-folders/move', {
+          dealId: deal.id,
+          folderId: selectedFolderId.value,
+        })
+      } catch { /* non-blocking */ }
     }
 
     toast.success('Сделка создана')
@@ -678,6 +703,43 @@ async function submitDeal() {
               </button>
             </div>
           </v-card>
+
+          <!-- Folder -->
+          <v-card v-if="allFolders.length > 0" rounded="lg" elevation="0" border class="pa-5 mt-4">
+            <div class="section-header-sm">
+              <v-icon icon="mdi-folder-outline" size="18" />
+              <span>Папка</span>
+              <span class="text-caption text-medium-emphasis ml-1">(необязательно)</span>
+            </div>
+            <div class="folder-list">
+              <button
+                type="button"
+                class="folder-chip"
+                :class="{ active: selectedFolderId === null }"
+                @click="selectedFolderId = null"
+              >
+                <v-icon icon="mdi-tray-remove" size="16" />
+                <span>Без папки</span>
+              </button>
+              <button
+                v-for="f in allFolders"
+                :key="f.id"
+                type="button"
+                class="folder-chip"
+                :class="{ active: selectedFolderId === f.id }"
+                :style="{
+                  '--folder-color': f.color || '#6366f1',
+                  borderColor: selectedFolderId === f.id ? (f.color || '#6366f1') : undefined,
+                  background: selectedFolderId === f.id ? `${f.color || '#6366f1'}14` : undefined,
+                  color: selectedFolderId === f.id ? (f.color || '#6366f1') : undefined,
+                }"
+                @click="selectedFolderId = f.id"
+              >
+                <v-icon :icon="f.icon || 'mdi-folder'" size="16" />
+                <span>{{ f.name }}</span>
+              </button>
+            </div>
+          </v-card>
     </div>
 
     <!-- Step 3: Client & Guarantor -->
@@ -847,6 +909,27 @@ async function submitDeal() {
               <span class="review-coinvestor-chip__name">{{ ci.name }}</span>
               <span class="review-coinvestor-chip__share">{{ ci.profitPercent }}% · {{ formatCurrency(Math.round(markup * ci.profitPercent / 100)) }}</span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Folder -->
+      <div v-if="selectedFolder" class="review-coinvestors">
+        <div class="review-coinvestors__title">
+          <v-icon icon="mdi-folder-outline" size="16" />
+          Папка
+        </div>
+        <div class="folder-list">
+          <div
+            class="folder-chip active"
+            :style="{
+              borderColor: selectedFolder.color || '#6366f1',
+              background: `${selectedFolder.color || '#6366f1'}14`,
+              color: selectedFolder.color || '#6366f1',
+            }"
+          >
+            <v-icon :icon="selectedFolder.icon || 'mdi-folder'" size="16" />
+            <span>{{ selectedFolder.name }}</span>
           </div>
         </div>
       </div>
@@ -2108,6 +2191,28 @@ async function submitDeal() {
 .coinvestor-option-share {
   font-size: 13px; font-weight: 700;
   color: #047857; flex-shrink: 0;
+}
+
+/* ─── Folder picker (Step 2) ─── */
+.folder-list {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.folder-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.15s;
+  font-family: inherit;
+}
+.folder-chip:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  border-color: rgba(var(--v-theme-on-surface), 0.20);
+}
+.folder-chip.active {
+  font-weight: 600;
 }
 
 /* ─── Co-investors in Review (Step 4) ─── */

@@ -10,6 +10,7 @@ import { generateContract } from '@/utils/contractPdf'
 import { generateReceipt } from '@/utils/receiptPdf'
 import { exportTemplatePdf } from '@/utils/templatePdfExport'
 import { generateDealSummary } from '@/utils/dealSummaryPdf'
+import { useSendPdfWhatsApp } from '@/composables/useSendPdfWhatsApp'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -171,6 +172,42 @@ const allCoInvestors = ref<CoInvestorInfo[]>([])
 const coInvestorLoading = ref(false)
 const showCoInvestorMenu = ref(false)
 
+// ── Staff assignee ──
+interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
+const allStaff = ref<StaffOption[]>([])
+const assignLoading = ref(false)
+const showAssigneeMenu = ref(false)
+
+async function loadStaff() {
+  // Only the owner can assign — staff don't need this fetch.
+  if (!authStore.isOwner) return
+  try {
+    const list = await api.get<StaffOption[]>('/auth/investor/staff')
+    allStaff.value = list.filter((s) => s.isActive)
+  } catch { /* ignore */ }
+}
+
+async function setAssignee(staffId: string | null) {
+  if (!deal.value) return
+  assignLoading.value = true
+  try {
+    await api.patch(`/deals/${deal.value.id}/assignee`, { staffId })
+    // Refresh deal so the badge / dealsStore picks up the new assignee.
+    await dealsStore.fetchDeal(deal.value.id).catch(() => {})
+    showAssigneeMenu.value = false
+    toast.success(staffId ? 'Сотрудник назначен' : 'Назначение снято')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось назначить')
+  } finally {
+    assignLoading.value = false
+  }
+}
+
+const assignedStaffName = computed(() => {
+  const s = (deal.value as any)?.assignedStaff
+  return s ? `${s.lastName ?? ''} ${s.firstName ?? ''}`.trim() || '—' : null
+})
+
 async function loadCoInvestors() {
   try {
     const [linked, all] = await Promise.all([
@@ -214,7 +251,7 @@ async function unlinkCoInvestor(ci: CoInvestorInfo) {
 }
 
 // Load co-investors on mount
-onMounted(() => { loadCoInvestors(); loadCustomTemplate() })
+onMounted(() => { loadCoInvestors(); loadCustomTemplate(); loadStaff() })
 
 async function restoreDeal() {
   deleting.value = true
@@ -548,7 +585,6 @@ async function confirmStatusChange() {
 
 
 function downloadContract() {
-  console.log('downloadContract called', { deal: !!deal.value, user: !!authStore.user })
   if (!deal.value) return
   const investor = authStore.user || {} as Partial<import('@/types').User>
   generateContract(deal.value, payments.value, investor)
@@ -558,6 +594,87 @@ function downloadSummary() {
   if (!deal.value) return
   const investor = authStore.user || {} as Partial<import('@/types').User>
   generateDealSummary(deal.value, payments.value, investor)
+}
+
+// ── Send PDFs via WhatsApp ──
+const { sending: sendingWhatsApp, sendPdf } = useSendPdfWhatsApp()
+
+function clientPhoneOnDeal(): string | null {
+  if (!deal.value) return null
+  return (
+    (deal.value.clientProfile as any)?.phone ||
+    deal.value.client?.phone ||
+    deal.value.externalClientPhone ||
+    null
+  )
+}
+
+async function confirmSend(label: string): Promise<boolean> {
+  const phone = clientPhoneOnDeal()
+  if (!phone) {
+    toast.error('У клиента нет телефона — нельзя отправить в WhatsApp')
+    return false
+  }
+  return confirm(`Отправить «${label}» клиенту в WhatsApp на ${phone}?`)
+}
+
+async function sendContractWhatsApp() {
+  if (!deal.value) return
+  if (!(await confirmSend('Договор мурабаха'))) return
+  const investor = authStore.user || {} as Partial<import('@/types').User>
+  const blob = (await generateContract(deal.value, payments.value, investor, { returnBlob: true })) as Blob
+  await sendPdf({
+    blob,
+    fileName: `Договор-${deal.value.dealNumber || deal.value.id.slice(0, 6)}.pdf`,
+    dealId: deal.value.id,
+    caption: `Здравствуйте! Договор по сделке «${deal.value.productName}».`,
+  })
+}
+
+async function sendSummaryWhatsApp() {
+  if (!deal.value) return
+  if (!(await confirmSend('Сводка по сделке'))) return
+  const investor = authStore.user || {} as Partial<import('@/types').User>
+  const blob = (await generateDealSummary(deal.value, payments.value, investor, { returnBlob: true })) as Blob
+  await sendPdf({
+    blob,
+    fileName: `Сводка-${deal.value.dealNumber || deal.value.id.slice(0, 6)}.pdf`,
+    dealId: deal.value.id,
+    caption: `Сводка по сделке «${deal.value.productName}».`,
+  })
+}
+
+async function sendCustomContractWhatsApp() {
+  if (!deal.value || !customTemplate.value) return
+  if (!(await confirmSend('Договор по шаблону'))) return
+  const investor = authStore.user || {} as Partial<import('@/types').User>
+  const blob = (await exportTemplatePdf(
+    customTemplate.value,
+    deal.value,
+    payments.value,
+    investor,
+    customTemplateMargins.value || undefined,
+    { returnBlob: true },
+  )) as Blob
+  await sendPdf({
+    blob,
+    fileName: `Договор-${deal.value.dealNumber || deal.value.id.slice(0, 6)}.pdf`,
+    dealId: deal.value.id,
+    caption: `Здравствуйте! Договор по сделке «${deal.value.productName}».`,
+  })
+}
+
+async function sendReceiptWhatsApp(payment: import('@/types').Payment) {
+  if (!deal.value) return
+  if (!(await confirmSend(`Квитанция #${payment.number}`))) return
+  const investor = authStore.user || {} as Partial<import('@/types').User>
+  const blob = (await generateReceipt(deal.value, payment, investor, { returnBlob: true })) as Blob
+  await sendPdf({
+    blob,
+    fileName: `Квитанция-${deal.value.dealNumber || deal.value.id.slice(0, 6)}-${payment.number}.pdf`,
+    dealId: deal.value.id,
+    caption: `Квитанция о получении платежа #${payment.number} по сделке «${deal.value.productName}».`,
+  })
 }
 
 
@@ -1289,6 +1406,66 @@ const timeline = computed(() => {
             </div>
           </v-card>
 
+          <!-- Assigned staff (partner-only) -->
+          <v-card v-if="authStore.isOwner" rounded="lg" elevation="0" border class="pa-5 mb-6">
+            <div class="d-flex align-center justify-space-between flex-wrap ga-3">
+              <div class="d-flex align-center ga-3" style="min-width: 0;">
+                <div class="ci-header-icon" style="background: rgba(99, 102, 241, 0.10); color: #6366f1;">
+                  <v-icon icon="mdi-account-tie-outline" size="20" />
+                </div>
+                <div style="min-width: 0;">
+                  <div class="ci-header-title">Ответственный сотрудник</div>
+                  <div class="ci-header-sub">
+                    <template v-if="assignedStaffName">{{ assignedStaffName }}</template>
+                    <template v-else>Не назначен</template>
+                  </div>
+                </div>
+              </div>
+              <v-menu v-model="showAssigneeMenu" :close-on-content-click="true" location="bottom end">
+                <template #activator="{ props: menuProps }">
+                  <button
+                    v-bind="menuProps"
+                    class="ci-add-btn"
+                    :disabled="assignLoading || allStaff.length === 0"
+                  >
+                    <v-icon :icon="(deal as any)?.assignedStaffId ? 'mdi-pencil-outline' : 'mdi-plus'" size="16" />
+                    {{ (deal as any)?.assignedStaffId ? 'Изменить' : 'Назначить' }}
+                  </button>
+                </template>
+                <v-card min-width="260" rounded="lg" elevation="4" class="ci-menu">
+                  <div class="ci-menu-header">
+                    <v-icon icon="mdi-account-tie-outline" size="14" />
+                    Кто отвечает за сделку?
+                  </div>
+                  <div class="ci-menu-list">
+                    <button
+                      class="ci-menu-item"
+                      :class="{ 'ci-menu-item--active': !(deal as any)?.assignedStaffId }"
+                      @click="setAssignee(null)"
+                    >
+                      <v-icon icon="mdi-account-off-outline" size="16" />
+                      <span>Без ответственного</span>
+                    </button>
+                    <div class="ci-menu-divider" />
+                    <button
+                      v-for="s in allStaff"
+                      :key="s.id"
+                      class="ci-menu-item"
+                      :class="{ 'ci-menu-item--active': (deal as any)?.assignedStaffId === s.id }"
+                      @click="setAssignee(s.id)"
+                    >
+                      <v-icon icon="mdi-account-circle-outline" size="16" />
+                      <span>{{ s.lastName }} {{ s.firstName }}</span>
+                    </button>
+                    <div v-if="!allStaff.length" class="ci-menu-empty">
+                      Нет активных сотрудников
+                    </div>
+                  </div>
+                </v-card>
+              </v-menu>
+            </div>
+          </v-card>
+
           <!-- Documents: PDF downloads -->
           <v-card rounded="lg" elevation="0" border class="pdf-docs-card mb-6">
             <div class="pdf-docs-header">
@@ -1309,35 +1486,67 @@ const timeline = computed(() => {
 
             <div class="pdf-docs-list">
               <!-- Contract -->
-              <button class="pdf-doc-item" :disabled="!canAccessFeature('pdfContract')" @click="canAccessFeature('pdfContract') && downloadContract()">
-                <v-icon icon="mdi-file-document-outline" size="20" color="#3b82f6" />
-                <div class="pdf-doc-item-info">
-                  <div class="pdf-doc-item-name">Договор мурабаха</div>
-                  <div class="pdf-doc-item-desc">Полный договор с условиями и графиком</div>
-                </div>
-                <v-icon :icon="canAccessFeature('pdfContract') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
-              </button>
+              <div class="pdf-doc-row">
+                <button class="pdf-doc-item" :disabled="!canAccessFeature('pdfContract')" @click="canAccessFeature('pdfContract') && downloadContract()">
+                  <v-icon icon="mdi-file-document-outline" size="20" color="#3b82f6" />
+                  <div class="pdf-doc-item-info">
+                    <div class="pdf-doc-item-name">Договор мурабаха</div>
+                    <div class="pdf-doc-item-desc">Полный договор с условиями и графиком</div>
+                  </div>
+                  <v-icon :icon="canAccessFeature('pdfContract') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
+                </button>
+                <button
+                  v-if="canAccessFeature('pdfContract')"
+                  class="pdf-wa-btn"
+                  :disabled="sendingWhatsApp"
+                  title="Отправить договор клиенту в WhatsApp"
+                  @click="sendContractWhatsApp"
+                >
+                  <v-icon icon="mdi-whatsapp" size="16" />
+                </button>
+              </div>
 
               <!-- Custom template -->
-              <button v-if="customTemplate" class="pdf-doc-item" :disabled="customTemplateLoading" @click="downloadCustomContract">
-                <v-icon icon="mdi-file-cog-outline" size="20" color="#047857" />
-                <div class="pdf-doc-item-info">
-                  <div class="pdf-doc-item-name">Мой договор</div>
-                  <div class="pdf-doc-item-desc">Из вашего шаблона</div>
-                </div>
-                <v-progress-circular v-if="customTemplateLoading" indeterminate size="14" width="2" />
-                <v-icon v-else icon="mdi-download" size="16" class="pdf-doc-item-action" />
-              </button>
+              <div v-if="customTemplate" class="pdf-doc-row">
+                <button class="pdf-doc-item" :disabled="customTemplateLoading" @click="downloadCustomContract">
+                  <v-icon icon="mdi-file-cog-outline" size="20" color="#047857" />
+                  <div class="pdf-doc-item-info">
+                    <div class="pdf-doc-item-name">Мой договор</div>
+                    <div class="pdf-doc-item-desc">Из вашего шаблона</div>
+                  </div>
+                  <v-progress-circular v-if="customTemplateLoading" indeterminate size="14" width="2" />
+                  <v-icon v-else icon="mdi-download" size="16" class="pdf-doc-item-action" />
+                </button>
+                <button
+                  class="pdf-wa-btn"
+                  :disabled="sendingWhatsApp || customTemplateLoading"
+                  title="Отправить договор клиенту в WhatsApp"
+                  @click="sendCustomContractWhatsApp"
+                >
+                  <v-icon icon="mdi-whatsapp" size="16" />
+                </button>
+              </div>
 
               <!-- Summary -->
-              <button class="pdf-doc-item" :disabled="!canAccessFeature('pdfExport')" @click="canAccessFeature('pdfExport') && downloadSummary()">
-                <v-icon icon="mdi-file-chart-outline" size="20" color="#8b5cf6" />
-                <div class="pdf-doc-item-info">
-                  <div class="pdf-doc-item-name">Сводка по сделке</div>
-                  <div class="pdf-doc-item-desc">Детали и график платежей</div>
-                </div>
-                <v-icon :icon="canAccessFeature('pdfExport') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
-              </button>
+              <div class="pdf-doc-row">
+                <button class="pdf-doc-item" :disabled="!canAccessFeature('pdfExport')" @click="canAccessFeature('pdfExport') && downloadSummary()">
+                  <v-icon icon="mdi-file-chart-outline" size="20" color="#8b5cf6" />
+                  <div class="pdf-doc-item-info">
+                    <div class="pdf-doc-item-name">Сводка по сделке</div>
+                    <div class="pdf-doc-item-desc">Детали и график платежей</div>
+                  </div>
+                  <v-icon :icon="canAccessFeature('pdfExport') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
+                </button>
+                <button
+                  v-if="canAccessFeature('pdfExport')"
+                  class="pdf-wa-btn"
+                  :disabled="sendingWhatsApp"
+                  title="Отправить сводку клиенту в WhatsApp"
+                  @click="sendSummaryWhatsApp"
+                >
+                  <v-icon icon="mdi-whatsapp" size="16" />
+                </button>
+              </div>
             </div>
           </v-card>
 
@@ -1670,14 +1879,24 @@ const timeline = computed(() => {
 
           <!-- Receipt PDF -->
           <div class="mb-5">
-            <button class="receipt-btn" @click="markPaidTarget && deal && generateReceipt(deal, markPaidTarget, authStore.user || {})">
-              <v-icon icon="mdi-file-document-outline" size="18" />
-              <div class="receipt-btn-text">
-                <span class="receipt-btn-title">Квитанция об оплате</span>
-                <span class="receipt-btn-sub">Скачать PDF</span>
-              </div>
-              <v-icon icon="mdi-download" size="16" class="receipt-btn-arrow" />
-            </button>
+            <div class="receipt-row">
+              <button class="receipt-btn" @click="markPaidTarget && deal && generateReceipt(deal, markPaidTarget, authStore.user || {})">
+                <v-icon icon="mdi-file-document-outline" size="18" />
+                <div class="receipt-btn-text">
+                  <span class="receipt-btn-title">Квитанция об оплате</span>
+                  <span class="receipt-btn-sub">Скачать PDF</span>
+                </div>
+                <v-icon icon="mdi-download" size="16" class="receipt-btn-arrow" />
+              </button>
+              <button
+                class="receipt-wa-btn"
+                :disabled="sendingWhatsApp || !markPaidTarget"
+                title="Отправить квитанцию клиенту в WhatsApp"
+                @click="markPaidTarget && sendReceiptWhatsApp(markPaidTarget)"
+              >
+                <v-icon icon="mdi-whatsapp" size="18" />
+              </button>
+            </div>
           </div>
 
           <!-- Proof screenshot upload -->
@@ -2704,11 +2923,53 @@ const timeline = computed(() => {
 }
 .pdf-doc-item:hover .pdf-doc-item-action { color: rgba(var(--v-theme-on-surface), 0.5); }
 
+/* Row wrapper that pairs the download button with a small WhatsApp action */
+.pdf-doc-row {
+  display: flex; align-items: stretch;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.04);
+}
+.pdf-doc-row:last-child { border-bottom: none; }
+.pdf-doc-row .pdf-doc-item {
+  flex: 1;
+  border-bottom: none; /* parent row handles the line */
+}
+.pdf-wa-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; flex-shrink: 0;
+  border: none; border-left: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  background: transparent;
+  color: #25d366;
+  cursor: pointer; transition: all 0.15s;
+}
+.pdf-wa-btn:hover {
+  background: rgba(37, 211, 102, 0.08);
+}
+.pdf-wa-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .dark .pdf-docs-header { border-color: rgba(255,255,255,0.06); }
 .dark .pdf-doc-item { border-color: rgba(255,255,255,0.04); }
+.dark .pdf-doc-row { border-color: rgba(255,255,255,0.04); }
+.dark .pdf-wa-btn { border-color: rgba(255,255,255,0.06); }
 .dark .pdf-doc-item:hover { background: rgba(255,255,255,0.02); }
 
 /* Receipt button */
+.receipt-row { display: flex; align-items: stretch; gap: 6px; }
+.receipt-row .receipt-btn { flex: 1; }
+.receipt-wa-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 48px; flex-shrink: 0;
+  padding: 0 10px; border-radius: 12px;
+  border: 1px solid rgba(37, 211, 102, 0.20);
+  background: rgba(37, 211, 102, 0.06);
+  color: #25d366;
+  cursor: pointer; transition: all 0.15s;
+}
+.receipt-wa-btn:hover:not(:disabled) {
+  background: rgba(37, 211, 102, 0.12);
+  border-color: rgba(37, 211, 102, 0.35);
+}
+.receipt-wa-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .receipt-btn {
   display: flex; align-items: center; gap: 12px;
   width: 100%; padding: 12px 16px; border-radius: 12px;
@@ -2837,6 +3098,18 @@ const timeline = computed(() => {
   text-align: left;
 }
 .ci-menu-item:hover { background: rgba(245, 158, 11, 0.06); }
+.ci-menu-item--active {
+  background: rgba(99, 102, 241, 0.08);
+  color: #6366f1; font-weight: 600;
+}
+.ci-menu-divider {
+  height: 1px; background: rgba(var(--v-theme-on-surface), 0.06);
+  margin: 4px 6px;
+}
+.ci-menu-empty {
+  padding: 16px 12px; text-align: center;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);
+}
 .ci-menu-item-info { flex: 1; min-width: 0; }
 .ci-menu-item-name {
   font-size: 13px; font-weight: 600;

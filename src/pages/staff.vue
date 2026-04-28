@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
-import type { StaffMember, StaffRole } from '@/types'
-import { STAFF_ROLE_LABELS } from '@/types'
+import { useChats } from '@/composables/useChats'
+import ChatPanel from '@/components/ChatPanel.vue'
+import type { StaffMember, StaffRole, DealsAccessMode } from '@/types'
+import { STAFF_ROLE_LABELS, ROLE_ROUTE_ACCESS, STAFF_TOGGLEABLE_ROUTES } from '@/types'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -21,12 +23,68 @@ const addForm = ref({ email: '', firstName: '', lastName: '', role: 'MANAGER' as
 const editDialog = ref(false)
 const editLoading = ref(false)
 const editTarget = ref<StaffMember | null>(null)
-const editForm = ref({ role: 'MANAGER' as StaffRole, isActive: true })
+const editForm = ref({
+  role: 'MANAGER' as StaffRole,
+  isActive: true,
+  dealsAccessMode: 'ALL' as DealsAccessMode,
+  accessOverrides: [] as string[],
+  canCreateDeals: true,
+})
+
+// Routes available to toggle for the current edit target — intersection of
+// the role's base set with the toggleable list.
+const editToggleableRoutes = computed(() => {
+  const role = editForm.value.role
+  const baseRoutes = new Set(ROLE_ROUTE_ACCESS[role] || [])
+  return STAFF_TOGGLEABLE_ROUTES.filter((r) => baseRoutes.has(r.path))
+})
+
+function isRouteEnabled(path: string): boolean {
+  return !editForm.value.accessOverrides.includes(path)
+}
+
+function toggleRoute(path: string) {
+  const idx = editForm.value.accessOverrides.indexOf(path)
+  if (idx >= 0) editForm.value.accessOverrides.splice(idx, 1)
+  else editForm.value.accessOverrides.push(path)
+}
 
 // Delete
 const deleteDialog = ref(false)
 const deleteTarget = ref<StaffMember | null>(null)
 const deleteLoading = ref(false)
+
+// Inline chat (right panel of split layout)
+const chats = useChats()
+const selectedStaff = ref<StaffMember | null>(null)
+const selectedChatId = ref<string | null>(null)
+const chatOpening = ref(false)
+let threadsPollTimer: number | null = null
+
+async function selectStaff(member: StaffMember) {
+  if (selectedStaff.value?.id === member.id) return
+  selectedStaff.value = member
+  selectedChatId.value = null
+  chatOpening.value = true
+  try {
+    const thread = await chats.findOrCreate(member.id)
+    selectedChatId.value = thread.id
+    // Optimistic local zero — backend will reconfirm via fetchThreads next poll
+    const t = chats.threads.value.find((x) => x.id === thread.id)
+    if (t) t.unreadCount = 0
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось открыть чат')
+    selectedStaff.value = null
+  } finally {
+    chatOpening.value = false
+  }
+}
+
+function closeSelected() {
+  selectedStaff.value = null
+  selectedChatId.value = null
+  chats.fetchThreads().catch(() => {})
+}
 
 const ROLE_COLORS: Record<StaffRole, string> = {
   MANAGER: '#3b82f6',
@@ -41,12 +99,21 @@ const ROLE_ICONS: Record<StaffRole, string> = {
 async function loadStaff() {
   pageLoading.value = true
   try {
-    staff.value = await api.get<StaffMember[]>('/auth/investor/staff')
+    const [list] = await Promise.all([
+      api.get<StaffMember[]>('/auth/investor/staff'),
+      chats.fetchThreads().catch(() => {}),
+    ])
+    staff.value = list
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки')
   } finally {
     pageLoading.value = false
   }
+}
+
+function staffUnread(staffId: string): number {
+  const t = chats.threads.value.find((x) => x.counterpart.id === staffId)
+  return t?.unreadCount || 0
 }
 
 function openAdd() {
@@ -70,7 +137,13 @@ async function addStaffMember() {
 
 function openEdit(member: StaffMember) {
   editTarget.value = member
-  editForm.value = { role: member.role, isActive: member.isActive }
+  editForm.value = {
+    role: member.role,
+    isActive: member.isActive,
+    dealsAccessMode: member.dealsAccessMode || 'ALL',
+    accessOverrides: [...(member.accessOverrides || [])],
+    canCreateDeals: member.canCreateDeals !== false,
+  }
   editDialog.value = true
 }
 
@@ -123,7 +196,14 @@ const activeCount = computed(() => staff.value.filter((s) => s.isActive).length)
 const managersCount = computed(() => staff.value.filter((s) => s.role === 'MANAGER').length)
 const operatorsCount = computed(() => staff.value.filter((s) => s.role === 'OPERATOR').length)
 
-onMounted(loadStaff)
+onMounted(async () => {
+  await loadStaff()
+  threadsPollTimer = window.setInterval(() => chats.fetchThreads().catch(() => {}), 15000)
+})
+
+onBeforeUnmount(() => {
+  if (threadsPollTimer) window.clearInterval(threadsPollTimer)
+})
 </script>
 
 <template>
@@ -173,98 +253,103 @@ onMounted(loadStaff)
         </div>
       </div>
 
-      <!-- Main card -->
-      <v-card rounded="lg" elevation="0" border>
-        <div class="pa-4">
-          <!-- Header -->
-          <div class="d-flex align-center ga-3 mb-4 flex-wrap">
-            <div class="text-body-2 text-medium-emphasis flex-grow-1">
-              Управляйте доступом сотрудников к платформе
-            </div>
-            <button class="sf-add-btn" @click="openAdd">
+      <!-- Split: staff list (left) + chat panel (right) -->
+      <div class="sf-shell">
+        <!-- LEFT: staff list -->
+        <aside class="sf-sidebar">
+          <header class="sf-sidebar-header">
+            <span class="sf-sidebar-title">Сотрудники</span>
+            <button class="sf-sidebar-add" @click="openAdd" title="Добавить сотрудника">
               <v-icon icon="mdi-plus" size="18" />
-              <span class="d-none d-sm-inline">Добавить сотрудника</span>
             </button>
-          </div>
+          </header>
 
-          <!-- Info banner -->
-          <div class="sf-info-banner mb-4">
-            <div class="sf-info-icon">
-              <v-icon icon="mdi-information-outline" size="18" color="primary" />
-            </div>
-            <div>
-              <div class="sf-info-title">Роли и доступ</div>
-              <div class="sf-info-text">
-                <strong>Менеджер</strong> — полный доступ ко всем разделам кроме настроек и управления сотрудниками.
-                <strong>Оператор</strong> — только сделки, клиенты, платежи и калькулятор.
-                На email сотрудника будут отправлены логин и пароль для входа.
-              </div>
-            </div>
-          </div>
-
-          <!-- Staff list -->
-          <div v-if="staff.length" class="sf-list">
+          <div v-if="staff.length" class="sf-sidebar-list">
             <div
               v-for="m in staff"
               :key="m.id"
-              class="sf-card"
-              :class="{ 'sf-card--inactive': !m.isActive }"
+              class="sf-row"
+              :class="{
+                'sf-row--active': selectedStaff?.id === m.id,
+                'sf-row--inactive': !m.isActive,
+              }"
+              @click="selectStaff(m)"
             >
-              <div class="sf-header">
-                <div class="sf-avatar" :style="{ background: ROLE_COLORS[m.role] + '14', color: ROLE_COLORS[m.role] }">
-                  {{ m.firstName[0] }}{{ m.lastName[0] }}
+              <div class="sf-avatar" :style="{ background: ROLE_COLORS[m.role] + '14', color: ROLE_COLORS[m.role] }">
+                {{ m.firstName[0] }}{{ m.lastName[0] }}
+              </div>
+              <div class="sf-row-main">
+                <div class="sf-row-line">
+                  <span class="sf-row-name">{{ m.firstName }} {{ m.lastName }}</span>
+                  <span v-if="staffUnread(m.id) > 0" class="sf-row-badge">
+                    {{ staffUnread(m.id) > 99 ? '99+' : staffUnread(m.id) }}
+                  </span>
                 </div>
-
-                <div class="sf-main">
-                  <div class="sf-name-row">
-                    <span class="sf-name">{{ m.firstName }} {{ m.lastName }}</span>
-                    <span class="sf-role-badge" :style="{ background: ROLE_COLORS[m.role] + '14', color: ROLE_COLORS[m.role] }">
-                      <v-icon :icon="ROLE_ICONS[m.role]" size="12" class="mr-1" />
-                      {{ STAFF_ROLE_LABELS[m.role] }}
-                    </span>
-                    <span v-if="!m.isActive" class="sf-role-badge" style="background: rgba(239,68,68,0.08); color: #ef4444;">
-                      Деактивирован
-                    </span>
-                  </div>
-                  <div class="sf-meta">{{ m.email }} · {{ formatDate(m.createdAt) }}</div>
+                <div class="sf-row-line">
+                  <span class="sf-row-role" :style="{ color: ROLE_COLORS[m.role] }">
+                    <v-icon :icon="ROLE_ICONS[m.role]" size="11" class="mr-1" />
+                    {{ STAFF_ROLE_LABELS[m.role] }}
+                  </span>
+                  <span v-if="!m.isActive" class="sf-row-meta sf-row-meta--off">· Отключён</span>
                 </div>
-
-                <!-- Desktop stats -->
-                <div class="sf-stats d-none d-md-flex">
-                  <div class="sf-stat">
-                    <div class="sf-stat-value" :style="{ color: m.isActive ? '#10b981' : '#ef4444' }">
-                      {{ m.isActive ? 'Активен' : 'Отключён' }}
-                    </div>
-                    <div class="sf-stat-label">Статус</div>
-                  </div>
-                </div>
-
-                <div class="sf-actions">
-                  <button class="sf-action-btn" title="Редактировать" @click="openEdit(m)">
-                    <v-icon icon="mdi-pencil-outline" size="16" />
-                  </button>
-                  <button class="sf-action-btn sf-action-btn--danger" title="Удалить" @click="openDelete(m)">
-                    <v-icon icon="mdi-delete-outline" size="16" />
-                  </button>
-                </div>
+              </div>
+              <div class="sf-row-actions">
+                <button class="sf-action-btn" title="Редактировать" @click.stop="openEdit(m)">
+                  <v-icon icon="mdi-pencil-outline" size="14" />
+                </button>
+                <button class="sf-action-btn sf-action-btn--danger" title="Удалить" @click.stop="openDelete(m)">
+                  <v-icon icon="mdi-delete-outline" size="14" />
+                </button>
               </div>
             </div>
           </div>
 
-          <!-- Empty state -->
-          <div v-else class="sf-empty">
-            <div class="sf-empty-icon">
-              <v-icon icon="mdi-account-key-outline" size="36" color="grey-lighten-1" />
-            </div>
-            <div class="sf-empty-title">Нет сотрудников</div>
-            <div class="sf-empty-subtitle">Добавьте первого сотрудника для совместной работы</div>
-            <button class="sf-add-btn mt-4" @click="openAdd">
-              <v-icon icon="mdi-plus" size="18" />
-              <span>Добавить сотрудника</span>
+          <!-- Sidebar empty state -->
+          <div v-else class="sf-sidebar-empty">
+            <v-icon icon="mdi-account-key-outline" size="32" color="grey-lighten-1" />
+            <div class="sf-sidebar-empty-title">Нет сотрудников</div>
+            <div class="sf-sidebar-empty-sub">Добавьте первого, чтобы начать переписку</div>
+            <button class="sf-add-btn mt-3" @click="openAdd">
+              <v-icon icon="mdi-plus" size="16" />
+              <span>Добавить</span>
             </button>
           </div>
-        </div>
-      </v-card>
+        </aside>
+
+        <!-- RIGHT: chat panel -->
+        <section class="sf-main-panel">
+          <template v-if="selectedStaff">
+            <header class="sf-chat-bar">
+              <div class="sf-avatar sf-avatar--sm" :style="{ background: ROLE_COLORS[selectedStaff.role] + '14', color: ROLE_COLORS[selectedStaff.role] }">
+                {{ selectedStaff.firstName[0] }}{{ selectedStaff.lastName[0] }}
+              </div>
+              <div class="sf-chat-bar-info">
+                <div class="sf-chat-bar-name">{{ selectedStaff.firstName }} {{ selectedStaff.lastName }}</div>
+                <div class="sf-chat-bar-sub">
+                  {{ STAFF_ROLE_LABELS[selectedStaff.role] }} · {{ selectedStaff.email }}{{ selectedStaff.isActive ? '' : ' · Деактивирован' }}
+                </div>
+              </div>
+              <button class="sf-chat-bar-close" title="Закрыть чат" @click="closeSelected">
+                <v-icon icon="mdi-close" size="18" />
+              </button>
+            </header>
+            <div v-if="chatOpening" class="d-flex justify-center pa-6">
+              <v-progress-circular indeterminate size="20" color="primary" />
+            </div>
+            <ChatPanel v-else :chat-id="selectedChatId" />
+          </template>
+
+          <!-- Empty state when no staff selected -->
+          <div v-else class="sf-placeholder">
+            <v-icon icon="mdi-message-outline" size="48" color="grey-lighten-1" />
+            <div class="sf-placeholder-title">Выберите сотрудника</div>
+            <div class="sf-placeholder-sub">
+              Слева — список ваших работников. Кликните, чтобы открыть переписку.
+              Упоминайте сделки через <code>#номер</code>.
+            </div>
+          </div>
+        </section>
+      </div>
     </template>
 
     <!-- Add Dialog -->
@@ -361,6 +446,76 @@ onMounted(loadStaff)
                 </div>
               </button>
             </div>
+          </div>
+
+          <div class="mb-5">
+            <div class="sf-section-label mb-3">Доступ к сделкам</div>
+            <div class="sf-role-grid">
+              <button
+                class="sf-role-card"
+                :class="{ 'sf-role-card--active': editForm.dealsAccessMode === 'ALL' }"
+                :style="editForm.dealsAccessMode === 'ALL' ? { borderColor: '#10b981', background: '#10b98106' } : {}"
+                @click="editForm.dealsAccessMode = 'ALL'"
+              >
+                <div class="sf-role-card-icon" style="background: #10b98114; color: #10b981;">
+                  <v-icon icon="mdi-folder-multiple-outline" size="20" />
+                </div>
+                <div class="sf-role-card-label">Все сделки</div>
+                <div class="sf-role-card-desc">Видит все сделки и платежи партнёра</div>
+                <div v-if="editForm.dealsAccessMode === 'ALL'" class="sf-role-card-check">
+                  <v-icon icon="mdi-check-circle" size="18" color="#10b981" />
+                </div>
+              </button>
+              <button
+                class="sf-role-card"
+                :class="{ 'sf-role-card--active': editForm.dealsAccessMode === 'ASSIGNED_ONLY' }"
+                :style="editForm.dealsAccessMode === 'ASSIGNED_ONLY' ? { borderColor: '#f59e0b', background: '#f59e0b06' } : {}"
+                @click="editForm.dealsAccessMode = 'ASSIGNED_ONLY'"
+              >
+                <div class="sf-role-card-icon" style="background: #f59e0b14; color: #f59e0b;">
+                  <v-icon icon="mdi-account-arrow-right-outline" size="20" />
+                </div>
+                <div class="sf-role-card-label">Только назначенные</div>
+                <div class="sf-role-card-desc">Видит только сделки, привязанные к нему</div>
+                <div v-if="editForm.dealsAccessMode === 'ASSIGNED_ONLY'" class="sf-role-card-check">
+                  <v-icon icon="mdi-check-circle" size="18" color="#f59e0b" />
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div class="sf-active-toggle mb-5" :class="{ 'sf-active-toggle--off': !editForm.canCreateDeals }" @click="editForm.canCreateDeals = !editForm.canCreateDeals">
+            <div class="sf-active-toggle-dot" :style="{ background: editForm.canCreateDeals ? '#10b981' : '#9ca3af' }" />
+            <div class="sf-active-toggle-text">
+              <div class="sf-active-toggle-title">Создание сделок</div>
+              <div class="sf-active-toggle-desc">{{ editForm.canCreateDeals ? 'Может создавать новые сделки и импорт' : 'Кнопка "Создать" в шапке скрыта' }}</div>
+            </div>
+            <div class="sf-switch-track" :class="{ 'sf-switch-track--on': editForm.canCreateDeals }">
+              <div class="sf-switch-thumb" />
+            </div>
+          </div>
+
+          <div v-if="editToggleableRoutes.length" class="mb-5">
+            <div class="sf-section-label mb-3">Доступ к разделам</div>
+            <div class="sf-routes-grid">
+              <button
+                v-for="r in editToggleableRoutes"
+                :key="r.path"
+                type="button"
+                class="sf-route-card"
+                :class="{ 'sf-route-card--off': !isRouteEnabled(r.path) }"
+                @click="toggleRoute(r.path)"
+              >
+                <v-icon :icon="r.icon" size="18" />
+                <span class="sf-route-label">{{ r.label }}</span>
+                <v-icon
+                  :icon="isRouteEnabled(r.path) ? 'mdi-check-circle' : 'mdi-close-circle-outline'"
+                  size="16"
+                  class="sf-route-mark"
+                />
+              </button>
+            </div>
+            <div class="sf-routes-hint">Снимите галку, чтобы скрыть раздел у работника</div>
           </div>
 
           <div class="sf-active-toggle mb-6" :class="{ 'sf-active-toggle--off': !editForm.isActive }" @click="editForm.isActive = !editForm.isActive">
@@ -698,5 +853,264 @@ onMounted(loadStaff)
   background: rgba(239, 68, 68, 0.08);
   display: flex; align-items: center; justify-content: center;
   margin: 0 auto;
+}
+
+/* ── Route checkboxes (per-staff access overrides) ── */
+.sf-routes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.sf-route-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  text-align: left;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.sf-route-card:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+.dark .sf-route-card { background: rgba(255,255,255,0.02); border-color: rgba(255,255,255,0.08); }
+.dark .sf-route-card:hover { background: rgba(255,255,255,0.05); }
+.sf-route-card--off {
+  opacity: 0.5;
+  background: transparent;
+}
+.sf-route-card--off .sf-route-mark { color: rgba(var(--v-theme-on-surface), 0.35); }
+.sf-route-card:not(.sf-route-card--off) .sf-route-mark { color: #10b981; }
+.sf-route-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sf-routes-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+/* ── Split layout shell ── */
+.sf-shell {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 0;
+  height: calc(100vh - 280px);
+  min-height: 480px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgb(var(--v-theme-surface));
+}
+.dark .sf-shell { border-color: rgba(255,255,255,0.06); background: #1a1a26; }
+
+/* LEFT — staff sidebar */
+.sf-sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.015);
+  min-height: 0;
+}
+.dark .sf-sidebar { border-right-color: rgba(255,255,255,0.06); background: #16161f; }
+
+.sf-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 10px 16px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.dark .sf-sidebar-header { border-bottom-color: rgba(255,255,255,0.06); }
+.sf-sidebar-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+.sf-sidebar-add {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  background: rgba(4, 120, 87, 0.1);
+  color: #047857;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s;
+}
+.sf-sidebar-add:hover { background: rgba(4, 120, 87, 0.18); }
+.dark .sf-sidebar-add { background: rgba(4, 120, 87, 0.18); color: #34d399; }
+
+.sf-sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px 12px;
+}
+
+.sf-sidebar-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px 16px;
+  gap: 8px;
+}
+.sf-sidebar-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.sf-sidebar-empty-sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  max-width: 220px;
+}
+
+/* Compact staff row */
+.sf-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px;
+  margin: 2px 0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sf-row:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+.dark .sf-row:hover { background: rgba(255,255,255,0.04); }
+.sf-row--active { background: rgba(var(--v-theme-primary), 0.08); }
+.sf-row--active:hover { background: rgba(var(--v-theme-primary), 0.12); }
+.sf-row--inactive { opacity: 0.55; }
+
+.sf-avatar--sm { width: 36px; height: 36px; min-width: 36px; font-size: 13px; border-radius: 10px; }
+
+.sf-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sf-row-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.sf-row-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sf-row-role {
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+}
+.sf-row-meta {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.sf-row-meta--off { color: #ef4444; }
+.sf-row-badge {
+  flex-shrink: 0;
+  background: rgb(var(--v-theme-primary));
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  min-width: 18px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.sf-row-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.sf-row:hover .sf-row-actions,
+.sf-row--active .sf-row-actions { opacity: 1; }
+
+/* RIGHT — chat panel */
+.sf-main-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sf-chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  flex-shrink: 0;
+}
+.dark .sf-chat-bar { border-bottom-color: rgba(255,255,255,0.06); }
+.sf-chat-bar-info { flex: 1; min-width: 0; }
+.sf-chat-bar-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+.sf-chat-bar-sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.sf-chat-bar-close {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sf-chat-bar-close:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+
+.sf-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+  padding: 32px;
+}
+.sf-placeholder-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.sf-placeholder-sub {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  max-width: 360px;
+  line-height: 1.5;
+}
+.sf-placeholder-sub code {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 12px;
 }
 </style>

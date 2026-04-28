@@ -6,6 +6,9 @@ import { useToast } from '@/composables/useToast'
 import { useCapital } from '@/composables/useCapital'
 import { Bar } from 'vue-chartjs'
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend } from 'chart.js'
+import CashflowJournal from '@/components/CashflowJournal.vue'
+import CoInvestorJournalEmbed from '@/components/CoInvestorJournalEmbed.vue'
+import { useCoInvestors } from '@/composables/useCoInvestors'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
@@ -50,6 +53,14 @@ interface CapitalOperation {
   category?: { id: string; name: string; icon?: string; color?: string }
   isManual?: boolean
 }
+interface CapitalDealPayment {
+  id: string
+  number: number
+  amount: number
+  status: 'PENDING' | 'PAID' | 'OVERDUE' | 'CLOSED_EARLY'
+  dueDate: string
+  paidAt: string | null
+}
 interface CapitalDeal {
   id: string
   productName: string
@@ -57,15 +68,33 @@ interface CapitalDeal {
   purchasePrice: number
   totalPrice: number
   markup: number
+  downPayment: number
   received: number
   status: string
   progress: number
+  payments: CapitalDealPayment[]
 }
 
 const capitalDetails = ref<{ deals: CapitalDeal[]; operations: CapitalOperation[]; coInvestors: any[] } | null>(null)
-const detailsTab = ref<'operations' | 'deals'>('operations')
+
+function coInvestorsTotal(field: 'realizedProfit' | 'totalPayout' | 'balanceOwed'): number {
+  if (!capitalDetails.value?.coInvestors?.length) return 0
+  return capitalDetails.value.coInvestors.reduce((s: number, c: any) => s + (c[field] ?? 0), 0)
+}
+const detailsTab = ref<'operations' | 'deals' | 'journal'>('journal')
 const showAllOps = ref(false)
 const wfExpanded = ref<string | null>(null)
+
+// Cashier scope: 'partner' = own ledger, otherwise the CoInvestor's id.
+// Lets the partner see CI cashiers without leaving /finance.
+const cashierScope = ref<'partner' | string>('partner')
+const { coInvestors: ciList, fetchCoInvestors } = useCoInvestors()
+fetchCoInvestors()
+const activeCi = computed(() =>
+  cashierScope.value === 'partner'
+    ? null
+    : ciList.value.find((c) => c.id === cashierScope.value) ?? null,
+)
 
 async function fetchCapitalDetails() {
   try {
@@ -94,6 +123,66 @@ const operationsPayout = computed(() => {
     .filter(o => o.type === 'PAYOUT')
     .reduce((s, o) => s + o.amount, 0)
 })
+
+// ── Per-deal cash-flow breakdown helpers ──
+// Every ruble client pays splits into `cost recovery` (returns purchase) and
+// `profit` (markup), in the proportion `purchasePrice / totalPrice`. Showing
+// both halves explicitly makes "В работе" math obvious — otherwise the number
+// looks "off" by the profit amount.
+function dealCostRatio(d: CapitalDeal): number {
+  return d.totalPrice > 0 ? d.purchasePrice / d.totalPrice : 0
+}
+function dealCostRecovered(d: CapitalDeal): number {
+  return Math.round(d.received * dealCostRatio(d))
+}
+function dealProfitEarned(d: CapitalDeal): number {
+  if (d.totalPrice <= 0) return 0
+  return Math.round(d.received * (d.markup / d.totalPrice))
+}
+function dealInProgress(d: CapitalDeal): number {
+  return Math.max(d.purchasePrice - dealCostRecovered(d), 0)
+}
+function dealProfitRemaining(d: CapitalDeal): number {
+  return Math.max(d.markup - dealProfitEarned(d), 0)
+}
+
+// Profit contribution from a single payment within a deal
+function paymentProfit(d: CapitalDeal, p: CapitalDealPayment): number {
+  if (d.totalPrice <= 0) return 0
+  return Math.round(p.amount * (d.markup / d.totalPrice))
+}
+const PAYMENT_STATUS_LABEL: Record<CapitalDealPayment['status'], string> = {
+  PAID: 'оплачен',
+  PENDING: 'ожидается',
+  OVERDUE: 'просрочен',
+  CLOSED_EARLY: 'закрыт досрочно',
+}
+
+const activeDealsList = computed(() =>
+  capitalDetails.value?.deals.filter(d => d.status === 'ACTIVE') ?? [],
+)
+const activeDealsPurchaseTotal = computed(() =>
+  activeDealsList.value.reduce((s, d) => s + d.purchasePrice, 0),
+)
+const activeDealsCostRecovered = computed(() =>
+  activeDealsList.value.reduce((s, d) => s + dealCostRecovered(d), 0),
+)
+
+// Track which deals are expanded in waterfall panels.
+// Set of deal IDs — the deal is expanded if its id is in the set.
+const expandedInProfit = ref<Set<string>>(new Set())
+const expandedInProgress = ref<Set<string>>(new Set())
+
+function toggleProfitDeal(dealId: string) {
+  const next = new Set(expandedInProfit.value)
+  if (next.has(dealId)) next.delete(dealId); else next.add(dealId)
+  expandedInProfit.value = next
+}
+function toggleProgressDeal(dealId: string) {
+  const next = new Set(expandedInProgress.value)
+  if (next.has(dealId)) next.delete(dealId); else next.add(dealId)
+  expandedInProgress.value = next
+}
 
 // ── Types ──
 
@@ -560,9 +649,14 @@ function formatTransactionAmount(t: Transaction) {
               <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.inProgress) }}</div>
               <div class="wf-item-label">В работе · {{ capitalDetails.deals?.filter(d => d.status === 'ACTIVE').length || 0 }}</div>
             </button>
-            <button v-if="capitalDetails.coInvestorPayout > 0" class="wf-item" @click="wfExpanded = null">
+            <button
+              v-if="capitalDetails.coInvestorPayout > 0"
+              class="wf-item"
+              :class="{ 'wf-item--active': wfExpanded === 'coInvestors' }"
+              @click="wfExpanded = wfExpanded === 'coInvestors' ? null : 'coInvestors'"
+            >
               <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.coInvestorPayout) }}</div>
-              <div class="wf-item-label">Доля со-инвесторов</div>
+              <div class="wf-item-label">Доля со-инвесторов · {{ capitalDetails.coInvestors?.length || 0 }}</div>
             </button>
             <button v-if="capitalDetails.manualBalance !== 0" class="wf-item" @click="wfExpanded = null">
               <div class="wf-item-value" :style="{ color: capitalDetails.manualBalance > 0 ? '#3b82f6' : '#ef4444' }">
@@ -596,28 +690,189 @@ function formatTransactionAmount(t: Transaction) {
 
             <template v-else-if="wfExpanded === 'profit' && capitalDetails.deals">
               <div class="wf-panel-title">Прибыль по сделкам</div>
-              <div v-for="d in capitalDetails.deals.filter(x => x.markup > 0)" :key="d.id" class="wf-expand-row">
-                <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
-                  {{ d.productName }}
-                  <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
-                  <span class="wf-expand-dim"> · {{ d.status === 'COMPLETED' ? '✓' : d.progress + '%' }}</span>
-                </router-link>
-                <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(d.status === 'COMPLETED' ? d.markup : Math.round(d.received / (d.totalPrice || 1) * d.markup)) }}</span>
+              <div v-for="d in capitalDetails.deals.filter(x => x.markup > 0)" :key="d.id" class="wf-acc">
+                <button class="wf-acc-head" @click="toggleProfitDeal(d.id)">
+                  <v-icon
+                    :icon="expandedInProfit.has(d.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'"
+                    size="16"
+                    class="wf-acc-chevron"
+                  />
+                  <div class="wf-acc-title">
+                    <router-link :to="`/deals/${d.id}`" class="wf-expand-link" @click.stop>
+                      {{ d.productName }}
+                      <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
+                    </router-link>
+                    <span class="wf-acc-sub">из ожидаемой {{ formatCurrencyShort(d.markup) }}</span>
+                  </div>
+                  <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(dealProfitEarned(d)) }}</span>
+                </button>
+
+                <div v-if="expandedInProfit.has(d.id)" class="wf-acc-body">
+                  <!-- Down payment row, if any -->
+                  <div v-if="d.downPayment > 0" class="wf-pay-row">
+                    <span class="wf-pay-status wf-pay-status--paid">✓</span>
+                    <span class="wf-pay-name">Первоначальный взнос</span>
+                    <span class="wf-pay-amount-dim">({{ formatCurrencyShort(d.downPayment) }})</span>
+                    <span class="wf-pay-flex" />
+                    <span class="wf-pay-profit">+{{ formatCurrency(Math.round(d.downPayment * (d.markup / Math.max(d.totalPrice, 1)))) }}</span>
+                  </div>
+
+                  <!-- Each payment row -->
+                  <div v-for="p in d.payments" :key="p.id" class="wf-pay-row">
+                    <span class="wf-pay-status" :class="`wf-pay-status--${p.status.toLowerCase()}`">
+                      <v-icon
+                        :icon="p.status === 'PAID' ? 'mdi-check' : (p.status === 'OVERDUE' ? 'mdi-alert' : 'mdi-clock-outline')"
+                        size="11"
+                      />
+                    </span>
+                    <span class="wf-pay-name">Платёж #{{ p.number }}</span>
+                    <span class="wf-pay-amount-dim">({{ formatCurrencyShort(p.amount) }})</span>
+                    <span class="wf-pay-status-text">{{ PAYMENT_STATUS_LABEL[p.status] }}</span>
+                    <span class="wf-pay-flex" />
+                    <span v-if="p.status === 'PAID'" class="wf-pay-profit">+{{ formatCurrency(paymentProfit(d, p)) }}</span>
+                    <span v-else class="wf-pay-profit-future">— ожидается {{ formatCurrencyShort(paymentProfit(d, p)) }}</span>
+                  </div>
+                </div>
               </div>
               <div v-if="capitalDetails.deals.every(x => x.markup === 0)" class="wf-expand-empty">Прибыли пока нет</div>
             </template>
 
             <template v-else-if="wfExpanded === 'deployed' && capitalDetails.deals">
-              <div class="wf-panel-title">Активные сделки</div>
-              <div v-for="d in capitalDetails.deals.filter(x => x.status === 'ACTIVE')" :key="d.id" class="wf-expand-row">
-                <router-link :to="`/deals/${d.id}`" class="wf-expand-link">
-                  {{ d.productName }}
-                  <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
-                  <span class="wf-expand-dim"> · {{ d.progress }}%</span>
-                </router-link>
-                <span class="wf-expand-val" style="color: #f59e0b;">{{ formatCurrency(Math.max(d.purchasePrice - d.received, 0)) }}</span>
+              <div class="wf-panel-title">Капитал в активных сделках</div>
+
+              <!-- Top-level math — shows where the number comes from -->
+              <div class="wf-formula">
+                <div class="wf-formula-row">
+                  <span>Закупка по активным сделкам</span>
+                  <span class="wf-formula-val">{{ formatCurrency(activeDealsPurchaseTotal) }}</span>
+                </div>
+                <div class="wf-formula-row wf-formula-row--minus">
+                  <span>− Возврат закупки клиентами</span>
+                  <span class="wf-formula-val">{{ formatCurrency(activeDealsCostRecovered) }}</span>
+                </div>
+                <div class="wf-formula-row wf-formula-row--total">
+                  <span>В работе</span>
+                  <span class="wf-formula-val">{{ formatCurrency(capitalDetails.inProgress) }}</span>
+                </div>
+                <div class="wf-formula-hint">
+                  <v-icon icon="mdi-information-outline" size="13" />
+                  <span>Каждый платёж клиента делится на возврат закупки и прибыль в пропорции <b>наценка / итоговая цена</b>. Прибыль учитывается отдельно.</span>
+                </div>
+              </div>
+
+              <!-- Per-deal accordion with full breakdown table inside -->
+              <div class="wf-expand-subtitle">По сделкам</div>
+              <div v-for="d in capitalDetails.deals.filter(x => x.status === 'ACTIVE')" :key="d.id" class="wf-acc">
+                <button class="wf-acc-head" @click="toggleProgressDeal(d.id)">
+                  <v-icon
+                    :icon="expandedInProgress.has(d.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'"
+                    size="16"
+                    class="wf-acc-chevron"
+                  />
+                  <div class="wf-acc-title">
+                    <router-link :to="`/deals/${d.id}`" class="wf-expand-link" @click.stop>
+                      {{ d.productName }}
+                      <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
+                    </router-link>
+                    <span class="wf-acc-sub">{{ d.progress }}% оплачено</span>
+                  </div>
+                  <span class="wf-expand-val" style="color: #f59e0b;">{{ formatCurrency(dealInProgress(d)) }}</span>
+                </button>
+
+                <div v-if="expandedInProgress.has(d.id)" class="wf-acc-body">
+                  <table class="wf-table">
+                    <thead>
+                      <tr>
+                        <th></th>
+                        <th class="wf-table-num">Получено</th>
+                        <th class="wf-table-num">Ожидается</th>
+                        <th class="wf-table-num">Всего</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td class="wf-table-row-label">Возврат закупки</td>
+                        <td class="wf-table-num">{{ formatCurrency(dealCostRecovered(d)) }}</td>
+                        <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(dealInProgress(d)) }}</td>
+                        <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(d.purchasePrice) }}</td>
+                      </tr>
+                      <tr>
+                        <td class="wf-table-row-label">Прибыль (наценка)</td>
+                        <td class="wf-table-num" style="color: #10b981;">{{ formatCurrency(dealProfitEarned(d)) }}</td>
+                        <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(dealProfitRemaining(d)) }}</td>
+                        <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(d.markup) }}</td>
+                      </tr>
+                      <tr class="wf-table-total">
+                        <td class="wf-table-row-label">Поступления</td>
+                        <td class="wf-table-num">{{ formatCurrency(d.received) }}</td>
+                        <td class="wf-table-num">{{ formatCurrency(Math.max(d.totalPrice - d.received, 0)) }}</td>
+                        <td class="wf-table-num">{{ formatCurrency(d.totalPrice) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
               <div v-if="capitalDetails.deals.every(x => x.status !== 'ACTIVE')" class="wf-expand-empty">Нет активных сделок</div>
+            </template>
+
+            <template v-else-if="wfExpanded === 'coInvestors' && capitalDetails.coInvestors">
+              <div class="wf-panel-title">Доля со-инвесторов</div>
+
+              <!-- Top-level math -->
+              <div class="wf-formula">
+                <div class="wf-formula-row">
+                  <span>Начислено всего</span>
+                  <span class="wf-formula-val">{{ formatCurrency(coInvestorsTotal('realizedProfit')) }}</span>
+                </div>
+                <div class="wf-formula-row wf-formula-row--minus">
+                  <span>− Уже выплачено</span>
+                  <span class="wf-formula-val">{{ formatCurrency(coInvestorsTotal('totalPayout')) }}</span>
+                </div>
+                <div class="wf-formula-row wf-formula-row--total">
+                  <span>Остаток к выплате</span>
+                  <span class="wf-formula-val">{{ formatCurrency(coInvestorsTotal('balanceOwed')) }}</span>
+                </div>
+                <div class="wf-formula-hint">
+                  <v-icon icon="mdi-information-outline" size="13" />
+                  <span>Вычитается из доступного капитала, потому что эта прибыль уже принадлежит со-инвесторам.</span>
+                </div>
+              </div>
+
+              <!-- Per-CI rows -->
+              <div class="wf-expand-subtitle">По со-инвесторам</div>
+              <div class="ci-breakdown-list">
+                <router-link
+                  v-for="ci in capitalDetails.coInvestors"
+                  :key="ci.id"
+                  :to="`/co-investors/${ci.id}`"
+                  class="ci-breakdown-row"
+                >
+                  <div class="ci-breakdown-head">
+                    <div class="ci-breakdown-name">
+                      {{ ci.name }}
+                      <span class="ci-breakdown-pct">{{ ci.profitPercent }}%</span>
+                    </div>
+                    <div class="ci-breakdown-balance" :class="{ 'ci-breakdown-balance--owed': (ci.balanceOwed ?? 0) > 0 }">
+                      {{ formatCurrency(ci.balanceOwed ?? 0) }}
+                      <span class="ci-breakdown-balance-sub">к выплате</span>
+                    </div>
+                  </div>
+                  <div class="ci-breakdown-stats">
+                    <div class="ci-breakdown-stat">
+                      <span class="ci-breakdown-stat-label">Капитал</span>
+                      <span class="ci-breakdown-stat-val" style="color: #3b82f6;">{{ formatCurrency(ci.capital) }}</span>
+                    </div>
+                    <div class="ci-breakdown-stat">
+                      <span class="ci-breakdown-stat-label">Начислено</span>
+                      <span class="ci-breakdown-stat-val" style="color: #047857;">{{ formatCurrency(ci.realizedProfit ?? 0) }}</span>
+                    </div>
+                    <div class="ci-breakdown-stat">
+                      <span class="ci-breakdown-stat-label">Выплачено</span>
+                      <span class="ci-breakdown-stat-val" style="color: #7c3aed;">{{ formatCurrency(ci.totalPayout ?? 0) }}</span>
+                    </div>
+                  </div>
+                </router-link>
+              </div>
             </template>
 
             <template v-else>
@@ -656,6 +911,9 @@ function formatTransactionAmount(t: Transaction) {
           <!-- Header with tabs and actions -->
           <div class="d-flex align-center ga-3 mb-4 flex-wrap">
             <div class="fn-tabs">
+              <button class="fn-tab" :class="{ 'fn-tab--active': detailsTab === 'journal' }" @click="detailsTab = 'journal'">
+                Касса
+              </button>
               <button class="fn-tab" :class="{ 'fn-tab--active': detailsTab === 'operations' }" @click="detailsTab = 'operations'">
                 Все операции
               </button>
@@ -678,8 +936,61 @@ function formatTransactionAmount(t: Transaction) {
             </button>
           </div>
 
+          <!-- Journal (Slice 4) — single source of truth from cash_flow_entries -->
+          <template v-if="detailsTab === 'journal'">
+            <!-- Scope selector: partner ledger or any co-investor's cashier -->
+            <div v-if="ciList.length > 0" class="cashier-scope mb-3">
+              <v-menu :close-on-content-click="true" offset="6">
+                <template #activator="{ props: menuProps }">
+                  <button type="button" class="cashier-scope-trigger" v-bind="menuProps">
+                    <v-icon
+                      :icon="cashierScope === 'partner' ? 'mdi-briefcase-outline' : 'mdi-account-outline'"
+                      size="14"
+                    />
+                    <template v-if="cashierScope === 'partner'">
+                      <span class="cashier-scope-current">Моя касса</span>
+                    </template>
+                    <template v-else>
+                      <span class="cashier-scope-label-inline">Касса:</span>
+                      <span class="cashier-scope-current">{{ activeCi?.name ?? '—' }}</span>
+                    </template>
+                    <v-icon icon="mdi-chevron-down" size="14" class="cashier-scope-caret" />
+                  </button>
+                </template>
+                <div class="cashier-scope-menu">
+                  <button
+                    type="button"
+                    class="cashier-scope-item"
+                    :class="{ selected: cashierScope === 'partner' }"
+                    @click="cashierScope = 'partner'"
+                  >
+                    <v-icon icon="mdi-briefcase-outline" size="14" />
+                    <span>Моя касса</span>
+                    <v-icon v-if="cashierScope === 'partner'" icon="mdi-check" size="14" class="ml-auto" />
+                  </button>
+                  <div class="cashier-scope-divider" />
+                  <button
+                    v-for="ci in ciList"
+                    :key="ci.id"
+                    type="button"
+                    class="cashier-scope-item"
+                    :class="{ selected: cashierScope === ci.id }"
+                    @click="cashierScope = ci.id"
+                  >
+                    <v-icon icon="mdi-account-outline" size="14" />
+                    <span>{{ ci.name }}</span>
+                    <v-icon v-if="cashierScope === ci.id" icon="mdi-check" size="14" class="ml-auto" />
+                  </button>
+                </div>
+              </v-menu>
+            </div>
+
+            <CashflowJournal v-if="cashierScope === 'partner'" />
+            <CoInvestorJournalEmbed v-else :co-investor-id="cashierScope" />
+          </template>
+
           <!-- Operations list (unified: auto + manual) -->
-          <template v-if="detailsTab === 'operations'">
+          <template v-else-if="detailsTab === 'operations'">
             <div v-if="capitalDetails.operations.length === 0" class="fn-empty">
               <div class="fn-empty-icon"><v-icon icon="mdi-wallet-outline" size="48" color="grey" /></div>
               <div class="fn-empty-title">Нет операций</div>
@@ -1155,6 +1466,127 @@ function formatTransactionAmount(t: Transaction) {
 }
 
 /* ── Tabs ── */
+/* CI breakdown rows in the wf-right "Доля со-инвесторов" panel */
+.ci-breakdown-list {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ci-breakdown-row {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  text-decoration: none;
+  transition: all 0.15s;
+}
+.ci-breakdown-row:hover {
+  border-color: rgba(99, 102, 241, 0.25);
+  background: rgba(99, 102, 241, 0.04);
+}
+.ci-breakdown-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.ci-breakdown-name {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.ci-breakdown-pct {
+  font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 6px;
+  background: rgba(99, 102, 241, 0.10); color: #6366f1;
+}
+.ci-breakdown-balance {
+  display: flex; flex-direction: column; align-items: flex-end;
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  line-height: 1;
+}
+.ci-breakdown-balance--owed {
+  color: #f59e0b;
+}
+.ci-breakdown-balance-sub {
+  font-size: 10px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 3px;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.ci-breakdown-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+}
+.ci-breakdown-stat {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.ci-breakdown-stat-label {
+  font-size: 10px; color: rgba(var(--v-theme-on-surface), 0.4);
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.ci-breakdown-stat-val {
+  font-size: 13px; font-weight: 700;
+}
+
+/* Scope selector dropdown for which cashier to display in the journal tab */
+.cashier-scope {
+  display: flex; align-items: center;
+}
+.cashier-scope-trigger {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  cursor: pointer; transition: all 0.15s;
+  font-family: inherit;
+}
+.cashier-scope-trigger:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  border-color: rgba(var(--v-theme-on-surface), 0.20);
+}
+.cashier-scope-label-inline {
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-weight: 500;
+}
+.cashier-scope-current {
+  color: #047857;
+  font-weight: 600;
+}
+.cashier-scope-caret {
+  margin-left: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.cashier-scope-menu {
+  display: flex; flex-direction: column;
+  min-width: 220px; max-width: 320px;
+  padding: 4px;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+  max-height: 320px; overflow-y: auto;
+}
+.cashier-scope-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 6px; border: none;
+  background: transparent;
+  font-size: 13px; font-weight: 500; text-align: left;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  cursor: pointer; transition: background 0.12s;
+  font-family: inherit;
+}
+.cashier-scope-item:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+.cashier-scope-item.selected {
+  background: rgba(4, 120, 87, 0.06);
+  color: #047857;
+}
+.cashier-scope-divider {
+  height: 1px; margin: 4px 0;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+
 .fn-tabs {
   display: flex; gap: 4px;
   background: rgba(var(--v-theme-on-surface), 0.04);
@@ -1987,6 +2419,174 @@ function formatTransactionAmount(t: Transaction) {
 .wf-expand-link:hover { color: rgb(var(--v-theme-primary)); }
 .wf-expand-dim { color: rgba(var(--v-theme-on-surface), 0.35); }
 .wf-expand-empty { padding: 8px 10px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.3); font-style: italic; }
+
+/* Subtitle inside an expand panel — separates the formula from the per-deal list */
+.wf-expand-subtitle {
+  font-size: 11px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 14px 10px 6px;
+}
+
+/* Formula card — explains how `inProgress` is computed */
+.wf-formula {
+  display: flex; flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  margin: 0 4px 4px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.04);
+  border: 1px solid rgba(245, 158, 11, 0.12);
+}
+.wf-formula-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.wf-formula-row--minus { color: rgba(var(--v-theme-on-surface), 0.55); }
+.wf-formula-row--total {
+  padding-top: 6px;
+  border-top: 1px dashed rgba(245, 158, 11, 0.30);
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+.wf-formula-val {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.wf-formula-row--total .wf-formula-val { color: #d97706; }
+.wf-formula-hint {
+  display: flex; gap: 6px; align-items: flex-start;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(245, 158, 11, 0.18);
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  line-height: 1.4;
+}
+.wf-formula-hint .v-icon { flex-shrink: 0; margin-top: 1px; opacity: 0.7; }
+
+/* Accordion: clickable deal head + expandable body */
+.wf-acc {
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.04);
+}
+.wf-acc:last-child { border-bottom: none; }
+.wf-acc-head {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  padding: 10px;
+  border: none; background: transparent;
+  cursor: pointer; text-align: left;
+  font-family: inherit;
+  border-radius: 6px;
+  transition: background 0.1s;
+}
+.wf-acc-head:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.wf-acc-chevron {
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.wf-acc-title {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.wf-acc-sub {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.wf-acc-body {
+  padding: 6px 10px 12px 32px;
+}
+
+/* Per-payment row inside profit accordion */
+.wf-pay-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.wf-pay-row + .wf-pay-row {
+  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.04);
+}
+.wf-pay-status {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  font-size: 11px; font-weight: 700;
+  flex-shrink: 0;
+}
+.wf-pay-status--paid { background: rgba(16, 185, 129, 0.12); color: #059669; }
+.wf-pay-status--pending { background: rgba(var(--v-theme-on-surface), 0.06); color: rgba(var(--v-theme-on-surface), 0.45); }
+.wf-pay-status--overdue { background: rgba(239, 68, 68, 0.10); color: #dc2626; }
+.wf-pay-status--closed_early { background: rgba(124, 58, 237, 0.10); color: #7c3aed; }
+.wf-pay-name {
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.wf-pay-amount-dim {
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  font-variant-numeric: tabular-nums;
+}
+.wf-pay-status-text {
+  font-size: 10px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-style: italic;
+}
+.wf-pay-flex { flex: 1; }
+.wf-pay-profit {
+  font-weight: 700;
+  color: #059669;
+  font-variant-numeric: tabular-nums;
+}
+.wf-pay-profit-future {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  font-style: italic;
+  font-size: 11px;
+}
+
+/* Inside-accordion 3×2 table for "В работе" */
+.wf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.wf-table thead th {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  padding: 6px 4px;
+  text-align: right;
+}
+.wf-table thead th:first-child { text-align: left; }
+.wf-table tbody tr {
+  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.06);
+}
+.wf-table tbody td {
+  padding: 6px 4px;
+}
+.wf-table-row-label {
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  font-weight: 500;
+}
+.wf-table-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.wf-table-num--dim {
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  font-weight: 500;
+}
+.wf-table-total td {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.10);
+  font-weight: 700;
+}
+.wf-table-total .wf-table-num {
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
 
 .wf-utilization {
   padding: 16px 24px 0;

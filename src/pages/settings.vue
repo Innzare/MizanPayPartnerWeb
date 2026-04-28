@@ -150,10 +150,38 @@ function insertVar(field: 'template' | 'overdueTemplate', variable: string) {
 
 onMounted(() => {
   checkWhatsAppStatus()
+  fetchWeeklyExport()
 })
 
 // Export Excel
 const exporting = ref(false)
+
+// Weekly auto-export to email — opt-in toggle stored on the Investor row.
+const weeklyExportEmail = ref(false)
+const weeklyExportToggling = ref(false)
+const weeklyExportEmailAddress = ref<string | null>(null)
+
+async function fetchWeeklyExport() {
+  try {
+    const res = await api.get<{ enabled: boolean; email: string | null }>('/export/weekly-email')
+    weeklyExportEmail.value = res.enabled
+    weeklyExportEmailAddress.value = res.email
+  } catch { /* silent */ }
+}
+
+async function toggleWeeklyExport(value: boolean) {
+  weeklyExportToggling.value = true
+  try {
+    const res = await api.patch<{ enabled: boolean; email: string | null }>('/export/weekly-email', { enabled: value })
+    weeklyExportEmail.value = res.enabled
+    toast.success(res.enabled ? 'Еженедельная рассылка включена' : 'Еженедельная рассылка выключена')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось сохранить')
+    weeklyExportEmail.value = !value // revert
+  } finally {
+    weeklyExportToggling.value = false
+  }
+}
 
 async function exportExcel() {
   exporting.value = true
@@ -588,6 +616,10 @@ const plans = [
               <div class="profile-row">
                 <span class="profile-row-label">Телефон</span>
                 <span class="profile-row-value">{{ formatPhone(authStore.user?.phone || '') }}</span>
+              </div>
+              <div class="profile-row">
+                <span class="profile-row-label">Email</span>
+                <span class="profile-row-value">{{ authStore.user?.email || '—' }}</span>
               </div>
               <div class="profile-row">
                 <span class="profile-row-label">Город</span>
@@ -1265,6 +1297,30 @@ const plans = [
             <v-icon v-else icon="mdi-download" size="20" />
             {{ exporting ? 'Формирование файла...' : 'Скачать Excel' }}
           </button>
+
+          <!-- Auto-email subscription toggle -->
+          <div class="weekly-export-card">
+            <div class="weekly-export-icon">
+              <v-icon icon="mdi-email-fast-outline" size="20" />
+            </div>
+            <div class="weekly-export-text">
+              <div class="weekly-export-title">Еженедельный отчёт на почту</div>
+              <div class="weekly-export-desc">
+                Каждый понедельник в 09:00 будем отправлять свежий Excel со всеми сделками на
+                <span v-if="weeklyExportEmailAddress" class="weekly-export-email">{{ weeklyExportEmailAddress }}</span>
+                <span v-else class="weekly-export-email weekly-export-email--missing">— email не указан</span>
+              </div>
+            </div>
+            <label class="weekly-export-switch" :class="{ 'weekly-export-switch--on': weeklyExportEmail }">
+              <input
+                type="checkbox"
+                :checked="weeklyExportEmail"
+                :disabled="weeklyExportToggling || !weeklyExportEmailAddress"
+                @change="(e) => toggleWeeklyExport((e.target as HTMLInputElement).checked)"
+              />
+              <span class="weekly-export-switch-track" />
+            </label>
+          </div>
         </div>
       </template>
     </div>
@@ -1909,6 +1965,69 @@ const plans = [
 }
 .export-download-btn:hover { background: #065f46; }
 .export-download-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Weekly auto-export to email */
+.weekly-export-card {
+  display: flex; align-items: center; gap: 14px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(99, 102, 241, 0.04);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+}
+.weekly-export-icon {
+  width: 38px; height: 38px; min-width: 38px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(99, 102, 241, 0.12); color: #6366f1;
+}
+.weekly-export-text { flex: 1; min-width: 0; }
+.weekly-export-title {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.weekly-export-desc {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
+  margin-top: 3px; line-height: 1.45;
+}
+.weekly-export-email {
+  font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.weekly-export-email--missing { color: #ef4444; }
+
+/* iOS-style switch */
+.weekly-export-switch {
+  position: relative; width: 44px; height: 26px; flex-shrink: 0; cursor: pointer;
+  display: inline-block;
+}
+.weekly-export-switch input {
+  opacity: 0; width: 0; height: 0; position: absolute;
+}
+.weekly-export-switch input:disabled + .weekly-export-switch-track {
+  opacity: 0.4; cursor: not-allowed;
+}
+.weekly-export-switch-track {
+  position: absolute; inset: 0; border-radius: 999px;
+  background: rgba(var(--v-theme-on-surface), 0.18);
+  transition: background 0.18s;
+}
+.weekly-export-switch-track::after {
+  content: ''; position: absolute; left: 3px; top: 3px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.20);
+  transition: transform 0.18s;
+}
+.weekly-export-switch--on .weekly-export-switch-track {
+  background: #6366f1;
+}
+.weekly-export-switch--on .weekly-export-switch-track::after {
+  transform: translateX(18px);
+}
+
+.dark .weekly-export-card {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.25);
+}
 
 /* Dark mode export */
 .dark .export-locked-card { background: #1e1e2e; border-color: rgba(232, 185, 49, 0.15); }

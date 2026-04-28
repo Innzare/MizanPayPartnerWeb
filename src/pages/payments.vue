@@ -9,7 +9,10 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
 import { useFolders } from '@/composables/useFolders'
+import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
+import SendRemindersDialog from '@/components/SendRemindersDialog.vue'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
@@ -19,25 +22,47 @@ const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
 const { folders, fetchFolders } = useFolders()
 const filterFolder = ref<string | null>(null)
+const { coInvestors: ciList, fetchCoInvestors } = useCoInvestors()
+fetchCoInvestors()
+const filterCoInvestor = ref<string | null>(null)
+const filterCoInvestorObj = computed(() =>
+  filterCoInvestor.value ? ciList.value.find((c) => c.id === filterCoInvestor.value) ?? null : null,
+)
+
+// Staff assignee filter (partner-only)
+const authStore = useAuthStore()
+interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
+const staffList = ref<StaffOption[]>([])
+const filterStaff = ref<string | null>(null)
+const filterStaffObj = computed(() =>
+  filterStaff.value ? staffList.value.find((s) => s.id === filterStaff.value) ?? null : null,
+)
+async function loadStaffList() {
+  if (!authStore.isOwner) return
+  try {
+    const list = await api.get<StaffOption[]>('/auth/investor/staff')
+    staffList.value = list.filter((s) => s.isActive)
+  } catch { /* ignore */ }
+}
+loadStaffList()
 
 const pageLoading = ref(true)
 
+// Dialog flow replaces the old "blast everyone" button — partner now picks
+// who gets a reminder, sees the list with phones, and confirms.
+const showRemindersDialog = ref(false)
+
+function openRemindersDialog() {
+  showRemindersDialog.value = true
+}
+
+// Kept as a no-op wrapper for now — `sendingBulk` is referenced in the
+// template's loading state for the trigger button, but the dialog handles
+// its own sending state. Remove this when the trigger button is migrated.
 const sendingBulk = ref(false)
 
 async function sendBulkReminders() {
-  if (!confirm('Отправить напоминания всем клиентам с просроченными или приближающимися платежами?')) return
-  sendingBulk.value = true
-  try {
-    const result = await api.post<{ sent: number; failed: number; total: number }>('/whatsapp/remind-all')
-    toast.success(`Отправлено ${result.sent} из ${result.total} напоминаний`)
-    if (result.failed > 0) {
-      toast.error(`${result.failed} не удалось отправить`)
-    }
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка рассылки')
-  } finally {
-    sendingBulk.value = false
-  }
+  openRemindersDialog()
 }
 
 onMounted(async () => {
@@ -446,6 +471,22 @@ const displayedPayments = computed(() => {
     })
   }
 
+  // Co-investor filter
+  if (filterCoInvestor.value) {
+    payments = payments.filter(p => {
+      const deal = getDealForPayment(p)
+      return deal?.coInvestors?.some(link => link.coInvestor.id === filterCoInvestor.value)
+    })
+  }
+
+  // Staff assignee filter
+  if (filterStaff.value) {
+    payments = payments.filter(p => {
+      const deal = getDealForPayment(p) as any
+      return deal?.assignedStaffId === filterStaff.value
+    })
+  }
+
   if (search.value) {
     const s = search.value.toLowerCase()
     payments = payments.filter((p) => {
@@ -670,6 +711,78 @@ const rescheduleReasonOptions = [
         {{ sendingBulk ? 'Рассылка...' : 'Напомнить всем' }}
       </button>
       <v-spacer />
+      <!-- Co-investor filter -->
+      <v-menu v-if="ciList.length > 0" :close-on-content-click="true">
+        <template #activator="{ props: cp }">
+          <button v-bind="cp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterCoInvestor }">
+            <v-icon icon="mdi-account-group-outline" size="15" />
+            <template v-if="filterCoInvestorObj">
+              {{ filterCoInvestorObj.name }}
+            </template>
+            <template v-else>Со-инвестор</template>
+            <v-icon icon="mdi-chevron-down" size="13" style="opacity: 0.4;" />
+          </button>
+        </template>
+        <v-card rounded="lg" elevation="4" class="pf-folder-menu">
+          <div class="pf-folder-header">
+            <span>Со-инвесторы</span>
+          </div>
+          <div class="pf-folder-body">
+            <button class="pf-folder-item" :class="{ 'pf-folder-item--active': !filterCoInvestor }" @click="filterCoInvestor = null">
+              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
+              <span class="pf-folder-item-name">Все платежи</span>
+            </button>
+            <div class="pf-folder-divider" />
+            <button
+              v-for="ci in ciList"
+              :key="ci.id"
+              class="pf-folder-item"
+              :class="{ 'pf-folder-item--active': filterCoInvestor === ci.id }"
+              @click="filterCoInvestor = filterCoInvestor === ci.id ? null : ci.id"
+            >
+              <v-icon icon="mdi-account-outline" size="14" style="color: rgba(var(--v-theme-on-surface), 0.45);" />
+              <span class="pf-folder-item-name">{{ ci.name }}</span>
+            </button>
+          </div>
+        </v-card>
+      </v-menu>
+
+      <!-- Staff assignee filter -->
+      <v-menu v-if="authStore.isOwner && staffList.length > 0" :close-on-content-click="true">
+        <template #activator="{ props: sp }">
+          <button v-bind="sp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterStaff }">
+            <v-icon icon="mdi-account-tie-outline" size="15" />
+            <template v-if="filterStaffObj">
+              {{ filterStaffObj.firstName }} {{ filterStaffObj.lastName }}
+            </template>
+            <template v-else>Сотрудник</template>
+            <v-icon icon="mdi-chevron-down" size="13" style="opacity: 0.4;" />
+          </button>
+        </template>
+        <v-card rounded="lg" elevation="4" class="pf-folder-menu">
+          <div class="pf-folder-header">
+            <span>Ответственные</span>
+          </div>
+          <div class="pf-folder-body">
+            <button class="pf-folder-item" :class="{ 'pf-folder-item--active': !filterStaff }" @click="filterStaff = null">
+              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
+              <span class="pf-folder-item-name">Все платежи</span>
+            </button>
+            <div class="pf-folder-divider" />
+            <button
+              v-for="s in staffList"
+              :key="s.id"
+              class="pf-folder-item"
+              :class="{ 'pf-folder-item--active': filterStaff === s.id }"
+              @click="filterStaff = filterStaff === s.id ? null : s.id"
+            >
+              <v-icon icon="mdi-account-outline" size="14" style="color: rgba(var(--v-theme-on-surface), 0.45);" />
+              <span class="pf-folder-item-name">{{ s.firstName }} {{ s.lastName }}</span>
+            </button>
+          </div>
+        </v-card>
+      </v-menu>
+
       <!-- Folder filter -->
       <v-menu :close-on-content-click="false">
         <template #activator="{ props: fp }">
@@ -1503,6 +1616,9 @@ const rescheduleReasonOptions = [
       </v-card>
     </v-dialog>
     </template>
+
+    <!-- WhatsApp bulk reminders dialog (preview + per-row selection) -->
+    <SendRemindersDialog v-model="showRemindersDialog" />
   </div>
 </template>
 

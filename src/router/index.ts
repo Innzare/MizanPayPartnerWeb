@@ -46,17 +46,17 @@ router.beforeEach(async (to, from, next) => {
   }
 
   if (authStore.isAuthenticated && to.path === "/login") {
-    return next("/");
+    return next(authStore.defaultRoute);
   }
 
-  // Hidden routes — redirect to home
+  // Hidden routes — redirect to default landing
   if (hiddenRoutes.some(r => to.path === r || to.path.startsWith(r + '/'))) {
-    return next("/");
+    return next(authStore.defaultRoute);
   }
 
   // Role-based access check for staff
   if (authStore.isAuthenticated && !authStore.canAccess(to.path)) {
-    return next("/");
+    return next(authStore.defaultRoute);
   }
 
   // Subscription-based feature check
@@ -67,6 +67,12 @@ router.beforeEach(async (to, from, next) => {
     if (featureKey) {
       const sub = useSubscription();
       if (!sub.canAccess(featureKey)) {
+        // Staff has no /settings access — redirect to their default landing
+        // instead, otherwise we'd loop (settings rejected → defaultRoute →
+        // back to gated page → back to /settings).
+        if (authStore.isStaff) {
+          return next(authStore.defaultRoute);
+        }
         return next({ path: '/settings', query: { tab: 'subscription' } });
       }
     }

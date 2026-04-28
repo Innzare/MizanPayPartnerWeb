@@ -16,7 +16,12 @@ function fullName(obj: any): string {
   return parts.join(' ') || 'Не указано'
 }
 
-export function generateReceipt(deal: Deal, payment: Payment, investor: Partial<User>) {
+export function generateReceipt(
+  deal: Deal,
+  payment: Payment,
+  investor: Partial<User>,
+  opts: { returnBlob?: boolean } = {},
+): Promise<Blob> | void {
   const cp = deal.clientProfile
   const client = cp
     ? { firstName: cp.firstName, lastName: cp.lastName, patronymic: cp.patronymic, phone: cp.phone }
@@ -212,5 +217,8 @@ export function generateReceipt(deal: Deal, payment: Payment, investor: Partial<
     ],
   }
 
+  if (opts.returnBlob) {
+    return new Promise<Blob>((resolve) => pdfMake.createPdf(docDefinition).getBlob(resolve))
+  }
   pdfMake.createPdf(docDefinition).open()
 }

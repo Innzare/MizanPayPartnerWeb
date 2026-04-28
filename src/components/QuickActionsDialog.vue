@@ -116,6 +116,89 @@
           </div>
         </div>
 
+        <!-- Folder + Co-investors pickers (single-line dropdowns) -->
+        <div
+          v-if="allFolders.length > 0 || allCoInvestors.length > 0"
+          class="qa-pickers mb-4"
+        >
+          <!-- Folder dropdown (single-select) -->
+          <v-menu v-if="allFolders.length > 0" :close-on-content-click="true" offset="6">
+            <template #activator="{ props: menuProps }">
+              <button type="button" class="qa-picker-trigger" v-bind="menuProps">
+                <v-icon
+                  :icon="selectedFolder?.icon || 'mdi-folder-outline'"
+                  size="14"
+                  :style="selectedFolder ? { color: selectedFolder.color || '#6366f1' } : undefined"
+                />
+                <span v-if="selectedFolder" :style="{ color: selectedFolder.color || '#6366f1' }">
+                  {{ selectedFolder.name }}
+                </span>
+                <span v-else class="qa-picker-placeholder">Папка</span>
+                <v-icon icon="mdi-chevron-down" size="14" class="qa-picker-caret" />
+              </button>
+            </template>
+            <div class="qa-menu">
+              <button
+                type="button"
+                class="qa-menu-item"
+                :class="{ selected: selectedFolderId === null }"
+                @click="selectedFolderId = null"
+              >
+                <v-icon icon="mdi-tray-remove" size="14" />
+                <span>Без папки</span>
+                <v-icon v-if="selectedFolderId === null" icon="mdi-check" size="14" class="ml-auto" />
+              </button>
+              <button
+                v-for="f in allFolders"
+                :key="f.id"
+                type="button"
+                class="qa-menu-item"
+                :class="{ selected: selectedFolderId === f.id }"
+                @click="selectedFolderId = f.id"
+              >
+                <v-icon
+                  :icon="f.icon || 'mdi-folder'"
+                  size="14"
+                  :style="{ color: f.color || '#6366f1' }"
+                />
+                <span>{{ f.name }}</span>
+                <v-icon v-if="selectedFolderId === f.id" icon="mdi-check" size="14" class="ml-auto" />
+              </button>
+            </div>
+          </v-menu>
+
+          <!-- Co-investors dropdown (multi-select) -->
+          <v-menu v-if="allCoInvestors.length > 0" :close-on-content-click="false" offset="6">
+            <template #activator="{ props: menuProps }">
+              <button type="button" class="qa-picker-trigger" v-bind="menuProps">
+                <v-icon icon="mdi-account-group-outline" size="14" />
+                <span v-if="selectedCoInvestorIds.length > 0" class="qa-picker-active">
+                  Со-инвесторы · {{ selectedCoInvestorIds.length }}
+                </span>
+                <span v-else class="qa-picker-placeholder">Со-инвесторы</span>
+                <v-icon icon="mdi-chevron-down" size="14" class="qa-picker-caret" />
+              </button>
+            </template>
+            <div class="qa-menu">
+              <button
+                v-for="ci in allCoInvestors"
+                :key="ci.id"
+                type="button"
+                class="qa-menu-item"
+                :class="{ selected: selectedCoInvestorIds.includes(ci.id) }"
+                @click="toggleCoInvestor(ci.id)"
+              >
+                <v-icon
+                  :icon="selectedCoInvestorIds.includes(ci.id) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline'"
+                  size="14"
+                />
+                <span>{{ ci.name }}</span>
+                <span class="qa-menu-item-pct">{{ ci.profitPercent }}%</span>
+              </button>
+            </div>
+          </v-menu>
+        </div>
+
         <!-- Live preview -->
         <div v-if="salePreview.totalPrice > 0" class="reschedule-info mb-5">
           <div class="d-flex justify-space-between mb-2">
@@ -290,14 +373,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch, nextTick } from 'vue'
+import { computed, reactive, ref, watch, nextTick, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useDealsStore } from '@/stores/deals'
 import { useToast } from '@/composables/useToast'
-import { CURRENCY_MASK, parseMasked, formatPhone, formatCurrency, formatDate } from '@/utils/formatters'
+import { useFolders } from '@/composables/useFolders'
+import { CURRENCY_MASK, formatPhone, formatCurrency, formatDate } from '@/utils/formatters'
 import ClientPicker from './ClientPicker.vue'
-import type { ClientProfile } from '@/types'
+import type { ClientProfile, DealFolder } from '@/types'
 
 const props = defineProps<{
   modelValue: boolean
@@ -326,6 +410,9 @@ watch(() => props.modelValue, (open) => {
     search.value = ''
     results.value = []
     expandedId.value = null
+    // Make sure co-investor / folder lists are up to date — the partner
+    // could have added a new one since the dialog last opened.
+    ensureOptionsLoaded()
     if (mode.value === 'payment') nextTick(() => searchInputRef.value?.focus())
   }
 })
@@ -351,6 +438,35 @@ const sale = reactive({
 })
 const creating = ref(false)
 
+// Co-investors + folder bindings (mirror create-deal page)
+interface CoInvestorOption { id: string; name: string; profitPercent: number }
+const allCoInvestors = ref<CoInvestorOption[]>([])
+const selectedCoInvestorIds = ref<string[]>([])
+const { folders: allFolders, fetchFolders } = useFolders()
+const selectedFolderId = ref<string | null>(null)
+
+// Cache co-investors + folders once on first dialog open. The dialog
+// can be reopened many times, so don't re-fetch on every open.
+const optionsLoaded = ref(false)
+async function ensureOptionsLoaded() {
+  if (optionsLoaded.value) return
+  try {
+    const [cis] = await Promise.all([
+      api.get<any[]>('/co-investors'),
+      fetchFolders(),
+    ])
+    allCoInvestors.value = cis.map((c) => ({ id: c.id, name: c.name, profitPercent: c.profitPercent }))
+    optionsLoaded.value = true
+  } catch { /* non-blocking */ }
+}
+onMounted(ensureOptionsLoaded)
+
+function toggleCoInvestor(id: string) {
+  const idx = selectedCoInvestorIds.value.indexOf(id)
+  if (idx >= 0) selectedCoInvestorIds.value.splice(idx, 1)
+  else selectedCoInvestorIds.value.push(id)
+}
+
 function resetSale() {
   sale.clientProfileId = null
   sale.selectedClient = null
@@ -359,15 +475,34 @@ function resetSale() {
   sale.markupPercent = 15
   sale.numberOfPayments = 6
   sale.downPayment = ''
+  selectedCoInvestorIds.value = []
+  selectedFolderId.value = null
 }
+
+const selectedFolder = computed<DealFolder | null>(() =>
+  selectedFolderId.value
+    ? allFolders.value.find((f) => f.id === selectedFolderId.value) ?? null
+    : null,
+)
 
 function onClientSelected(profile: ClientProfile | null) {
   sale.selectedClient = profile
 }
 
+// `sale.purchasePrice` / `sale.downPayment` are bound to v-model so they
+// hold the formatted string ("222 323 ₽"), not the raw number. parseMasked
+// expects an event from `@maska` and reads `e.detail.unmasked` — passing a
+// string returns 0, which left canCreateSale permanently false. Strip
+// non-digit characters and Number-cast directly.
+function unmaskCurrency(s: string): number {
+  if (!s) return 0
+  const n = Number(String(s).replace(/[^\d.-]/g, ''))
+  return Number.isFinite(n) ? n : 0
+}
+
 const salePreview = computed(() => {
-  const purchase = parseMasked(sale.purchasePrice)
-  const downPayment = parseMasked(sale.downPayment)
+  const purchase = unmaskCurrency(sale.purchasePrice)
+  const downPayment = unmaskCurrency(sale.downPayment)
   const markupPercent = sale.markupPercent || 0
   const markup = Math.round(purchase * (markupPercent / 100))
   const totalPrice = purchase + markup
@@ -390,14 +525,36 @@ async function onCreateSale(keepOpen: boolean) {
   if (!canCreateSale.value) return
   creating.value = true
   try {
-    await dealsStore.createDirectDeal({
+    const deal = await dealsStore.createDirectDeal({
       clientProfileId: sale.clientProfileId!,
       productName: sale.productName.trim(),
       purchasePrice: salePreview.value.purchase,
       markupPercent: sale.markupPercent,
       numberOfPayments: sale.numberOfPayments,
-      downPayment: parseMasked(sale.downPayment) || undefined,
+      downPayment: unmaskCurrency(sale.downPayment) || undefined,
     })
+
+    // Link selected co-investors + place into folder. Best-effort: failures
+    // here don't invalidate the just-created deal, partner can re-attach
+    // from the deal page.
+    if (deal?.id) {
+      if (selectedCoInvestorIds.value.length > 0) {
+        await Promise.allSettled(
+          selectedCoInvestorIds.value.map((ciId) =>
+            api.post(`/co-investors/${ciId}/deals/${deal.id}`),
+          ),
+        )
+      }
+      if (selectedFolderId.value) {
+        try {
+          await api.post('/deal-folders/move', {
+            dealId: deal.id,
+            folderId: selectedFolderId.value,
+          })
+        } catch { /* non-blocking */ }
+      }
+    }
+
     showToast('Продажа создана', 'success')
     if (keepOpen) {
       resetSale()
@@ -473,7 +630,7 @@ async function onMarkPaid(r: QuickSearchResult) {
   if (!r.nextPayment) return
   markingPaid.value = true
   try {
-    const amount = parseMasked(payForm.amount) || r.nextPayment.amount
+    const amount = unmaskCurrency(payForm.amount) || r.nextPayment.amount
     const paidAt = payForm.date ? new Date(payForm.date).toISOString() : undefined
     await api.patch(`/payments/${r.nextPayment.id}/paid`, { amount, paidAt, method: 'TRANSFER' })
     showToast(`Платёж ${r.nextPayment.number}/${r.numberOfPayments} принят`, 'success')
@@ -788,5 +945,67 @@ async function onMarkPaid(r: QuickSearchResult) {
   padding: 14px;
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   background: rgba(var(--v-theme-on-surface), 0.01);
+}
+
+/* ─── Compact dropdown pickers (folder + co-investors) ─── */
+.qa-pickers {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.qa-picker-trigger {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  cursor: pointer; transition: all 0.15s;
+  font-family: inherit;
+  max-width: 100%;
+}
+.qa-picker-trigger:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  border-color: rgba(var(--v-theme-on-surface), 0.20);
+}
+.qa-picker-placeholder {
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.qa-picker-active {
+  font-weight: 600; color: #047857;
+}
+.qa-picker-caret {
+  margin-left: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+/* Dropdown menu body */
+.qa-menu {
+  display: flex; flex-direction: column;
+  min-width: 220px; max-width: 320px;
+  padding: 4px;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+  max-height: 320px; overflow-y: auto;
+}
+.qa-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 6px; border: none;
+  background: transparent;
+  font-size: 13px; font-weight: 500; text-align: left;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  cursor: pointer; transition: background 0.12s;
+  font-family: inherit;
+}
+.qa-menu-item:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+.qa-menu-item.selected {
+  background: rgba(4, 120, 87, 0.06);
+  color: #047857;
+}
+.qa-menu-item-pct {
+  margin-left: auto;
+  font-size: 11px; font-weight: 700; opacity: 0.7;
 }
 </style>

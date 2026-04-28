@@ -22,7 +22,12 @@ function fullName(user: Partial<User>): string {
   return parts.join(' ') || 'Не указано'
 }
 
-export function generateContract(deal: Deal, payments: Payment[], investor: Partial<User>) {
+export function generateContract(
+  deal: Deal,
+  payments: Payment[],
+  investor: Partial<User>,
+  opts: { returnBlob?: boolean } = {},
+): Promise<Blob> | void {
   // Resolve client data: prefer clientProfile, fallback to legacy client, then external
   const cp = deal.clientProfile
   const client = cp
@@ -319,5 +324,8 @@ export function generateContract(deal: Deal, payments: Payment[], investor: Part
     },
   }
 
+  if (opts.returnBlob) {
+    return new Promise<Blob>((resolve) => pdfMake.createPdf(docDefinition).getBlob(resolve))
+  }
   pdfMake.createPdf(docDefinition).open()
 }

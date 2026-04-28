@@ -67,6 +67,29 @@
         </div>
       </div>
 
+      <!-- Errors hint banner — shown until all errors are fixed or skipped -->
+      <div v-if="errorCount > 0" class="errors-banner mb-4">
+        <div class="errors-banner-icon">
+          <v-icon icon="mdi-alert-circle-outline" size="20" />
+        </div>
+        <div class="errors-banner-text">
+          <div class="errors-banner-title">
+            Импорт недоступен — есть {{ errorCount }} {{ pluralize(errorCount, 'строка', 'строки', 'строк') }} с ошибками
+          </div>
+          <div class="errors-banner-sub">
+            Исправьте данные в красных ячейках или нажмите «Пропустить ошибки», чтобы исключить эти строки из импорта.
+          </div>
+        </div>
+        <button
+          class="errors-banner-cta"
+          :disabled="saving"
+          @click="filterMode = 'errors'"
+        >
+          Показать ошибки
+          <v-icon icon="mdi-arrow-right" size="14" />
+        </button>
+      </div>
+
       <!-- Toolbar: filters left, bulk-assignments + actions right -->
       <div class="toolbar mb-4">
         <div class="filter-pills">
@@ -231,6 +254,15 @@
         </button>
 
         <button
+          class="tb-btn"
+          :disabled="saving || committing"
+          @click="onAddRow"
+        >
+          <v-icon icon="mdi-plus" size="14" />
+          Добавить строку
+        </button>
+
+        <button
           class="tb-btn tb-btn--danger"
           :disabled="committing"
           @click="onCancel"
@@ -332,7 +364,7 @@ import 'ag-grid-community/styles/ag-theme-quartz.css'
 
 const route = useRoute()
 const router = useRouter()
-const { draft, loading, saving, committing, fetchDraft, savePatches, commit, cancel } = useImportDraft()
+const { draft, loading, saving, committing, fetchDraft, savePatches, commit, cancel, addRow, deleteRow } = useImportDraft()
 const { show: showToast } = useToast()
 const { isDark } = useIsDark()
 const { folders, fetchFolders } = useFolders()
@@ -475,6 +507,31 @@ async function skipAllErrors() {
     showToast(`Пропущено ${patches.length} ${pluralize(patches.length, 'строка', 'строки', 'строк')} с ошибками`, 'success')
   } catch (e: any) {
     showToast(e.message || 'Не удалось применить', 'error')
+  }
+}
+
+async function onAddRow() {
+  // Flush any in-flight edits first so the new blank row doesn't land in a
+  // stale snapshot. Then add server-side and reset the rowIdx counter.
+  if (pendingPatches.value.length) await flushPatches()
+  try {
+    await addRow(draftId.value)
+    showToast('Добавлена пустая строка — заполните её', 'success')
+  } catch (e: any) {
+    showToast(e.message || 'Не удалось добавить строку', 'error')
+  }
+}
+
+async function onDeleteRow(rowIdx: number) {
+  if (!confirm('Удалить эту строку из черновика? Действие не отменить.')) return
+  // Drop any pending patch that targets this row — it would 404 server-side
+  // after the delete since rowIdx no longer exists.
+  pendingPatches.value = pendingPatches.value.filter((p) => p.rowIdx !== rowIdx)
+  try {
+    await deleteRow(draftId.value, rowIdx)
+    showToast('Строка удалена', 'success')
+  } catch (e: any) {
+    showToast(e.message || 'Не удалось удалить строку', 'error')
   }
 }
 
@@ -794,7 +851,32 @@ const columnDefs = computed<(ColDef | ColGroupDef)[]>(() => {
       headerTooltip: 'Со-инвестор, делящий прибыль по этой сделке.',
     },
   ]
-  return [...baseCols, ...buildPaymentColumns()]
+  // Trailing actions column — pinned right so the delete button is always
+  // visible even on wide tables.
+  const actionsCol: ColDef = {
+    headerName: '',
+    width: 56,
+    pinned: 'right',
+    editable: false,
+    sortable: false,
+    filter: false,
+    suppressHeaderMenuButton: true,
+    cellClass: 'cell-row-actions',
+    cellRenderer: (p: any) => {
+      const btn = document.createElement('button')
+      btn.className = 'row-delete-btn'
+      btn.title = 'Удалить строку'
+      btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M9,3V4H4V6H5V19A2,2 0 0,0 7,21H17A2,2 0 0,0 19,19V6H20V4H15V3H9M7,6H17V19H7V6M9,8V17H11V8H9M13,8V17H15V8H13Z" /></svg>'
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const rowIdx = p.data?.rowIdx
+        if (typeof rowIdx === 'number') onDeleteRow(rowIdx)
+      })
+      return btn
+    },
+  }
+
+  return [...baseCols, ...buildPaymentColumns(), actionsCol]
 })
 
 const defaultColDef: ColDef = {
@@ -899,6 +981,60 @@ watch(() => route.params.id, (id) => {
 }
 .stat-label {
   font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+/* Errors hint banner */
+.errors-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px; border-radius: 12px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.20);
+}
+.errors-banner-icon {
+  width: 38px; height: 38px; min-width: 38px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(239, 68, 68, 0.10);
+  color: #ef4444;
+  flex-shrink: 0;
+}
+.errors-banner-text { flex: 1; min-width: 0; }
+.errors-banner-title {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.errors-banner-sub {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
+  margin-top: 3px; line-height: 1.45;
+}
+.errors-banner-cta {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 9px; border: 1px solid rgba(239, 68, 68, 0.30);
+  background: rgb(var(--v-theme-surface));
+  color: #ef4444; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+  font-family: inherit; flex-shrink: 0;
+  white-space: nowrap;
+}
+.errors-banner-cta:hover {
+  background: rgba(239, 68, 68, 0.08);
+}
+.errors-banner-cta:disabled { opacity: 0.5; cursor: not-allowed; }
+.dark .errors-banner-cta {
+  background: #1e1e2e;
+}
+
+/* Per-row delete button in actions column */
+.row-delete-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 6px; border: none;
+  background: transparent;
+  color: rgba(127, 127, 127, 0.55);
+  cursor: pointer; transition: all 0.12s;
+}
+.row-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.10);
+  color: #ef4444;
 }
 
 /* Filter pills */

@@ -8,6 +8,7 @@ import logoTextDark from "@/assets/images/logo-text-dark.svg";
 import { useAuthStore } from "@/stores/auth";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useSubscription } from "@/composables/useSubscription";
+import { useChats } from "@/composables/useChats";
 import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
 import QuickActionsDialog from "@/components/QuickActionsDialog.vue";
@@ -17,6 +18,7 @@ import type { PlanFeatures } from "@/types";
 const authStore = useAuthStore();
 const notificationsStore = useNotificationsStore();
 const subscription = useSubscription();
+const chats = useChats();
 const theme = useTheme();
 
 const route = useRoute();
@@ -30,11 +32,26 @@ const quickActionsMode = ref<'sale' | 'payment'>('sale');
 const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 const shortcutModifier = computed(() => (isMac ? '⌘' : 'Ctrl'));
 
-function openQuickActions(mode: 'sale' | 'payment') {
+function openQuickActions(mode?: 'sale' | 'payment') {
+  // Resolve the mode here (not in the template): `localStorage` is not on
+  // the component instance, so referencing it from inline @click crashed
+  // the handler with "Cannot read properties of undefined". Falling back
+  // to the last-used mode also lets the dropdown call this with no args.
+  const resolved =
+    mode ??
+    (localStorage.getItem('quickActionsLastMode') as 'sale' | 'payment' | null) ??
+    'payment';
+
+  // Close the v-menu first, then wait for its overlay to fully tear down
+  // (~200ms transition in Vuetify) before opening the v-dialog. nextTick
+  // alone fires before the menu's exit animation finishes, so the dialog's
+  // overlay clobbers the still-mounted menu's overlay and never appears.
   quickActionsMenu.value = false;
-  quickActionsMode.value = mode;
-  localStorage.setItem('quickActionsLastMode', mode);
-  showQuickActions.value = true;
+  quickActionsMode.value = resolved;
+  localStorage.setItem('quickActionsLastMode', resolved);
+  setTimeout(() => {
+    showQuickActions.value = true;
+  }, 250);
 }
 
 const planBadgeLabels: Record<string, string> = { PRO: 'Стандарт', BUSINESS: 'Бизнес', PREMIUM: 'Премиум' };
@@ -51,6 +68,9 @@ const sidebarWidth = computed(() => (collapsed.value ? 72 : 260));
 
 onMounted(() => {
   notificationsStore.fetchNotifications()
+  chats.refreshUnreadCount()
+  const chatPoll = window.setInterval(() => chats.refreshUnreadCount(), 60_000)
+  onUnmounted(() => window.clearInterval(chatPoll))
 
   const onResize = () => {
     const wasDesktop = !isMobile.value;
@@ -64,10 +84,11 @@ onMounted(() => {
   };
   window.addEventListener("resize", onResize);
 
-  // Global hotkeys:
+  // Global hotkeys (owner-only — staff has neither search nor quick actions):
   //  - Cmd/Ctrl+K → Global Search (industry standard)
   //  - Alt+K → Quick Actions in last-used mode (no browser conflicts)
   const onKey = (e: KeyboardEvent) => {
+    if (!authStore.isOwner) return;
     // ⌘K / Ctrl+K → Global Search
     if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
       e.preventDefault();
@@ -109,12 +130,13 @@ const toggleTheme = () => {
 };
 
 // Navigation
-const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?: boolean; requiredFeature?: keyof PlanFeatures }[] = [
+const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?: boolean; staffOnly?: boolean; requiredFeature?: keyof PlanFeatures }[] = [
   { path: "/", title: "Главная", icon: "mdi-view-dashboard" },
   { path: "/analytics", title: "Аналитика", icon: "mdi-chart-line", requiredFeature: "analytics" },
   { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
   { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
+  { path: "/messages", title: "Сообщения", icon: "mdi-message-text-outline", staffOnly: true },
   { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
   { path: "/finance", title: "Мой капитал", icon: "mdi-wallet-outline", requiredFeature: "finance" },
   { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account", requiredFeature: "registry" },
@@ -129,6 +151,7 @@ const mainNavRoutes = computed(() =>
   allMainNavRoutes
     .filter((r) => {
       if (r.ownerOnly && !authStore.isOwner) return false;
+      if (r.staffOnly && authStore.isOwner) return false;
       return authStore.canAccess(r.path);
     })
     .map((r) => ({
@@ -165,6 +188,7 @@ const routeTitles: Record<string, string> = {
   "/registry": "Реестр клиентов",
   "/staff": "Сотрудники",
   "/activity": "История действий",
+  "/messages": "Сообщения",
 };
 
 const routeSubtitles: Record<string, string> = {
@@ -184,6 +208,7 @@ const routeSubtitles: Record<string, string> = {
   "/registry": "Проверяйте платёжеспособность клиентов",
   "/staff": "Управление доступами сотрудников",
   "/activity": "Журнал всех действий в личном кабинете",
+  "/messages": "Переписка с сотрудниками",
 };
 
 // User initials for avatar
@@ -282,6 +307,12 @@ const confirmLogout = async () => {
                   >
                     <v-icon :icon="item.icon" size="20" />
                     <span class="lyt-nav-text">{{ item.title }}</span>
+                    <span
+                      v-if="item.path === '/messages' && chats.totalUnread.value > 0 && !collapsed"
+                      class="lyt-nav-badge"
+                    >
+                      {{ chats.totalUnread.value > 99 ? '99+' : chats.totalUnread.value }}
+                    </span>
                     <v-icon v-if="item.locked" icon="mdi-crown" size="16" class="lyt-nav-crown" />
                   </div>
                 </component>
@@ -290,8 +321,8 @@ const confirmLogout = async () => {
           </nav>
         </div>
 
-        <!-- Secondary nav -->
-        <div class="lyt-nav-section">
+        <!-- Secondary nav (hidden when nothing accessible — e.g. staff has no /settings) -->
+        <div v-if="secondaryNavRoutes.length" class="lyt-nav-section">
           <p class="lyt-nav-label">Прочее</p>
           <nav class="lyt-nav">
             <v-tooltip
@@ -401,7 +432,7 @@ const confirmLogout = async () => {
 
             <div class="lyt-header-right">
               <button
-                v-if="!isMobile"
+                v-if="!isMobile && authStore.isOwner"
                 class="lyt-header-search-btn"
                 @click="showGlobalSearch = true"
               >
@@ -422,8 +453,8 @@ const confirmLogout = async () => {
                 <v-icon icon="mdi-calculator" size="20" />
               </router-link>
 
-              <!-- Activity history -->
-              <v-tooltip :text="subscription.canAccess('activity') ? 'История действий' : 'Доступно с плана Стандарт'" location="bottom">
+              <!-- Activity history (hidden for staff if partner disabled /activity via accessOverrides) -->
+              <v-tooltip v-if="authStore.canAccess('/activity')" :text="subscription.canAccess('activity') ? 'История действий' : 'Доступно с плана Стандарт'" location="bottom">
                 <template #activator="{ props: tip }">
                   <component
                     :is="subscription.canAccess('activity') ? 'router-link' : 'button'"
@@ -439,42 +470,50 @@ const confirmLogout = async () => {
                 </template>
               </v-tooltip>
 
-              <!-- Zakat -->
-              <router-link to="/zakat" class="lyt-header-icon-btn" title="Закят">
+              <!-- Zakat (owner-only) -->
+              <router-link v-if="authStore.isOwner" to="/zakat" class="lyt-header-icon-btn" title="Закят">
                 <v-icon icon="mdi-moon-waning-crescent" size="20" />
               </router-link>
 
-              <!-- Notifications -->
-              <router-link to="/notifications" class="lyt-header-icon-btn" title="Уведомления">
+              <!-- Notifications (owner-only) -->
+              <router-link v-if="authStore.isOwner" to="/notifications" class="lyt-header-icon-btn" title="Уведомления">
                 <v-icon icon="mdi-bell-outline" size="20" />
                 <span v-if="notificationsStore.unreadCount" class="lyt-header-badge">{{ notificationsStore.unreadCount }}</span>
               </router-link>
 
-              <!-- Quick actions (accent) -->
-              <v-menu v-model="quickActionsMenu" offset="8">
+              <!--
+                Create dropdown.
+                - Owner: full menu (quick actions + create client/deal + import)
+                - Staff with canCreateDeals: deal-creating items only (no quick actions)
+                - Staff without canCreateDeals: hidden entirely
+              -->
+              <v-menu v-if="authStore.isOwner || (authStore.user?.canCreateDeals !== false)" v-model="quickActionsMenu" offset="8">
                 <template v-slot:activator="{ props }">
                   <button
                     class="lyt-header-add-btn"
                     v-bind="props"
-                    :title="`Быстрые действия (${isMac ? '⌥' : 'Alt+'}K)`"
+                    :title="authStore.isOwner ? `Быстрые действия (${isMac ? '⌥' : 'Alt+'}K)` : 'Создать'"
                   >
                     <v-icon icon="mdi-plus" size="20" />
                     <span v-if="!isMobile" class="lyt-header-add-btn-label">Создать</span>
                   </button>
                 </template>
                 <div class="lyt-dropdown">
-                  <button
-                    class="lyt-dropdown-item lyt-dropdown-item--accent"
-                    @click="openQuickActions((localStorage.getItem('quickActionsLastMode') as 'sale' | 'payment') || 'payment')"
-                  >
-                    <v-icon icon="mdi-flash" size="18" />
-                    <span>Быстрые действия</span>
-                    <span class="lyt-dropdown-kbd">
-                      <kbd class="qa-kbd">{{ isMac ? '⌥' : 'Alt' }}</kbd>
-                      <kbd class="qa-kbd">K</kbd>
-                    </span>
-                  </button>
-                  <div class="lyt-dropdown-divider" />
+                  <!-- Quick Actions: owner-only -->
+                  <template v-if="authStore.isOwner">
+                    <button
+                      class="lyt-dropdown-item lyt-dropdown-item--accent"
+                      @click="openQuickActions()"
+                    >
+                      <v-icon icon="mdi-flash" size="18" />
+                      <span>Быстрые действия</span>
+                      <span class="lyt-dropdown-kbd">
+                        <kbd class="qa-kbd">{{ isMac ? '⌥' : 'Alt' }}</kbd>
+                        <kbd class="qa-kbd">K</kbd>
+                      </span>
+                    </button>
+                    <div class="lyt-dropdown-divider" />
+                  </template>
                   <button class="lyt-dropdown-item" @click="quickActionsMenu = false; showCreateClientDialog = true">
                     <v-icon icon="mdi-account-plus-outline" size="18" />
                     <span>Создать клиента</span>
@@ -780,6 +819,19 @@ const confirmLogout = async () => {
 .lyt-nav-crown {
   margin-left: auto;
   color: #e8b931;
+}
+
+.lyt-nav-badge {
+  margin-left: auto;
+  background: rgb(var(--v-theme-primary));
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  min-width: 20px;
+  text-align: center;
+  line-height: 1.4;
 }
 
 .lyt-nav-text {

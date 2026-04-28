@@ -130,5 +130,25 @@ export function useImportDraft() {
     return api.delete(`/import/drafts/${id}`)
   }
 
-  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, cancel }
+  async function addRow(id: string) {
+    saving.value = true
+    try {
+      draft.value = await api.post<ImportDraft>(`/import/drafts/${id}/rows`)
+      return draft.value
+    } finally {
+      saving.value = false
+    }
+  }
+
+  async function deleteRow(id: string, rowIdx: number) {
+    saving.value = true
+    try {
+      draft.value = await api.delete<ImportDraft>(`/import/drafts/${id}/rows/${rowIdx}`)
+      return draft.value
+    } finally {
+      saving.value = false
+    }
+  }
+
+  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, cancel, addRow, deleteRow }
 }
