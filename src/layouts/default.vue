@@ -13,6 +13,7 @@ import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
 import QuickActionsDialog from "@/components/QuickActionsDialog.vue";
 import GlobalSearchDialog from "@/components/GlobalSearchDialog.vue";
+import SubscriptionStatusBanner from "@/components/SubscriptionStatusBanner.vue";
 import type { PlanFeatures } from "@/types";
 import { minPlanLabelForFeature } from "@/types";
 
@@ -587,6 +588,7 @@ const confirmLogout = async () => {
           </header>
 
           <!-- Page content -->
+          <SubscriptionStatusBanner />
           <router-view v-slot="{ Component }">
             <component :is="Component" />
           </router-view>

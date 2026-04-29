@@ -236,6 +236,10 @@ export interface CoInvestor {
   profitPercent: number
   payoutSchedule?: PayoutSchedule
   mode?: CoInvestorMode
+  // Live balances. Backend returns these via the `...ci` spread on findAll.
+  currentCapital?: number
+  realizedProfit?: number
+  totalPayout?: number
   createdAt: string
 }
 

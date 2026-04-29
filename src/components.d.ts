@@ -25,6 +25,7 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SendRemindersDialog: typeof import('./components/SendRemindersDialog.vue')['default']
+    SubscriptionStatusBanner: typeof import('./components/SubscriptionStatusBanner.vue')['default']
     UpgradePrompt: typeof import('./components/UpgradePrompt.vue')['default']
   }
 }

@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { useDealsStore } from '@/stores/deals'
+import { useAuthStore } from '@/stores/auth'
 import { formatCurrency, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
@@ -12,6 +13,8 @@ import { useFolders } from '@/composables/useFolders'
 import { api } from '@/api/client'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
+
+const authStore = useAuthStore()
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -34,6 +37,24 @@ const route = useRoute()
 
 const editId = computed(() => (route.query.edit as string) || null)
 const isEditMode = computed(() => !!editId.value)
+
+// Plan-limit gate. Editing existing deals is always allowed (Approach A:
+// read-only freeze means existing deals stay editable; only NEW deal
+// creation is blocked when over the active-deal limit).
+const dealLimitInfo = computed(() => {
+  const limit = authStore.user?.planLimits?.maxActiveDeals ?? -1
+  const active = authStore.user?.activeDeals ?? 0
+  return {
+    limit,
+    active,
+    blocked: !isEditMode.value && limit > 0 && active >= limit,
+    plan: authStore.user?.subscriptionPlan ?? 'FREE',
+  }
+})
+
+function goToSubscription() {
+  router.push({ path: '/settings', query: { tab: 'subscription' } })
+}
 
 const step = ref(1)
 const steps = [
@@ -410,6 +431,32 @@ async function submitDeal() {
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
+    <!-- Plan-limit gate: hide the form when partner is over active-deal limit -->
+    <div v-if="dealLimitInfo.blocked" class="limit-gate">
+      <div class="limit-gate__icon">
+        <v-icon icon="mdi-lock-alert-outline" size="40" />
+      </div>
+      <div class="limit-gate__title">Достигнут лимит активных сделок</div>
+      <div class="limit-gate__subtitle">
+        На текущем плане доступно
+        <strong>{{ dealLimitInfo.limit }}</strong>
+        активных сделок. Сейчас у вас:
+        <strong>{{ dealLimitInfo.active }}</strong>.
+      </div>
+      <div class="limit-gate__hint">
+        Завершите часть сделок или перейдите на более высокий тариф, чтобы создавать новые.
+      </div>
+      <div class="limit-gate__actions">
+        <button class="limit-gate__btn limit-gate__btn--primary" @click="goToSubscription">
+          Перейти к подпискам
+        </button>
+        <button class="limit-gate__btn limit-gate__btn--secondary" @click="router.push('/deals')">
+          К списку сделок
+        </button>
+      </div>
+    </div>
+
+    <template v-else>
     <!-- Custom stepper header -->
     <div class="stepper-header">
       <div
@@ -1109,10 +1156,78 @@ async function submitDeal() {
     </aside>
 
     </div><!-- /wizard-layout -->
+    </template>
   </div>
 </template>
 
 <style scoped>
+/* Plan-limit gate (blocks the form when over active-deal limit) */
+.limit-gate {
+  max-width: 540px;
+  margin: 60px auto;
+  padding: 40px 32px;
+  background: #fff;
+  border-radius: 16px;
+  border: 1px solid #f0f0f0;
+  text-align: center;
+}
+.limit-gate__icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: rgba(244, 67, 54, 0.1);
+  color: #c62828;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 20px;
+}
+.limit-gate__title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin-bottom: 12px;
+}
+.limit-gate__subtitle {
+  font-size: 15px;
+  color: #4a4a4a;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+.limit-gate__hint {
+  font-size: 13px;
+  color: #888;
+  margin-bottom: 24px;
+  line-height: 1.5;
+}
+.limit-gate__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.limit-gate__btn {
+  padding: 12px 24px;
+  border-radius: 10px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.limit-gate__btn:hover { opacity: 0.85; }
+.limit-gate__btn--primary { background: #1a1a1a; color: #fff; }
+.limit-gate__btn--secondary { background: #f5f5f5; color: #1a1a1a; }
+.dark .limit-gate {
+  background: #1a1a1a;
+  border-color: #333;
+}
+.dark .limit-gate__title { color: #fff; }
+.dark .limit-gate__subtitle { color: #ccc; }
+.dark .limit-gate__hint { color: #888; }
+.dark .limit-gate__btn--primary { background: #fff; color: #1a1a1a; }
+.dark .limit-gate__btn--secondary { background: #2a2a2a; color: #fff; }
+
 /* Wizard two-column layout */
 .wizard-layout {
   display: grid;

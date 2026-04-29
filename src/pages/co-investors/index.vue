@@ -369,6 +369,23 @@ async function saveCoInvestor() {
 
 // ── Delete ──
 
+// Info about what auto-settle will record on delete. Backend treats deletion
+// as "partner returned the capital and paid out remaining dividends in cash"
+// — show the partner those amounts up-front so they don't get a silent swing
+// in availableCapital.
+const deletingInfo = computed(() => {
+  const ci = coInvestors.value.find((c) => c.id === deletingId.value)
+  if (!ci) return null
+  const currentCapital = ci.currentCapital ?? 0
+  const owedDividends = (ci.realizedProfit ?? 0) - (ci.totalPayout ?? 0)
+  return {
+    name: ci.name,
+    currentCapital,
+    owedDividends: Math.max(0, owedDividends),
+    hasObligations: currentCapital > 0 || owedDividends > 0,
+  }
+})
+
 function confirmDelete(id: string) {
   deletingId.value = id
   deleteDialog.value = true
@@ -935,7 +952,23 @@ function payoutLabel(s: string | undefined): string {
             <v-icon icon="mdi-alert-circle-outline" size="48" color="error" />
           </div>
           <div class="ci-delete-title mb-2">Удалить со-инвестора?</div>
-          <div class="ci-delete-subtitle mb-4">
+          <div v-if="deletingInfo?.hasObligations" class="ci-delete-subtitle mb-4">
+            <div class="mb-2">При удалении будут записаны следующие операции:</div>
+            <div class="ci-delete-info-block">
+              <div v-if="deletingInfo.currentCapital > 0" class="ci-delete-info-row">
+                <span>Возврат капитала:</span>
+                <strong>{{ formatCurrency(deletingInfo.currentCapital) }}</strong>
+              </div>
+              <div v-if="deletingInfo.owedDividends > 0" class="ci-delete-info-row">
+                <span>Выплата остатка дивидендов:</span>
+                <strong>{{ formatCurrency(deletingInfo.owedDividends) }}</strong>
+              </div>
+            </div>
+            <div class="ci-delete-hint mt-3">
+              Это означает, что вы фактически вернули капитал и выплатили дивиденды со-инвестору. Если это не так — закройте окно и проведите расчёт через журнал.
+            </div>
+          </div>
+          <div v-else class="ci-delete-subtitle mb-4">
             Все привязки к сделкам будут удалены. Это действие нельзя отменить.
           </div>
           <div class="d-flex ga-3 justify-center">
@@ -1638,6 +1671,32 @@ function payoutLabel(s: string | undefined): string {
 }
 .ci-delete-subtitle {
   font-size: 14px; color: rgba(var(--v-theme-on-surface), 0.5);
+  text-align: left;
+}
+.ci-delete-info-block {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ci-delete-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.ci-delete-info-row strong {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+.ci-delete-hint {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  line-height: 1.4;
 }
 
 /* ── Deal selector ── */
