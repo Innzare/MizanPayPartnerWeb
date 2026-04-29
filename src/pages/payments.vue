@@ -692,7 +692,7 @@ const rescheduleReasonOptions = [
 
     <!-- View mode toggle -->
     <div class="d-flex ga-2 mb-4 align-center">
-      <v-tooltip v-if="!subscription.canAccess('whatsapp')" text="Доступно с плана Стандарт" location="bottom">
+      <v-tooltip v-if="!subscription.canAccess('whatsapp')" text="Доступно с плана Премиум" location="bottom">
         <template #activator="{ props: tip }">
           <button
             class="btn-whatsapp btn-whatsapp--locked"

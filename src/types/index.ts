@@ -19,6 +19,34 @@ export interface PlanFeatures {
   whatsapp: boolean
 }
 
+// Minimum plan required for each feature. Mirrors backend PLAN_FEATURES —
+// keep in sync when changing the matrix in subscription-plans.ts.
+export const FEATURE_MIN_PLAN: Record<keyof PlanFeatures, SubscriptionPlan> = {
+  analytics: 'PRO',
+  analyticsCharts: 'BUSINESS',
+  pdfContract: 'PRO',
+  pdfExport: 'PRO',
+  excelExport: 'BUSINESS',
+  import: 'BUSINESS',
+  activity: 'PRO',
+  registry: 'PRO',
+  coInvestors: 'BUSINESS',
+  finance: 'PRO',
+  staff: 'PREMIUM',
+  whatsapp: 'PREMIUM',
+}
+
+export const PLAN_LABELS: Record<SubscriptionPlan, string> = {
+  FREE: 'Без подписки',
+  PRO: 'Стандарт',
+  BUSINESS: 'Бизнес',
+  PREMIUM: 'Премиум',
+}
+
+export function minPlanLabelForFeature(feature: keyof PlanFeatures): string {
+  return PLAN_LABELS[FEATURE_MIN_PLAN[feature]]
+}
+
 export interface User {
   id: string
   email: string

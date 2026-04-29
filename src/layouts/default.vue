@@ -14,6 +14,7 @@ import CreateClientDialog from "@/components/CreateClientDialog.vue";
 import QuickActionsDialog from "@/components/QuickActionsDialog.vue";
 import GlobalSearchDialog from "@/components/GlobalSearchDialog.vue";
 import type { PlanFeatures } from "@/types";
+import { minPlanLabelForFeature } from "@/types";
 
 const authStore = useAuthStore();
 const notificationsStore = useNotificationsStore();
@@ -286,7 +287,7 @@ const confirmLogout = async () => {
             <v-tooltip
               v-for="item in mainNavRoutes"
               :key="item.path"
-              :text="item.locked ? `${item.title} — доступно с плана Стандарт` : item.title"
+              :text="item.locked && item.requiredFeature ? `${item.title} — доступно с плана ${minPlanLabelForFeature(item.requiredFeature)}` : item.title"
               location="end"
               :disabled="!collapsed && !item.locked"
             >
