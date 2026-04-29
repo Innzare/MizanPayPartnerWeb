@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useChats } from '@/composables/useChats'
 import ChatPanel from '@/components/ChatPanel.vue'
-import type { StaffMember, StaffRole, DealsAccessMode } from '@/types'
+import type { StaffMember, StaffRole, DealsAccessMode, Deal, DealStatus } from '@/types'
 import { STAFF_ROLE_LABELS, ROLE_ROUTE_ACCESS, STAFF_TOGGLEABLE_ROUTES } from '@/types'
+import { formatCurrency } from '@/utils/formatters'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -83,7 +84,119 @@ async function selectStaff(member: StaffMember) {
 function closeSelected() {
   selectedStaff.value = null
   selectedChatId.value = null
+  activeTab.value = 'chat'
   chats.fetchThreads().catch(() => {})
+}
+
+// Tabs in right panel: chat (default) or assigned deals list
+type RightPanelTab = 'chat' | 'deals'
+const activeTab = ref<RightPanelTab>('chat')
+
+// Assigned deals — loaded when partner selects a staff and opens "Сделки" tab
+const assignedDeals = ref<Deal[]>([])
+const assignedDealsLoading = ref(false)
+
+async function loadAssignedDeals() {
+  if (!selectedStaff.value) {
+    assignedDeals.value = []
+    return
+  }
+  assignedDealsLoading.value = true
+  try {
+    assignedDeals.value = await api.get<Deal[]>(
+      `/deals?role=investor&assignedStaffId=${selectedStaff.value.id}`,
+    )
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось загрузить сделки')
+  } finally {
+    assignedDealsLoading.value = false
+  }
+}
+
+watch([activeTab, selectedStaff], ([tab, staff]) => {
+  if (tab === 'deals' && staff) loadAssignedDeals()
+})
+
+// Detach a deal from currently selected staff
+async function detachDeal(deal: Deal) {
+  if (!selectedStaff.value) return
+  if (!confirm(`Открепить «${deal.productName}» от ${selectedStaff.value.firstName}?`)) return
+  try {
+    await api.patch(`/deals/${deal.id}/assignee`, { staffId: null })
+    toast.success('Сделка откреплена')
+    await loadAssignedDeals()
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось открепить')
+  }
+}
+
+// Attach-deal dialog: pick from existing deals (search by number/product)
+const attachDialog = ref(false)
+const attachSearch = ref('')
+const allInvestorDeals = ref<Deal[]>([])
+const attachLoading = ref(false)
+
+async function openAttachDialog() {
+  attachSearch.value = ''
+  attachDialog.value = true
+  attachLoading.value = true
+  try {
+    // Fetch all partner's deals (no staff filter — we want to see what to attach)
+    allInvestorDeals.value = await api.get<Deal[]>('/deals?role=investor')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось загрузить сделки')
+  } finally {
+    attachLoading.value = false
+  }
+}
+
+const attachDealCandidates = computed(() => {
+  // Show deals that are NOT yet assigned to this staff. Sort: ACTIVE first, then by recency.
+  if (!selectedStaff.value) return []
+  const staffId = selectedStaff.value.id
+  const q = attachSearch.value.trim().toLowerCase()
+  let list = allInvestorDeals.value.filter(
+    (d) => (d as any).assignedStaffId !== staffId && d.status !== 'CANCELLED',
+  )
+  if (q) {
+    list = list.filter(
+      (d) =>
+        String(d.dealNumber).startsWith(q) ||
+        d.productName.toLowerCase().includes(q),
+    )
+  }
+  // Active first, then by createdAt desc
+  list.sort((a, b) => {
+    if (a.status === 'ACTIVE' && b.status !== 'ACTIVE') return -1
+    if (a.status !== 'ACTIVE' && b.status === 'ACTIVE') return 1
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  })
+  return list.slice(0, 50)
+})
+
+async function attachDeal(deal: Deal) {
+  if (!selectedStaff.value) return
+  try {
+    await api.patch(`/deals/${deal.id}/assignee`, { staffId: selectedStaff.value.id })
+    toast.success('Сделка прикреплена')
+    attachDialog.value = false
+    await loadAssignedDeals()
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось прикрепить')
+  }
+}
+
+const DEAL_STATUS_LABELS: Record<DealStatus, string> = {
+  ACTIVE: 'Активна',
+  COMPLETED: 'Завершена',
+  DISPUTED: 'Спор',
+  CANCELLED: 'Отменена',
+}
+const DEAL_STATUS_COLORS: Record<DealStatus, string> = {
+  ACTIVE: '#10b981',
+  COMPLETED: '#6b7280',
+  DISPUTED: '#f59e0b',
+  CANCELLED: '#ef4444',
 }
 
 const ROLE_COLORS: Record<StaffRole, string> = {
@@ -329,14 +442,96 @@ onBeforeUnmount(() => {
                   {{ STAFF_ROLE_LABELS[selectedStaff.role] }} · {{ selectedStaff.email }}{{ selectedStaff.isActive ? '' : ' · Деактивирован' }}
                 </div>
               </div>
-              <button class="sf-chat-bar-close" title="Закрыть чат" @click="closeSelected">
+              <button class="sf-chat-bar-close" title="Закрыть" @click="closeSelected">
                 <v-icon icon="mdi-close" size="18" />
               </button>
             </header>
-            <div v-if="chatOpening" class="d-flex justify-center pa-6">
-              <v-progress-circular indeterminate size="20" color="primary" />
+
+            <!-- Tabs row -->
+            <div class="sf-tabs">
+              <button
+                class="sf-tab"
+                :class="{ 'sf-tab--active': activeTab === 'chat' }"
+                @click="activeTab = 'chat'"
+              >
+                <v-icon icon="mdi-message-text-outline" size="14" />
+                <span>Чат</span>
+                <span v-if="staffUnread(selectedStaff.id) > 0" class="sf-tab-badge">{{ staffUnread(selectedStaff.id) }}</span>
+              </button>
+              <button
+                class="sf-tab"
+                :class="{ 'sf-tab--active': activeTab === 'deals' }"
+                @click="activeTab = 'deals'"
+              >
+                <v-icon icon="mdi-briefcase-outline" size="14" />
+                <span>Сделки</span>
+                <span v-if="assignedDeals.length > 0" class="sf-tab-badge sf-tab-badge--neutral">{{ assignedDeals.length }}</span>
+              </button>
             </div>
-            <ChatPanel v-else :chat-id="selectedChatId" />
+
+            <!-- Chat tab -->
+            <template v-if="activeTab === 'chat'">
+              <div v-if="chatOpening" class="d-flex justify-center pa-6">
+                <v-progress-circular indeterminate size="20" color="primary" />
+              </div>
+              <ChatPanel v-else :chat-id="selectedChatId" />
+            </template>
+
+            <!-- Deals tab -->
+            <div v-else class="sf-deals-tab">
+              <div class="sf-deals-header">
+                <div class="sf-deals-title">
+                  Назначенные сделки
+                  <span class="sf-deals-count">{{ assignedDeals.length }}</span>
+                </div>
+                <button class="sf-deals-add-btn" @click="openAttachDialog">
+                  <v-icon icon="mdi-plus" size="14" />
+                  Прикрепить
+                </button>
+              </div>
+
+              <div v-if="assignedDealsLoading" class="d-flex justify-center pa-6">
+                <v-progress-circular indeterminate size="20" color="primary" />
+              </div>
+
+              <div v-else-if="assignedDeals.length === 0" class="sf-deals-empty">
+                <v-icon icon="mdi-briefcase-off-outline" size="32" color="grey-lighten-1" />
+                <div class="sf-deals-empty-title">Сделок пока нет</div>
+                <div class="sf-deals-empty-sub">
+                  Прикрепите первую сделку — работник с режимом «Только назначенные» увидит её в своём списке.
+                </div>
+                <button class="sf-deals-add-btn mt-3" @click="openAttachDialog">
+                  <v-icon icon="mdi-plus" size="14" />
+                  Прикрепить сделку
+                </button>
+              </div>
+
+              <div v-else class="sf-deals-list">
+                <RouterLink
+                  v-for="d in assignedDeals"
+                  :key="d.id"
+                  :to="`/deals/${d.id}`"
+                  class="sf-deal-row"
+                >
+                  <div class="sf-deal-num">#{{ d.dealNumber }}</div>
+                  <div class="sf-deal-main">
+                    <div class="sf-deal-product">{{ d.productName }}</div>
+                    <div class="sf-deal-meta">
+                      {{ formatCurrency(d.totalPrice) }} · остаток {{ formatCurrency(d.remainingAmount) }}
+                    </div>
+                  </div>
+                  <span
+                    class="sf-deal-status"
+                    :style="{ background: DEAL_STATUS_COLORS[d.status] + '14', color: DEAL_STATUS_COLORS[d.status] }"
+                  >
+                    {{ DEAL_STATUS_LABELS[d.status] }}
+                  </span>
+                  <button class="sf-deal-detach" title="Открепить" @click.stop.prevent="detachDeal(d)">
+                    <v-icon icon="mdi-link-off" size="14" />
+                  </button>
+                </RouterLink>
+              </div>
+            </div>
           </template>
 
           <!-- Empty state when no staff selected -->
@@ -534,6 +729,75 @@ onBeforeUnmount(() => {
             <button class="btn-primary flex-grow-1" :disabled="editLoading" @click="saveEdit">
               <v-progress-circular v-if="editLoading" indeterminate size="16" width="2" color="white" class="mr-2" />
               Сохранить
+            </button>
+          </div>
+        </div>
+      </v-card>
+    </v-dialog>
+
+    <!-- Attach Deal Dialog -->
+    <v-dialog v-model="attachDialog" max-width="560">
+      <v-card v-if="selectedStaff" rounded="lg">
+        <div class="pa-5">
+          <div class="d-flex align-center justify-space-between mb-4">
+            <div>
+              <div class="text-h6 font-weight-bold">Прикрепить сделку</div>
+              <div class="text-caption text-medium-emphasis">
+                Назначить сотрудника {{ selectedStaff.firstName }} {{ selectedStaff.lastName }} ответственным
+              </div>
+            </div>
+            <button class="dialog-close-sm" @click="attachDialog = false">
+              <v-icon icon="mdi-close" size="18" />
+            </button>
+          </div>
+
+          <div class="sf-attach-search-wrap mb-3">
+            <v-icon icon="mdi-magnify" size="16" class="sf-attach-search-icon" />
+            <input
+              v-model="attachSearch"
+              type="text"
+              class="sf-attach-search-input"
+              placeholder="Поиск по номеру (#42) или названию"
+              autofocus
+            />
+          </div>
+
+          <div v-if="attachLoading" class="d-flex justify-center pa-6">
+            <v-progress-circular indeterminate size="20" color="primary" />
+          </div>
+
+          <div v-else-if="attachDealCandidates.length === 0" class="sf-attach-empty">
+            <v-icon icon="mdi-magnify-close" size="28" color="grey-lighten-1" />
+            <div class="mt-2">{{ attachSearch ? 'Ничего не найдено' : 'Нет сделок для прикрепления' }}</div>
+          </div>
+
+          <div v-else class="sf-attach-list">
+            <button
+              v-for="d in attachDealCandidates"
+              :key="d.id"
+              type="button"
+              class="sf-attach-row"
+              @click="attachDeal(d)"
+            >
+              <div class="sf-attach-num">#{{ d.dealNumber }}</div>
+              <div class="sf-attach-main">
+                <div class="sf-attach-product">{{ d.productName }}</div>
+                <div class="sf-attach-meta">{{ formatCurrency(d.totalPrice) }}</div>
+              </div>
+              <span
+                class="sf-deal-status"
+                :style="{ background: DEAL_STATUS_COLORS[d.status] + '14', color: DEAL_STATUS_COLORS[d.status] }"
+              >
+                {{ DEAL_STATUS_LABELS[d.status] }}
+              </span>
+              <span
+                v-if="(d as any).assignedStaff"
+                class="sf-attach-current"
+                :title="`Сейчас: ${(d as any).assignedStaff.firstName} ${(d as any).assignedStaff.lastName}`"
+              >
+                <v-icon icon="mdi-account-arrow-right-outline" size="12" />
+                переназначить
+              </span>
             </button>
           </div>
         </div>
@@ -1112,5 +1376,281 @@ onBeforeUnmount(() => {
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 12px;
+}
+
+/* ── Tabs in right panel (Чат / Сделки) ── */
+.sf-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px 0 12px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  flex-shrink: 0;
+}
+.dark .sf-tabs { border-bottom-color: rgba(255,255,255,0.06); }
+.sf-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+.sf-tab:hover { color: rgba(var(--v-theme-on-surface), 0.8); }
+.sf-tab--active {
+  color: rgb(var(--v-theme-primary));
+  border-bottom-color: rgb(var(--v-theme-primary));
+  font-weight: 600;
+}
+.sf-tab-badge {
+  background: rgb(var(--v-theme-primary));
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  min-width: 16px;
+  text-align: center;
+  line-height: 1.4;
+}
+.sf-tab-badge--neutral {
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+/* ── Deals tab content ── */
+.sf-deals-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 14px 16px;
+}
+.sf-deals-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.sf-deals-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.sf-deals-count {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 8px;
+}
+.sf-deals-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary));
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sf-deals-add-btn:hover { background: rgba(var(--v-theme-primary), 0.18); }
+
+.sf-deals-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 40px 20px;
+  gap: 4px;
+}
+.sf-deals-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.sf-deals-empty-sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  max-width: 320px;
+  line-height: 1.5;
+}
+
+.sf-deals-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sf-deal-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  background: rgba(var(--v-theme-on-surface), 0.015);
+  text-decoration: none;
+  color: inherit;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sf-deal-row:hover {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-color: rgba(var(--v-theme-on-surface), 0.15);
+}
+.sf-deal-num {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 13px;
+  color: rgb(var(--v-theme-primary));
+  min-width: 40px;
+}
+.sf-deal-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sf-deal-product {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sf-deal-meta {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.sf-deal-status {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+.sf-deal-detach {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.sf-deal-row:hover .sf-deal-detach { opacity: 1; }
+.sf-deal-detach:hover {
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+}
+
+/* ── Attach Deal Dialog ── */
+.sf-attach-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.sf-attach-search-icon {
+  position: absolute;
+  left: 10px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.sf-attach-search-input {
+  width: 100%;
+  padding: 9px 10px 9px 32px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+  outline: none;
+}
+.sf-attach-search-input:focus { border-color: rgb(var(--v-theme-primary)); }
+
+.sf-attach-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.sf-attach-list {
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sf-attach-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.015);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+.sf-attach-row:hover { background: rgba(var(--v-theme-primary), 0.06); }
+.sf-attach-num {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 13px;
+  color: rgb(var(--v-theme-primary));
+  min-width: 40px;
+}
+.sf-attach-main {
+  flex: 1;
+  min-width: 0;
+}
+.sf-attach-product {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sf-attach-meta {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.sf-attach-current {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-weight: 600;
 }
 </style>
