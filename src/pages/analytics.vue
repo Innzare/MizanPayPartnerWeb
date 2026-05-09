@@ -88,14 +88,31 @@ function getNext6Months() {
 }
 
 // ── Profit calculation ──
-// Each payment contains a profit portion: amount * (markupPercent / (100 + markupPercent))
+// Each payment carries a profit portion = amount × (margin / totalPrice).
+// "Margin" here is the FULL margin a partner earns on the deal:
+//   - With wholesalePrice set: (totalPrice − wholesalePrice) — includes
+//     both retail margin (purchase − wholesale) and installment markup.
+//   - Without wholesalePrice (legacy): just the markup, equivalent to
+//     the old `markupPercent / (100 + markupPercent)` formula.
+// Mirrors the server-side `dealTotalMargin` helper in /finance so all
+// "profit" numbers across the app come from the same source of truth.
 function getDealForPayment(payment: any) {
   return dealsStore.getDeal(payment.dealId) || payment.deal
 }
 
 function getPaymentProfit(payment: { amount: number; dealId: string; deal?: any }) {
   const deal = getDealForPayment(payment)
-  if (!deal || !deal.markupPercent) return 0
+  if (!deal || !deal.totalPrice) return 0
+
+  const hasWholesale = deal.wholesalePrice != null && deal.wholesalePrice > 0
+  if (hasWholesale) {
+    // Full margin: revenue − real cost. Equivalent to retail + markup.
+    const totalMargin = Math.max(0, deal.totalPrice - deal.wholesalePrice)
+    return payment.amount * (totalMargin / deal.totalPrice)
+  }
+
+  // Legacy fallback — preserves analytics for deals without wholesalePrice.
+  if (!deal.markupPercent) return 0
   return payment.amount * (deal.markupPercent / (100 + deal.markupPercent))
 }
 

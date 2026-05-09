@@ -66,6 +66,11 @@ interface CapitalDeal {
   productName: string
   client: string | null
   purchasePrice: number
+  // Optional wholesale cost — when set, drives the real cost basis for
+  // both the in-progress capital and the partner's profit margin
+  // (retailMargin = purchasePrice − wholesalePrice).
+  wholesalePrice?: number | null
+  profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
   totalPrice: number
   markup: number
   downPayment: number
@@ -125,31 +130,46 @@ const operationsPayout = computed(() => {
 })
 
 // ── Per-deal cash-flow breakdown helpers ──
-// Every ruble client pays splits into `cost recovery` (returns purchase) and
-// `profit` (markup), in the proportion `purchasePrice / totalPrice`. Showing
-// both halves explicitly makes "В работе" math obvious — otherwise the number
+// Every ruble client pays splits into `cost recovery` (returns the
+// real outlay to supplier — wholesalePrice when set, else purchasePrice)
+// and `profit` (full margin = retailMargin + markup, or just markup
+// for legacy deals without wholesalePrice). Showing both halves
+// explicitly makes "В работе" math obvious — otherwise the number
 // looks "off" by the profit amount.
+
+function dealRealCost(d: CapitalDeal): number {
+  return d.wholesalePrice != null && d.wholesalePrice > 0 ? d.wholesalePrice : d.purchasePrice
+}
+function dealTotalMargin(d: CapitalDeal): number {
+  // Full margin: retail (purchasePrice − wholesalePrice) plus the
+  // installment markup. When wholesale isn't set, retail contribution
+  // is 0 and we fall back to plain markup — matches legacy behavior.
+  const retailMargin = d.wholesalePrice != null && d.wholesalePrice > 0
+    ? Math.max(0, d.purchasePrice - d.wholesalePrice)
+    : 0
+  return retailMargin + d.markup
+}
 function dealCostRatio(d: CapitalDeal): number {
-  return d.totalPrice > 0 ? d.purchasePrice / d.totalPrice : 0
+  return d.totalPrice > 0 ? dealRealCost(d) / d.totalPrice : 0
 }
 function dealCostRecovered(d: CapitalDeal): number {
   return Math.round(d.received * dealCostRatio(d))
 }
 function dealProfitEarned(d: CapitalDeal): number {
   if (d.totalPrice <= 0) return 0
-  return Math.round(d.received * (d.markup / d.totalPrice))
+  return Math.round(d.received * (dealTotalMargin(d) / d.totalPrice))
 }
 function dealInProgress(d: CapitalDeal): number {
-  return Math.max(d.purchasePrice - dealCostRecovered(d), 0)
+  return Math.max(dealRealCost(d) - dealCostRecovered(d), 0)
 }
 function dealProfitRemaining(d: CapitalDeal): number {
-  return Math.max(d.markup - dealProfitEarned(d), 0)
+  return Math.max(dealTotalMargin(d) - dealProfitEarned(d), 0)
 }
 
 // Profit contribution from a single payment within a deal
 function paymentProfit(d: CapitalDeal, p: CapitalDealPayment): number {
   if (d.totalPrice <= 0) return 0
-  return Math.round(p.amount * (d.markup / d.totalPrice))
+  return Math.round(p.amount * (dealTotalMargin(d) / d.totalPrice))
 }
 const PAYMENT_STATUS_LABEL: Record<CapitalDealPayment['status'], string> = {
   PAID: 'оплачен',
@@ -690,7 +710,10 @@ function formatTransactionAmount(t: Transaction) {
 
             <template v-else-if="wfExpanded === 'profit' && capitalDetails.deals">
               <div class="wf-panel-title">Прибыль по сделкам</div>
-              <div v-for="d in capitalDetails.deals.filter(x => x.markup > 0)" :key="d.id" class="wf-acc">
+              <!-- Filter on full margin (retail + installment) instead of raw
+                   markup so deals with only retail margin (markup=0) still
+                   appear in the breakdown. -->
+              <div v-for="d in capitalDetails.deals.filter(x => dealTotalMargin(x) > 0)" :key="d.id" class="wf-acc">
                 <button class="wf-acc-head" @click="toggleProfitDeal(d.id)">
                   <v-icon
                     :icon="expandedInProfit.has(d.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'"
@@ -702,7 +725,7 @@ function formatTransactionAmount(t: Transaction) {
                       {{ d.productName }}
                       <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
                     </router-link>
-                    <span class="wf-acc-sub">из ожидаемой {{ formatCurrencyShort(d.markup) }}</span>
+                    <span class="wf-acc-sub">из ожидаемой {{ formatCurrencyShort(dealTotalMargin(d)) }}</span>
                   </div>
                   <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(dealProfitEarned(d)) }}</span>
                 </button>
@@ -714,7 +737,7 @@ function formatTransactionAmount(t: Transaction) {
                     <span class="wf-pay-name">Первоначальный взнос</span>
                     <span class="wf-pay-amount-dim">({{ formatCurrencyShort(d.downPayment) }})</span>
                     <span class="wf-pay-flex" />
-                    <span class="wf-pay-profit">+{{ formatCurrency(Math.round(d.downPayment * (d.markup / Math.max(d.totalPrice, 1)))) }}</span>
+                    <span class="wf-pay-profit">+{{ formatCurrency(Math.round(d.downPayment * (dealTotalMargin(d) / Math.max(d.totalPrice, 1)))) }}</span>
                   </div>
 
                   <!-- Each payment row -->
@@ -1072,15 +1095,15 @@ function formatTransactionAmount(t: Transaction) {
                 <div class="cap-deal-numbers">
                   <div class="cap-deal-num">
                     <div class="cap-deal-num-label">Закупка</div>
-                    <div class="cap-deal-num-value" style="color: #ef4444;">{{ formatCurrency(deal.purchasePrice) }}</div>
+                    <div class="cap-deal-num-value" style="color: #ef4444;">{{ formatCurrency(dealRealCost(deal)) }}</div>
                   </div>
                   <div class="cap-deal-num">
                     <div class="cap-deal-num-label">Получено</div>
                     <div class="cap-deal-num-value" style="color: #10b981;">{{ formatCurrency(deal.received) }}</div>
                   </div>
                   <div class="cap-deal-num">
-                    <div class="cap-deal-num-label">Наценка</div>
-                    <div class="cap-deal-num-value">{{ formatCurrency(deal.markup) }}</div>
+                    <div class="cap-deal-num-label">Прибыль</div>
+                    <div class="cap-deal-num-value">{{ formatCurrency(dealTotalMargin(deal)) }}</div>
                   </div>
                 </div>
               </div>

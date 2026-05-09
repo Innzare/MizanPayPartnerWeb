@@ -42,6 +42,12 @@ interface DealInfo {
   totalPrice: number
   productPhotos?: string[]
   purchasePrice?: number
+  // Optional wholesale-related fields. When profitSplitBase=FULL_MARGIN
+  // and wholesalePrice is set, CI share is computed from
+  // (totalPrice − wholesalePrice) instead of plain markup. Otherwise
+  // (default for legacy deals) CI splits markup as before.
+  wholesalePrice?: number | null
+  profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
   remainingAmount?: number
   client?: { id: string; firstName: string; lastName: string }
   externalClientName?: string
@@ -445,7 +451,17 @@ async function unlinkDeal(coInvestorId: string, dealId: string) {
 // ── Helpers ──
 
 function getDealShareForCi(deal: DealInfo, ci: CoInvestor) {
-  const profit = deal.markup
+  // Profit base shared with CI mirrors backend logic in
+  // accrueProfitForCoInvestors / profitBaseFor:
+  //   FULL_MARGIN with wholesalePrice → totalPrice − wholesalePrice
+  //   (everyone else, including legacy deals) → markup
+  const useFullMargin =
+    deal.profitSplitBase === 'FULL_MARGIN' &&
+    deal.wholesalePrice != null &&
+    deal.wholesalePrice > 0
+  const profit = useFullMargin
+    ? Math.max(0, deal.totalPrice - (deal.wholesalePrice as number))
+    : deal.markup
   const ciShare = Math.round(profit * ci.profitPercent / 100)
   return { profit, ciShare, myShare: profit - ciShare }
 }
