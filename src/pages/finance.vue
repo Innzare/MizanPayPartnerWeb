@@ -724,6 +724,11 @@ function formatTransactionAmount(t: Transaction) {
                     <router-link :to="`/deals/${d.id}`" class="wf-expand-link" @click.stop>
                       {{ d.productName }}
                       <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
+                      <span
+                        v-if="d.wholesalePrice != null && d.wholesalePrice > 0"
+                        class="wf-pill-wholesale"
+                        :title="`Оптовая ${formatCurrencyShort(d.wholesalePrice)} · Розничная ${formatCurrencyShort(d.purchasePrice)}`"
+                      >опт</span>
                     </router-link>
                     <span class="wf-acc-sub">из ожидаемой {{ formatCurrencyShort(dealTotalMargin(d)) }}</span>
                   </div>
@@ -796,6 +801,11 @@ function formatTransactionAmount(t: Transaction) {
                     <router-link :to="`/deals/${d.id}`" class="wf-expand-link" @click.stop>
                       {{ d.productName }}
                       <span v-if="d.client" class="wf-expand-dim"> · {{ d.client }}</span>
+                      <span
+                        v-if="d.wholesalePrice != null && d.wholesalePrice > 0"
+                        class="wf-pill-wholesale"
+                        :title="`Оптовая ${formatCurrencyShort(d.wholesalePrice)} · Розничная ${formatCurrencyShort(d.purchasePrice)}`"
+                      >опт</span>
                     </router-link>
                     <span class="wf-acc-sub">{{ d.progress }}% оплачено</span>
                   </div>
@@ -2609,6 +2619,19 @@ function formatTransactionAmount(t: Transaction) {
   font-weight: 400;
   color: rgba(var(--v-theme-on-surface), 0.45);
   margin-top: 2px;
+}
+.wf-pill-wholesale {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+  vertical-align: middle;
 }
 .wf-table-num {
   text-align: right;
