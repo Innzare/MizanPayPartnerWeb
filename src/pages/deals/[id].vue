@@ -290,6 +290,67 @@ const progress = computed(() =>
     ? (deal.value.paidPayments / deal.value.numberOfPayments) * 100 : 0
 )
 
+/**
+ * Breakdown of partner's profit on this specific deal:
+ *
+ *   - retailMargin = purchasePrice − wholesalePrice (when wholesalePrice
+ *     set; else 0). Always belongs to partner unless FULL_MARGIN mode
+ *     is enabled, in which case it goes into the split pool.
+ *   - installmentMargin = totalPrice − purchasePrice (= deal.markup).
+ *     Always shared with co-investors per their profitPercent.
+ *   - splitBase = what's actually divided with CI based on profitSplitBase.
+ *   - ciAmount = sum of (splitBase × profitPercent / 100) across all
+ *     PER_DEAL CIs linked to this deal. POOL CIs are not included
+ *     here — their share comes from a separate flow that depends on
+ *     pool weights, which the deal page doesn't have data for.
+ *
+ * `realizedPartner` scales totalPartner by the fraction of totalPrice
+ * actually received so far (paid payments + downPayment). Mirrors the
+ * server-side accrual ratio so partner sees a number that matches
+ * what they'd see in /finance after every payment is marked paid.
+ */
+const dealProfitBreakdown = computed(() => {
+  if (!deal.value) return null
+  const d = deal.value
+  const wholesale = d.wholesalePrice ?? 0
+  const useWholesale = wholesale > 0
+  const retailMargin = useWholesale ? Math.max(0, d.purchasePrice - wholesale) : 0
+  const installmentMargin = d.markup
+  const isFullMargin = d.profitSplitBase === 'FULL_MARGIN' && useWholesale
+
+  // What gets split with PER_DEAL co-investors
+  const splitBase = isFullMargin ? retailMargin + installmentMargin : installmentMargin
+
+  // Sum of percent across PER_DEAL CIs (POOL handled separately, not
+  // displayed in this card — the partner has /co-investors for that).
+  const ciTotalPercent = dealCoInvestors.value.reduce((s, ci) => s + (ci.profitPercent || 0), 0)
+  const ciAmount = Math.round((splitBase * ciTotalPercent) / 100)
+
+  const partnerFromSplit = splitBase - ciAmount
+  const partnerRetailDirect = isFullMargin ? 0 : retailMargin
+  const totalPartner = partnerRetailDirect + partnerFromSplit
+
+  // Realized fraction — how much of the deal's totalPrice has come in
+  // (downPayment + paid payments). 1.0 = fully completed.
+  const ratio = d.totalPrice > 0 ? totalPaid.value / d.totalPrice : 0
+  const realizedPartner = Math.round(totalPartner * Math.min(1, Math.max(0, ratio)))
+
+  return {
+    useWholesale,
+    isFullMargin,
+    retailMargin,
+    installmentMargin,
+    splitBase,
+    ciTotalPercent,
+    ciAmount,
+    partnerRetailDirect,
+    partnerFromSplit,
+    totalPartner,
+    realizedPartner,
+    progressPercent: Math.round(Math.min(1, Math.max(0, ratio)) * 100),
+  }
+})
+
 // Payment timeline chart
 const paymentChartData = computed(() => {
   if (!payments.value.length) return { labels: [], datasets: [] }
@@ -893,6 +954,97 @@ const timeline = computed(() => {
               <div class="finance-value" style="color: #f59e0b;">{{ formatCurrency(deal.remainingAmount) }}</div>
             </div>
           </div>
+
+          <!-- Profit breakdown — only when wholesalePrice or CI present -->
+          <v-card
+            v-if="dealProfitBreakdown && (dealProfitBreakdown.useWholesale || dealCoInvestors.length > 0)"
+            rounded="lg"
+            elevation="0"
+            border
+            class="pa-5 mb-6 profit-card"
+          >
+            <div class="d-flex align-center mb-4">
+              <v-icon icon="mdi-trending-up" size="20" color="#16a34a" class="mr-2" />
+              <div>
+                <div class="section-title">Ваша прибыль по сделке</div>
+                <div class="section-subtitle">Разбивка с учётом со-инвесторов и оптовой цены</div>
+              </div>
+            </div>
+
+            <div class="profit-rows">
+              <!-- Retail margin (only if wholesalePrice set) -->
+              <div v-if="dealProfitBreakdown.useWholesale" class="profit-row">
+                <div class="profit-label">
+                  Розничная маржа
+                  <span class="profit-formula">
+                    ({{ formatCurrency(deal.purchasePrice) }} − {{ formatCurrency(deal.wholesalePrice || 0) }})
+                  </span>
+                </div>
+                <div class="profit-amount">{{ formatCurrency(dealProfitBreakdown.retailMargin) }}</div>
+              </div>
+
+              <!-- Installment margin -->
+              <div class="profit-row">
+                <div class="profit-label">
+                  Наценка рассрочки
+                  <span class="profit-formula">
+                    ({{ formatCurrency(deal.totalPrice) }} − {{ formatCurrency(deal.purchasePrice) }})
+                  </span>
+                </div>
+                <div class="profit-amount">{{ formatCurrency(dealProfitBreakdown.installmentMargin) }}</div>
+              </div>
+
+              <!-- Split mode hint -->
+              <div v-if="dealProfitBreakdown.useWholesale" class="profit-mode-hint">
+                <v-icon
+                  :icon="dealProfitBreakdown.isFullMargin ? 'mdi-account-group' : 'mdi-account'"
+                  size="13"
+                />
+                <span v-if="dealProfitBreakdown.isFullMargin">
+                  Со-инвесторы получают долю с полной прибыли (включая розничную маржу)
+                </span>
+                <span v-else>
+                  Розничная маржа — только вам. С со-инвесторами делится только наценка рассрочки
+                </span>
+              </div>
+
+              <!-- CI share -->
+              <div v-if="dealProfitBreakdown.ciTotalPercent > 0" class="profit-row profit-row--negative">
+                <div class="profit-label">
+                  Доля со-инвесторов
+                  <span class="profit-formula">
+                    ({{ dealProfitBreakdown.ciTotalPercent }}% от {{ formatCurrency(dealProfitBreakdown.splitBase) }})
+                  </span>
+                </div>
+                <div class="profit-amount">−{{ formatCurrency(dealProfitBreakdown.ciAmount) }}</div>
+              </div>
+
+              <!-- Total partner -->
+              <div class="profit-row profit-row--total">
+                <div class="profit-label">Ваша прибыль (потенциал)</div>
+                <div class="profit-amount profit-amount--total">
+                  {{ formatCurrency(dealProfitBreakdown.totalPartner) }}
+                </div>
+              </div>
+
+              <!-- Realized -->
+              <div class="profit-realized">
+                <div class="profit-realized-row">
+                  <span>Получено уже</span>
+                  <strong>{{ formatCurrency(dealProfitBreakdown.realizedPartner) }}</strong>
+                </div>
+                <div class="profit-realized-bar">
+                  <div
+                    class="profit-realized-fill"
+                    :style="{ width: dealProfitBreakdown.progressPercent + '%' }"
+                  />
+                </div>
+                <div class="profit-realized-meta">
+                  {{ dealProfitBreakdown.progressPercent }}% от потенциальной прибыли
+                </div>
+              </div>
+            </div>
+          </v-card>
 
           <!-- Progress -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
@@ -2136,6 +2288,107 @@ const timeline = computed(() => {
   margin-top: 4px;
   font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+/* Profit breakdown card */
+.profit-card {
+  background: linear-gradient(135deg, rgba(22, 163, 74, 0.04) 0%, rgba(22, 163, 74, 0.02) 100%);
+  border-color: rgba(22, 163, 74, 0.15);
+}
+.profit-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.profit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+.profit-label {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.profit-formula {
+  display: block;
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+}
+.profit-amount {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  font-variant-numeric: tabular-nums;
+}
+.profit-row--negative .profit-amount {
+  color: #b45309;
+}
+.profit-row--total {
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: rgba(22, 163, 74, 0.08);
+  border-radius: 8px;
+}
+.profit-row--total .profit-label {
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.profit-amount--total {
+  font-size: 18px;
+  font-weight: 800;
+  color: #16a34a;
+}
+.profit-mode-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(99, 102, 241, 0.06);
+  border-radius: 8px;
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  line-height: 1.4;
+}
+.profit-realized {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.12);
+}
+.profit-realized-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  margin-bottom: 6px;
+}
+.profit-realized-row strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  font-variant-numeric: tabular-nums;
+}
+.profit-realized-bar {
+  height: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.profit-realized-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #16a34a, #22c55e);
+  border-radius: 3px;
+  transition: width 0.3s ease-out;
+}
+.profit-realized-meta {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 4px;
+  text-align: right;
 }
 
 /* Section titles */
