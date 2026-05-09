@@ -122,6 +122,9 @@ export const useDealsStore = defineStore('deals', () => {
     dealDate?: string
     firstPaymentDate?: string
     numberOfPayments?: number
+    // Pass null to clear (backend accepts null explicitly via DTO).
+    wholesalePrice?: number | null
+    profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
   }) {
     const updated = await api.patch<Deal>(`/deals/${id}`, data)
     const index = deals.value.findIndex((d) => d.id === id)
@@ -157,6 +160,8 @@ export const useDealsStore = defineStore('deals', () => {
     paymentType?: string
     dealDate?: string
     firstPaymentDate?: string
+    wholesalePrice?: number
+    profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
   }) {
     isLoading.value = true
     error.value = null

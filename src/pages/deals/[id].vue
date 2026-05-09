@@ -831,9 +831,27 @@ const timeline = computed(() => {
         <v-col cols="12" lg="8">
           <!-- Finance cards -->
           <div class="finance-grid mb-6">
+            <!-- Wholesale price card — shown only if partner enabled it.
+                 Marked partner-only with a small lock icon to make it
+                 clear this number stays internal (never sent to client). -->
+            <div v-if="deal.wholesalePrice && deal.wholesalePrice > 0" class="finance-card finance-card--wholesale">
+              <div class="finance-label">
+                <v-icon icon="mdi-lock-outline" size="11" class="mr-1" />
+                Оптовая цена
+              </div>
+              <div class="finance-value">{{ formatCurrency(deal.wholesalePrice) }}</div>
+              <div class="finance-sub">только для вас</div>
+            </div>
             <div class="finance-card">
               <div class="finance-label">Закупочная цена</div>
               <div class="finance-value">{{ formatCurrency(deal.purchasePrice) }}</div>
+              <div
+                v-if="deal.wholesalePrice && deal.wholesalePrice > 0 && deal.purchasePrice > deal.wholesalePrice"
+                class="finance-sub"
+                style="color: #16a34a;"
+              >
+                +{{ formatCurrency(deal.purchasePrice - deal.wholesalePrice) }} розничная
+              </div>
             </div>
             <div class="finance-card">
               <div class="finance-label">Итоговая цена</div>
@@ -842,6 +860,20 @@ const timeline = computed(() => {
             <div class="finance-card">
               <div class="finance-label">Наценка</div>
               <div class="finance-value" style="color: #047857;">+{{ formatCurrency(deal.markup) }} ({{ formatPercent(deal.markupPercent) }})</div>
+              <div
+                v-if="deal.wholesalePrice && deal.wholesalePrice > 0 && deal.profitSplitBase === 'FULL_MARGIN'"
+                class="finance-sub"
+                style="color: #6366f1;"
+              >
+                делится с со-инвесторами вся прибыль
+              </div>
+              <div
+                v-else-if="deal.wholesalePrice && deal.wholesalePrice > 0"
+                class="finance-sub"
+                style="color: rgba(0, 0, 0, 0.5);"
+              >
+                делится только наценка рассрочки
+              </div>
             </div>
             <div class="finance-card">
               <div class="finance-label">Первоначальный взнос</div>
@@ -2095,6 +2127,16 @@ const timeline = computed(() => {
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
 .finance-value--lg { font-size: 20px; }
+.finance-card--wholesale {
+  background: rgba(99, 102, 241, 0.04);
+  border-color: rgba(99, 102, 241, 0.18);
+}
+.finance-sub {
+  font-size: 11px;
+  margin-top: 4px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
 
 /* Section titles */
 .section-title {

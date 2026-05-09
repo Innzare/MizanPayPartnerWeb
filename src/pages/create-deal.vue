@@ -127,6 +127,31 @@ const paymentInterval = ref('MONTHLY')
 const dealDate = ref(new Date().toISOString().slice(0, 10))
 const customFirstPayment = ref('')
 
+// Wholesale price (what partner actually paid the supplier) and
+// profit-split mode. Both optional — when wholesalePrice is null the
+// deal is in legacy MARKUP_ONLY mode regardless. Visible only to
+// the partner: never sent to the client app or shown in PDFs.
+const useWholesalePrice = ref(false)
+const wholesalePrice = ref<number | null>(null)
+const profitSplitBase = ref<'MARKUP_ONLY' | 'FULL_MARGIN'>('MARKUP_ONLY')
+
+// Snapshot of wholesale fields when edit-mode loads — used by submit
+// to detect whether the partner changed any cashflow-affecting field
+// and show a confirm dialog (server-side rewriteForDeal will recompute
+// CI accruals, so the partner needs to acknowledge).
+const initialWholesalePrice = ref<number | null>(null)
+const initialProfitSplitBase = ref<'MARKUP_ONLY' | 'FULL_MARGIN'>('MARKUP_ONLY')
+
+// Retail margin = purchasePrice - wholesalePrice (when wholesalePrice
+// is set). This is partner's "trade margin" before any installment
+// uplift; useful for analytics + when deciding profitSplitBase.
+const retailMargin = computed(() => {
+  if (!useWholesalePrice.value) return 0
+  const w = wholesalePrice.value || 0
+  const p = purchasePrice.value || 0
+  return Math.max(0, p - w)
+})
+
 const markupOptions = [10, 15, 20, 25]
 const termOptions = [3, 4, 6, 9, 12, 18, 24]
 
@@ -179,6 +204,21 @@ onMounted(async () => {
       if (deal.clientProfile) selectedClientProfile.value = deal.clientProfile
       if (deal.guarantorProfile) selectedGuarantorProfile.value = deal.guarantorProfile
       selectedFolderId.value = (deal as any).folderId || null
+
+      // Wholesale price / profit-split mode (Phase 3). Fields are
+      // optional — only show the wholesale section if the deal already
+      // has a value, so existing partners aren't confused by a new
+      // empty input that's irrelevant to them.
+      if (deal.wholesalePrice != null && deal.wholesalePrice > 0) {
+        useWholesalePrice.value = true
+        wholesalePrice.value = deal.wholesalePrice
+      }
+      if (deal.profitSplitBase) {
+        profitSplitBase.value = deal.profitSplitBase
+      }
+      // Snapshot for change detection in submit (Phase 4 confirm).
+      initialWholesalePrice.value = deal.wholesalePrice ?? null
+      initialProfitSplitBase.value = deal.profitSplitBase ?? 'MARKUP_ONLY'
     } catch (e: any) {
       toast.error(e.message || 'Не удалось загрузить сделку')
       router.push('/deals')
@@ -349,10 +389,35 @@ const submitting = ref(false)
 
 async function submitDeal() {
   try {
+    // Phase 4 — guard against silent CI recompute. When editing an
+    // existing deal, changing wholesalePrice or profitSplitBase causes
+    // the server to call rewriteForDeal, which deletes existing
+    // PROFIT_ACCRUED entries and creates new ones based on the new
+    // settings. CI's realizedProfit is decremented/incremented to
+    // match. If the deal already has paid payments, this means CI
+    // accrual numbers will change. Partner must explicitly acknowledge.
+    if (isEditMode.value && editId.value) {
+      const newWholesale = useWholesalePrice.value ? (wholesalePrice.value || 0) : null
+      const wholesaleChanged = newWholesale !== initialWholesalePrice.value
+      const splitBaseChanged = profitSplitBase.value !== initialProfitSplitBase.value
+      if (wholesaleChanged || splitBaseChanged) {
+        const ok = window.confirm(
+          'Изменение оптовой цены или режима распределения прибыли пересчитает ' +
+          'ранее начисленную долю со-инвесторов по этой сделке.\n\n' +
+          'Если по сделке уже были оплаченные платежи, суммы у CI могут ' +
+          'измениться (увеличиться или уменьшиться).\n\n' +
+          'Продолжить?',
+        )
+        if (!ok) return
+      }
+    }
+
     submitting.value = true
 
     if (isEditMode.value && editId.value) {
-      // Edit flow — update fields, regenerate schedule if needed
+      // Edit flow — update fields, regenerate schedule if needed.
+      // wholesalePrice/profitSplitBase changes trigger rewriteForDeal
+      // server-side which recomputes CI accruals.
       await dealsStore.updateDeal(editId.value, {
         productName: productName.value,
         purchasePrice: purchasePrice.value || 0,
@@ -361,6 +426,8 @@ async function submitDeal() {
         numberOfPayments: termMonths.value,
         dealDate: dealDate.value,
         firstPaymentDate: customFirstPayment.value || undefined,
+        wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || 0) : null,
+        profitSplitBase: profitSplitBase.value,
       })
       toast.success('Сделка обновлена')
       router.push(`/deals/${editId.value}`)
@@ -395,6 +462,13 @@ async function submitDeal() {
       paymentType: paymentType.value,
       dealDate: dealDate.value,
       firstPaymentDate: customFirstPayment.value || undefined,
+      // Wholesale price + split mode (Phase 3). Both optional; only
+      // sent when partner enabled the wholesale section. Default mode
+      // is MARKUP_ONLY (legacy behavior — wholesalePrice acts as
+      // analytics-only data unless partner explicitly flips to
+      // FULL_MARGIN to share retail margin with co-investors).
+      wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || undefined) : undefined,
+      profitSplitBase: useWholesalePrice.value ? profitSplitBase.value : undefined,
     })
 
     // Link selected co-investors
@@ -631,6 +705,77 @@ async function submitDeal() {
                   <template v-else>
                     Доступно: {{ formatCurrency(capital.availableCapital) }}
                   </template>
+                </div>
+              </div>
+
+              <!-- Wholesale price (опционально, видно только партнёру) -->
+              <div class="form-field full-width wholesale-section">
+                <div class="wholesale-toggle-row">
+                  <label class="wholesale-checkbox-label">
+                    <input
+                      type="checkbox"
+                      :checked="useWholesalePrice"
+                      @change="useWholesalePrice = !useWholesalePrice"
+                    />
+                    <span>Указать оптовую закупочную цену</span>
+                  </label>
+                  <span class="wholesale-hint">только для вашего учёта</span>
+                </div>
+
+                <div v-if="useWholesalePrice" class="wholesale-body">
+                  <label class="field-label mt-3">Оптовая цена закупки</label>
+                  <div class="input-with-suffix">
+                    <input
+                      :value="wholesalePrice || ''"
+                      v-maska="CURRENCY_MASK"
+                      @maska="(e: any) => wholesalePrice = parseMasked(e)"
+                      type="text"
+                      inputmode="numeric"
+                      class="field-input"
+                      placeholder="0"
+                    />
+                    <span class="input-suffix">₽</span>
+                  </div>
+
+                  <!-- Retail margin preview -->
+                  <div v-if="retailMargin > 0" class="wholesale-margin-hint">
+                    <v-icon icon="mdi-trending-up" size="14" />
+                    Розничная маржа: {{ formatCurrency(retailMargin) }}
+                    <span class="wholesale-margin-sub">
+                      ({{ formatCurrency(purchasePrice || 0) }} − {{ formatCurrency(wholesalePrice || 0) }})
+                    </span>
+                  </div>
+
+                  <!-- Profit split mode toggle -->
+                  <div class="wholesale-split-block mt-3">
+                    <div class="wholesale-split-title">Как делить прибыль с со-инвесторами</div>
+                    <div class="wholesale-split-options">
+                      <button
+                        type="button"
+                        class="split-option"
+                        :class="{ active: profitSplitBase === 'MARKUP_ONLY' }"
+                        @click="profitSplitBase = 'MARKUP_ONLY'"
+                      >
+                        <div class="split-option-title">Только наценку рассрочки</div>
+                        <div class="split-option-desc">
+                          Розничная маржа — полностью вам. Со-инвестор получает долю
+                          только от наценки за рассрочку.
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        class="split-option"
+                        :class="{ active: profitSplitBase === 'FULL_MARGIN' }"
+                        @click="profitSplitBase = 'FULL_MARGIN'"
+                      >
+                        <div class="split-option-title">Всю прибыль</div>
+                        <div class="split-option-desc">
+                          Со-инвестор получает долю и от розничной маржи, и от наценки
+                          за рассрочку.
+                        </div>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1657,6 +1802,104 @@ async function submitDeal() {
   background: #fff; color: rgba(var(--v-theme-on-surface), 0.8);
   box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
+/* Wholesale price section — Phase 3 */
+.wholesale-section {
+  background: rgba(99, 102, 241, 0.04);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.wholesale-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.wholesale-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.wholesale-checkbox-label input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #6366f1;
+}
+.wholesale-hint {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-left: auto;
+}
+.wholesale-body {
+  margin-top: 10px;
+}
+.wholesale-margin-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(34, 197, 94, 0.08);
+  color: #16a34a;
+  font-size: 12px;
+  font-weight: 500;
+}
+.wholesale-margin-sub {
+  font-weight: 400;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-family: ui-monospace, monospace;
+}
+.wholesale-split-block {
+  border-top: 1px dashed rgba(99, 102, 241, 0.2);
+  padding-top: 12px;
+}
+.wholesale-split-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  margin-bottom: 8px;
+}
+.wholesale-split-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.split-option {
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.split-option:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+}
+.split-option.active {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.06);
+}
+.split-option-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  margin-bottom: 4px;
+}
+.split-option-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+@media (max-width: 600px) {
+  .wholesale-split-options { grid-template-columns: 1fr; }
+}
+
 .field-hint-styled {
   display: flex; align-items: center; gap: 6px;
   margin-top: 8px; padding: 8px 12px;

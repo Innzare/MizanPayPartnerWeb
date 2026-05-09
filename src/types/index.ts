@@ -169,6 +169,12 @@ export interface Deal {
   totalPrice: number
   remainingAmount: number
   downPayment?: number
+  // Wholesale cost (what partner paid the supplier). Visible only to
+  // the partner — never exposed to client UI/PDF/contracts. Combined
+  // with profitSplitBase=FULL_MARGIN, drives a different cashflow split
+  // — see backend cash-flow.service.ts for full semantics.
+  wholesalePrice?: number | null
+  profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
   externalClientName?: string
   externalClientPhone?: string
   clientProfileId?: string
