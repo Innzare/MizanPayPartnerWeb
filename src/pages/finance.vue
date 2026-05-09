@@ -182,7 +182,7 @@ const activeDealsList = computed(() =>
   capitalDetails.value?.deals.filter(d => d.status === 'ACTIVE') ?? [],
 )
 const activeDealsPurchaseTotal = computed(() =>
-  activeDealsList.value.reduce((s, d) => s + d.purchasePrice, 0),
+  activeDealsList.value.reduce((s, d) => s + dealRealCost(d), 0),
 )
 const activeDealsCostRecovered = computed(() =>
   activeDealsList.value.reduce((s, d) => s + dealCostRecovered(d), 0),
@@ -814,16 +814,26 @@ function formatTransactionAmount(t: Transaction) {
                     </thead>
                     <tbody>
                       <tr>
-                        <td class="wf-table-row-label">Возврат закупки</td>
+                        <td class="wf-table-row-label">
+                          Возврат закупки
+                          <span v-if="d.wholesalePrice != null && d.wholesalePrice > 0" class="wf-table-row-hint">
+                            опт {{ formatCurrencyShort(d.wholesalePrice) }} · розн {{ formatCurrencyShort(d.purchasePrice) }}
+                          </span>
+                        </td>
                         <td class="wf-table-num">{{ formatCurrency(dealCostRecovered(d)) }}</td>
                         <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(dealInProgress(d)) }}</td>
-                        <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(d.purchasePrice) }}</td>
+                        <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(dealRealCost(d)) }}</td>
                       </tr>
                       <tr>
-                        <td class="wf-table-row-label">Прибыль (наценка)</td>
+                        <td class="wf-table-row-label">
+                          {{ d.wholesalePrice != null && d.wholesalePrice > 0 ? 'Прибыль' : 'Прибыль (наценка)' }}
+                          <span v-if="d.wholesalePrice != null && d.wholesalePrice > 0" class="wf-table-row-hint">
+                            розн. маржа {{ formatCurrencyShort(Math.max(0, d.purchasePrice - d.wholesalePrice)) }} + наценка {{ formatCurrencyShort(d.markup) }}
+                          </span>
+                        </td>
                         <td class="wf-table-num" style="color: #10b981;">{{ formatCurrency(dealProfitEarned(d)) }}</td>
                         <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(dealProfitRemaining(d)) }}</td>
-                        <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(d.markup) }}</td>
+                        <td class="wf-table-num wf-table-num--dim">{{ formatCurrency(dealTotalMargin(d)) }}</td>
                       </tr>
                       <tr class="wf-table-total">
                         <td class="wf-table-row-label">Поступления</td>
@@ -2592,6 +2602,13 @@ function formatTransactionAmount(t: Transaction) {
 .wf-table-row-label {
   color: rgba(var(--v-theme-on-surface), 0.65);
   font-weight: 500;
+}
+.wf-table-row-hint {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 2px;
 }
 .wf-table-num {
   text-align: right;
