@@ -94,13 +94,21 @@ const waSettings = ref({
   sendTime: '10:00',
   template: 'Здравствуйте, {клиент}! Напоминаем об оплате по рассрочке: {товар} — {сумма}, срок: {дата}.{телефон_строка}',
   overdueTemplate: 'Здравствуйте, {клиент}! У вас просрочен платёж по рассрочке: {товар} — {сумма}, срок был: {дата}. Просим оплатить как можно скорее.{телефон_строка}',
+  // Сводное сообщение — используется при ручной рассылке через диалог
+  // «Напомнить всем», когда у клиента 2+ платежей в окне напоминания.
+  summaryTemplate:
+    'Здравствуйте, {имя}!\n\nНапоминаем по вашим платежам:\n\n{просроченные}{ближайшие}Итого к оплате: {итого}.{телефон_строка}',
 })
 const savingSettings = ref(false)
 const daysOptions = [1, 2, 3, 5, 7]
 const templateVars = ['{сумма}', '{товар}', '{дата}', '{клиент}', '{телефон_строка}']
+// Сводный шаблон оперирует другими переменными — список просрочек
+// и ближайших платежей вместо конкретных {сумма}/{товар}/{дата}.
+const summaryTemplateVars = ['{имя}', '{просроченные}', '{ближайшие}', '{итого}', '{телефон_строка}']
 
 const templateRef = ref<HTMLTextAreaElement | null>(null)
 const overdueTemplateRef = ref<HTMLTextAreaElement | null>(null)
+const summaryTemplateRef = ref<HTMLTextAreaElement | null>(null)
 
 async function loadWaSettings() {
   try {
@@ -130,8 +138,36 @@ function previewTemplate(tpl: string): string {
     .replace(/\{телефон_строка\}/g, '\nПо вопросам: +7 928 000 00 00')
 }
 
-function insertVar(field: 'template' | 'overdueTemplate', variable: string) {
-  const textarea = field === 'template' ? templateRef.value : overdueTemplateRef.value
+/**
+ * Превью сводного шаблона. Подставляем готовые блоки «Просроченные»
+ * и «Ближайшие» с примерами 2 + 1 платежей, чтобы партнёр сразу видел
+ * как будет выглядеть финальное сообщение клиенту с несколькими долгами.
+ */
+function previewSummaryTemplate(tpl: string): string {
+  const overdueBlock =
+    'Просроченные:\n' +
+    '— 7 500 ₽ по «iPhone 15» (был 5 мая)\n' +
+    '— 7 500 ₽ по «MacBook» (был 7 мая)\n\n'
+  const upcomingBlock =
+    'Ближайшие:\n' + '— 5 000 ₽ по «AirPods» (срок 14 мая)\n\n'
+  return tpl
+    .replace(/\{имя\}/g, 'Ахмед')
+    .replace(/\{просроченные\}/g, overdueBlock)
+    .replace(/\{ближайшие\}/g, upcomingBlock)
+    .replace(/\{итого\}/g, '20 000 ₽')
+    .replace(/\{телефон_строка\}/g, '\nПо вопросам: +7 928 000 00 00')
+}
+
+function insertVar(
+  field: 'template' | 'overdueTemplate' | 'summaryTemplate',
+  variable: string,
+) {
+  const textarea =
+    field === 'template'
+      ? templateRef.value
+      : field === 'overdueTemplate'
+        ? overdueTemplateRef.value
+        : summaryTemplateRef.value
   if (!textarea) {
     waSettings.value[field] += variable
     return
@@ -1088,6 +1124,53 @@ const plans = [
               </div>
               <div class="wa-bubble wa-bubble--overdue">
                 <div class="wa-bubble-text">{{ previewTemplate(waSettings.overdueTemplate) }}</div>
+                <div class="wa-bubble-time">10:00</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Summary template — для ручной рассылки клиентам с 2+ платежами -->
+          <div class="wa-template-block wa-template-block--summary">
+            <div class="wa-template-label">
+              <v-icon icon="mdi-format-list-bulleted" size="14" color="primary" />
+              Сводное напоминание (несколько платежей у клиента)
+              <span class="wa-template-hint">используется только при ручной рассылке</span>
+            </div>
+            <textarea
+              ref="summaryTemplateRef"
+              v-model="waSettings.summaryTemplate"
+              class="wa-template-textarea"
+              rows="6"
+              placeholder="Текст сводного напоминания..."
+            />
+            <div class="wa-var-row">
+              <span class="wa-var-label">Вставить:</span>
+              <button
+                v-for="v in summaryTemplateVars"
+                :key="'summary-' + v"
+                class="wa-var-chip"
+                @click="insertVar('summaryTemplate', v)"
+              >
+                {{ v }}
+              </button>
+            </div>
+            <div class="wa-template-help">
+              <strong>Что значат переменные:</strong>
+              <ul>
+                <li><code>{имя}</code> — имя клиента</li>
+                <li><code>{просроченные}</code> — список просроченных платежей</li>
+                <li><code>{ближайшие}</code> — список ближайших платежей</li>
+                <li><code>{итого}</code> — общая сумма</li>
+                <li><code>{телефон_строка}</code> — ваш телефон для подписи</li>
+              </ul>
+            </div>
+            <div v-if="waSettings.summaryTemplate" class="wa-preview-block">
+              <div class="wa-preview-header">
+                <v-icon icon="mdi-eye-outline" size="14" />
+                Предпросмотр (3 платежа: 2 просрочки + 1 ближайший)
+              </div>
+              <div class="wa-bubble">
+                <div class="wa-bubble-text">{{ previewSummaryTemplate(waSettings.summaryTemplate) }}</div>
                 <div class="wa-bubble-time">10:00</div>
               </div>
             </div>
@@ -2211,6 +2294,37 @@ const plans = [
 .wa-template-block--overdue {
   border-color: rgba(239, 68, 68, 0.12);
   background: rgba(239, 68, 68, 0.02);
+}
+.wa-template-block--summary {
+  border-color: rgba(37, 99, 235, 0.12);
+  background: rgba(37, 99, 235, 0.02);
+}
+.wa-template-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-left: auto;
+}
+.wa-template-help {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  line-height: 1.5;
+}
+.wa-template-help ul {
+  margin: 6px 0 0 0;
+  padding-left: 18px;
+}
+.wa-template-help li { margin-bottom: 2px; }
+.wa-template-help code {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
 }
 .wa-template-label {
   display: flex; align-items: center; gap: 6px;

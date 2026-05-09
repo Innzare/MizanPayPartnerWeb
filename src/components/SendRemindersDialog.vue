@@ -13,14 +13,27 @@ interface PaymentRow {
   dealId: string
   dealNumber: number | null
   productName: string
-  clientName: string
+}
+
+interface ClientGroup {
+  key: string
   clientPhone: string | null
+  clientName: string
   canSend: boolean
+  payments: PaymentRow[]
+  totals: {
+    overdueCount: number
+    overdueAmount: number
+    upcomingCount: number
+    upcomingAmount: number
+    totalCount: number
+    totalAmount: number
+  }
 }
 
 interface PreviewResponse {
   daysBeforeDue: number
-  payments: PaymentRow[]
+  groups: ClientGroup[]
 }
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -31,9 +44,10 @@ const toast = useToast()
 const daysBeforeDue = ref(3)
 const loading = ref(false)
 const sending = ref(false)
-const payments = ref<PaymentRow[]>([])
+const groups = ref<ClientGroup[]>([])
 const excluded = ref<Set<string>>(new Set())
 const search = ref('')
+const expanded = ref<Set<string>>(new Set())
 
 // On dialog open: reset, then preview with current daysBeforeDue.
 watch(
@@ -41,6 +55,7 @@ watch(
   (open) => {
     if (open) {
       excluded.value = new Set()
+      expanded.value = new Set()
       search.value = ''
       loadPreview()
     }
@@ -53,69 +68,85 @@ async function loadPreview() {
     const res = await api.post<PreviewResponse>('/whatsapp/remind-preview', {
       daysBeforeDue: daysBeforeDue.value,
     })
-    payments.value = res.payments
+    groups.value = res.groups
   } catch (e: any) {
     toast.error(e.message || 'Не удалось загрузить список')
-    payments.value = []
+    groups.value = []
   } finally {
     loading.value = false
   }
 }
 
-const visiblePayments = computed(() => {
-  if (!search.value.trim()) return payments.value
+const visibleGroups = computed(() => {
+  if (!search.value.trim()) return groups.value
   const s = search.value.trim().toLowerCase()
-  return payments.value.filter(
-    (p) =>
-      p.productName.toLowerCase().includes(s) ||
-      p.clientName.toLowerCase().includes(s) ||
-      (p.clientPhone ?? '').toLowerCase().includes(s),
+  return groups.value.filter(
+    (g) =>
+      g.clientName.toLowerCase().includes(s) ||
+      (g.clientPhone ?? '').toLowerCase().includes(s) ||
+      g.payments.some((p) => p.productName.toLowerCase().includes(s)),
   )
 })
 
-const sendablePayments = computed(() => payments.value.filter((p) => p.canSend))
-const selectedPayments = computed(() =>
-  sendablePayments.value.filter((p) => !excluded.value.has(p.paymentId)),
+const sendableGroups = computed(() => groups.value.filter((g) => g.canSend))
+const selectedGroups = computed(() =>
+  sendableGroups.value.filter((g) => !excluded.value.has(g.key)),
 )
-const selectedAmount = computed(() => selectedPayments.value.reduce((s, p) => s + p.amount, 0))
-const noPhoneCount = computed(() => payments.value.filter((p) => !p.canSend).length)
+const selectedAmount = computed(() =>
+  selectedGroups.value.reduce((s, g) => s + g.totals.totalAmount, 0),
+)
+const totalPaymentsCount = computed(() =>
+  groups.value.reduce((s, g) => s + g.totals.totalCount, 0),
+)
+const noPhoneCount = computed(() => groups.value.filter((g) => !g.canSend).length)
 
-function toggle(pid: string) {
+function toggleGroup(key: string) {
   const next = new Set(excluded.value)
-  if (next.has(pid)) next.delete(pid)
-  else next.add(pid)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
   excluded.value = next
+}
+
+function toggleExpanded(key: string) {
+  const next = new Set(expanded.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expanded.value = next
 }
 
 function selectAllVisible() {
   const next = new Set(excluded.value)
-  for (const p of visiblePayments.value) {
-    if (p.canSend) next.delete(p.paymentId)
+  for (const g of visibleGroups.value) {
+    if (g.canSend) next.delete(g.key)
   }
   excluded.value = next
 }
 
 function clearAllVisible() {
   const next = new Set(excluded.value)
-  for (const p of visiblePayments.value) {
-    if (p.canSend) next.add(p.paymentId)
+  for (const g of visibleGroups.value) {
+    if (g.canSend) next.add(g.key)
   }
   excluded.value = next
 }
 
 const isAllVisibleSelected = computed(() => {
-  const sendable = visiblePayments.value.filter((p) => p.canSend)
+  const sendable = visibleGroups.value.filter((g) => g.canSend)
   if (sendable.length === 0) return false
-  return sendable.every((p) => !excluded.value.has(p.paymentId))
+  return sendable.every((g) => !excluded.value.has(g.key))
 })
 
 async function send() {
-  const ids = selectedPayments.value.map((p) => p.paymentId)
+  // Collect all paymentIds from selected groups; backend re-groups by
+  // phone server-side and sends one consolidated message per group.
+  const ids = selectedGroups.value.flatMap((g) => g.payments.map((p) => p.paymentId))
   if (!ids.length) {
-    toast.error('Выберите хотя бы один платёж')
+    toast.error('Выберите хотя бы одного клиента')
     return
   }
-  if (!confirm(`Отправить ${ids.length} напоминаний? Действие необратимо.`)) return
+  const groupCount = selectedGroups.value.length
+  const noun = groupCount === 1 ? 'клиенту' : 'клиентам'
+  if (!confirm(`Отправить напоминания ${groupCount} ${noun}? Действие необратимо.`)) return
 
   sending.value = true
   try {
@@ -133,20 +164,19 @@ async function send() {
   }
 }
 
-function statusLabel(s: string) {
-  return s === 'OVERDUE' ? 'Просрочен' : 'Скоро'
-}
-function statusColor(s: string) {
-  return s === 'OVERDUE' ? '#ef4444' : '#f59e0b'
-}
 function maskPhone(p: string | null) {
   if (!p) return '—'
-  // Light masking: +7 (XXX) XXX-XX-XX → keep readable but consistent
   const digits = p.replace(/\D/g, '')
   if (digits.length === 11) {
     return `+${digits[0]} (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7, 9)}-${digits.slice(9)}`
   }
   return p
+}
+
+function getInitials(name: string) {
+  if (!name || name === '—') return '?'
+  const parts = name.trim().split(/\s+/)
+  return (parts[0]?.[0] ?? '' + (parts[1]?.[0] ?? '')).toUpperCase()
 }
 </script>
 
@@ -165,7 +195,9 @@ function maskPhone(p: string | null) {
         </div>
         <div class="srd-header-text">
           <div class="srd-title">Напоминания о платежах</div>
-          <div class="srd-subtitle">Выберите кому и о каких платежах напомнить</div>
+          <div class="srd-subtitle">
+            Каждый клиент получит одно сводное сообщение по всем своим платежам
+          </div>
         </div>
         <button class="srd-close" @click="emit('update:modelValue', false)">
           <v-icon icon="mdi-close" size="18" />
@@ -194,7 +226,7 @@ function maskPhone(p: string | null) {
             v-model="search"
             type="text"
             class="srd-search"
-            placeholder="Поиск по товару, клиенту или телефону..."
+            placeholder="Поиск по клиенту, телефону или товару..."
           />
         </div>
       </div>
@@ -202,12 +234,13 @@ function maskPhone(p: string | null) {
       <!-- Status strip -->
       <div class="srd-summary">
         <span class="srd-summary-item">
-          <strong>{{ payments.length }}</strong>
-          {{ payments.length === 1 ? 'платёж' : 'платежей' }} в окне
+          <strong>{{ groups.length }}</strong>
+          {{ groups.length === 1 ? 'клиент' : 'клиентов' }}
+          ({{ totalPaymentsCount }} {{ totalPaymentsCount === 1 ? 'платёж' : 'платежей' }})
         </span>
         <span class="srd-summary-sep">·</span>
         <span class="srd-summary-item srd-summary-item--ok">
-          <strong>{{ selectedPayments.length }}</strong> к отправке
+          <strong>{{ selectedGroups.length }}</strong> к отправке
           ({{ formatCurrency(selectedAmount) }})
         </span>
         <span v-if="noPhoneCount > 0" class="srd-summary-sep">·</span>
@@ -217,8 +250,8 @@ function maskPhone(p: string | null) {
         </span>
       </div>
 
-      <!-- List -->
-      <div class="srd-list-head" v-if="payments.length > 0">
+      <!-- Select-all bar -->
+      <div class="srd-list-head" v-if="groups.length > 0">
         <label class="srd-check">
           <input
             type="checkbox"
@@ -226,63 +259,101 @@ function maskPhone(p: string | null) {
             @change="isAllVisibleSelected ? clearAllVisible() : selectAllVisible()"
           />
         </label>
-        <span class="srd-list-head-label">Платёж</span>
-        <span class="srd-list-head-spacer" />
-        <span class="srd-list-head-amount">Сумма</span>
+        <span class="srd-list-head-label">
+          {{ isAllVisibleSelected ? 'Снять всех' : 'Выбрать всех' }}
+        </span>
       </div>
 
+      <!-- List of client groups -->
       <div class="srd-list" :class="{ loading }">
         <div v-if="loading" class="srd-empty">
           <v-progress-circular indeterminate size="28" color="primary" />
         </div>
-        <div v-else-if="!visiblePayments.length" class="srd-empty">
+        <div v-else-if="!visibleGroups.length" class="srd-empty">
           <v-icon icon="mdi-cash-check" size="36" color="grey" />
           <div class="srd-empty-title">Нет платежей по фильтру</div>
           <div class="srd-empty-sub">Попробуйте изменить срок или поиск</div>
         </div>
-        <div
-          v-for="p in visiblePayments"
-          :key="p.paymentId"
-          class="srd-row"
-          :class="{ 'srd-row--disabled': !p.canSend }"
-          @click="p.canSend && toggle(p.paymentId)"
-        >
-          <label class="srd-check" @click.stop>
-            <input
-              type="checkbox"
-              :checked="p.canSend && !excluded.has(p.paymentId)"
-              :disabled="!p.canSend"
-              @change="toggle(p.paymentId)"
-            />
-          </label>
 
-          <div class="srd-row-main">
-            <div class="srd-row-title">
-              <span class="srd-row-deal">
-                <span v-if="p.dealNumber" class="srd-row-dealnum">#{{ p.dealNumber }}</span>
-                {{ p.productName }}
-              </span>
-              <span
-                class="srd-row-status"
-                :style="{ background: statusColor(p.status) + '18', color: statusColor(p.status) }"
-              >
-                {{ statusLabel(p.status) }}
-              </span>
+        <div
+          v-for="g in visibleGroups"
+          :key="g.key"
+          class="srd-group"
+          :class="{ 'srd-group--disabled': !g.canSend, 'srd-group--selected': g.canSend && !excluded.has(g.key) }"
+        >
+          <!-- Group header -->
+          <div class="srd-group-head" @click="g.canSend && toggleGroup(g.key)">
+            <label class="srd-check" @click.stop>
+              <input
+                type="checkbox"
+                :checked="g.canSend && !excluded.has(g.key)"
+                :disabled="!g.canSend"
+                @change="toggleGroup(g.key)"
+              />
+            </label>
+
+            <div class="srd-group-avatar">{{ getInitials(g.clientName) }}</div>
+
+            <div class="srd-group-main">
+              <div class="srd-group-title">
+                <span class="srd-group-name">{{ g.clientName }}</span>
+                <span class="srd-group-meta">
+                  <v-icon icon="mdi-phone-outline" size="12" />
+                  <span :class="{ 'srd-no-phone': !g.canSend }">
+                    {{ g.canSend ? maskPhone(g.clientPhone) : 'Нет телефона' }}
+                  </span>
+                </span>
+              </div>
+              <div class="srd-group-stats">
+                <span v-if="g.totals.overdueCount > 0" class="srd-stat srd-stat--overdue">
+                  <v-icon icon="mdi-alert-circle" size="12" />
+                  {{ g.totals.overdueCount }} просроч.
+                  ({{ formatCurrency(g.totals.overdueAmount) }})
+                </span>
+                <span v-if="g.totals.upcomingCount > 0" class="srd-stat srd-stat--upcoming">
+                  <v-icon icon="mdi-clock-outline" size="12" />
+                  {{ g.totals.upcomingCount }} ближайш.
+                  ({{ formatCurrency(g.totals.upcomingAmount) }})
+                </span>
+              </div>
             </div>
-            <div class="srd-row-meta">
-              <v-icon icon="mdi-account-outline" size="12" />
-              {{ p.clientName }}
-              <span class="srd-row-meta-sep">·</span>
-              <v-icon icon="mdi-phone-outline" size="12" />
-              <span :class="{ 'srd-no-phone': !p.canSend }">
-                {{ p.canSend ? maskPhone(p.clientPhone) : 'Нет телефона' }}
-              </span>
-              <span class="srd-row-meta-sep">·</span>
-              Платёж #{{ p.number }} до {{ formatDate(p.dueDate) }}
+
+            <div class="srd-group-total">
+              <div class="srd-group-total-label">Итого</div>
+              <div class="srd-group-total-value">{{ formatCurrency(g.totals.totalAmount) }}</div>
             </div>
+
+            <button
+              class="srd-group-toggle"
+              :class="{ open: expanded.has(g.key) }"
+              @click.stop="toggleExpanded(g.key)"
+              type="button"
+            >
+              <v-icon icon="mdi-chevron-down" size="18" />
+            </button>
           </div>
 
-          <div class="srd-row-amount">{{ formatCurrency(p.amount) }}</div>
+          <!-- Expanded payments list -->
+          <div v-if="expanded.has(g.key)" class="srd-group-body">
+            <div
+              v-for="p in g.payments"
+              :key="p.paymentId"
+              class="srd-payment-row"
+            >
+              <span
+                class="srd-payment-status"
+                :class="p.status === 'OVERDUE' ? 'srd-payment-status--overdue' : 'srd-payment-status--upcoming'"
+              />
+              <span class="srd-payment-amount">{{ formatCurrency(p.amount) }}</span>
+              <span class="srd-payment-deal">
+                <span v-if="p.dealNumber" class="srd-payment-dealnum">#{{ p.dealNumber }}</span>
+                {{ p.productName }}
+              </span>
+              <span class="srd-payment-date">
+                {{ p.status === 'OVERDUE' ? 'был' : 'срок' }} {{ formatDate(p.dueDate) }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -293,12 +364,14 @@ function maskPhone(p: string | null) {
         </button>
         <button
           class="srd-btn srd-btn--primary"
-          :disabled="sending || selectedPayments.length === 0"
+          :disabled="sending || selectedGroups.length === 0"
           @click="send"
         >
           <v-progress-circular v-if="sending" indeterminate size="14" width="2" color="white" />
           <v-icon v-else icon="mdi-whatsapp" size="16" />
-          Отправить {{ selectedPayments.length }}
+          Отправить
+          {{ selectedGroups.length }}
+          {{ selectedGroups.length === 1 ? 'клиенту' : 'клиентам' }}
         </button>
       </div>
     </v-card>
@@ -310,181 +383,232 @@ function maskPhone(p: string | null) {
 
 /* Header */
 .srd-header {
-  display: flex; align-items: center; gap: 12px;
-  padding: 18px 20px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 .srd-header-icon {
-  width: 38px; height: 38px; border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(37, 211, 102, 0.10); color: #25d366;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(37, 211, 102, 0.12);
+  color: #25d366;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .srd-header-text { flex: 1; min-width: 0; }
-.srd-title { font-size: 16px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.95); }
-.srd-subtitle { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55); margin-top: 1px; }
+.srd-title { font-size: 15px; font-weight: 700; }
+.srd-subtitle { font-size: 12px; color: rgba(0, 0, 0, 0.55); margin-top: 2px; }
 .srd-close {
-  width: 30px; height: 30px; border-radius: 8px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px; border: none; background: transparent;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
 }
-.srd-close:hover { background: rgba(var(--v-theme-on-surface), 0.10); }
+.srd-close:hover { background: rgba(0, 0, 0, 0.04); }
 
 /* Filters */
 .srd-filters {
-  padding: 14px 20px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px 20px; border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
-.srd-days-label {
-  display: block; font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  margin-bottom: 6px;
-}
-.srd-days-control { display: flex; gap: 4px; flex-wrap: wrap; }
+.srd-days { display: flex; flex-direction: column; gap: 6px; }
+.srd-days-label { font-size: 12px; color: rgba(0, 0, 0, 0.55); }
+.srd-days-control { display: flex; flex-wrap: wrap; gap: 6px; }
 .srd-days-btn {
   padding: 6px 12px; border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  font-size: 12px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  cursor: pointer; transition: all 0.15s;
-  font-family: inherit;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: #fff; font-size: 12px; cursor: pointer;
+  transition: all 0.15s;
 }
-.srd-days-btn:hover { border-color: rgba(99, 102, 241, 0.30); color: #6366f1; }
+.srd-days-btn:hover { border-color: rgba(4, 120, 87, 0.4); }
 .srd-days-btn.active {
-  border-color: #6366f1; background: rgba(99, 102, 241, 0.10); color: #6366f1; font-weight: 600;
+  background: #047857; color: #fff; border-color: #047857;
 }
-
 .srd-search-wrap {
-  position: relative; margin-top: 10px;
+  position: relative; display: flex; align-items: center;
+  border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 8px; padding: 0 10px;
 }
-.srd-search-icon {
-  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
-  color: rgba(var(--v-theme-on-surface), 0.35);
-}
+.srd-search-icon { color: rgba(0, 0, 0, 0.4); }
 .srd-search {
-  width: 100%; padding: 8px 12px 8px 32px;
-  border-radius: 8px; border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  font-size: 13px; outline: none;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  font-family: inherit;
-}
-.srd-search:focus {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
+  flex: 1; border: none; outline: none; padding: 8px 8px;
+  font-size: 13px; background: transparent;
 }
 
 /* Summary */
 .srd-summary {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   padding: 10px 20px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
-  flex-wrap: wrap;
+  background: rgba(0, 0, 0, 0.02);
+  font-size: 12px; color: rgba(0, 0, 0, 0.65);
 }
 .srd-summary-item { display: inline-flex; align-items: center; gap: 4px; }
-.srd-summary-item strong { font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
 .srd-summary-item--ok strong { color: #047857; }
-.srd-summary-item--warn { color: #f59e0b; }
-.srd-summary-item--warn strong { color: #f59e0b; }
-.srd-summary-sep { opacity: 0.4; }
+.srd-summary-item--warn { color: #b45309; }
+.srd-summary-sep { color: rgba(0, 0, 0, 0.3); }
 
-/* List header */
+/* Select-all bar */
 .srd-list-head {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 10px;
   padding: 8px 20px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.45);
-  text-transform: uppercase; letter-spacing: 0.4px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 12px; color: rgba(0, 0, 0, 0.6);
 }
-.srd-list-head-label { font-weight: 700; }
-.srd-list-head-spacer { flex: 1; }
-.srd-list-head-amount { font-weight: 700; padding-right: 4px; }
+.srd-list-head-label { font-weight: 500; }
+.srd-check input {
+  width: 18px; height: 18px; cursor: pointer;
+  accent-color: #047857;
+}
 
 /* List */
-.srd-list { max-height: 50vh; overflow-y: auto; }
-.srd-list.loading { min-height: 200px; }
-
-.srd-row {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 20px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.04);
-  cursor: pointer;
-  transition: background 0.12s;
+.srd-list {
+  max-height: 500px; overflow-y: auto;
+  padding: 8px 12px;
 }
-.srd-row:hover { background: rgba(99, 102, 241, 0.04); }
-.srd-row--disabled { cursor: not-allowed; opacity: 0.55; }
-.srd-row--disabled:hover { background: transparent; }
-
-.srd-check {
-  display: flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px;
-  cursor: pointer;
-}
-.srd-check input { width: 16px; height: 16px; cursor: pointer; accent-color: #047857; }
-
-.srd-row-main { flex: 1; min-width: 0; }
-.srd-row-title {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.srd-row-deal { display: inline-flex; align-items: center; gap: 6px; }
-.srd-row-dealnum {
-  font-size: 11px; font-weight: 700; padding: 1px 6px;
-  border-radius: 5px; background: rgba(99, 102, 241, 0.10); color: #6366f1;
-}
-.srd-row-status {
-  font-size: 10px; font-weight: 700;
-  padding: 2px 8px; border-radius: 5px;
-}
-.srd-row-meta {
-  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  margin-top: 3px;
-}
-.srd-row-meta-sep { opacity: 0.4; margin: 0 3px; }
-.srd-no-phone { color: #f59e0b; font-weight: 500; }
-.srd-row-amount {
-  font-size: 14px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap;
-}
-
-/* Empty */
+.srd-list.loading { opacity: 0.5; pointer-events: none; }
 .srd-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 40px 16px; text-align: center;
-  min-height: 180px;
+  padding: 60px 20px; text-align: center;
 }
-.srd-empty-title { font-size: 14px; font-weight: 600; margin-top: 10px; color: rgba(var(--v-theme-on-surface), 0.7); }
-.srd-empty-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 2px; }
+.srd-empty-title { font-size: 14px; font-weight: 600; margin-top: 8px; }
+.srd-empty-sub { font-size: 12px; color: rgba(0, 0, 0, 0.5); margin-top: 4px; }
+
+/* Group card */
+.srd-group {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  background: #fff;
+  transition: all 0.15s;
+}
+.srd-group:hover { border-color: rgba(4, 120, 87, 0.3); }
+.srd-group--disabled { opacity: 0.55; }
+.srd-group--disabled:hover { border-color: rgba(0, 0, 0, 0.08); }
+.srd-group--selected {
+  border-color: rgba(4, 120, 87, 0.4);
+  background: rgba(4, 120, 87, 0.02);
+}
+
+.srd-group-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.srd-group-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: rgba(4, 120, 87, 0.1);
+  color: #047857;
+  font-size: 12px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.srd-group-main { flex: 1; min-width: 0; }
+.srd-group-title {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px;
+}
+.srd-group-name { font-weight: 600; color: rgba(0, 0, 0, 0.85); }
+.srd-group-meta {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: rgba(0, 0, 0, 0.5);
+  font-family: ui-monospace, monospace;
+}
+.srd-no-phone { color: #b45309; }
+.srd-group-stats {
+  display: flex; gap: 10px; margin-top: 3px;
+  font-size: 11px;
+}
+.srd-stat {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px; border-radius: 6px;
+}
+.srd-stat--overdue {
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+}
+.srd-stat--upcoming {
+  background: rgba(245, 158, 11, 0.1);
+  color: #b45309;
+}
+.srd-group-total {
+  text-align: right;
+  flex-shrink: 0;
+}
+.srd-group-total-label {
+  font-size: 10px; text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.4); letter-spacing: 0.04em;
+}
+.srd-group-total-value {
+  font-size: 14px; font-weight: 700;
+  color: rgba(0, 0, 0, 0.85);
+}
+.srd-group-toggle {
+  width: 28px; height: 28px;
+  border-radius: 6px; border: none; background: transparent;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: rgba(0, 0, 0, 0.5);
+  transition: transform 0.15s;
+}
+.srd-group-toggle:hover { background: rgba(0, 0, 0, 0.04); }
+.srd-group-toggle.open { transform: rotate(180deg); }
+
+.srd-group-body {
+  padding: 4px 12px 10px 56px;
+  display: flex; flex-direction: column; gap: 2px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.06);
+  margin-top: 2px;
+}
+.srd-payment-row {
+  display: grid;
+  grid-template-columns: 8px 90px 1fr auto;
+  align-items: center; gap: 10px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.srd-payment-status {
+  width: 6px; height: 6px; border-radius: 50%;
+}
+.srd-payment-status--overdue { background: #ef4444; }
+.srd-payment-status--upcoming { background: #f59e0b; }
+.srd-payment-amount { font-weight: 600; }
+.srd-payment-deal {
+  color: rgba(0, 0, 0, 0.7);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.srd-payment-dealnum {
+  color: rgba(0, 0, 0, 0.4);
+  font-family: ui-monospace, monospace;
+  margin-right: 4px;
+}
+.srd-payment-date {
+  color: rgba(0, 0, 0, 0.5); font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
 
 /* Footer */
 .srd-footer {
-  display: flex; justify-content: flex-end; gap: 10px;
-  padding: 16px 20px;
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  display: flex; gap: 10px; justify-content: flex-end;
+  padding: 14px 20px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
 }
 .srd-btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 9px 18px; border-radius: 9px; border: none;
-  font-size: 14px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s;
-  font-family: inherit;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 18px; border-radius: 8px; border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: all 0.15s;
 }
-.srd-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .srd-btn--ghost {
   background: transparent;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
+  color: rgba(0, 0, 0, 0.7);
 }
-.srd-btn--ghost:hover:not(:disabled) { background: rgba(var(--v-theme-on-surface), 0.05); }
+.srd-btn--ghost:hover { background: rgba(0, 0, 0, 0.04); }
 .srd-btn--primary {
   background: #25d366; color: #fff;
 }
-.srd-btn--primary:hover:not(:disabled) { background: #1ebe5a; }
+.srd-btn--primary:disabled {
+  opacity: 0.5; cursor: not-allowed;
+}
+.srd-btn--primary:not(:disabled):hover { background: #1eb558; }
 </style>
