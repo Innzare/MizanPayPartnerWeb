@@ -45,7 +45,12 @@ const daysBeforeDue = ref(3)
 const loading = ref(false)
 const sending = ref(false)
 const groups = ref<ClientGroup[]>([])
+// Exclusions are split into two layers so the user can deselect
+// either a whole client (group key) or individual payments inside an
+// expanded client card. A payment is sent if BOTH its group is not
+// in `excluded` AND its paymentId is not in `excludedPayments`.
 const excluded = ref<Set<string>>(new Set())
+const excludedPayments = ref<Set<string>>(new Set())
 const search = ref('')
 const expanded = ref<Set<string>>(new Set())
 
@@ -55,6 +60,7 @@ watch(
   (open) => {
     if (open) {
       excluded.value = new Set()
+      excludedPayments.value = new Set()
       expanded.value = new Set()
       search.value = ''
       loadPreview()
@@ -89,11 +95,57 @@ const visibleGroups = computed(() => {
 })
 
 const sendableGroups = computed(() => groups.value.filter((g) => g.canSend))
+
+/**
+ * Returns the effective payments for a group — i.e. those that are NOT
+ * individually excluded by the user. The group-level checkbox only
+ * removes the group from `excluded`; for fine-grained control the user
+ * can also uncheck specific payments inside the expanded card, which
+ * end up in `excludedPayments`.
+ */
+function effectivePayments(group: ClientGroup): PaymentRow[] {
+  return group.payments.filter((p) => !excludedPayments.value.has(p.paymentId))
+}
+
+/**
+ * Recompute totals based on the user's per-payment exclusions. Used in
+ * the group header (counts/sums) and in the bottom summary so numbers
+ * always reflect what will actually be sent.
+ */
+function effectiveTotals(group: ClientGroup) {
+  let overdueCount = 0
+  let overdueAmount = 0
+  let upcomingCount = 0
+  let upcomingAmount = 0
+  for (const p of effectivePayments(group)) {
+    if (p.status === 'OVERDUE') {
+      overdueCount++
+      overdueAmount += p.amount
+    } else {
+      upcomingCount++
+      upcomingAmount += p.amount
+    }
+  }
+  return {
+    overdueCount,
+    overdueAmount,
+    upcomingCount,
+    upcomingAmount,
+    totalCount: overdueCount + upcomingCount,
+    totalAmount: overdueAmount + upcomingAmount,
+  }
+}
+
+// A group is "selected" only if it's not group-excluded AND has at
+// least one payment that isn't individually excluded. Otherwise it
+// won't produce any message and shouldn't count toward the sender.
 const selectedGroups = computed(() =>
-  sendableGroups.value.filter((g) => !excluded.value.has(g.key)),
+  sendableGroups.value.filter(
+    (g) => !excluded.value.has(g.key) && effectivePayments(g).length > 0,
+  ),
 )
 const selectedAmount = computed(() =>
-  selectedGroups.value.reduce((s, g) => s + g.totals.totalAmount, 0),
+  selectedGroups.value.reduce((s, g) => s + effectiveTotals(g).totalAmount, 0),
 )
 const totalPaymentsCount = computed(() =>
   groups.value.reduce((s, g) => s + g.totals.totalCount, 0),
@@ -102,9 +154,41 @@ const noPhoneCount = computed(() => groups.value.filter((g) => !g.canSend).lengt
 
 function toggleGroup(key: string) {
   const next = new Set(excluded.value)
-  if (next.has(key)) next.delete(key)
-  else next.add(key)
+  if (next.has(key)) {
+    // Re-selecting the group — also clear any per-payment exclusions
+    // for this group so the user gets the full set back. Otherwise
+    // they'd have to uncheck/check both layers separately.
+    next.delete(key)
+    const group = groups.value.find((g) => g.key === key)
+    if (group) {
+      const cleared = new Set(excludedPayments.value)
+      for (const p of group.payments) cleared.delete(p.paymentId)
+      excludedPayments.value = cleared
+    }
+  } else {
+    next.add(key)
+  }
   excluded.value = next
+}
+
+/**
+ * Toggle a single payment inside an expanded card. If unchecking a
+ * payment makes ALL payments in the group excluded, also flip the
+ * group-level checkbox so the UI stays consistent ("nothing selected
+ * for this client" matches "client unchecked").
+ */
+function togglePayment(group: ClientGroup, paymentId: string) {
+  const next = new Set(excludedPayments.value)
+  if (next.has(paymentId)) next.delete(paymentId)
+  else next.add(paymentId)
+  excludedPayments.value = next
+
+  // Sync group-level state with payment-level reality.
+  const allExcluded = group.payments.every((p) => next.has(p.paymentId))
+  const groupExcl = new Set(excluded.value)
+  if (allExcluded) groupExcl.add(group.key)
+  else groupExcl.delete(group.key)
+  excluded.value = groupExcl
 }
 
 function toggleExpanded(key: string) {
@@ -116,10 +200,17 @@ function toggleExpanded(key: string) {
 
 function selectAllVisible() {
   const next = new Set(excluded.value)
+  const nextPayments = new Set(excludedPayments.value)
   for (const g of visibleGroups.value) {
-    if (g.canSend) next.delete(g.key)
+    if (g.canSend) {
+      next.delete(g.key)
+      // Selecting "all" should also clear per-payment exclusions —
+      // otherwise the group looks selected but partially deflated.
+      for (const p of g.payments) nextPayments.delete(p.paymentId)
+    }
   }
   excluded.value = next
+  excludedPayments.value = nextPayments
 }
 
 function clearAllVisible() {
@@ -128,6 +219,9 @@ function clearAllVisible() {
     if (g.canSend) next.add(g.key)
   }
   excluded.value = next
+  // Don't touch excludedPayments here — clearing the group flag is
+  // sufficient. If the user re-selects the group, toggleGroup() will
+  // restore the payment-level state.
 }
 
 const isAllVisibleSelected = computed(() => {
@@ -137,9 +231,12 @@ const isAllVisibleSelected = computed(() => {
 })
 
 async function send() {
-  // Collect all paymentIds from selected groups; backend re-groups by
-  // phone server-side and sends one consolidated message per group.
-  const ids = selectedGroups.value.flatMap((g) => g.payments.map((p) => p.paymentId))
+  // Collect paymentIds that are effectively selected (group on +
+  // payment not individually excluded). Backend re-groups by phone
+  // server-side and sends one consolidated message per group.
+  const ids = selectedGroups.value.flatMap((g) =>
+    effectivePayments(g).map((p) => p.paymentId),
+  )
   if (!ids.length) {
     toast.error('Выберите хотя бы одного клиента')
     return
@@ -305,22 +402,30 @@ function getInitials(name: string) {
                 </span>
               </div>
               <div class="srd-group-stats">
-                <span v-if="g.totals.overdueCount > 0" class="srd-stat srd-stat--overdue">
+                <span v-if="effectiveTotals(g).overdueCount > 0" class="srd-stat srd-stat--overdue">
                   <v-icon icon="mdi-alert-circle" size="12" />
-                  {{ g.totals.overdueCount }} просроч.
-                  ({{ formatCurrency(g.totals.overdueAmount) }})
+                  {{ effectiveTotals(g).overdueCount }} просроч.
+                  ({{ formatCurrency(effectiveTotals(g).overdueAmount) }})
                 </span>
-                <span v-if="g.totals.upcomingCount > 0" class="srd-stat srd-stat--upcoming">
+                <span v-if="effectiveTotals(g).upcomingCount > 0" class="srd-stat srd-stat--upcoming">
                   <v-icon icon="mdi-clock-outline" size="12" />
-                  {{ g.totals.upcomingCount }} ближайш.
-                  ({{ formatCurrency(g.totals.upcomingAmount) }})
+                  {{ effectiveTotals(g).upcomingCount }} ближайш.
+                  ({{ formatCurrency(effectiveTotals(g).upcomingAmount) }})
+                </span>
+                <span
+                  v-if="effectiveTotals(g).totalCount < g.totals.totalCount"
+                  class="srd-stat srd-stat--partial"
+                  :title="`Выбрано ${effectiveTotals(g).totalCount} из ${g.totals.totalCount}`"
+                >
+                  <v-icon icon="mdi-filter-variant" size="12" />
+                  {{ effectiveTotals(g).totalCount }} из {{ g.totals.totalCount }}
                 </span>
               </div>
             </div>
 
             <div class="srd-group-total">
               <div class="srd-group-total-label">Итого</div>
-              <div class="srd-group-total-value">{{ formatCurrency(g.totals.totalAmount) }}</div>
+              <div class="srd-group-total-value">{{ formatCurrency(effectiveTotals(g).totalAmount) }}</div>
             </div>
 
             <button
@@ -333,13 +438,23 @@ function getInitials(name: string) {
             </button>
           </div>
 
-          <!-- Expanded payments list -->
+          <!-- Expanded payments list with per-payment checkboxes -->
           <div v-if="expanded.has(g.key)" class="srd-group-body">
             <div
               v-for="p in g.payments"
               :key="p.paymentId"
               class="srd-payment-row"
+              :class="{ 'srd-payment-row--excluded': excludedPayments.has(p.paymentId) }"
+              @click="g.canSend && togglePayment(g, p.paymentId)"
             >
+              <label class="srd-check srd-check--small" @click.stop>
+                <input
+                  type="checkbox"
+                  :checked="!excludedPayments.has(p.paymentId)"
+                  :disabled="!g.canSend"
+                  @change="togglePayment(g, p.paymentId)"
+                />
+              </label>
               <span
                 class="srd-payment-status"
                 :class="p.status === 'OVERDUE' ? 'srd-payment-status--overdue' : 'srd-payment-status--upcoming'"
@@ -532,6 +647,10 @@ function getInitials(name: string) {
   background: rgba(245, 158, 11, 0.1);
   color: #b45309;
 }
+.srd-stat--partial {
+  background: rgba(99, 102, 241, 0.1);
+  color: #4338ca;
+}
 .srd-group-total {
   text-align: right;
   flex-shrink: 0;
@@ -562,11 +681,22 @@ function getInitials(name: string) {
 }
 .srd-payment-row {
   display: grid;
-  grid-template-columns: 8px 90px 1fr auto;
+  grid-template-columns: 22px 8px 90px 1fr auto;
   align-items: center; gap: 10px;
   padding: 4px 0;
   font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.1s;
 }
+.srd-payment-row:hover { background: rgba(0, 0, 0, 0.02); }
+.srd-payment-row--excluded {
+  opacity: 0.45;
+  text-decoration: line-through;
+  text-decoration-color: rgba(0, 0, 0, 0.4);
+}
+.srd-payment-row--excluded:hover { opacity: 0.6; }
+.srd-check--small input { width: 14px; height: 14px; }
 .srd-payment-status {
   width: 6px; height: 6px; border-radius: 50%;
 }

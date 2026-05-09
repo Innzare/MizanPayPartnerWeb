@@ -1062,13 +1062,18 @@ const plans = [
           </div>
         </v-card>
 
-        <!-- Card 2: Templates -->
-        <v-card v-if="waSettings.enabled" rounded="lg" elevation="0" border class="pa-5 mt-4">
+        <!-- Card 2: Templates — всегда доступны, потому что используются
+             и автоматическими, и ручными напоминаниями (Сводное —
+             только ручными), независимо от waSettings.enabled. -->
+        <v-card rounded="lg" elevation="0" border class="pa-5 mt-4">
           <div class="wa-card-header mb-4">
             <div class="wa-card-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
               <v-icon icon="mdi-message-text-outline" size="20" />
             </div>
-            <div class="wa-card-title">Шаблоны сообщений</div>
+            <div class="wa-card-title">
+              Шаблоны сообщений
+              <span class="wa-card-hint">для авто и ручных напоминаний</span>
+            </div>
           </div>
 
           <!-- Regular template -->
@@ -1100,8 +1105,10 @@ const plans = [
             </div>
           </div>
 
-          <!-- Overdue template -->
-          <div v-if="waSettings.remindOverdue" class="wa-template-block wa-template-block--overdue">
+          <!-- Overdue template — используется и в ручной рассылке,
+               поэтому редактируется всегда, а не только когда
+               remindOverdue включён в авто-напоминаниях. -->
+          <div class="wa-template-block wa-template-block--overdue">
             <div class="wa-template-label">
               <v-icon icon="mdi-alert-circle-outline" size="14" color="error" />
               При просрочке платежа
@@ -2252,6 +2259,12 @@ const plans = [
   display: flex; align-items: center; justify-content: center;
 }
 .wa-card-title { flex: 1; font-size: 15px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
+.wa-card-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-left: 8px;
+}
 .wa-card-body { margin-top: 20px; display: flex; flex-direction: column; gap: 20px; }
 
 /* Fields */
