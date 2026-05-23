@@ -3,10 +3,12 @@ import { api } from '@/api/client'
 import { formatPhone, formatDate, PHONE_MASK } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useRouter } from 'vue-router'
 
 const { isDark } = useIsDark()
 const toast = useToast()
+const { isMobile } = useIsMobile()
 const router = useRouter()
 
 // ── Types ──
@@ -779,7 +781,7 @@ function renderStars(rating: number): string[] {
     </v-card>
 
     <!-- Blacklist Dialog -->
-    <v-dialog v-model="showBlacklistDialog" max-width="480" persistent>
+    <v-dialog v-model="showBlacklistDialog" max-width="480" persistent :fullscreen="isMobile">
       <v-card rounded="lg">
         <div class="rg-dialog-header">
           <span class="rg-dialog-title">Добавить в чёрный список</span>
@@ -843,7 +845,7 @@ function renderStars(rating: number): string[] {
     </v-dialog>
 
     <!-- Review Dialog -->
-    <v-dialog v-model="showReviewDialog" max-width="480" persistent>
+    <v-dialog v-model="showReviewDialog" max-width="480" persistent :fullscreen="isMobile">
       <v-card rounded="lg">
         <div class="rg-dialog-header">
           <span class="rg-dialog-title">Оставить отзыв</span>
@@ -918,7 +920,7 @@ function renderStars(rating: number): string[] {
     </v-dialog>
 
     <!-- Delete Confirmation Dialog -->
-    <v-dialog v-model="showDeleteDialog" max-width="420" persistent>
+    <v-dialog v-model="showDeleteDialog" max-width="420" persistent :fullscreen="isMobile">
       <v-card rounded="lg">
         <div class="rg-dialog-header">
           <span class="rg-dialog-title">Удалить клиента</span>
@@ -1843,5 +1845,40 @@ function renderStars(rating: number): string[] {
 .dark .rg-mode-btn--active {
   background: #1e1e2e;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .stats-row { grid-template-columns: 1fr; gap: 8px; }
+  .stat-card { padding: 12px 14px; gap: 12px; }
+  .stat-icon { width: 36px; height: 36px; min-width: 36px; border-radius: 9px; }
+  .stat-value { font-size: 17px; }
+  .stat-label { font-size: 11px; }
+
+  .rg-tabs {
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .rg-tabs::-webkit-scrollbar { display: none; }
+  .rg-tab { padding: 7px 12px; font-size: 12.5px; }
+
+  .rg-type-filter {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .rg-type-filter::-webkit-scrollbar { display: none; }
+  .rg-type-btn { flex-shrink: 0; padding: 7px 11px; font-size: 11.5px; }
+
+  .rg-header { padding: 12px 14px; gap: 10px; }
+  .rg-avatar { width: 40px; height: 40px; min-width: 40px; border-radius: 11px; font-size: 14px; }
+  .rg-name { font-size: 14px; }
+  .rg-meta { font-size: 12px; }
+  .rg-status-badge { font-size: 10px; padding: 2px 7px; }
+
+  .rg-disclaimer { padding: 10px 12px; gap: 8px; }
+  .rg-global-hint { padding: 10px 12px; font-size: 12px; }
 }
 </style>

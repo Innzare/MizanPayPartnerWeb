@@ -626,7 +626,11 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
   gap: 10px;
 }
 @media (max-width: 1024px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 480px) { .stats-row { grid-template-columns: 1fr; } }
+/* На мобиле остаёмся в 2-col — компактнее, чем стек. */
+@media (max-width: 480px) { .stats-row { grid-template-columns: repeat(2, 1fr); gap: 8px; } }
+@media (max-width: 599px) {
+  .stat-card { padding: 12px; }
+}
 
 .stat-card {
   display: flex; align-items: center; gap: 12px;

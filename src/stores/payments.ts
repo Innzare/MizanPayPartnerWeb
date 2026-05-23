@@ -89,15 +89,12 @@ export const usePaymentsStore = defineStore('payments', () => {
     options?: { amount?: number; method?: string; proofScreenshot?: string; note?: string; onTime?: boolean }
   ) {
     try {
-      const updated = await api.patch<Payment>(`/payments/${paymentId}/paid`, options || {})
-      const dealPayments = payments.value[dealId]
-      if (dealPayments) {
-        const idx = dealPayments.findIndex((p) => p.id === paymentId)
-        if (idx !== -1) {
-          dealPayments[idx] = updated
-          payments.value = { ...payments.value, [dealId]: [...dealPayments] }
-        }
-      }
+      await api.patch<Payment>(`/payments/${paymentId}/paid`, options || {})
+      // Backend may have redistributed sister payment amounts and rewritten
+      // `remainingAfter` across the whole schedule (custom-amount overflow,
+      // overpayment closure, etc). Replacing just the one payment in cache
+      // would leave the rest stale — refetch the deal's full payments list.
+      await fetchPaymentsForDeal(dealId)
     } catch (e: any) {
       error.value = e.message || 'Ошибка при отметке оплаты'
       throw e
@@ -129,9 +126,9 @@ export const usePaymentsStore = defineStore('payments', () => {
     }
   }
 
-  async function unmarkPaid(paymentId: string, dealId: string) {
+  async function undoReschedulePayment(paymentId: string, dealId: string) {
     try {
-      const updated = await api.patch<Payment>(`/payments/${paymentId}/unpaid`)
+      const updated = await api.patch<Payment>(`/payments/${paymentId}/undo-reschedule`)
       const dealPayments = payments.value[dealId]
       if (dealPayments) {
         const idx = dealPayments.findIndex((p) => p.id === paymentId)
@@ -140,6 +137,19 @@ export const usePaymentsStore = defineStore('payments', () => {
           payments.value = { ...payments.value, [dealId]: [...dealPayments] }
         }
       }
+    } catch (e: any) {
+      error.value = e.message || 'Ошибка при возврате даты'
+      throw e
+    }
+  }
+
+  async function unmarkPaid(paymentId: string, dealId: string) {
+    try {
+      await api.patch<Payment>(`/payments/${paymentId}/unpaid`)
+      // Same reason as markAsPaid: backend redistributes PENDING amounts and
+      // rewrites remainingAfter for every payment of this deal. Single-row
+      // cache update would leave sister payments stale.
+      await fetchPaymentsForDeal(dealId)
     } catch (e: any) {
       error.value = e.message || 'Ошибка при отмене оплаты'
       throw e
@@ -166,6 +176,7 @@ export const usePaymentsStore = defineStore('payments', () => {
     markAsPaid,
     unmarkPaid,
     reschedulePayment,
+    undoReschedulePayment,
     addPayments,
   }
 })

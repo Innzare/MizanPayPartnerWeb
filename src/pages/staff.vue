@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useChats } from '@/composables/useChats'
 import ChatPanel from '@/components/ChatPanel.vue'
 import type { StaffMember, StaffRole, DealsAccessMode, Deal, DealStatus } from '@/types'
@@ -11,6 +12,7 @@ import { formatCurrency } from '@/utils/formatters'
 
 const { isDark } = useIsDark()
 const toast = useToast()
+const { isMobile } = useIsMobile()
 
 const staff = ref<StaffMember[]>([])
 const pageLoading = ref(true)
@@ -548,7 +550,7 @@ onBeforeUnmount(() => {
     </template>
 
     <!-- Add Dialog -->
-    <v-dialog v-model="addDialog" max-width="480">
+    <v-dialog v-model="addDialog" max-width="480" :fullscreen="isMobile">
       <v-card rounded="lg">
         <div class="pa-6">
           <div class="d-flex align-center justify-space-between mb-5">
@@ -605,7 +607,7 @@ onBeforeUnmount(() => {
     </v-dialog>
 
     <!-- Edit Dialog -->
-    <v-dialog v-model="editDialog" max-width="440">
+    <v-dialog v-model="editDialog" max-width="440" :fullscreen="isMobile">
       <v-card v-if="editTarget" rounded="lg">
         <div class="pa-6">
           <div class="d-flex align-center justify-space-between mb-5">
@@ -736,7 +738,7 @@ onBeforeUnmount(() => {
     </v-dialog>
 
     <!-- Attach Deal Dialog -->
-    <v-dialog v-model="attachDialog" max-width="560">
+    <v-dialog v-model="attachDialog" max-width="560" :fullscreen="isMobile">
       <v-card v-if="selectedStaff" rounded="lg">
         <div class="pa-5">
           <div class="d-flex align-center justify-space-between mb-4">
@@ -805,7 +807,7 @@ onBeforeUnmount(() => {
     </v-dialog>
 
     <!-- Delete Dialog -->
-    <v-dialog v-model="deleteDialog" max-width="400">
+    <v-dialog v-model="deleteDialog" max-width="400" :fullscreen="isMobile">
       <v-card v-if="deleteTarget" rounded="lg" class="pa-6 text-center">
         <div class="sf-delete-icon mb-4">
           <v-icon icon="mdi-alert-circle-outline" size="28" color="#ef4444" />
@@ -1652,5 +1654,35 @@ onBeforeUnmount(() => {
   padding: 2px 7px;
   border-radius: 6px;
   font-weight: 600;
+}
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .stats-row { gap: 8px; }
+  .stat-card { padding: 12px 14px; gap: 10px; }
+  .stat-icon { width: 36px; height: 36px; min-width: 36px; }
+  .stat-value { font-size: 17px; }
+  .stat-label { font-size: 11px; }
+
+  .sf-shell {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+  }
+  /* Hide chat panel when no staff selected on mobile */
+  .sf-shell:not(:has(.sf-chat-bar)) .sf-main-panel { display: none; }
+  /* Hide sidebar when chat is open */
+  .sf-shell:has(.sf-chat-bar) .sf-sidebar { display: none; }
+
+  .sf-sidebar { border-right: none; }
+  .sf-sidebar-list { padding: 4px 8px 12px; }
+  .sf-row { padding: 10px 8px; }
+  .sf-row-actions { opacity: 1; }
+  .sf-action-btn { width: 30px; height: 30px; }
+
+  .sf-main-panel { min-height: calc(100vh - 200px); }
+  .sf-chat-bar { padding: 12px 14px; gap: 10px; }
+  .sf-chat-bar-name { font-size: 14px; }
+  .sf-chat-bar-sub { font-size: 11px; }
 }
 </style>

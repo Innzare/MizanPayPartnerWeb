@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 
 interface PaymentRow {
@@ -40,6 +41,7 @@ const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
 
 const toast = useToast()
+const { isMobile } = useIsMobile()
 
 const daysBeforeDue = ref(3)
 const loading = ref(false)
@@ -283,6 +285,7 @@ function getInitials(name: string) {
     @update:model-value="(v) => emit('update:modelValue', v)"
     max-width="780"
     persistent
+    :fullscreen="isMobile"
   >
     <v-card rounded="lg" class="srd-card">
       <!-- Header -->

@@ -174,6 +174,10 @@ import { formatCurrency, formatCurrencyShort } from '@/utils/formatters'
 const router = useRouter()
 const { entries, total, loading, fetchJournal } = useCashflow()
 
+// Optional scope — when passed, all journal queries are limited to a single
+// cashbox. Used by the cashbox detail page; unset means partner-wide ledger.
+const props = defineProps<{ cashBoxId?: string }>()
+
 // ─── Type metadata ─────────────────────────────────────────────────────
 // Single source of truth for icons/colors/labels across the journal UI.
 const TYPE_META: Record<CashFlowEntryType, { label: string; icon: string; bg: string; fg: string }> = {
@@ -253,6 +257,7 @@ function currentFilters() {
   return {
     types: activeTypes.value.length ? activeTypes.value : undefined,
     search: searchInput.value || undefined,
+    cashBoxId: props.cashBoxId,
     ...periodRange(),
   }
 }

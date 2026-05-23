@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useDealsStore } from '@/stores/deals'
+import { useCashBoxesStore } from '@/stores/cashboxes'
 import { usePaymentsStore } from '@/stores/payments'
 import { useClientsStore } from '@/stores/clients'
 import { formatCurrency, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
@@ -27,6 +28,14 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip,
 
 const route = useRoute()
 const router = useRouter()
+
+// Reactive mobile flag — used to (a) swap the schedule table for a card
+// list on phones, (b) make dialogs fullscreen.
+const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
+function updateMobile() { isMobile.value = window.innerWidth < 768 }
+onMounted(() => window.addEventListener('resize', updateMobile))
+onUnmounted(() => window.removeEventListener('resize', updateMobile))
+
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const clientsStore = useClientsStore()
@@ -39,11 +48,14 @@ const dealId = computed(() => route.params.id as string)
 
 const pageLoading = ref(true)
 
+const cashboxesStore = useCashBoxesStore()
+
 onMounted(async () => {
   try {
     await Promise.all([
       dealsStore.fetchDeal(dealId.value),
       paymentsStore.fetchPaymentsForDeal(dealId.value),
+      cashboxesStore.items.length === 0 ? cashboxesStore.fetchAll() : Promise.resolve(),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки сделки')
@@ -53,6 +65,48 @@ onMounted(async () => {
 })
 
 const deal = computed(() => dealsStore.getDeal(dealId.value))
+
+// Resolve the cashbox the deal belongs to — used by the hero badge and
+// the move-cashbox dialog. Falls back to null if the cashbox is archived
+// or the deal pre-dates the cashboxes feature (cashBoxId nullable).
+const dealCashBox = computed(() => {
+  const id = deal.value?.cashBoxId
+  if (!id) return null
+  return cashboxesStore.items.find((b) => b.id === id) ?? null
+})
+
+// Move-cashbox dialog state
+const showMoveCashbox = ref(false)
+const moveTargetCashBoxId = ref<string | null>(null)
+const movingCashbox = ref(false)
+
+const moveTargets = computed(() =>
+  cashboxesStore.items.filter((b) => b.id !== deal.value?.cashBoxId && !b.archivedAt),
+)
+
+function openMoveCashbox() {
+  if (moveTargets.value.length === 0) {
+    toast.error('Нет других касс — создайте ещё одну на странице «Кассы»')
+    return
+  }
+  moveTargetCashBoxId.value = moveTargets.value[0]?.id ?? null
+  showMoveCashbox.value = true
+}
+
+async function handleMoveCashbox() {
+  if (!deal.value || !moveTargetCashBoxId.value) return
+  movingCashbox.value = true
+  try {
+    await cashboxesStore.moveDeal(deal.value.id, moveTargetCashBoxId.value)
+    toast.success('Сделка перенесена в другую кассу')
+    showMoveCashbox.value = false
+    await dealsStore.fetchDeal(deal.value.id)
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось перенести')
+  } finally {
+    movingCashbox.value = false
+  }
+}
 const payments = computed(() => paymentsStore.getPaymentsForDeal(dealId.value))
 
 // Client info from deal's nested client object
@@ -158,19 +212,20 @@ async function removeGuarantor() {
   }
 }
 
-// ── Co-Investors ──
+// ── Co-Investors (Phase 3: read-only, all CIs of the deal's cashbox) ──
 interface CoInvestorInfo {
   id: string
   name: string
   phone: string | null
-  profitPercent: number
+  profitPercent: number | null
   capital: number
+  cashBoxId?: string
 }
 
+// `dealCoInvestors` now holds the CIs of this deal's cashbox — they all
+// participate by virtue of cashbox membership, there's no per-deal link.
 const dealCoInvestors = ref<CoInvestorInfo[]>([])
-const allCoInvestors = ref<CoInvestorInfo[]>([])
 const coInvestorLoading = ref(false)
-const showCoInvestorMenu = ref(false)
 
 // ── Staff assignee ──
 interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
@@ -210,44 +265,9 @@ const assignedStaffName = computed(() => {
 
 async function loadCoInvestors() {
   try {
-    const [linked, all] = await Promise.all([
-      api.get<CoInvestorInfo[]>(`/co-investors/deal/${dealId.value}`),
-      api.get<any[]>('/co-investors'),
-    ])
-    dealCoInvestors.value = linked
-    allCoInvestors.value = all.map(ci => ({ id: ci.id, name: ci.name, phone: ci.phone, profitPercent: ci.profitPercent, capital: ci.capital }))
+    // Phase 3: endpoint returns CIs of this deal's cashbox.
+    dealCoInvestors.value = await api.get<CoInvestorInfo[]>(`/co-investors/deal/${dealId.value}`)
   } catch { /* ignore */ }
-}
-
-const availableCoInvestors = computed(() =>
-  allCoInvestors.value.filter(ci => !dealCoInvestors.value.some(d => d.id === ci.id))
-)
-
-async function linkCoInvestor(ci: CoInvestorInfo) {
-  coInvestorLoading.value = true
-  try {
-    await api.post(`/co-investors/${ci.id}/deals/${dealId.value}`)
-    dealCoInvestors.value.push(ci)
-    showCoInvestorMenu.value = false
-    toast.success(`${ci.name} привязан к сделке`)
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось привязать со-инвестора')
-  } finally {
-    coInvestorLoading.value = false
-  }
-}
-
-async function unlinkCoInvestor(ci: CoInvestorInfo) {
-  coInvestorLoading.value = true
-  try {
-    await api.delete(`/co-investors/${ci.id}/deals/${dealId.value}`)
-    dealCoInvestors.value = dealCoInvestors.value.filter(d => d.id !== ci.id)
-    toast.success(`${ci.name} отвязан от сделки`)
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось отвязать со-инвестора')
-  } finally {
-    coInvestorLoading.value = false
-  }
 }
 
 // Load co-investors on mount
@@ -289,6 +309,42 @@ const progress = computed(() =>
   deal.value && deal.value.numberOfPayments > 0
     ? (deal.value.paidPayments / deal.value.numberOfPayments) * 100 : 0
 )
+
+// Current monthly payment — amount the client owes for the next due payment.
+// Uses the actually-scheduled amount (may differ from the original plan if
+// the partner paid early with a custom sum and the backend redistributed).
+// Falls back to PENDING/OVERDUE → just the first non-paid by number.
+const currentMonthlyPayment = computed(() => {
+  const next = payments.value.find(p => p.status === 'OVERDUE')
+    ?? payments.value.find(p => p.status === 'PENDING')
+  return next?.amount ?? 0
+})
+
+// Overdue summary — count + total amount. Shown only when > 0.
+const overdueStats = computed(() => {
+  const overdue = payments.value.filter(p => p.status === 'OVERDUE')
+  return {
+    count: overdue.length,
+    total: overdue.reduce((s, p) => s + p.amount, 0),
+  }
+})
+
+// Days overdue for a single payment (positive integer). 0 if not overdue.
+function daysOverdue(p: { dueDate: string; status: string }): number {
+  if (p.status !== 'OVERDUE') return 0
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const due = new Date(p.dueDate)
+  due.setHours(0, 0, 0, 0)
+  const diff = Math.floor((today.getTime() - due.getTime()) / 86400000)
+  return Math.max(diff, 0)
+}
+
+function pluralDays(n: number): string {
+  if (n % 10 === 1 && n % 100 !== 11) return 'день'
+  if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return 'дня'
+  return 'дней'
+}
 
 /**
  * Breakdown of partner's profit on this specific deal:
@@ -453,6 +509,25 @@ async function confirmReschedule() {
   }
 }
 
+// Undo a previous reschedule: restores the original dueDate stored in
+// `rescheduledFrom`. Confirms first because the action is irreversible
+// (we don't keep a full history of reschedules — just the immediate prior).
+const undoingReschedule = ref<string | null>(null)
+async function confirmUndoReschedule(p: typeof payments.value[0]) {
+  if (!p.rescheduledFrom) return
+  const originalDate = formatDate(p.rescheduledFrom)
+  if (!confirm(`Вернуть исходную дату ${originalDate}?`)) return
+  undoingReschedule.value = p.id
+  try {
+    await paymentsStore.undoReschedulePayment(p.id, p.dealId)
+    toast.success('Дата платежа восстановлена')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка при возврате даты')
+  } finally {
+    undoingReschedule.value = null
+  }
+}
+
 // Mark as paid dialog
 const markPaidDialog = ref(false)
 const markPaidTarget = ref<typeof payments.value[0] | null>(null)
@@ -468,13 +543,80 @@ const proofEnlargeUrl = ref('')
 const markPaidAmount = ref<number | null>(null)
 const markPaidOnTime = ref(false)
 
+const outOfOrderDialog = ref(false)
+const outOfOrderPending = ref<typeof payments.value[0] | null>(null)
+
+const earlierUnpaid = computed(() => {
+  const target = outOfOrderPending.value
+  if (!target) return []
+  return payments.value
+    .filter(p => p.number < target.number && (p.status === 'PENDING' || p.status === 'OVERDUE'))
+    .sort((a, b) => a.number - b.number)
+})
+
 function openMarkPaid(p: typeof payments.value[0]) {
+  const earlier = payments.value.filter(
+    x => x.number < p.number && (x.status === 'PENDING' || x.status === 'OVERDUE'),
+  )
+  if (earlier.length > 0) {
+    outOfOrderPending.value = p
+    outOfOrderDialog.value = true
+    return
+  }
+  openMarkPaidImmediate(p)
+}
+
+function openMarkPaidImmediate(p: typeof payments.value[0]) {
   markPaidTarget.value = p
   markPaidAmount.value = Math.round(p.amount)
   markPaidProofFile.value = null
   markPaidProofPreview.value = ''
-  markPaidOnTime.value = p.status === 'OVERDUE' ? false : false
+  markPaidOnTime.value = false
   markPaidDialog.value = true
+}
+
+// Detect "this mark-paid amount will close the deal early" so the partner sees
+// it BEFORE confirming, not after. Triggers when sumAlreadyPaid + entered
+// amount covers the deal balance AND there are still other PENDING/OVERDUE
+// payments (which the backend will auto-flip to CLOSED_EARLY).
+const earlyCloseInfo = computed(() => {
+  const target = markPaidTarget.value
+  const enteredAmount = markPaidAmount.value
+  if (!target || !deal.value || !enteredAmount || enteredAmount <= 0) {
+    return { willClose: false, count: 0, excess: 0 }
+  }
+  const balance = deal.value.totalPrice - (deal.value.downPayment || 0)
+  const sumAlreadyPaid = payments.value
+    .filter(p => p.id !== target.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
+    .reduce((s, p) => s + p.amount, 0)
+  const otherUnpaid = payments.value.filter(
+    p => p.id !== target.id && (p.status === 'PENDING' || p.status === 'OVERDUE'),
+  )
+  const totalAfter = sumAlreadyPaid + enteredAmount
+  return {
+    willClose: totalAfter >= balance && otherUnpaid.length > 0,
+    count: otherUnpaid.length,
+    excess: Math.max(totalAfter - balance, 0),
+  }
+})
+
+function dismissOutOfOrder() {
+  outOfOrderDialog.value = false
+  outOfOrderPending.value = null
+}
+
+function markEarlierFirst() {
+  const first = earlierUnpaid.value[0]
+  outOfOrderDialog.value = false
+  outOfOrderPending.value = null
+  if (first) openMarkPaidImmediate(first)
+}
+
+function markOutOfOrderAnyway() {
+  const target = outOfOrderPending.value
+  outOfOrderDialog.value = false
+  outOfOrderPending.value = null
+  if (target) openMarkPaidImmediate(target)
 }
 
 const unpaidLoading = ref<string | null>(null)
@@ -483,7 +625,10 @@ async function confirmUnmarkPaid(p: typeof payments.value[0]) {
   unpaidLoading.value = p.id
   try {
     await paymentsStore.unmarkPaid(p.id, p.dealId)
-    await dealsStore.fetchDeals()
+    // Refresh THIS deal so paidPayments/remainingAmount/status update on the
+    // page without a hard reload. Single-deal fetch is much cheaper than
+    // fetchDeals() (which loads the partner's entire portfolio).
+    await dealsStore.fetchDeal(p.dealId)
     toast.success('Оплата отменена')
   } catch (e: any) {
     toast.error(e.message || 'Ошибка при отмене оплаты')
@@ -528,7 +673,10 @@ async function confirmMarkPaid() {
       proofScreenshot,
       onTime: markPaidOnTime.value || undefined,
     })
-    await dealsStore.fetchDeals()
+    // Refresh THIS deal (paidPayments/status/remainingAmount may have flipped
+    // — e.g. to COMPLETED on overpayment closure) without reloading the whole
+    // deals list.
+    await dealsStore.fetchDeal(markPaidTarget.value.dealId)
     toast.success('Платёж отмечен как оплаченный')
     markPaidDialog.value = false
     markPaidTarget.value = null
@@ -837,14 +985,27 @@ const timeline = computed(() => {
 
       <!-- Hero -->
       <div class="detail-hero mb-6">
-        <button
-          class="detail-hero-edit"
-          title="Редактировать сделку"
-          @click="$router.push(`/create-deal?edit=${dealId}`)"
-        >
-          <v-icon icon="mdi-pencil-outline" size="16" />
-          <span>Редактировать</span>
-        </button>
+        <div class="detail-hero-actions">
+          <button
+            v-if="dealCashBox"
+            class="detail-hero-cashbox"
+            :style="{ '--cb-color': dealCashBox.color }"
+            :title="`В кассе «${dealCashBox.name}». Нажмите чтобы перенести`"
+            @click="openMoveCashbox"
+          >
+            <v-icon :icon="dealCashBox.icon" size="14" :style="{ color: dealCashBox.color }" />
+            <span>{{ dealCashBox.name }}</span>
+            <v-icon icon="mdi-swap-horizontal" size="14" />
+          </button>
+          <button
+            class="detail-hero-edit"
+            title="Редактировать сделку"
+            @click="$router.push(`/create-deal?edit=${dealId}`)"
+          >
+            <v-icon icon="mdi-pencil-outline" size="16" />
+            <span>Редактировать</span>
+          </button>
+        </div>
         <div class="detail-hero-photo" :class="{ 'detail-hero-photo--empty': !deal.productPhotos?.length }">
           <img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" alt="" />
           <div v-else class="detail-hero-photo-placeholder">
@@ -868,6 +1029,14 @@ const timeline = computed(() => {
             <v-icon icon="mdi-account" size="16" /> {{ deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—' }}
             <span class="mx-2">·</span>
             Создано {{ formatDate(deal.createdAt) }}
+            <span class="mx-2">·</span>
+            <v-icon icon="mdi-calendar-outline" size="14" />
+            Заключена {{ formatDate(deal.dealDate) }}
+            <template v-if="deal.firstPaymentDate">
+              <span class="mx-2">·</span>
+              <v-icon icon="mdi-calendar-start" size="14" />
+              Первый платёж {{ formatDate(deal.firstPaymentDate) }}
+            </template>
           </div>
         </div>
       </div>
@@ -945,6 +1114,14 @@ const timeline = computed(() => {
                 {{ deal.downPayment ? formatCurrency(deal.downPayment) : 'Без взноса' }}
               </div>
             </div>
+            <!-- Current monthly payment — shows what the client owes next. -->
+            <div v-if="currentMonthlyPayment > 0" class="finance-card">
+              <div class="finance-label">Месячный платёж</div>
+              <div class="finance-value" style="color: #3b82f6;">{{ formatCurrency(currentMonthlyPayment) }}</div>
+              <div v-if="deal.paidPayments > 0" class="finance-sub" style="opacity: 0.55;">
+                после переоценки
+              </div>
+            </div>
             <div class="finance-card">
               <div class="finance-label">Оплачено</div>
               <div class="finance-value" style="color: #047857;">{{ formatCurrency(totalPaid) }}</div>
@@ -952,6 +1129,18 @@ const timeline = computed(() => {
             <div class="finance-card">
               <div class="finance-label">Остаток</div>
               <div class="finance-value" style="color: #f59e0b;">{{ formatCurrency(deal.remainingAmount) }}</div>
+            </div>
+            <!-- Overdue card — visible only when there are overdue payments.
+                 Highlighted in red so it doesn't get lost in the grid. -->
+            <div v-if="overdueStats.count > 0" class="finance-card finance-card--overdue">
+              <div class="finance-label">
+                <v-icon icon="mdi-alert-circle" size="11" class="mr-1" />
+                Просрочено
+              </div>
+              <div class="finance-value" style="color: #ef4444;">{{ formatCurrency(overdueStats.total) }}</div>
+              <div class="finance-sub" style="color: #ef4444;">
+                {{ overdueStats.count }} {{ overdueStats.count === 1 ? 'платёж' : 'платежа' }}
+              </div>
             </div>
           </div>
 
@@ -1074,6 +1263,10 @@ const timeline = computed(() => {
                   <div style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b;" />
                   <span class="section-subtitle">Ожидается</span>
                 </div>
+                <div v-if="overdueStats.count > 0" class="d-flex align-center ga-1">
+                  <div style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444;" />
+                  <span class="section-subtitle">Просрочено</span>
+                </div>
               </div>
             </div>
             <div style="height: 220px;">
@@ -1088,7 +1281,7 @@ const timeline = computed(() => {
               <div class="section-subtitle mb-4">Полный список по сделке</div>
             </div>
 
-            <v-table density="default" class="schedule-table">
+            <v-table density="default" class="schedule-table schedule-table--desktop">
               <thead>
                 <tr>
                   <th>#</th>
@@ -1112,6 +1305,12 @@ const timeline = computed(() => {
                     <div v-if="p.rescheduledFrom" class="rescheduled-hint">
                       <v-icon icon="mdi-calendar-arrow-right" size="12" />
                       было {{ formatDate(p.rescheduledFrom) }}
+                    </div>
+                    <!-- Phase 3.x: explicit days-overdue chip so partner sees
+                         «насколько» а не только «overdue». -->
+                    <div v-if="p.status === 'OVERDUE'" class="overdue-chip">
+                      <v-icon icon="mdi-clock-alert-outline" size="11" />
+                      просрочен на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
                     </div>
                   </td>
                   <td class="text-end font-weight-bold text-no-wrap">{{ formatCurrency(p.amount) }}</td>
@@ -1143,6 +1342,16 @@ const timeline = computed(() => {
                       <button class="action-btn action-btn--warning" title="Перенести дату" @click="openReschedule(p)">
                         <v-icon icon="mdi-calendar-clock" size="16" />
                       </button>
+                      <button
+                        v-if="p.rescheduledFrom"
+                        class="action-btn action-btn--ghost"
+                        :title="`Вернуть исходную дату (${formatDate(p.rescheduledFrom)})`"
+                        :disabled="undoingReschedule === p.id"
+                        @click="confirmUndoReschedule(p)"
+                      >
+                        <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
+                        <v-icon v-else icon="mdi-calendar-refresh" size="16" />
+                      </button>
                     </div>
                     <div v-else-if="p.status === 'PAID'" class="d-flex align-center justify-center">
                       <button
@@ -1159,6 +1368,98 @@ const timeline = computed(() => {
                 </tr>
               </tbody>
             </v-table>
+
+            <!-- Mobile card list — same content rearranged for narrow screens. -->
+            <div class="schedule-cards">
+              <div
+                v-for="p in payments"
+                :key="p.id"
+                class="sched-card"
+                :class="{
+                  'sched-card--paid': p.status === 'PAID',
+                  'sched-card--overdue': p.status === 'OVERDUE',
+                  'sched-card--closed': p.status === 'CLOSED_EARLY',
+                }"
+              >
+                <div class="sched-card-head">
+                  <div class="sched-card-num">#{{ p.number }}</div>
+                  <div class="pay-status" :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])">
+                    {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                  </div>
+                </div>
+
+                <div class="sched-card-date">
+                  <div class="sched-card-date-value">{{ formatDate(p.dueDate) }}</div>
+                  <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+                    <v-icon icon="mdi-calendar-arrow-right" size="12" />
+                    было {{ formatDate(p.rescheduledFrom) }}
+                  </div>
+                  <div v-if="p.status === 'OVERDUE'" class="overdue-chip">
+                    <v-icon icon="mdi-clock-alert-outline" size="11" />
+                    просрочен на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
+                  </div>
+                </div>
+
+                <div class="sched-card-amounts">
+                  <div class="sched-card-amount">
+                    <div class="sched-card-amount-label">Сумма</div>
+                    <div class="sched-card-amount-value">{{ formatCurrency(p.amount) }}</div>
+                  </div>
+                  <div class="sched-card-amount">
+                    <div class="sched-card-amount-label">Остаток после</div>
+                    <div class="sched-card-amount-value sched-card-amount-value--muted">
+                      {{ formatCurrency(p.remainingAfter) }}
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="p.paidAt || p.proofScreenshot" class="sched-card-paid">
+                  <div v-if="p.paidAt" class="sched-card-paid-date">
+                    <v-icon icon="mdi-check-circle-outline" size="14" />
+                    Оплачено {{ formatDate(p.paidAt) }}
+                  </div>
+                  <img
+                    v-if="p.proofScreenshot"
+                    :src="p.proofScreenshot"
+                    class="proof-thumbnail sched-card-proof"
+                    title="Скриншот оплаты"
+                    @click="openProofEnlarge(p.proofScreenshot!)"
+                  />
+                </div>
+
+                <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="sched-card-actions">
+                  <button class="action-btn action-btn--success" @click="openMarkPaid(p)">
+                    <v-icon icon="mdi-check" size="16" />
+                    Оплачено
+                  </button>
+                  <button class="action-btn action-btn--warning" @click="openReschedule(p)">
+                    <v-icon icon="mdi-calendar-clock" size="16" />
+                    Перенести
+                  </button>
+                  <button
+                    v-if="p.rescheduledFrom"
+                    class="action-btn action-btn--ghost"
+                    :disabled="undoingReschedule === p.id"
+                    @click="confirmUndoReschedule(p)"
+                  >
+                    <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
+                    <v-icon v-else icon="mdi-calendar-refresh" size="16" />
+                    Вернуть
+                  </button>
+                </div>
+                <div v-else-if="p.status === 'PAID'" class="sched-card-actions">
+                  <button
+                    class="action-btn action-btn--danger"
+                    :disabled="unpaidLoading === p.id"
+                    @click="confirmUnmarkPaid(p)"
+                  >
+                    <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                    <v-icon v-else icon="mdi-undo" size="16" />
+                    Отменить оплату
+                  </button>
+                </div>
+              </div>
+            </div>
           </v-card>
         </v-col>
 
@@ -1490,63 +1791,27 @@ const timeline = computed(() => {
             <div v-else class="text-body-2 text-medium-emphasis">Не назначен</div>
           </v-card>
 
-          <!-- Co-Investors -->
+          <!-- Phase 3: Investors of the deal's cashbox. Read-only — the
+               relationship is implicit (every CI of the cashbox shares this
+               deal's profit). To add/remove participants, the partner changes
+               the deal's cashbox or moves the CI to another cashbox. -->
           <v-card v-if="!deal.deletedAt" rounded="lg" elevation="0" border class="ci-section mb-6">
-            <!-- Header -->
             <div class="ci-header">
               <div class="ci-header-left">
                 <div class="ci-header-icon">
                   <v-icon icon="mdi-account-group-outline" size="20" />
                 </div>
                 <div>
-                  <div class="ci-header-title">Со-инвесторы</div>
+                  <div class="ci-header-title">Инвесторы кассы</div>
                   <div class="ci-header-sub">
                     <template v-if="dealCoInvestors.length > 0">
-                      {{ dealCoInvestors.length }} {{ dealCoInvestors.length === 1 ? 'партнёр' : 'партнёра' }}
-                      <template v-if="deal.markup">
-                        · {{ formatCurrency(dealCoInvestors.reduce((sum, ci) => sum + Math.round((deal?.markup || 0) * ci.profitPercent / 100), 0)) }} распределено
-                      </template>
+                      {{ dealCoInvestors.length }} {{ dealCoInvestors.length === 1 ? 'инвестор' : 'инвестора' }}
+                      делит прибыль этой сделки
                     </template>
-                    <template v-else>Не привязаны</template>
+                    <template v-else>В кассе сделки нет инвесторов</template>
                   </div>
                 </div>
               </div>
-              <v-menu v-model="showCoInvestorMenu" :close-on-content-click="false" location="bottom end">
-                <template #activator="{ props: menuProps }">
-                  <button
-                    v-if="availableCoInvestors.length > 0"
-                    v-bind="menuProps"
-                    class="ci-add-btn"
-                    :disabled="coInvestorLoading"
-                  >
-                    <v-icon icon="mdi-plus" size="16" />
-                    Добавить
-                  </button>
-                </template>
-                <v-card min-width="300" rounded="xl" elevation="4" class="ci-menu">
-                  <div class="ci-menu-header">
-                    <v-icon icon="mdi-account-plus-outline" size="16" />
-                    Выберите со-инвестора
-                  </div>
-                  <div class="ci-menu-list">
-                    <button
-                      v-for="ci in availableCoInvestors"
-                      :key="ci.id"
-                      class="ci-menu-item"
-                      @click="linkCoInvestor(ci)"
-                    >
-                      <div class="ci-avatar ci-avatar--sm">
-                        {{ ci.name.split(' ').map((w: string) => w[0]).join('').slice(0, 2) }}
-                      </div>
-                      <div class="ci-menu-item-info">
-                        <div class="ci-menu-item-name">{{ ci.name }}</div>
-                        <div class="ci-menu-item-meta">{{ ci.profitPercent }}% от прибыли</div>
-                      </div>
-                      <v-icon icon="mdi-plus-circle-outline" size="20" class="ci-menu-item-action" />
-                    </button>
-                  </div>
-                </v-card>
-              </v-menu>
             </div>
 
             <!-- Cards -->
@@ -1563,18 +1828,23 @@ const timeline = computed(() => {
                       {{ ci.phone }}
                     </div>
                   </div>
-                  <button class="ci-card-remove" :disabled="coInvestorLoading" @click="unlinkCoInvestor(ci)">
-                    <v-icon icon="mdi-link-variant-off" size="14" />
-                  </button>
                 </div>
                 <div class="ci-card-stats">
-                  <div class="ci-card-stat">
-                    <span class="ci-card-stat-label">Доля прибыли</span>
-                    <span class="ci-card-stat-value">{{ ci.profitPercent }}%</span>
-                  </div>
-                  <div v-if="deal.markup" class="ci-card-stat">
-                    <span class="ci-card-stat-label">Сумма</span>
-                    <span class="ci-card-stat-value ci-card-stat-value--accent">{{ formatCurrency(Math.round(deal.markup * ci.profitPercent / 100)) }}</span>
+                  <template v-if="ci.profitPercent != null && ci.profitPercent > 0">
+                    <div class="ci-card-stat">
+                      <span class="ci-card-stat-label">Доля прибыли</span>
+                      <span class="ci-card-stat-value">{{ ci.profitPercent }}%</span>
+                    </div>
+                    <div v-if="deal.markup" class="ci-card-stat">
+                      <span class="ci-card-stat-label">Сумма</span>
+                      <span class="ci-card-stat-value ci-card-stat-value--accent">
+                        {{ formatCurrency(Math.round(deal.markup * ci.profitPercent / 100)) }}
+                      </span>
+                    </div>
+                  </template>
+                  <div v-else class="ci-card-stat">
+                    <span class="ci-card-stat-label">Способ деления</span>
+                    <span class="ci-card-stat-value">По вкладу</span>
                   </div>
                 </div>
               </div>
@@ -1585,8 +1855,10 @@ const timeline = computed(() => {
               <div class="ci-empty-icon">
                 <v-icon icon="mdi-account-group-outline" size="24" />
               </div>
-              <div class="ci-empty-text">Со-инвесторы не привязаны к сделке</div>
-              <div class="ci-empty-hint">Добавьте партнёров, чтобы распределить прибыль</div>
+              <div class="ci-empty-text">В кассе сделки нет инвесторов</div>
+              <div class="ci-empty-hint">
+                Добавьте инвестора в кассу сделки на странице «Инвесторы»
+              </div>
             </div>
           </v-card>
 
@@ -1766,7 +2038,7 @@ const timeline = computed(() => {
           </v-card>
 
           <!-- Contract enlarge dialog -->
-          <v-dialog v-model="contractEnlargeDialog" max-width="800">
+          <v-dialog v-model="contractEnlargeDialog" max-width="800" :fullscreen="isMobile">
             <v-card rounded="lg">
               <img :src="contractEnlargeUrl" style="width: 100%; height: auto; display: block;" />
               <v-card-actions>
@@ -1888,7 +2160,7 @@ const timeline = computed(() => {
       </div>
 
       <!-- Reschedule dialog -->
-      <v-dialog v-model="rescheduleDialog" max-width="480" content-class="reschedule-dialog">
+      <v-dialog v-model="rescheduleDialog" max-width="480" content-class="reschedule-dialog" :fullscreen="isMobile">
         <v-card rounded="lg" class="pa-6">
           <button class="dialog-close-sm" @click="rescheduleDialog = false">
             <v-icon icon="mdi-close" size="18" />
@@ -1945,7 +2217,7 @@ const timeline = computed(() => {
       </v-dialog>
 
       <!-- Status change dialog -->
-      <v-dialog v-model="statusDialog" max-width="520">
+      <v-dialog v-model="statusDialog" max-width="520" :fullscreen="isMobile">
         <v-card rounded="lg" class="pa-6">
           <div v-if="statusAction" class="d-flex align-start ga-4 mb-4">
             <div class="status-dialog-icon" :style="{ background: statusAction.color + '18' }">
@@ -2022,7 +2294,7 @@ const timeline = computed(() => {
       </v-dialog>
 
       <!-- Mark as paid dialog -->
-      <v-dialog v-model="markPaidDialog" max-width="480">
+      <v-dialog v-model="markPaidDialog" max-width="480" :fullscreen="isMobile">
         <v-card rounded="lg" class="pa-6">
           <button class="dialog-close-sm" @click="markPaidDialog = false">
             <v-icon icon="mdi-close" size="18" />
@@ -2058,6 +2330,25 @@ const timeline = computed(() => {
             </div>
             <div v-if="markPaidTarget && markPaidAmount && markPaidAmount !== markPaidTarget.amount" class="text-caption mt-1" :style="{ color: markPaidAmount > markPaidTarget.amount ? '#10b981' : '#f59e0b' }">
               {{ markPaidAmount > markPaidTarget.amount ? `Переплата ${formatCurrency(markPaidAmount - markPaidTarget.amount)} — оставшиеся платежи будут пересчитаны` : `Недоплата ${formatCurrency(markPaidTarget.amount - markPaidAmount)}` }}
+            </div>
+          </div>
+
+          <!-- Early closure warning: this payment covers the remaining balance -->
+          <div v-if="earlyCloseInfo.willClose" class="early-close-banner mb-5">
+            <v-icon icon="mdi-flag-checkered" color="#0ea5e9" size="20" class="mt-1 flex-shrink-0" />
+            <div>
+              <div class="early-close-banner-title">Сделка будет закрыта досрочно</div>
+              <div class="early-close-banner-text">
+                Эта оплата покрывает остаток. Оставшиеся
+                {{ earlyCloseInfo.count }}
+                {{ earlyCloseInfo.count === 1 ? 'платёж' : earlyCloseInfo.count >= 2 && earlyCloseInfo.count <= 4 ? 'платежа' : 'платежей' }}
+                <template v-if="earlyCloseInfo.excess > 0">
+                  будут закрыты досрочно. Переплата {{ formatCurrency(earlyCloseInfo.excess) }}.
+                </template>
+                <template v-else>
+                  будут закрыты досрочно.
+                </template>
+              </div>
             </div>
           </div>
 
@@ -2132,6 +2423,37 @@ const timeline = computed(() => {
         </v-card>
       </v-dialog>
 
+      <!-- Out-of-order warning dialog -->
+      <v-dialog v-model="outOfOrderDialog" max-width="440" :fullscreen="isMobile">
+        <v-card rounded="lg" class="pa-6">
+          <button class="dialog-close-sm" @click="dismissOutOfOrder">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+          <div class="d-flex align-center ga-2 mb-2">
+            <v-icon icon="mdi-alert-circle-outline" color="warning" size="22" />
+            <div class="text-h6 font-weight-bold">Платежи не по порядку</div>
+          </div>
+          <div class="text-body-2 text-medium-emphasis mb-4">
+            Раньше этого платежа есть неоплаченные. Чтобы остаток и график считались корректно, рекомендуется отмечать платежи по порядку.
+          </div>
+          <div class="ooo-list mb-4">
+            <div v-for="p in earlierUnpaid" :key="p.id" class="ooo-row">
+              <span class="ooo-num">№{{ p.number }}</span>
+              <span class="ooo-date">{{ formatDate(p.dueDate) }}</span>
+              <span class="ooo-amount">{{ formatCurrency(p.amount) }}</span>
+            </div>
+          </div>
+          <div class="d-flex flex-column ga-2">
+            <button class="btn-primary" @click="markEarlierFirst">
+              Сначала отметить №{{ earlierUnpaid[0]?.number }}
+            </button>
+            <button class="btn-secondary" @click="markOutOfOrderAnyway">
+              Всё равно отметить этот
+            </button>
+          </div>
+        </v-card>
+      </v-dialog>
+
       <!-- Proof enlarge dialog -->
       <v-dialog v-model="proofEnlargeDialog" max-width="600">
         <v-card rounded="lg" class="pa-2">
@@ -2151,6 +2473,41 @@ const timeline = computed(() => {
         Вернуться к портфелю
       </v-btn>
     </div>
+
+    <!-- Move cashbox dialog -->
+    <v-dialog v-model="showMoveCashbox" max-width="480" persistent :fullscreen="isMobile">
+      <v-card rounded="lg" class="move-cb-card">
+        <div class="move-cb-header">
+          <v-icon icon="mdi-briefcase-arrow-right-outline" color="primary" size="22" />
+          <div>
+            <div class="move-cb-title">Перенести в другую кассу</div>
+            <div class="move-cb-sub">
+              Сейчас в «{{ dealCashBox?.name || '—' }}». Вся история операций тоже переедет.
+            </div>
+          </div>
+        </div>
+        <div class="move-cb-body">
+          <v-select
+            v-model="moveTargetCashBoxId"
+            :items="moveTargets"
+            item-title="name"
+            item-value="id"
+            label="Касса-получатель"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+          <div class="move-cb-warn">
+            <v-icon icon="mdi-information-outline" size="16" color="#f59e0b" />
+            <span>Баланс обеих касс пересчитается автоматически.</span>
+          </div>
+        </div>
+        <div class="move-cb-footer">
+          <v-btn variant="text" :disabled="movingCashbox" @click="showMoveCashbox = false">Отмена</v-btn>
+          <v-btn color="primary" :loading="movingCashbox" @click="handleMoveCashbox">Перенести</v-btn>
+        </div>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -2209,8 +2566,12 @@ const timeline = computed(() => {
   display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
   margin-top: auto;
 }
-.detail-hero-edit {
+.detail-hero-actions {
   position: absolute; top: 16px; right: 16px; z-index: 3;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.detail-hero-edit {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 8px 14px; border-radius: 10px;
   background: rgba(255, 255, 255, 0.2);
@@ -2227,6 +2588,53 @@ const timeline = computed(() => {
 }
 .detail-hero-edit:active {
   transform: translateY(0);
+}
+.detail-hero-cashbox {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 12px; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: all 0.15s ease;
+}
+.detail-hero-cashbox:hover {
+  background: rgba(255, 255, 255, 0.28);
+  border-color: rgba(255, 255, 255, 0.4);
+  transform: translateY(-1px);
+}
+
+/* Move-cashbox dialog */
+.move-cb-card { background: rgb(var(--v-theme-surface)); }
+.move-cb-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.move-cb-title {
+  font-size: 15px; font-weight: 700;
+  color: rgb(var(--v-theme-on-surface));
+}
+.move-cb-sub {
+  font-size: 12px; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.move-cb-body {
+  padding: 20px; display: flex; flex-direction: column; gap: 14px;
+}
+.move-cb-warn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: 10px;
+  background: rgba(245, 158, 11, 0.1);
+  color: #92400e; font-size: 12px;
+}
+.v-theme--dark .move-cb-warn { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+.move-cb-footer {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 .detail-hero-photo {
   flex-shrink: 0;
@@ -2282,6 +2690,10 @@ const timeline = computed(() => {
 .finance-card--wholesale {
   background: rgba(99, 102, 241, 0.04);
   border-color: rgba(99, 102, 241, 0.18);
+}
+.finance-card--overdue {
+  background: rgba(239, 68, 68, 0.04);
+  border-color: rgba(239, 68, 68, 0.20);
 }
 .finance-sub {
   font-size: 11px;
@@ -2502,6 +2914,15 @@ const timeline = computed(() => {
 .action-btn--warning:hover {
   background: rgba(245, 158, 11, 0.18);
 }
+.action-btn--ghost {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.action-btn--ghost:hover:not(:disabled) {
+  background: rgba(var(--v-theme-on-surface), 0.12);
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.action-btn--ghost:disabled { opacity: 0.5; cursor: not-allowed; }
 .action-btn--wa {
   background: rgba(37, 211, 102, 0.08); color: #25D366;
 }
@@ -2645,6 +3066,18 @@ const timeline = computed(() => {
   font-size: 11px; color: #f59e0b; margin-top: 2px;
   text-decoration: line-through;
   text-decoration-color: rgba(245, 158, 11, 0.4);
+}
+
+/* Overdue chip in payments table — explicit "просрочен на N дней" hint */
+.overdue-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  font-size: 11px; font-weight: 700;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 5px;
+  white-space: nowrap;
 }
 
 /* Reschedule dialog */
@@ -3585,5 +4018,140 @@ const timeline = computed(() => {
 .dark .create-client-btn {
   background: rgba(var(--v-theme-on-surface), 0.03);
   border-color: rgba(var(--v-theme-on-surface), 0.1);
+}
+
+.ooo-list {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.ooo-row {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.ooo-row + .ooo-row {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.ooo-num { font-weight: 600; }
+.ooo-date { color: rgba(var(--v-theme-on-surface), 0.6); }
+.ooo-amount { font-weight: 600; }
+
+.early-close-banner {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(14, 165, 233, 0.25);
+  border-radius: 10px;
+}
+.early-close-banner-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #0ea5e9;
+  margin-bottom: 2px;
+}
+.early-close-banner-text {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  line-height: 1.4;
+}
+
+/* ───── Mobile: schedule cards вместо широкой таблицы ───── */
+.schedule-cards {
+  display: none;
+  padding: 12px 14px 14px;
+}
+
+@media (max-width: 767px) {
+  .schedule-table--desktop { display: none !important; }
+  .schedule-cards { display: flex; flex-direction: column; gap: 10px; }
+
+  /* Финансовая сетка на мобиле — 2 колонки уже есть (768px),
+     но карточки сами по себе крупные. Чуть компактнее. */
+  .finance-card { padding: 12px; }
+
+  /* Hero — фото поменьше на мобиле, чтобы не съедало пол-экрана. */
+  .detail-hero-photo {
+    height: 140px !important;
+  }
+}
+
+.sched-card {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 12px;
+  background: rgb(var(--v-theme-surface));
+}
+.sched-card--overdue {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.02);
+}
+.sched-card--paid {
+  background: rgba(16, 185, 129, 0.03);
+}
+.sched-card--closed {
+  opacity: 0.6;
+}
+.sched-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.sched-card-num {
+  font-size: 13px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.sched-card-date-value {
+  font-size: 15px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+}
+.sched-card-amounts {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  padding: 10px 12px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border-radius: 10px;
+}
+.sched-card-amount-label {
+  font-size: 11px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-bottom: 2px;
+}
+.sched-card-amount-value {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+.sched-card-amount-value--muted {
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+.sched-card-paid {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.sched-card-paid-date {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.sched-card-paid-date .v-icon { color: #10b981; }
+.sched-card-proof {
+  width: 40px; height: 40px;
+}
+.sched-card-actions {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  margin-top: 4px;
+}
+.sched-card-actions .action-btn {
+  flex: 1 1 auto;
+  width: auto;
+  height: 38px;
+  padding: 0 12px;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
 }
 </style>

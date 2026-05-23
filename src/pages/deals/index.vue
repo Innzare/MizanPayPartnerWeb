@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
-import { formatCurrency, formatDate, formatDateShort, formatPercent, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type DealFolder, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useFolders } from '@/composables/useFolders'
-import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useCashBoxesStore } from '@/stores/cashboxes'
+import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 
@@ -24,11 +25,12 @@ const { folders, fetchFolders, createFolder, updateFolder, deleteFolder, moveDea
 const activeFolder = ref<string | null>(null) // null = all
 
 // Co-investor filter — null = all deals (regardless of CI link)
-const activeCoInvestor = ref<string | null>(null)
-const { coInvestors: ciList, fetchCoInvestors } = useCoInvestors()
-fetchCoInvestors()
-const activeCoInvestorObj = computed(() =>
-  activeCoInvestor.value ? ciList.value.find((c) => c.id === activeCoInvestor.value) ?? null : null,
+const activeCashBoxId = ref<string | null>(null)
+const cashBoxesStore = useCashBoxesStore()
+const { items: cashBoxes } = storeToRefs(cashBoxesStore)
+cashBoxesStore.fetchAll()
+const activeCashBoxObj = computed(() =>
+  activeCashBoxId.value ? cashBoxes.value.find((b) => b.id === activeCashBoxId.value) ?? null : null,
 )
 
 // Staff assignee filter — partner-only. null = all deals.
@@ -130,7 +132,21 @@ onMounted(async () => {
 })
 
 const tab = ref(0)
-const viewMode = ref<'grid' | 'table'>('table')
+// Reactive mobile detection — used to (a) force grid view on phones where
+// the 9-column table can't fit, and (b) make dialogs fullscreen.
+const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
+const viewMode = ref<'grid' | 'table'>(isMobile.value ? 'grid' : 'table')
+function updateMobile() {
+  const m = window.innerWidth < 768
+  if (m !== isMobile.value) {
+    isMobile.value = m
+    // Going to mobile — force grid (table is unreadable). Going to desktop
+    // — leave whatever the user had (don't override their preference).
+    if (m && viewMode.value === 'table') viewMode.value = 'grid'
+  }
+}
+onMounted(() => window.addEventListener('resize', updateMobile))
+onUnmounted(() => window.removeEventListener('resize', updateMobile))
 const search = ref('')
 const selectMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
@@ -280,11 +296,9 @@ const displayedDeals = computed(() => {
     result = result.filter(d => d.folderId === activeFolder.value)
   }
 
-  // Co-investor filter
-  if (activeCoInvestor.value) {
-    result = result.filter(d =>
-      d.coInvestors?.some(link => link.coInvestor.id === activeCoInvestor.value),
-    )
+  // Cashbox filter
+  if (activeCashBoxId.value) {
+    result = result.filter(d => d.cashBoxId === activeCashBoxId.value)
   }
 
   // Staff assignee filter
@@ -331,6 +345,12 @@ function dealClientName(deal: Deal) {
   if (deal.client) return userName(deal.client)
   if (deal.clientProfile) return clientProfileName(deal.clientProfile)
   return deal.externalClientName || '—'
+}
+
+function dealClientPhone(deal: Deal): string | null {
+  // Mirror backend priority: ClientProfile → User → external phone.
+  const raw = deal.clientProfile?.phone || deal.client?.phone || deal.externalClientPhone
+  return raw ? formatPhone(raw) : null
 }
 
 function openDeal(deal: Deal) {
@@ -402,40 +422,40 @@ const selectedDealPaidTotal = computed(() =>
 
     <!-- Filters row (top right, above main card): folder + co-investor -->
     <div v-if="!isTrashTab" class="d-flex justify-end ga-2 mb-3 flex-wrap">
-      <!-- Co-investor filter -->
-      <v-menu v-if="ciList.length > 0" :close-on-content-click="true">
+      <!-- Cashbox filter -->
+      <v-menu v-if="cashBoxes.length > 1" :close-on-content-click="true">
         <template #activator="{ props: mp }">
-          <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeCoInvestor }">
-            <v-icon icon="mdi-account-group-outline" size="16" />
-            <template v-if="activeCoInvestorObj">
-              {{ activeCoInvestorObj.name }}
+          <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeCashBoxId }">
+            <v-icon icon="mdi-wallet-outline" size="16" />
+            <template v-if="activeCashBoxObj">
+              {{ activeCashBoxObj.name }}
             </template>
             <template v-else>
-              Со-инвестор
+              Касса
             </template>
             <v-icon icon="mdi-chevron-down" size="14" style="opacity: 0.4;" />
           </button>
         </template>
         <v-card rounded="lg" elevation="4" class="fb-dropdown">
           <div class="fb-dropdown-header">
-            <span>Со-инвесторы</span>
+            <span>Кассы</span>
           </div>
           <div class="fb-dropdown-body">
-            <button class="fb-item" :class="{ 'fb-item--active': !activeCoInvestor }" @click="activeCoInvestor = null">
+            <button class="fb-item" :class="{ 'fb-item--active': !activeCashBoxId }" @click="activeCashBoxId = null">
               <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
-              <span class="fb-item-name">Все сделки</span>
+              <span class="fb-item-name">Все кассы</span>
             </button>
             <div class="fb-divider" />
             <button
-              v-for="ci in ciList"
-              :key="ci.id"
+              v-for="b in cashBoxes"
+              :key="b.id"
               class="fb-item"
-              :class="{ 'fb-item--active': activeCoInvestor === ci.id }"
-              @click="activeCoInvestor = activeCoInvestor === ci.id ? null : ci.id"
+              :class="{ 'fb-item--active': activeCashBoxId === b.id }"
+              @click="activeCashBoxId = activeCashBoxId === b.id ? null : b.id"
             >
-              <v-icon icon="mdi-account-outline" size="14" style="color: rgba(var(--v-theme-on-surface), 0.45);" />
-              <span class="fb-item-name">{{ ci.name }}</span>
-              <span class="fb-item-count">{{ ci.profitPercent }}%</span>
+              <v-icon icon="mdi-wallet-outline" size="14" :style="{ color: b.color }" />
+              <span class="fb-item-name">{{ b.name }}</span>
+              <span v-if="b.isDefault" class="fb-item-count">осн.</span>
             </button>
           </div>
         </v-card>
@@ -603,7 +623,7 @@ const selectedDealPaidTotal = computed(() =>
               style="max-width: 180px; min-width: 140px"
             />
 
-            <div class="view-toggle">
+            <div v-if="!isMobile" class="view-toggle">
               <button class="view-toggle-btn" :class="{ active: viewMode === 'table' }" @click="viewMode = 'table'">
                 <v-icon icon="mdi-table" size="18" />
               </button>
@@ -720,6 +740,10 @@ const selectedDealPaidTotal = computed(() =>
                   <v-icon icon="mdi-account" size="14" /> {{ dealClientName(deal) }}
                   <span v-if="!deal.client && deal.clientProfile && !deal.clientProfile.userId" class="external-badge">Внешний</span>
                 </div>
+                <div v-if="dealClientPhone(deal)" class="deal-card-phone">
+                  <v-icon icon="mdi-phone-outline" size="12" />
+                  {{ dealClientPhone(deal) }}
+                </div>
 
                 <div class="deal-card-prices">
                   <div class="deal-card-total">{{ formatCurrency(deal.totalPrice) }}</div>
@@ -790,12 +814,17 @@ const selectedDealPaidTotal = computed(() =>
                 </div>
               </td>
               <td>
-                <div class="d-flex align-center ga-2">
-                  <span>{{ dealClientName(deal) }}</span>
-                  <span v-if="!deal.client && deal.clientProfile && !deal.clientProfile.userId" class="external-badge">Внешний</span>
-                  <v-chip size="x-small" variant="tonal" color="warning">
-                    <v-icon icon="mdi-star" size="10" start /> {{ deal.client?.rating ?? 0 }}
-                  </v-chip>
+                <div>
+                  <div class="d-flex align-center ga-2">
+                    <span>{{ dealClientName(deal) }}</span>
+                    <span v-if="!deal.client && deal.clientProfile && !deal.clientProfile.userId" class="external-badge">Внешний</span>
+                    <v-chip size="x-small" variant="tonal" color="warning">
+                      <v-icon icon="mdi-star" size="10" start /> {{ deal.client?.rating ?? 0 }}
+                    </v-chip>
+                  </div>
+                  <div v-if="dealClientPhone(deal)" class="client-phone-row">
+                    {{ dealClientPhone(deal) }}
+                  </div>
                 </div>
               </td>
               <td class="text-end font-weight-bold text-no-wrap">{{ formatCurrency(deal.totalPrice) }}</td>
@@ -860,7 +889,7 @@ const selectedDealPaidTotal = computed(() =>
     </v-card>
 
     <!-- Deal Detail Dialog -->
-    <v-dialog v-model="showDialog" max-width="680" scrollable>
+    <v-dialog v-model="showDialog" max-width="680" scrollable :fullscreen="isMobile">
       <v-card v-if="selectedDeal" rounded="lg">
         <!-- Header with photo on the left -->
         <div class="dialog-hero">
@@ -886,6 +915,11 @@ const selectedDealPaidTotal = computed(() =>
             <div class="dialog-hero-meta">
               <v-icon icon="mdi-account" size="14" />
               {{ dealClientName(selectedDeal) }}
+              <template v-if="dealClientPhone(selectedDeal)">
+                <span class="mx-1">·</span>
+                <v-icon icon="mdi-phone-outline" size="13" />
+                {{ dealClientPhone(selectedDeal) }}
+              </template>
               <span class="mx-1">·</span>
               Создано {{ formatDate(selectedDeal.createdAt) }}
             </div>
@@ -969,7 +1003,7 @@ const selectedDealPaidTotal = computed(() =>
     </template>
 
     <!-- Folder dialog -->
-    <v-dialog v-model="showFolderDialog" max-width="420">
+    <v-dialog v-model="showFolderDialog" max-width="420" :fullscreen="isMobile">
       <v-card rounded="xl" class="fd-dialog">
         <div class="fd-header">
           <div class="fd-header-icon" :style="{ background: folderForm.color + '18', color: folderForm.color }">
@@ -1042,7 +1076,8 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 @media (max-width: 1024px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 600px) { .stats-row { grid-template-columns: 1fr; } }
+/* На мобиле 2×2 — компактнее, не растягивает экран в 4 строки. */
+@media (max-width: 600px) { .stats-row { grid-template-columns: repeat(2, 1fr); gap: 8px; } }
 
 .stat-card {
   display: flex;
@@ -1213,7 +1248,18 @@ const selectedDealPaidTotal = computed(() =>
 }
 .deal-card-client {
   font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
-  display: flex; align-items: center; gap: 4px; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 4px;
+}
+.deal-card-phone {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 2px; margin-bottom: 12px;
+}
+.client-phone-row {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 2px;
 }
 .deal-card-prices { margin-bottom: 12px; }
 .deal-card-total {
@@ -1864,4 +1910,44 @@ const selectedDealPaidTotal = computed(() =>
 .dark .fd-preview { background: rgba(255,255,255,0.04); }
 .dark .fd-footer { border-top-color: rgba(255,255,255,0.06); }
 .dark .fd-color.active { border-color: rgba(255,255,255,0.2); }
+
+/* ───── Mobile tweaks ───── */
+@media (max-width: 767px) {
+  /* Stat-карточки чуть компактнее чтобы 2×2 не растягивались. */
+  .stat-card { padding: 12px; }
+  .stat-value { font-size: 16px; }
+  .stat-label { font-size: 11px; }
+  .stat-icon { width: 32px; height: 32px; }
+
+  /* Вкладки (Активные/Завершённые/Все/Корзина) — горизонтальный скролл. */
+  .pa-4 > .d-flex.flex-wrap.ga-2.align-center > .d-flex.ga-2:first-child {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex: 1 1 100%;
+    min-width: 0;
+    padding-bottom: 2px;
+  }
+  .pa-4 > .d-flex.flex-wrap.ga-2.align-center > .d-flex.ga-2:first-child::-webkit-scrollbar {
+    display: none;
+  }
+  .tab-btn {
+    flex-shrink: 0;
+  }
+
+  /* Search/sort/select-mode группа — на всю ширину. */
+  .pa-4 > .d-flex.flex-wrap.ga-2.align-center > .d-flex.flex-wrap.ga-2.align-center {
+    flex: 1 1 100%;
+  }
+  .filter-input-wrap {
+    flex: 1 1 100%;
+    max-width: 100% !important;
+  }
+  .filter-select {
+    flex: 1 1 auto;
+    max-width: none !important;
+  }
+}
 </style>

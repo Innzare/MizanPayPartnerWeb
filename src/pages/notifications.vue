@@ -80,8 +80,8 @@ const groupedNotifications = computed(() => {
 
     <v-card v-else rounded="lg" elevation="0" border>
       <!-- Header -->
-      <div class="d-flex align-center justify-space-between pa-4 pb-0">
-        <div class="d-flex align-center ga-3">
+      <div class="ntf-header">
+        <div class="ntf-header-filters">
           <button
             class="ntf-filter-btn"
             :class="{ active: filter === 'all' }"
@@ -100,12 +100,13 @@ const groupedNotifications = computed(() => {
           </button>
         </div>
 
-        <div class="d-flex ga-1">
+        <div class="d-flex ga-1 ntf-header-actions">
           <v-btn
             v-if="store.unreadCount > 0"
             variant="tonal"
             size="small"
             prepend-icon="mdi-check-all"
+            class="ntf-mark-all-btn"
             @click="store.markAllAsRead()"
           >
             Прочитать все
@@ -308,5 +309,73 @@ const groupedNotifications = computed(() => {
 .ntf-delete:hover {
   background: rgba(var(--v-theme-error), 0.1);
   color: rgb(var(--v-theme-error));
+}
+
+.ntf-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 0;
+  gap: 12px;
+}
+.ntf-header-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ntf-header-actions {
+  flex-shrink: 0;
+}
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .ntf-header {
+    flex-wrap: wrap;
+    padding: 12px 12px 0;
+    gap: 10px;
+  }
+  .ntf-header-filters {
+    flex: 1 1 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ntf-header-filters::-webkit-scrollbar { display: none; }
+  .ntf-header-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+  .ntf-mark-all-btn { flex: 1 1 auto; }
+
+  .ntf-filter-btn {
+    padding: 8px 12px;
+    font-size: 12.5px;
+    flex-shrink: 0;
+  }
+  .ntf-filter-count {
+    font-size: 10.5px;
+    line-height: 17px;
+    min-width: 18px;
+    padding: 0 5px;
+  }
+
+  .ntf-item {
+    gap: 10px;
+    padding: 12px 10px;
+  }
+  .ntf-icon {
+    width: 36px; height: 36px; min-width: 36px;
+    border-radius: 10px;
+  }
+  .ntf-title { font-size: 13.5px; }
+  .ntf-message { font-size: 12.5px; }
+  .ntf-time { font-size: 11px; }
+  .ntf-delete {
+    opacity: 1;
+    width: 32px;
+    height: 32px;
+  }
 }
 </style>

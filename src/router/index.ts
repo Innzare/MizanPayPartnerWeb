@@ -11,7 +11,7 @@ const ROUTE_FEATURES: Record<string, keyof PlanFeatures> = {
   '/activity': 'activity',
   '/registry': 'registry',
   '/co-investors': 'coInvestors',
-  '/finance': 'finance',
+  '/cashboxes': 'finance',
   '/staff': 'staff',
 };
 
@@ -20,7 +20,7 @@ const router = createRouter({
   routes: setupLayouts(routes),
 });
 
-const publicRoutes = ["/login", "/forgot-password", "/reset-password"];
+const publicRoutes = ["/login", "/forgot-password", "/reset-password", "/investor"];
 
 // Routes intentionally hidden — accessing them via URL redirects to home
 const hiddenRoutes = ["/products", "/requests", "/create-product"];
@@ -28,9 +28,17 @@ const hiddenRoutes = ["/products", "/requests", "/create-product"];
 let authChecked = false;
 
 router.beforeEach(async (to, from, next) => {
-  const authStore = useAuthStore();
-
   const isPublicRoute = publicRoutes.some(r => to.path.startsWith(r));
+
+  // Public routes (login, forgot-password, /investor/:token) — short-circuit
+  // BEFORE auth init. The share-link page is token-based, never depends on
+  // auth state. /login is special-cased below so an already signed-in
+  // partner gets routed back to their default landing.
+  if (isPublicRoute && to.path !== '/login') {
+    return next();
+  }
+
+  const authStore = useAuthStore();
 
   // Always run checkAuth once on first navigation to refresh user from backend
   if (!authChecked) {

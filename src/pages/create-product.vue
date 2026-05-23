@@ -944,4 +944,23 @@ function getCategoryIcon(catId: string) {
 .dark .upload-zone:hover { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.3); }
 .dark .upload-zone--has-file { background: #252538; border-color: #2e2e42; }
 .dark .photo-preview-card { border-color: #2e2e42; }
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .stepper-dot { width: 32px; height: 32px; font-size: 13px; }
+  .stepper-line { width: 14px; min-width: 10px; margin: 0 4px; }
+  .stepper-header { margin-bottom: 18px; gap: 6px; }
+
+  .step-title-row { gap: 10px; margin-bottom: 14px; }
+  .step-icon-wrap { width: 38px; height: 38px; min-width: 38px; border-radius: 10px; }
+  .step-title { font-size: 16px; }
+  .step-subtitle { font-size: 12px; }
+
+  .step-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .step-actions > * { flex: 1 1 calc(50% - 4px); min-width: 0; }
+  .btn-primary, .btn-secondary { width: 100%; padding: 0 14px; }
+}
 </style>

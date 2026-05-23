@@ -6,9 +6,13 @@ import { useRouter } from 'vue-router'
 import { userName, clientProfileName } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useSubscription } from '@/composables/useSubscription'
 import { useCapital } from '@/composables/useCapital'
 import HeroSummary from '@/components/HeroSummary.vue'
+import { useCashBoxesStore } from '@/stores/cashboxes'
+import { api } from '@/api/client'
+import type { CapitalSummary } from '@/types'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -21,19 +25,120 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineEleme
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const router = useRouter()
+const { isMobile } = useIsMobile()
 const { canAccess: canAccessFeature } = useSubscription()
 const hasCharts = computed(() => canAccessFeature('analyticsCharts'))
 
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
-const { capital, isCapitalSet, fetchCapital } = useCapital()
+const { capital: globalCapital, isCapitalSet: isGlobalCapitalSet, fetchCapital } = useCapital()
+
+const pageLoading = ref(true)
+const cashboxesStore = useCashBoxesStore()
+
+// ── Cashbox scope ──────────────────────────────────────────────────
+// null = aggregate over all cashboxes (uses /finance/capital + all deals)
+// string = a specific cashbox (uses /cashboxes/:id/capital + scoped deals)
+const selectedCashBoxId = ref<string | null>(null)
+const scopedCapital = ref<CapitalSummary | null>(null)
+
+async function fetchScopedCapital() {
+  if (!selectedCashBoxId.value) {
+    scopedCapital.value = null
+    return
+  }
+  try {
+    scopedCapital.value = await api.get<CapitalSummary>(`/cashboxes/${selectedCashBoxId.value}/capital`)
+  } catch {
+    scopedCapital.value = null
+  }
+}
+
+watch(selectedCashBoxId, () => {
+  fetchScopedCapital()
+})
+
+const capital = computed(() => selectedCashBoxId.value ? scopedCapital.value : globalCapital.value)
+const isCapitalSet = computed(() =>
+  capital.value?.initialCapital !== null && capital.value?.initialCapital !== undefined,
+)
 
 const capitalUtilization = computed(() => {
   if (!capital.value || capital.value.totalCapital <= 0) return 0
   return Math.min(Math.round((capital.value.deployed / capital.value.totalCapital) * 100), 100)
 })
 
-const pageLoading = ref(true)
+// ── Scoped deals & payments (filtered by selectedCashBoxId) ───────
+// When no cashbox selected — fall back to all data from the stores.
+const scopedInvestorDeals = computed(() =>
+  selectedCashBoxId.value
+    ? dealsStore.investorDeals.filter((d: any) => d.cashBoxId === selectedCashBoxId.value)
+    : dealsStore.investorDeals
+)
+const scopedActiveDeals = computed(() =>
+  selectedCashBoxId.value
+    ? dealsStore.activeDeals.filter((d: any) => d.cashBoxId === selectedCashBoxId.value)
+    : dealsStore.activeDeals
+)
+const scopedCompletedDeals = computed(() =>
+  selectedCashBoxId.value
+    ? dealsStore.completedDeals.filter((d: any) => d.cashBoxId === selectedCashBoxId.value)
+    : dealsStore.completedDeals
+)
+const scopedAllDeals = computed(() =>
+  selectedCashBoxId.value
+    ? dealsStore.deals.filter((d: any) => d.cashBoxId === selectedCashBoxId.value)
+    : dealsStore.deals
+)
+
+const scopedTotalInvested = computed(() =>
+  scopedInvestorDeals.value.reduce((s, d) => s + d.purchasePrice, 0)
+)
+const scopedTotalRevenue = computed(() =>
+  scopedInvestorDeals.value.reduce((s, d) => s + d.totalPrice, 0)
+)
+const scopedTotalProfit = computed(() =>
+  scopedInvestorDeals.value.reduce((s, d) => s + d.markup, 0)
+)
+const scopedTotalRemaining = computed(() =>
+  scopedActiveDeals.value.reduce((s, d) => s + d.remainingAmount, 0)
+)
+const scopedMonthlyIncome = computed(() =>
+  scopedActiveDeals.value.reduce((s, d) => d.numberOfPayments > 0 ? s + d.totalPrice / d.numberOfPayments : s, 0)
+)
+
+// Build a Set of deal IDs in scope for fast payment lookup
+const scopedDealIds = computed(() => {
+  if (!selectedCashBoxId.value) return null // null = no filter
+  return new Set(scopedInvestorDeals.value.map((d: any) => d.id))
+})
+
+const scopedAllPaymentsFlat = computed(() => {
+  if (!scopedDealIds.value) return paymentsStore.allPaymentsFlat
+  return paymentsStore.allPaymentsFlat.filter((p) => scopedDealIds.value!.has(p.dealId))
+})
+const scopedPaidPayments = computed(() =>
+  scopedAllPaymentsFlat.value.filter((p) => p.status === 'PAID')
+)
+const scopedPendingPayments = computed(() =>
+  scopedAllPaymentsFlat.value.filter((p) => p.status === 'PENDING')
+)
+const scopedOverduePayments = computed(() =>
+  scopedAllPaymentsFlat.value.filter((p) => p.status === 'OVERDUE')
+)
+
+// Totals for HeroSummary scope prop (only when filtered, otherwise pass undefined)
+const heroTotals = computed(() => selectedCashBoxId.value ? {
+  totalRemaining: scopedTotalRemaining.value,
+  totalRevenue: scopedTotalRevenue.value,
+  totalInvested: scopedTotalInvested.value,
+  totalProfit: scopedTotalProfit.value,
+  monthlyIncome: scopedMonthlyIncome.value,
+} : null)
+
+const selectedCashBox = computed(() =>
+  selectedCashBoxId.value ? cashboxesStore.items.find((b) => b.id === selectedCashBoxId.value) ?? null : null
+)
 
 onMounted(async () => {
   try {
@@ -41,6 +146,7 @@ onMounted(async () => {
       dealsStore.fetchDeals(),
       paymentsStore.fetchPayments(),
       fetchCapital(),
+      cashboxesStore.fetchAll(),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки данных')
@@ -119,24 +225,24 @@ function getPaymentProfit(payment: { amount: number; dealId: string; deal?: any 
 // ── KPI ──
 
 const paymentHealth = computed(() => {
-  const paid = paymentsStore.paidPayments
+  const paid = scopedPaidPayments.value
   if (!paid.length) return 100
   const onTime = paid.filter(p => p.paidAt && new Date(p.paidAt) <= new Date(p.dueDate)).length
   return Math.round((onTime / paid.length) * 100)
 })
 
 const overdueAmount = computed(() =>
-  paymentsStore.overduePayments.reduce((s, p) => s + p.amount, 0)
+  scopedOverduePayments.value.reduce((s, p) => s + p.amount, 0)
 )
 
 // Total earned profit (from paid payments)
 const earnedProfit = computed(() =>
-  paymentsStore.paidPayments.reduce((s, p) => s + getPaymentProfit(p), 0)
+  scopedPaidPayments.value.reduce((s, p) => s + getPaymentProfit(p), 0)
 )
 
 // Expected profit (from pending + overdue payments — not yet received)
 const expectedProfit = computed(() =>
-  paymentsStore.allPaymentsFlat
+  scopedAllPaymentsFlat.value
     .filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
     .reduce((s, p) => s + getPaymentProfit(p), 0)
 )
@@ -146,7 +252,7 @@ const thisMonthProfit = computed(() => {
   const now = new Date()
   const thisMonth = now.getMonth()
   const thisYear = now.getFullYear()
-  return paymentsStore.paidPayments
+  return scopedPaidPayments.value
     .filter(p => {
       const { year: y, month: m } = parseDateStr(p.dueDate)
       return m === thisMonth && y === thisYear
@@ -196,13 +302,13 @@ const profitByDeal = computed(() => {
   const monthKey = profitDetailMonth.value
 
   // Select source payments based on mode
-  let sourcePayments: typeof paymentsStore.allPaymentsFlat
+  let sourcePayments: typeof scopedAllPaymentsFlat.value
   if (mode === 'all') {
-    sourcePayments = paymentsStore.allPaymentsFlat
+    sourcePayments = scopedAllPaymentsFlat.value
   } else if (mode === 'expected') {
-    sourcePayments = paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
+    sourcePayments = scopedAllPaymentsFlat.value.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
   } else {
-    sourcePayments = paymentsStore.paidPayments
+    sourcePayments = scopedPaidPayments.value
   }
 
   // Filter by month and/or year (always by dueDate string — no timezone issues)
@@ -324,7 +430,7 @@ const yearMonths = computed((): MonthData[] => {
     const isCurrent = calYear.value === currentYear && i === currentMonth
 
     // All payments due this month (grouped by dueDate string — no timezone issues)
-    const monthPayments = paymentsStore.allPaymentsFlat.filter(p => {
+    const monthPayments = scopedAllPaymentsFlat.value.filter(p => {
       const { year: y, month: m } = parseDateStr(p.dueDate)
       return y === calYear.value && m === i
     })
@@ -384,7 +490,7 @@ function openMonthDetail(m: MonthData) {
 const revenueChartData = computed(() => {
   const months = getLast6Months()
 
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID').forEach(p => {
+  scopedAllPaymentsFlat.value.filter(p => p.status === 'PAID').forEach(p => {
     const key = getMonthKeyFromStr(p.dueDate)
     if (key in months) months[key] += p.amount
   })
@@ -408,7 +514,7 @@ const revenueChartData = computed(() => {
 const profitChartData = computed(() => {
   const months = getLast6Months()
 
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PAID').forEach(p => {
+  scopedAllPaymentsFlat.value.filter(p => p.status === 'PAID').forEach(p => {
     const key = getMonthKeyFromStr(p.dueDate)
     if (key in months) months[key] += getPaymentProfit(p)
   })
@@ -432,7 +538,7 @@ const profitChartData = computed(() => {
 const forecastChartData = computed(() => {
   const months = getNext6Months()
 
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
+  scopedAllPaymentsFlat.value.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
     const key = getMonthKeyFromStr(p.dueDate)
     if (key in months) months[key] += p.amount
   })
@@ -461,7 +567,7 @@ const forecastChartData = computed(() => {
 const profitForecastData = computed(() => {
   const months = getNext6Months()
 
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
+  scopedAllPaymentsFlat.value.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
     const key = getMonthKeyFromStr(p.dueDate)
     if (key in months) months[key] += getPaymentProfit(p)
   })
@@ -488,10 +594,10 @@ const profitForecastData = computed(() => {
 // ── CHART 5: Status distribution (doughnut) ──
 
 const statusDistribution = computed(() => {
-  const active = dealsStore.activeDeals.length
-  const completed = dealsStore.completedDeals.length
-  const disputed = dealsStore.deals.filter(d => d.status === 'DISPUTED').length
-  const cancelled = dealsStore.deals.filter(d => d.status === 'CANCELLED').length
+  const active = scopedActiveDeals.value.length
+  const completed = scopedCompletedDeals.value.length
+  const disputed = scopedAllDeals.value.filter(d => d.status === 'DISPUTED').length
+  const cancelled = scopedAllDeals.value.filter(d => d.status === 'CANCELLED').length
   return {
     labels: ['Активные', 'Завершённые', 'Спорные', 'Отменённые'],
     datasets: [{
@@ -619,7 +725,7 @@ function openBreakdown(metric: string) {
       hint = 'Сумма закупочных цен по всем сделкам'
       icon = 'mdi-cash-multiple'
       color = '#047857'
-      deals = dealsStore.investorDeals.map(d => ({
+      deals = scopedInvestorDeals.value.map(d => ({
         deal: d, value: d.purchasePrice,
         extra: `Наценка ${d.markupPercent}% · итого ${formatCurrency(d.totalPrice)}`,
         progress: d.numberOfPayments > 0 ? Math.round((d.paidPayments / d.numberOfPayments) * 100) : 0,
@@ -630,7 +736,7 @@ function openBreakdown(metric: string) {
       hint = 'Закупочная цена + наценка по всем сделкам'
       icon = 'mdi-chart-arc'
       color = '#3b82f6'
-      deals = dealsStore.investorDeals.map(d => ({
+      deals = scopedInvestorDeals.value.map(d => ({
         deal: d, value: d.totalPrice,
         extra: `${formatCurrency(d.purchasePrice)} закупка + ${formatCurrency(d.markup)} наценка`,
       }))
@@ -640,7 +746,7 @@ function openBreakdown(metric: string) {
       hint = 'Наценка по каждой сделке (totalPrice - purchasePrice)'
       icon = 'mdi-trending-up'
       color = '#10b981'
-      deals = dealsStore.investorDeals.map(d => ({
+      deals = scopedInvestorDeals.value.map(d => ({
         deal: d, value: d.markup,
         extra: `${d.markupPercent}% от ${formatCurrency(d.purchasePrice)}`,
       }))
@@ -650,7 +756,7 @@ function openBreakdown(metric: string) {
       hint = 'Остаток по активным сделкам (неоплаченные платежи)'
       icon = 'mdi-clock-outline'
       color = '#f59e0b'
-      deals = dealsStore.activeDeals.map(d => ({
+      deals = scopedActiveDeals.value.map(d => ({
         deal: d, value: d.remainingAmount,
         extra: `${d.paidPayments} из ${d.numberOfPayments} платежей`,
         progress: d.numberOfPayments > 0 ? Math.round((d.paidPayments / d.numberOfPayments) * 100) : 0,
@@ -661,7 +767,7 @@ function openBreakdown(metric: string) {
       hint = 'Средний ежемесячный платёж по активным сделкам'
       icon = 'mdi-calendar-month'
       color = '#047857'
-      deals = dealsStore.activeDeals
+      deals = scopedActiveDeals.value
         .filter(d => d.numberOfPayments > 0)
         .map(d => ({
           deal: d, value: Math.round(d.totalPrice / d.numberOfPayments),
@@ -673,7 +779,7 @@ function openBreakdown(metric: string) {
       hint = 'Сумма просроченных платежей'
       icon = 'mdi-alert-circle'
       color = '#ef4444'
-      deals = paymentsStore.overduePayments.map(p => ({
+      deals = scopedOverduePayments.value.map(p => ({
         deal: { productName: p.deal?.productName || 'Сделка', id: p.dealId },
         value: p.amount,
         extra: `Срок: ${formatDate(p.dueDate)}`,
@@ -708,8 +814,58 @@ function bdColor(name?: string) {
     </div>
 
     <template v-else>
-      <!-- Hero summary -->
-      <HeroSummary class="mb-6" @metric="openBreakdown" />
+      <!-- Cashbox scope chips. Tap a chip to filter all numbers/charts on
+           this page by that cashbox. "Все кассы" returns to the aggregated
+           view. -->
+      <div v-if="cashboxesStore.items.length > 0" class="cb-scope mb-4">
+        <div class="cb-scope-label">Смотреть:</div>
+        <div class="cb-scope-chips">
+          <button
+            class="cb-scope-chip"
+            :class="{ 'cb-scope-chip--active': selectedCashBoxId === null }"
+            type="button"
+            @click="selectedCashBoxId = null"
+          >
+            <v-icon icon="mdi-view-grid-outline" size="14" />
+            Все кассы
+          </button>
+          <button
+            v-for="b in cashboxesStore.items"
+            :key="b.id"
+            class="cb-scope-chip"
+            :class="{ 'cb-scope-chip--active': selectedCashBoxId === b.id }"
+            :style="selectedCashBoxId === b.id ? {
+              '--cb-color': b.color,
+              borderColor: b.color,
+              color: b.color,
+              background: b.color + '14',
+            } : { '--cb-color': b.color }"
+            type="button"
+            @click="selectedCashBoxId = b.id"
+          >
+            <v-icon :icon="b.icon" size="14" :style="{ color: b.color }" />
+            {{ b.name }}
+          </button>
+          <button
+            v-if="selectedCashBox"
+            class="cb-scope-open"
+            type="button"
+            @click="router.push(`/cashboxes/${selectedCashBox.id}`)"
+            :title="`Открыть кассу «${selectedCashBox.name}»`"
+          >
+            <v-icon icon="mdi-arrow-top-right" size="14" />
+            Открыть кассу
+          </button>
+        </div>
+      </div>
+
+      <!-- Hero summary (scope-aware: passes scoped totals + capital when a cashbox is selected) -->
+      <HeroSummary
+        class="mb-6"
+        :totals="heroTotals"
+        :available-capital="selectedCashBoxId ? (capital?.availableCapital ?? null) : undefined"
+        @metric="openBreakdown"
+      />
 
       <!-- KPI Cards -->
       <div class="kpi-row mb-6">
@@ -763,7 +919,7 @@ function bdColor(name?: string) {
           </div>
         </div>
 
-        <div class="kpi-card" v-if="isCapitalSet && capital" @click="router.push('/finance')" style="cursor: pointer;">
+        <div class="kpi-card" v-if="isCapitalSet && capital" @click="router.push('/cashboxes')" style="cursor: pointer;">
           <div class="kpi-icon-wrap" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
             <v-icon icon="mdi-wallet-outline" size="20" />
           </div>
@@ -1015,7 +1171,7 @@ function bdColor(name?: string) {
                 <div class="chart-subtitle">За последние 6 месяцев</div>
               </div>
               <div class="chart-total">
-                {{ formatCurrency(paymentsStore.paidPayments.reduce((s, p) => s + p.amount, 0)) }}
+                {{ formatCurrency(scopedPaidPayments.reduce((s, p) => s + p.amount, 0)) }}
               </div>
             </div>
             <div class="an-hint mb-3">
@@ -1045,19 +1201,19 @@ function bdColor(name?: string) {
               <div class="forecast-summary-item">
                 <div class="forecast-summary-label">Всего ожидается</div>
                 <div class="forecast-summary-value" style="color: #047857;">
-                  {{ formatCurrency(paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0)) }}
+                  {{ formatCurrency(scopedPendingPayments.reduce((s, p) => s + p.amount, 0)) }}
                 </div>
               </div>
               <div class="forecast-summary-item">
                 <div class="forecast-summary-label">Платежей</div>
                 <div class="forecast-summary-value" style="color: #f59e0b;">
-                  {{ paymentsStore.pendingPayments.length }}
+                  {{ scopedPendingPayments.length }}
                 </div>
               </div>
               <div class="forecast-summary-item">
                 <div class="forecast-summary-label">Средний платёж</div>
                 <div class="forecast-summary-value" style="color: #8b5cf6;">
-                  {{ formatCurrency(paymentsStore.pendingPayments.length > 0 ? paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0) / paymentsStore.pendingPayments.length : 0) }}
+                  {{ formatCurrency(scopedPendingPayments.length > 0 ? scopedPendingPayments.reduce((s, p) => s + p.amount, 0) / scopedPendingPayments.length : 0) }}
                 </div>
               </div>
             </div>
@@ -1087,22 +1243,22 @@ function bdColor(name?: string) {
                 <div class="status-legend-item">
                   <div class="status-dot" style="background: #047857;" />
                   <span>Активные</span>
-                  <span class="status-legend-count">{{ dealsStore.activeDeals.length }}</span>
+                  <span class="status-legend-count">{{ scopedActiveDeals.length }}</span>
                 </div>
                 <div class="status-legend-item">
                   <div class="status-dot" style="background: #3b82f6;" />
                   <span>Завершённые</span>
-                  <span class="status-legend-count">{{ dealsStore.completedDeals.length }}</span>
+                  <span class="status-legend-count">{{ scopedCompletedDeals.length }}</span>
                 </div>
                 <div class="status-legend-item">
                   <div class="status-dot" style="background: #f59e0b;" />
                   <span>Спорные</span>
-                  <span class="status-legend-count">{{ dealsStore.deals.filter(d => d.status === 'DISPUTED').length }}</span>
+                  <span class="status-legend-count">{{ scopedAllDeals.filter(d => d.status === 'DISPUTED').length }}</span>
                 </div>
                 <div class="status-legend-item">
                   <div class="status-dot" style="background: #ef4444;" />
                   <span>Отменённые</span>
-                  <span class="status-legend-count">{{ dealsStore.deals.filter(d => d.status === 'CANCELLED').length }}</span>
+                  <span class="status-legend-count">{{ scopedAllDeals.filter(d => d.status === 'CANCELLED').length }}</span>
                 </div>
               </div>
             </div>
@@ -1118,23 +1274,23 @@ function bdColor(name?: string) {
                 <div class="payment-summary-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
                   <v-icon icon="mdi-check-circle" size="22" />
                 </div>
-                <div class="payment-summary-value">{{ paymentsStore.paidPayments.length }}</div>
+                <div class="payment-summary-value">{{ scopedPaidPayments.length }}</div>
                 <div class="payment-summary-label">Оплаченных</div>
-                <div class="payment-summary-amount" style="color: #047857;">{{ formatCurrencyShort(paymentsStore.paidPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+                <div class="payment-summary-amount" style="color: #047857;">{{ formatCurrencyShort(scopedPaidPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
               </div>
               <div class="payment-summary-card">
                 <div class="payment-summary-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
                   <v-icon icon="mdi-clock-outline" size="22" />
                 </div>
-                <div class="payment-summary-value">{{ paymentsStore.pendingPayments.length }}</div>
+                <div class="payment-summary-value">{{ scopedPendingPayments.length }}</div>
                 <div class="payment-summary-label">Ожидаемых</div>
-                <div class="payment-summary-amount" style="color: #3b82f6;">{{ formatCurrencyShort(paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+                <div class="payment-summary-amount" style="color: #3b82f6;">{{ formatCurrencyShort(scopedPendingPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
               </div>
               <div class="payment-summary-card">
                 <div class="payment-summary-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
                   <v-icon icon="mdi-alert-circle" size="22" />
                 </div>
-                <div class="payment-summary-value">{{ paymentsStore.overduePayments.length }}</div>
+                <div class="payment-summary-value">{{ scopedOverduePayments.length }}</div>
                 <div class="payment-summary-label">Просроченных</div>
                 <div class="payment-summary-amount" style="color: #ef4444;">{{ formatCurrencyShort(overdueAmount) }}</div>
               </div>
@@ -1147,7 +1303,7 @@ function bdColor(name?: string) {
     </template>
 
     <!-- Profit Detail Dialog -->
-    <v-dialog v-model="profitDetailDialog" max-width="680" scrollable>
+    <v-dialog v-model="profitDetailDialog" max-width="680" scrollable :fullscreen="isMobile">
       <v-card rounded="lg">
         <div class="pa-5">
           <div class="d-flex align-center justify-space-between mb-2">
@@ -1231,7 +1387,7 @@ function bdColor(name?: string) {
     </v-dialog>
 
     <!-- Metric Breakdown Dialog -->
-    <v-dialog v-model="breakdownOpen" max-width="580" scrollable>
+    <v-dialog v-model="breakdownOpen" max-width="580" scrollable :fullscreen="isMobile">
       <v-card rounded="xl" class="bd-dialog">
         <!-- Header -->
         <div class="bd-header">
@@ -1258,7 +1414,7 @@ function bdColor(name?: string) {
         </div>
 
         <!-- Deals list -->
-        <div class="bd-list" style="max-height: 400px; overflow-y: auto;">
+        <div class="bd-list bd-list--scroll">
           <div v-if="!breakdownDeals.length" class="bd-empty">
             <v-icon icon="mdi-package-variant-closed" size="36" color="grey-lighten-1" />
             <div>Нет данных</div>
@@ -1949,6 +2105,7 @@ function bdColor(name?: string) {
 .bd-total-value { font-size: 26px; font-weight: 800; }
 .bd-total-label { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.4); }
 .bd-list { padding: 8px 12px 12px; }
+.bd-list--scroll { max-height: 400px; overflow-y: auto; }
 .bd-empty {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   padding: 32px; color: rgba(var(--v-theme-on-surface), 0.3); font-size: 13px;
@@ -1981,5 +2138,192 @@ function bdColor(name?: string) {
 .bd-value { font-size: 14px; font-weight: 700; }
 .bd-share { font-size: 10px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.3); margin-top: 1px; }
 
+/* Cashbox scope chips */
+.cb-scope {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.cb-scope-label {
+  font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  text-transform: uppercase; letter-spacing: 0.4px;
+  flex-shrink: 0;
+}
+.cb-scope-chips {
+  display: flex; gap: 6px; flex-wrap: wrap; flex: 1;
+}
+.cb-scope-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 30px; padding: 0 12px; border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  border: 1px solid transparent;
+  font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  cursor: pointer; transition: all 0.15s;
+  white-space: nowrap;
+}
+.cb-scope-chip:hover {
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  border-color: var(--cb-color, rgba(var(--v-theme-on-surface), 0.15));
+  color: var(--cb-color, inherit);
+}
+.cb-scope-chip--active {
+  background: rgb(var(--v-theme-primary));
+  color: #fff;
+  border-color: rgb(var(--v-theme-primary));
+}
+.cb-scope-chip--active:hover {
+  background: rgb(var(--v-theme-primary));
+  color: #fff;
+}
+.cb-scope-open {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 30px; padding: 0 12px; border-radius: 8px;
+  background: transparent;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.18);
+  font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  cursor: pointer; transition: all 0.15s;
+  white-space: nowrap;
+  margin-left: auto;
+}
+.cb-scope-open:hover {
+  border-color: #047857;
+  color: #047857;
+}
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .cb-scope {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .cb-scope-open {
+    margin-left: auto;
+    order: 1;
+  }
+  .cb-scope-chips {
+    order: 99;
+    flex-basis: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .cb-scope-chips::-webkit-scrollbar { display: none; }
+  .cb-scope-chip { flex-shrink: 0; }
+
+  .kpi-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .kpi-card {
+    padding: 12px;
+    gap: 10px;
+  }
+  .kpi-icon-wrap {
+    width: 36px; height: 36px; min-width: 36px;
+    border-radius: 9px;
+  }
+  .kpi-value { font-size: 15px; }
+  .kpi-label { font-size: 11px; white-space: normal; }
+
+  .chart-title { font-size: 15px; }
+  .chart-subtitle { font-size: 12px; }
+  .chart-total { font-size: 17px; }
+
+  .payment-summary-grid {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .payment-summary-card {
+    flex: 1 1 calc(50% - 5px);
+    padding: 12px 8px;
+    min-width: 0;
+  }
+  .payment-summary-icon { width: 36px; height: 36px; margin-bottom: 6px; }
+  .payment-summary-value { font-size: 18px; }
+  .payment-summary-label { font-size: 11px; }
+  .payment-summary-amount { font-size: 12px; }
+
+  .forecast-summary {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .yc-header {
+    padding: 16px 14px 14px;
+    gap: 12px;
+  }
+  .yc-header-year { font-size: 22px; }
+  .yc-header-stats { gap: 12px; }
+  .yc-stat-value { font-size: 15px; }
+  .yc-stat-label { font-size: 10px; }
+  .yc-stat-divider { height: 22px; }
+  .yc-month { padding: 10px 12px; }
+  .yc-month-name { font-size: 12px; margin-bottom: 8px; }
+  .yc-val { font-size: 11px; }
+  .yc-footer {
+    padding: 10px 14px 14px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .yc-legend-hint { display: none; }
+
+  .an-formula {
+    padding: 14px;
+    gap: 12px;
+  }
+  .an-formula-icon { width: 36px; height: 36px; min-width: 36px; }
+  .an-formula-title { font-size: 13px; }
+  .an-formula-text { font-size: 12px; line-height: 1.5; }
+
+  .an-section-title {
+    font-size: 12px;
+    margin-bottom: 10px;
+  }
+
+  .bd-dialog {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    border-radius: 0;
+  }
+  .bd-header { flex-shrink: 0; }
+  .bd-total-hero {
+    padding: 14px 16px;
+    margin: 0 12px;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .bd-total-value { font-size: 22px; }
+  .bd-list { padding: 8px; }
+  .bd-list--scroll {
+    max-height: none;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .bd-row { padding: 10px 8px; gap: 10px; }
+  .bd-avatar { width: 34px; height: 34px; min-width: 34px; }
+
+  .pd-summary { flex-wrap: wrap; gap: 12px; }
+  .pd-period-row { gap: 4px; }
+  .pd-period-btn { padding: 6px 10px; font-size: 12px; }
+
+  .an-charts-overlay-content { padding: 24px 18px; }
+  .an-charts-overlay-features { grid-template-columns: 1fr; }
+  .an-charts-overlay-title { font-size: 16px; }
+  .an-charts-overlay-text { font-size: 12px; }
+}
+
+@media (max-width: 480px) {
+  .kpi-row { grid-template-columns: 1fr; }
+  .payment-summary-card { flex: 1 1 100%; }
+}
 
 </style>

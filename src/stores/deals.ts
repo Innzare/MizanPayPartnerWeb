@@ -162,6 +162,7 @@ export const useDealsStore = defineStore('deals', () => {
     firstPaymentDate?: string
     wholesalePrice?: number
     profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
+    cashBoxId?: string
   }) {
     isLoading.value = true
     error.value = null

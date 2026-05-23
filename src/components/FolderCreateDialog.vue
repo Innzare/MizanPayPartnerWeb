@@ -3,6 +3,7 @@
     :model-value="modelValue"
     @update:model-value="(v) => emit('update:modelValue', v)"
     max-width="420"
+    :fullscreen="isMobile"
   >
     <v-card rounded="xl" class="fcd">
       <div class="fcd-header">
@@ -71,6 +72,7 @@
 import { reactive, ref, watch, nextTick } from 'vue'
 import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import type { DealFolder } from '@/types'
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -81,6 +83,7 @@ const emit = defineEmits<{
 
 const { createFolder } = useFolders()
 const { show: showToast } = useToast()
+const { isMobile } = useIsMobile()
 
 const FOLDER_COLORS = ['#6366f1', '#3b82f6', '#0ea5e9', '#10b981', '#047857', '#f59e0b', '#ef4444', '#ec4899', '#8b5cf6', '#64748b']
 

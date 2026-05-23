@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { usePaymentsStore } from '@/stores/payments'
 import { useDealsStore } from '@/stores/deals'
-import { formatCurrency, formatDate, formatDateShort, formatPercent, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
@@ -9,24 +9,36 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
 import { useFolders } from '@/composables/useFolders'
-import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useCashBoxesStore } from '@/stores/cashboxes'
+import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 import SendRemindersDialog from '@/components/SendRemindersDialog.vue'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
+
+// Reactive mobile detection — used to make dialogs fullscreen on phones.
+// Listens for viewport resize, keeps the flag in sync with media-query.
+const isMobile = ref(false)
+function updateMobile() { isMobile.value = window.innerWidth < 768 }
+onMounted(() => {
+  updateMobile()
+  window.addEventListener('resize', updateMobile)
+})
+onUnmounted(() => window.removeEventListener('resize', updateMobile))
 const toast = useToast()
 const subscription = useSubscription()
 const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
 const { folders, fetchFolders } = useFolders()
 const filterFolder = ref<string | null>(null)
-const { coInvestors: ciList, fetchCoInvestors } = useCoInvestors()
-fetchCoInvestors()
-const filterCoInvestor = ref<string | null>(null)
-const filterCoInvestorObj = computed(() =>
-  filterCoInvestor.value ? ciList.value.find((c) => c.id === filterCoInvestor.value) ?? null : null,
+const cashBoxesStore = useCashBoxesStore()
+const { items: cashBoxes } = storeToRefs(cashBoxesStore)
+cashBoxesStore.fetchAll()
+const filterCashBoxId = ref<string | null>(null)
+const filterCashBoxObj = computed(() =>
+  filterCashBoxId.value ? cashBoxes.value.find((b) => b.id === filterCashBoxId.value) ?? null : null,
 )
 
 // Staff assignee filter (partner-only)
@@ -434,6 +446,13 @@ const selectedDealPayments = computed(() => {
   return paymentsStore.getPaymentsForDeal(selectedDeal.value.id)
 })
 
+const selectedDealPhone = computed<string | null>(() => {
+  const d = selectedDeal.value
+  if (!d) return null
+  const raw = d.clientProfile?.phone || d.client?.phone || d.externalClientPhone
+  return raw ? formatPhone(raw) : null
+})
+
 const selectedDealPaidTotal = computed(() =>
   selectedDealPayments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
 )
@@ -471,11 +490,11 @@ const displayedPayments = computed(() => {
     })
   }
 
-  // Co-investor filter
-  if (filterCoInvestor.value) {
+  // Cashbox filter
+  if (filterCashBoxId.value) {
     payments = payments.filter(p => {
       const deal = getDealForPayment(p)
-      return deal?.coInvestors?.some(link => link.coInvestor.id === filterCoInvestor.value)
+      return deal?.cashBoxId === filterCashBoxId.value
     })
   }
 
@@ -542,6 +561,14 @@ function getClientName(payment: Payment) {
   if (deal.client) return userName(deal.client)
   if (deal.clientProfile) return clientProfileName(deal.clientProfile)
   return deal.externalClientName || '—'
+}
+
+function getClientPhone(payment: Payment): string | null {
+  const deal = getDealForPayment(payment)
+  if (!deal) return null
+  // Mirror backend priority: ClientProfile → User → external phone.
+  const raw = deal.clientProfile?.phone || deal.client?.phone || deal.externalClientPhone
+  return raw ? formatPhone(raw) : null
 }
 
 function daysUntil(dateStr: string) {
@@ -691,7 +718,7 @@ const rescheduleReasonOptions = [
     </div>
 
     <!-- View mode toggle -->
-    <div class="d-flex ga-2 mb-4 align-center">
+    <div class="d-flex ga-2 mb-4 align-center flex-wrap">
       <v-tooltip v-if="!subscription.canAccess('whatsapp')" text="Доступно с плана Премиум" location="bottom">
         <template #activator="{ props: tip }">
           <button
@@ -711,37 +738,43 @@ const rescheduleReasonOptions = [
         {{ sendingBulk ? 'Рассылка...' : 'Напомнить всем' }}
       </button>
       <v-spacer />
-      <!-- Co-investor filter -->
-      <v-menu v-if="ciList.length > 0" :close-on-content-click="true">
+      <!-- Filter group (cashbox + staff + folder).
+           Display: contents — на десктопе обёртка прозрачна, ничего не
+           ломает. На мобиле получает flex: 100% и переезжает на следующую
+           строку (см. CSS). -->
+      <div class="toolbar-filters">
+      <!-- Cashbox filter -->
+      <v-menu v-if="cashBoxes.length > 1" :close-on-content-click="true">
         <template #activator="{ props: cp }">
-          <button v-bind="cp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterCoInvestor }">
-            <v-icon icon="mdi-account-group-outline" size="15" />
-            <template v-if="filterCoInvestorObj">
-              {{ filterCoInvestorObj.name }}
+          <button v-bind="cp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterCashBoxId }">
+            <v-icon icon="mdi-wallet-outline" size="15" />
+            <template v-if="filterCashBoxObj">
+              {{ filterCashBoxObj.name }}
             </template>
-            <template v-else>Со-инвестор</template>
+            <template v-else>Касса</template>
             <v-icon icon="mdi-chevron-down" size="13" style="opacity: 0.4;" />
           </button>
         </template>
         <v-card rounded="lg" elevation="4" class="pf-folder-menu">
           <div class="pf-folder-header">
-            <span>Со-инвесторы</span>
+            <span>Кассы</span>
           </div>
           <div class="pf-folder-body">
-            <button class="pf-folder-item" :class="{ 'pf-folder-item--active': !filterCoInvestor }" @click="filterCoInvestor = null">
+            <button class="pf-folder-item" :class="{ 'pf-folder-item--active': !filterCashBoxId }" @click="filterCashBoxId = null">
               <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
               <span class="pf-folder-item-name">Все платежи</span>
             </button>
             <div class="pf-folder-divider" />
             <button
-              v-for="ci in ciList"
-              :key="ci.id"
+              v-for="b in cashBoxes"
+              :key="b.id"
               class="pf-folder-item"
-              :class="{ 'pf-folder-item--active': filterCoInvestor === ci.id }"
-              @click="filterCoInvestor = filterCoInvestor === ci.id ? null : ci.id"
+              :class="{ 'pf-folder-item--active': filterCashBoxId === b.id }"
+              @click="filterCashBoxId = filterCashBoxId === b.id ? null : b.id"
             >
-              <v-icon icon="mdi-account-outline" size="14" style="color: rgba(var(--v-theme-on-surface), 0.45);" />
-              <span class="pf-folder-item-name">{{ ci.name }}</span>
+              <v-icon icon="mdi-wallet-outline" size="14" :style="{ color: b.color }" />
+              <span class="pf-folder-item-name">{{ b.name }}</span>
+              <span v-if="b.isDefault" class="pf-folder-item-meta">осн.</span>
             </button>
           </div>
         </v-card>
@@ -822,6 +855,7 @@ const rescheduleReasonOptions = [
           </div>
         </v-card>
       </v-menu>
+      </div><!-- /toolbar-filters -->
       <div class="view-toggle">
         <button class="view-toggle-btn" :class="{ active: viewMode === 'table' }" @click="viewMode = 'table'">
           <v-icon icon="mdi-table" size="16" />
@@ -1269,8 +1303,8 @@ const rescheduleReasonOptions = [
           </button>
         </div>
 
-        <!-- Table -->
-        <v-table v-if="displayedPayments.length" density="comfortable" hover class="payments-table">
+        <!-- Table (desktop) -->
+        <v-table v-if="displayedPayments.length" density="comfortable" hover class="payments-table payments-table--desktop">
           <thead>
             <tr>
               <th class="th-index">№</th>
@@ -1304,9 +1338,12 @@ const rescheduleReasonOptions = [
               <td>
                 <span class="font-weight-medium">{{ getDealName(p) }}</span>
               </td>
-              <td class="text-medium-emphasis">
-                {{ getClientName(p) }}
-                <span v-if="!getDealForPayment(p)?.client && !getDealForPayment(p)?.clientProfile?.userId" class="external-badge">Внешний</span>
+              <td>
+                <div class="client-name">
+                  {{ getClientName(p) }}
+                  <span v-if="!getDealForPayment(p)?.client && !getDealForPayment(p)?.clientProfile?.userId" class="external-badge">Внешний</span>
+                </div>
+                <div v-if="getClientPhone(p)" class="client-phone">{{ getClientPhone(p) }}</div>
               </td>
               <td class="text-right text-no-wrap">
                 <span class="font-weight-bold">{{ formatCurrency(p.amount) }}</span>
@@ -1366,7 +1403,84 @@ const rescheduleReasonOptions = [
           </tbody>
         </v-table>
 
-        <div v-else class="text-center pa-12">
+        <!-- Mobile card view (shown only on <768px via CSS) -->
+        <div v-if="displayedPayments.length" class="payments-cards">
+          <div
+            v-for="(p, idx) in displayedPayments"
+            :key="p.id"
+            class="pay-card"
+            :class="{ 'pay-card--overdue': p.status === 'OVERDUE' }"
+            @click="openDealFromPayment(p)"
+          >
+            <div class="pay-card-head">
+              <div class="pay-card-num">#{{ idx + 1 }}</div>
+              <div
+                class="payment-status-chip"
+                :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
+              >
+                {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+              </div>
+            </div>
+            <div class="pay-card-deal">{{ getDealName(p) }}</div>
+            <div class="pay-card-client">
+              <span>{{ getClientName(p) }}</span>
+              <span v-if="!getDealForPayment(p)?.client && !getDealForPayment(p)?.clientProfile?.userId" class="external-badge">Внешний</span>
+            </div>
+            <div v-if="getClientPhone(p)" class="pay-card-phone">{{ getClientPhone(p) }}</div>
+
+            <div class="pay-card-row">
+              <div class="pay-card-amount">
+                <span class="pay-card-amount-value">{{ formatCurrency(p.amount) }}</span>
+                <span class="pay-card-amount-of">{{ p.number }} из {{ getDealForPayment(p)?.numberOfPayments || '?' }}</span>
+              </div>
+              <div class="pay-card-date">
+                <div>{{ formatDateShort(p.dueDate) }}</div>
+                <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+                  <v-icon icon="mdi-calendar-arrow-right" size="11" />
+                  <span>с {{ formatDateShort(p.rescheduledFrom) }}</span>
+                </div>
+                <div
+                  v-if="p.status !== 'PAID'"
+                  class="pay-card-due"
+                  :class="{ 'pay-card-due--overdue': p.status === 'OVERDUE' || (p.status === 'PENDING' && new Date(p.dueDate) < new Date()) }"
+                >
+                  {{ daysUntil(p.dueDate) }}
+                </div>
+              </div>
+            </div>
+
+            <div class="pay-card-actions" @click.stop>
+              <button
+                v-if="p.status === 'PENDING' || p.status === 'OVERDUE'"
+                class="action-btn action-btn--success"
+                @click="handleMarkPaid($event, p)"
+              >
+                <v-icon icon="mdi-check" size="16" />
+                Отметить оплачено
+              </button>
+              <button
+                v-if="p.status === 'PENDING' || p.status === 'OVERDUE'"
+                class="action-btn action-btn--warning"
+                @click="openReschedule($event, p)"
+              >
+                <v-icon icon="mdi-calendar-arrow-right" size="16" />
+                Перенести
+              </button>
+              <button
+                v-if="p.status === 'PAID'"
+                class="action-btn action-btn--danger"
+                :disabled="unpaidLoading === p.id"
+                @click="handleUnmarkPaid($event, p)"
+              >
+                <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                <v-icon v-else icon="mdi-undo" size="16" />
+                Отменить оплату
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="!displayedPayments.length" class="text-center pa-12">
           <v-icon icon="mdi-cash-multiple" size="56" color="grey-lighten-1" class="mb-3" />
           <p class="text-body-1 font-weight-medium text-medium-emphasis mb-1">Нет платежей</p>
           <p class="text-body-2 text-medium-emphasis">
@@ -1379,7 +1493,7 @@ const rescheduleReasonOptions = [
     <!-- /TABLE VIEW -->
 
     <!-- Deal Detail Dialog -->
-    <v-dialog v-model="showDealDialog" max-width="680" scrollable>
+    <v-dialog v-model="showDealDialog" max-width="680" scrollable :fullscreen="isMobile">
       <v-card v-if="selectedDeal" rounded="lg">
         <div class="dialog-hero">
           <button class="dialog-close" @click="showDealDialog = false">
@@ -1404,6 +1518,11 @@ const rescheduleReasonOptions = [
             <div class="dialog-hero-meta">
               <v-icon icon="mdi-account" size="14" />
               {{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '—' }}
+              <template v-if="selectedDealPhone">
+                <span class="mx-1">·</span>
+                <v-icon icon="mdi-phone-outline" size="13" />
+                {{ selectedDealPhone }}
+              </template>
               <span class="mx-1">·</span>
               Создано {{ formatDate(selectedDeal.createdAt) }}
             </div>
@@ -1487,7 +1606,7 @@ const rescheduleReasonOptions = [
 
     <!-- Reschedule Dialog -->
     <!-- Mark Paid Dialog -->
-    <v-dialog v-model="markPaidDialog" max-width="420">
+    <v-dialog v-model="markPaidDialog" max-width="420" :fullscreen="isMobile">
       <v-card rounded="lg" class="pa-6">
         <div class="text-h6 font-weight-bold mb-1">Отметить оплату</div>
         <div class="text-caption text-medium-emphasis mb-4">Подтвердите получение платежа</div>
@@ -1540,7 +1659,7 @@ const rescheduleReasonOptions = [
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="rescheduleDialog" max-width="440">
+    <v-dialog v-model="rescheduleDialog" max-width="440" :fullscreen="isMobile">
       <v-card v-if="reschedulePaymentRef" rounded="lg">
         <div class="pa-5">
           <div class="d-flex align-center justify-space-between mb-4">
@@ -1630,7 +1749,8 @@ const rescheduleReasonOptions = [
   gap: 12px;
 }
 @media (max-width: 1024px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 600px) { .stats-row { grid-template-columns: 1fr; } }
+/* На мобиле 2×2 вместо одного столбца — компактнее, не растягивает экран. */
+@media (max-width: 600px) { .stats-row { grid-template-columns: repeat(2, 1fr); gap: 8px; } }
 
 .stat-card {
   display: flex; align-items: center; gap: 12px;
@@ -1689,7 +1809,13 @@ const rescheduleReasonOptions = [
 }
 
 /* Table */
-.payments-table :deep(td) { font-size: 14px; }
+.payments-table :deep(td) {
+  font-size: 14px;
+  /* Двухстрочные клетки (имя клиента + телефон) — без vertical padding
+     ряд выглядит сдавленным. Поднимаем минимальную высоту строки. */
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+}
 .payments-table :deep(th) {
   font-size: 12px !important; text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -2671,4 +2797,170 @@ const rescheduleReasonOptions = [
 .dark .month-menu-year { border-color: rgba(255,255,255,0.06); }
 .dark .month-menu-year-btn { background: rgba(255,255,255,0.06); }
 .dark .month-menu-footer { border-color: rgba(255,255,255,0.06); }
+
+.client-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+}
+.client-phone {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 2px;
+}
+
+/* Filter group wrapper: prozhrachen на десктопе, отдельная строка на мобиле. */
+.toolbar-filters {
+  display: contents;
+}
+
+/* ───── Mobile cards (alternative to the wide desktop table) ───── */
+.payments-cards { display: none; }
+
+@media (max-width: 767px) {
+  /* Скрываем большую таблицу, показываем карточки. */
+  .payments-table--desktop { display: none !important; }
+  .payments-cards { display: flex; flex-direction: column; gap: 10px; }
+
+  /* Фильтры (Касса/Сотрудник/Папки) — отдельной строкой под кнопкой
+     «Напомнить всем» + переключателем «Таблица/Календарь». */
+  .toolbar-filters {
+    display: flex;
+    flex: 1 1 100%;
+    gap: 6px;
+    flex-wrap: wrap;
+    order: 99;
+  }
+  /* v-spacer теряет смысл на мобиле — прячем чтобы не давал лишний gap. */
+  .d-flex.ga-2.mb-4.align-center.flex-wrap > .v-spacer {
+    display: none;
+  }
+  /* Переключатель режима прижимаем направо в первой строке. */
+  .view-toggle {
+    margin-left: auto;
+  }
+
+  /* Вкладки «Текущие/Ожидаемые/...» — горизонтальный скролл ТОЛЬКО
+     внутри своего контейнера. Фильтр месяца и поиск переносятся на
+     следующую строку (flex-wrap parent остаётся как есть). */
+  .pa-4 > .d-flex.flex-wrap.ga-2.align-center > .d-flex.ga-2 {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    /* На полную ширину чтобы вкладки заняли свою строку и не делили её
+       с фильтром месяца / поиском. */
+    flex: 1 1 100%;
+    min-width: 0;
+    padding-bottom: 2px;
+  }
+  .pa-4 > .d-flex.flex-wrap.ga-2.align-center > .d-flex.ga-2::-webkit-scrollbar {
+    display: none;
+  }
+  .tab-btn {
+    flex-shrink: 0;
+  }
+  /* Поиск и фильтр месяца — на всю ширину следующей строкой. */
+  .filter-input-wrap {
+    flex: 1 1 100%;
+    max-width: 100% !important;
+  }
+
+  /* Stat-карточки в шапке — текст чуть мельче чтобы 2-col не ломались. */
+  .stat-card { padding: 12px; }
+  .stat-value { font-size: 16px; }
+  .stat-label { font-size: 11px; }
+  .stat-icon { width: 32px; height: 32px; }
+}
+
+.pay-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 12px;
+  background: rgb(var(--v-theme-surface));
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.pay-card:hover {
+  border-color: rgba(var(--v-theme-primary), 0.25);
+}
+.pay-card--overdue {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.02);
+}
+.pay-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.pay-card-num {
+  font-size: 11px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.pay-card-deal {
+  font-size: 15px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  line-height: 1.3;
+}
+.pay-card-client {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.pay-card-phone {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.pay-card-row {
+  display: flex; justify-content: space-between; align-items: flex-end;
+  gap: 12px; margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.pay-card-amount-value {
+  font-size: 17px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.95);
+  display: block;
+}
+.pay-card-amount-of {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 2px;
+}
+.pay-card-date {
+  text-align: right;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.pay-card-due {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 3px;
+}
+.pay-card-due--overdue {
+  color: #ef4444;
+  font-weight: 600;
+}
+.pay-card-actions {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  margin-top: 6px;
+}
+.pay-card-actions .action-btn {
+  flex: 1 1 auto;
+  width: auto;
+  height: 38px;
+  padding: 0 12px;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Action-кнопки в десктоп-таблице (если виден) — увеличим минимальный
+   размер до 36 на мобиле (на случай если таблица всё-таки видна). */
+@media (max-width: 767px) {
+  .action-btn {
+    min-width: 36px;
+    min-height: 36px;
+  }
+}
 </style>

@@ -5,12 +5,14 @@ import { CITIES } from '@/constants/cities'
 
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useSubscription } from '@/composables/useSubscription'
 import { api } from '@/api/client'
 import QRCode from 'qrcode'
 
 const { isDark } = useIsDark()
 const toast = useToast()
+const { isMobile } = useIsMobile()
 const authStore = useAuthStore()
 const { canAccess: canAccessFeature, plan: currentPlan, isFree } = useSubscription()
 const settingsPlanLabels: Record<string, string> = { PRO: 'Стандарт', BUSINESS: 'Бизнес', PREMIUM: 'Премиум' }
@@ -1599,7 +1601,7 @@ const plans = [
       </div>
 
       <!-- Subscription request dialog -->
-      <v-dialog v-model="showContactDialog" max-width="480">
+      <v-dialog v-model="showContactDialog" max-width="480" :fullscreen="isMobile">
         <div class="sub-dialog" :class="{ dark: isDark }">
           <button class="sub-dialog-close" @click="showContactDialog = false">
             <v-icon icon="mdi-close" size="20" />
@@ -3142,4 +3144,61 @@ const plans = [
 .dark .sub-dialog-saving { background: rgba(4,120,87,0.1); border-color: rgba(4,120,87,0.2); }
 .dark .sub-dialog-textarea { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
 .dark .sub-dialog-textarea:focus { border-color: #047857; }
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .page-header { margin-bottom: 14px; }
+  .page-icon-wrap { width: 38px; height: 38px; min-width: 38px; border-radius: 10px; }
+  .page-title { font-size: 16px; }
+  .page-subtitle { font-size: 12px; }
+
+  .settings-tabs {
+    margin-bottom: 16px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .settings-tabs::-webkit-scrollbar { display: none; }
+  .settings-tab { flex-shrink: 0; }
+
+  .section-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+  }
+  .section-header-left { font-size: 13px; }
+
+  .stats-grid { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stat-item { padding: 10px 6px; }
+  .stat-value { font-size: 17px; }
+  .stat-label { font-size: 10px; }
+
+  .profile-card-visual { padding: 22px 14px 18px; }
+  .profile-avatar { width: 64px; height: 64px; font-size: 22px; }
+  .profile-card-name { font-size: 16px; }
+
+  .wa-disc-bubble, .wa-preview-bubble { max-width: 100%; }
+
+  .current-plan-banner {
+    flex-wrap: wrap;
+    padding: 12px 14px;
+    gap: 10px;
+  }
+  .current-plan-right { text-align: left; }
+
+  .billing-toggle-wrap {
+    display: flex;
+    width: 100%;
+  }
+  .billing-toggle-btn { flex: 1; justify-content: center; padding: 10px 12px; }
+
+  .sub-dialog { border-radius: 0; }
+  .sub-dialog-contacts { flex-wrap: wrap; }
+}
+
+@media (max-width: 480px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
 </style>

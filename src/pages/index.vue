@@ -12,10 +12,12 @@ import { useToast } from '@/composables/useToast'
 import HeroSummary from '@/components/HeroSummary.vue'
 import SendRemindersDialog from '@/components/SendRemindersDialog.vue'
 import { useCapital } from '@/composables/useCapital'
+import { useIsMobile } from '@/composables/useIsMobile'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+const { isMobile } = useIsMobile()
 const { capital, isCapitalSet, fetchCapital } = useCapital()
 
 
@@ -160,7 +162,7 @@ function getAvatarColor(name?: string) {
 
     <template v-else>
     <!-- Capital banner -->
-    <div v-if="!isCapitalSet" class="dash-capital-banner mb-4" @click="router.push('/finance')">
+    <div v-if="!isCapitalSet" class="dash-capital-banner mb-4" @click="router.push('/cashboxes')">
       <div class="dash-capital-banner-icon">
         <v-icon icon="mdi-wallet-outline" size="20" />
       </div>
@@ -265,7 +267,7 @@ function getAvatarColor(name?: string) {
         </div>
       </div>
 
-      <div v-if="isCapitalSet && capital" class="kpi-card kpi-clickable" @click="router.push('/finance')">
+      <div v-if="isCapitalSet && capital" class="kpi-card kpi-clickable" @click="router.push('/cashboxes')">
         <div class="kpi-icon-wrap" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
           <v-icon icon="mdi-wallet-outline" size="20" />
         </div>
@@ -383,8 +385,8 @@ function getAvatarColor(name?: string) {
     </template>
 
     <!-- Metric Breakdown Dialog -->
-    <v-dialog v-model="breakdownOpen" max-width="560" scrollable>
-      <v-card rounded="lg">
+    <v-dialog v-model="breakdownOpen" max-width="560" scrollable :fullscreen="isMobile">
+      <v-card rounded="lg" class="breakdown-card">
         <v-card-title class="d-flex align-center justify-space-between pa-5 pb-3">
           <span class="text-h6">{{ breakdownTitle }}</span>
           <v-btn icon variant="text" size="small" @click="breakdownOpen = false">
@@ -394,7 +396,7 @@ function getAvatarColor(name?: string) {
 
         <v-divider />
 
-        <v-card-text class="pa-0" style="max-height: 400px;">
+        <v-card-text class="pa-0 breakdown-body">
           <div v-if="!breakdownDeals.length" class="pa-8 text-center text-medium-emphasis">
             Нет данных
           </div>
@@ -808,6 +810,10 @@ function getAvatarColor(name?: string) {
   justify-content: space-between;
   padding: 16px 20px;
 }
+.breakdown-body {
+  max-height: 400px;
+  overflow-y: auto;
+}
 
 /* Dark mode */
 
@@ -864,5 +870,43 @@ function getAvatarColor(name?: string) {
 .dark .dash-capital-banner {
   background: linear-gradient(135deg, rgba(124, 58, 237, 0.1) 0%, rgba(124, 58, 237, 0.04) 100%);
   border-color: rgba(124, 58, 237, 0.2);
+}
+
+/* ───── Mobile ───── */
+@media (max-width: 599px) {
+  /* KPI карточки — по две в ряд (5 карточек → 2-2-1). */
+  .kpi-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .kpi-card { padding: 12px; gap: 10px; }
+  .kpi-icon-wrap {
+    width: 36px; height: 36px; min-width: 36px;
+    border-radius: 9px;
+  }
+  .kpi-value { font-size: 16px; }
+  .kpi-label { font-size: 11px; white-space: normal; }
+
+  /* Banner про капитал — компактнее. */
+  .dash-capital-banner {
+    padding: 12px 14px;
+    gap: 10px;
+  }
+}
+
+/* ───── Mobile: breakdown dialog full-height ───── */
+@media (max-width: 768px) {
+  .breakdown-card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    border-radius: 0;
+  }
+  .breakdown-body {
+    max-height: none !important;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .breakdown-footer { flex-shrink: 0; }
 }
 </style>

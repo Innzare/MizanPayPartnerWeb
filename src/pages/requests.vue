@@ -6,9 +6,11 @@ import { CITIES } from '@/constants/cities'
 import { type Request, userName } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 
 const { isDark } = useIsDark()
 const toast = useToast()
+const { isMobile } = useIsMobile()
 const requestsStore = useRequestsStore()
 
 const pageLoading = ref(true)
@@ -591,7 +593,7 @@ const investorTimelineSteps = computed(() => {
     </v-card>
 
     <!-- Detail Dialog -->
-    <v-dialog v-model="detailDialog" max-width="600">
+    <v-dialog v-model="detailDialog" max-width="600" :fullscreen="isMobile">
       <v-card v-if="selectedRequest" rounded="lg">
         <v-img v-if="selectedRequest.photos?.length" :src="selectedRequest.photos[0]" height="200" cover />
         <div v-else class="d-flex align-center justify-center" style="height: 200px; background: rgba(var(--v-theme-on-surface), 0.06)">
@@ -738,7 +740,7 @@ const investorTimelineSteps = computed(() => {
     </v-dialog>
 
     <!-- Offer Tiers Wizard Dialog -->
-    <v-dialog v-model="acceptDialog" max-width="640" persistent>
+    <v-dialog v-model="acceptDialog" max-width="640" persistent :fullscreen="isMobile">
       <v-card v-if="selectedRequest" rounded="lg">
         <!-- Header -->
         <div class="pa-4 pb-0">
@@ -1537,5 +1539,33 @@ const investorTimelineSteps = computed(() => {
 .dark .req-tab-btn.active {
   background: rgba(4, 120, 87, 0.12);
   border-color: rgba(4, 120, 87, 0.25);
+}
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .filter-input-wrap {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 1 100%;
+  }
+  .filter-select {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 1 calc(50% - 4px);
+  }
+  .view-toggle { margin-left: auto; }
+
+  .categories-row {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .categories-row::-webkit-scrollbar { display: none; }
+  .cat-btn { flex-shrink: 0; padding: 7px 12px; font-size: 12.5px; }
+
+  .req-tab-btn { flex: 1 1 calc(50% - 6px); justify-content: center; }
+
+  .table-title { font-size: 15px; }
 }
 </style>

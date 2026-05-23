@@ -8,6 +8,16 @@ import { useRouter } from 'vue-router'
 const props = defineProps<{
   showAnalyticsLink?: boolean
   showLockedOverlay?: boolean
+  // Optional overrides for scoped views (e.g. analytics filtered by cashbox).
+  // When provided, replace the corresponding store-derived numbers.
+  totals?: {
+    totalRemaining: number
+    totalRevenue: number
+    totalInvested: number
+    totalProfit: number
+    monthlyIncome: number
+  } | null
+  availableCapital?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -16,22 +26,33 @@ const emit = defineEmits<{
 
 const dealsStore = useDealsStore()
 const subscription = useSubscription()
-const { capital, isCapitalSet } = useCapital()
+const { capital } = useCapital()
 const router = useRouter()
 
 const canView = computed(() => subscription.canAccess('analytics'))
-const received = computed(() => dealsStore.totalRevenue - dealsStore.totalRemaining)
-const progress = computed(() => dealsStore.totalRevenue > 0 ? Math.round((received.value / dealsStore.totalRevenue) * 100) : 0)
-const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.value / dealsStore.totalRevenue * 100) + '%' : '0%')
+
+const totalRemaining = computed(() => props.totals ? props.totals.totalRemaining : dealsStore.totalRemaining)
+const totalRevenue = computed(() => props.totals ? props.totals.totalRevenue : dealsStore.totalRevenue)
+const totalInvested = computed(() => props.totals ? props.totals.totalInvested : dealsStore.totalInvested)
+const totalProfit = computed(() => props.totals ? props.totals.totalProfit : dealsStore.totalProfit)
+const monthlyIncome = computed(() => props.totals ? props.totals.monthlyIncome : dealsStore.monthlyIncome)
+
+// When availableCapital is explicitly passed (including null), use it; otherwise fall back to global capital.
+const displayCapital = computed(() => props.availableCapital !== undefined ? props.availableCapital : capital.value?.availableCapital ?? null)
+const showCapital = computed(() => canView.value && displayCapital.value !== null)
+
+const received = computed(() => totalRevenue.value - totalRemaining.value)
+const progress = computed(() => totalRevenue.value > 0 ? Math.round((received.value / totalRevenue.value) * 100) : 0)
+const progressWidth = computed(() => totalRevenue.value > 0 ? (received.value / totalRevenue.value * 100) + '%' : '0%')
 </script>
 
 <template>
   <div class="hero-summary" style="position: relative;">
     <!-- Capital badge top-right -->
-    <router-link v-if="isCapitalSet && capital && canView" to="/finance" class="hs-capital-badge">
+    <router-link v-if="showCapital" to="/cashboxes" class="hs-capital-badge">
       <v-icon icon="mdi-wallet-outline" size="18" />
       <div class="hs-capital-info">
-        <div class="hs-capital-value">{{ formatCurrencyShort(capital.availableCapital) }}</div>
+        <div class="hs-capital-value">{{ formatCurrencyShort(displayCapital || 0) }}</div>
         <div class="hs-capital-label">Доступный капитал</div>
       </div>
       <v-icon icon="mdi-arrow-right" size="16" class="hs-capital-arrow" />
@@ -41,25 +62,25 @@ const progressWidth = computed(() => dealsStore.totalRevenue > 0 ? (received.val
       <div class="hs-main hs-clickable" @click="emit('metric', 'remaining')">
         <div class="hs-label">Общая сводка</div>
         <div class="hs-sublabel">Ожидается к получению</div>
-        <div class="hs-amount">{{ canView ? formatCurrency(dealsStore.totalRemaining) : '— ₽' }}</div>
+        <div class="hs-amount">{{ canView ? formatCurrency(totalRemaining) : '— ₽' }}</div>
         <div class="hs-sub" @click.stop="emit('metric', 'revenue')">
-          из <span class="hs-sub-link">{{ canView ? formatCurrency(dealsStore.totalRevenue) : '— ₽' }}</span> общего оборота
+          из <span class="hs-sub-link">{{ canView ? formatCurrency(totalRevenue) : '— ₽' }}</span> общего оборота
         </div>
       </div>
 
       <div class="hs-metrics">
         <div class="hs-metric hs-clickable" @click="emit('metric', 'invested')">
-          <span class="hs-metric-value">{{ canView ? formatCurrencyShort(dealsStore.totalInvested) : '—' }}</span>
+          <span class="hs-metric-value">{{ canView ? formatCurrencyShort(totalInvested) : '—' }}</span>
           <span class="hs-metric-label">Инвестировано</span>
         </div>
         <div class="hs-metric-divider" />
         <div class="hs-metric hs-clickable" @click="emit('metric', 'profit')">
-          <span class="hs-metric-value">{{ canView ? formatCurrencyShort(dealsStore.totalProfit) : '—' }}</span>
+          <span class="hs-metric-value">{{ canView ? formatCurrencyShort(totalProfit) : '—' }}</span>
           <span class="hs-metric-label">Прибыль</span>
         </div>
         <div class="hs-metric-divider" />
         <div class="hs-metric hs-clickable" @click="emit('metric', 'monthly')">
-          <span class="hs-metric-value">{{ canView ? formatCurrencyShort(dealsStore.monthlyIncome) : '—' }}</span>
+          <span class="hs-metric-value">{{ canView ? formatCurrencyShort(monthlyIncome) : '—' }}</span>
           <span class="hs-metric-label">Доход / мес</span>
         </div>
       </div>

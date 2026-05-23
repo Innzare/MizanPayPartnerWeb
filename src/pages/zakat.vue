@@ -357,7 +357,7 @@
   </div>
 
   <!-- Save payment dialog -->
-  <v-dialog v-model="saveDialog" max-width="520">
+  <v-dialog v-model="saveDialog" max-width="520" :fullscreen="isMobile">
     <v-card rounded="lg" class="pa-6">
       <h3 class="text-h6 font-weight-bold mb-2">Зафиксировать выплату</h3>
       <p class="text-body-2 text-medium-emphasis mb-4">
@@ -402,9 +402,11 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useZakat, RECIPIENT_LABELS, type ManualAssets, type RecipientCategory } from '@/composables/useZakat'
 
 const { isDark } = useIsDark()
+const { isMobile } = useIsMobile()
 const { show: showToast } = useToast()
 
 const {
@@ -715,4 +717,27 @@ watch(() => tab.value, (t) => {
 }
 .faq-title { font-size: 15px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.95); margin-bottom: 6px; }
 .faq-text { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.65); line-height: 1.55; margin: 0; }
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .hero-text { padding: 18px 16px 14px; }
+  .hero-title { font-size: 18px; }
+  .hero-desc { font-size: 12px; }
+  .hero-stats { padding: 14px 16px; gap: 12px; }
+  .hero-stat-value { font-size: 18px; }
+  .hero-stat-label { font-size: 11px; }
+
+  .tab-pills {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab-pills::-webkit-scrollbar { display: none; }
+  .tab-pill { flex-shrink: 0; padding: 8px 14px; font-size: 13px; }
+
+  .result-card { position: static !important; top: auto !important; }
+  .result-amount { font-size: 26px; }
+  .result-body { padding: 18px 16px; }
+}
 </style>

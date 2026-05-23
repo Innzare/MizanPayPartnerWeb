@@ -13,6 +13,12 @@ import { useToast } from '@/composables/useToast'
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+
+// Reactive mobile flag для fullscreen-диалога деталей сделки.
+const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
+function updateMobile() { isMobile.value = window.innerWidth < 768 }
+onMounted(() => window.addEventListener('resize', updateMobile))
+onUnmounted(() => window.removeEventListener('resize', updateMobile))
 const clientsStore = useClientsStore()
 const clientProfilesStore = useClientProfilesStore()
 const dealsStore = useDealsStore()
@@ -213,8 +219,8 @@ const selectedDealPaidTotal = computed(() =>
     <v-card rounded="lg" elevation="0" border>
       <div class="pa-4">
         <!-- Search -->
-        <div class="d-flex align-center ga-3 mb-4">
-          <div class="filter-input-wrap" style="max-width: 360px;">
+        <div class="clients-search-row">
+          <div class="filter-input-wrap clients-search-input">
             <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
             <input
               v-model="search"
@@ -223,8 +229,7 @@ const selectedDealPaidTotal = computed(() =>
               class="filter-input"
             />
           </div>
-          <v-spacer />
-          <div class="text-caption text-medium-emphasis">
+          <div class="text-caption text-medium-emphasis clients-search-count">
             {{ filteredClients.length }} из {{ stats.count }}
           </div>
         </div>
@@ -394,7 +399,7 @@ const selectedDealPaidTotal = computed(() =>
     </v-card>
 
     <!-- Deal Detail Dialog -->
-    <v-dialog v-model="showDialog" max-width="680" scrollable>
+    <v-dialog v-model="showDialog" max-width="680" scrollable :fullscreen="isMobile">
       <v-card v-if="selectedDeal" rounded="lg">
         <!-- Header with photo on the left -->
         <div class="dialog-hero">
@@ -512,7 +517,40 @@ const selectedDealPaidTotal = computed(() =>
   gap: 12px;
 }
 @media (max-width: 1024px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 600px) { .stats-row { grid-template-columns: 1fr; } }
+/* На мобиле каждая KPI карточка отдельной строкой — крупные суммы
+   (например «Остаток к получению» с 7-значной цифрой) не помещались
+   в 2-col layout и переносились или обрезались. */
+@media (max-width: 600px) { .stats-row { grid-template-columns: 1fr; gap: 8px; } }
+
+/* Строка поиска: на десктопе input ограничен 360px и слева, счётчик справа.
+   На мобиле input — на всю ширину, счётчик уходит под него. */
+.clients-search-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.clients-search-input {
+  flex: 1;
+  max-width: 360px;
+}
+.clients-search-count {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+@media (max-width: 599px) {
+  .clients-search-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .clients-search-input {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+  .clients-search-count {
+    margin-left: 0;
+  }
+}
 
 .stat-card {
   display: flex; align-items: center; gap: 12px;
@@ -667,10 +705,67 @@ const selectedDealPaidTotal = computed(() =>
   padding-top: 16px;
 }
 
+/* ───── Mobile (client cards) ───── */
+@media (max-width: 599px) {
+  /* Сжимаем padding header'а — на 360px каждый пиксель критичен. */
+  .client-header {
+    padding: 12px 14px;
+    gap: 10px;
+  }
+  .client-avatar {
+    width: 40px; height: 40px; min-width: 40px;
+    border-radius: 10px;
+    font-size: 14px;
+  }
+
+  /* Бэйджи в строке имени — компактнее, gap меньше. */
+  .client-name-row {
+    gap: 6px;
+  }
+  .client-name {
+    font-size: 14px;
+    line-height: 1.3;
+  }
+  /* Скрываем избыточные бейджи на узком экране, оставляем только score
+     и rating — без них партнёр не понимает, кто перед ним. */
+  .client-name-row .external-badge,
+  .client-name-row .passport-badge,
+  .client-name-row .verified-badge {
+    display: none;
+  }
+  .score-badge,
+  .rating-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+  }
+
+  .client-meta {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  /* Шеврон поближе и поменьше отступы. */
+  .expand-icon {
+    margin-left: 4px;
+  }
+}
+
 /* Mobile stats */
 .client-stats-mobile {
   display: grid; grid-template-columns: repeat(3, 1fr);
   gap: 8px; margin-bottom: 16px;
+}
+@media (max-width: 599px) {
+  /* На очень узких экранах stats в один столбец — иначе суммы сжимаются. */
+  .client-stats-mobile {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .client-stat-m {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px;
+    text-align: left;
+  }
 }
 .client-stat-m {
   padding: 10px; border-radius: 10px;

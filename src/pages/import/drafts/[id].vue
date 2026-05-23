@@ -178,52 +178,40 @@
           </v-card>
         </v-menu>
 
-        <!-- Bulk: co-investor -->
+        <!-- Bulk: cashbox -->
         <v-menu :close-on-content-click="true" location="bottom end">
           <template #activator="{ props: menuProps }">
-            <button v-bind="menuProps" class="assign-btn" :class="{ 'assign-btn--mixed': coInvestorLabel?.kind === 'mixed', 'assign-btn--set': coInvestorLabel?.kind === 'all' && coInvestorLabel.text !== 'Без со-инвестора' }">
-              <v-icon icon="mdi-account-cash-outline" size="15" class="assign-btn-icon" />
-              <template v-if="coInvestorLabel?.kind === 'all' && coInvestorLabel.text !== 'Без со-инвестора'">
-                <span class="assign-btn-text">{{ coInvestorLabel.text }}</span>
-                <span v-if="'subtitle' in coInvestorLabel && coInvestorLabel.subtitle" class="assign-btn-sub">{{ coInvestorLabel.subtitle }}</span>
+            <button v-bind="menuProps" class="assign-btn" :class="{ 'assign-btn--mixed': cashBoxLabel?.kind === 'mixed', 'assign-btn--set': cashBoxLabel?.kind === 'all' }">
+              <v-icon icon="mdi-wallet-outline" size="15" class="assign-btn-icon" />
+              <template v-if="cashBoxLabel?.kind === 'all'">
+                <span class="assign-btn-text">{{ cashBoxLabel.text }}</span>
               </template>
-              <template v-else-if="coInvestorLabel?.kind === 'mixed'">
-                <span class="assign-btn-text">{{ coInvestorLabel.text }}</span>
-                <span class="assign-btn-badge">{{ coInvestorLabel.distinct }}</span>
+              <template v-else-if="cashBoxLabel?.kind === 'mixed'">
+                <span class="assign-btn-text">{{ cashBoxLabel.text }}</span>
+                <span class="assign-btn-badge">{{ cashBoxLabel.distinct }}</span>
               </template>
               <template v-else>
-                <span class="assign-btn-text assign-btn-text--placeholder">Со-инвестор</span>
+                <span class="assign-btn-text assign-btn-text--placeholder">Касса</span>
               </template>
               <v-icon icon="mdi-chevron-down" size="13" class="assign-btn-caret" />
             </button>
           </template>
           <v-card rounded="lg" elevation="4" class="assign-menu">
             <div class="assign-menu-header">
-              <v-icon icon="mdi-account-cash-outline" size="14" />
-              <span>Со-инвестор для всех строк</span>
+              <v-icon icon="mdi-wallet-outline" size="14" />
+              <span>Касса для всех строк</span>
             </div>
             <div class="assign-menu-body">
-              <button class="assign-menu-item" :class="{ 'assign-menu-item--active': coInvestorState.allSame && coInvestorState.value === null }" @click="applyBulk('coInvestorId', null)">
-                <v-icon icon="mdi-account-off-outline" size="16" class="assign-menu-item-icon" />
-                <span class="assign-menu-item-name">Без со-инвестора</span>
-                <v-icon v-if="coInvestorState.allSame && coInvestorState.value === null" icon="mdi-check" size="14" class="assign-menu-item-check" />
-              </button>
-              <div v-if="coInvestors.length" class="assign-menu-divider" />
               <button
-                v-for="c in coInvestors" :key="c.id"
+                v-for="b in cashBoxes" :key="b.id"
                 class="assign-menu-item"
-                :class="{ 'assign-menu-item--active': coInvestorState.allSame && coInvestorState.value === c.id }"
-                @click="applyBulk('coInvestorId', c.id)"
+                :class="{ 'assign-menu-item--active': cashBoxState.allSame && cashBoxState.value === b.id }"
+                @click="applyBulk('cashBoxId', b.id)"
               >
-                <v-icon icon="mdi-account-circle-outline" size="16" class="assign-menu-item-icon" />
-                <span class="assign-menu-item-name">{{ c.name }}</span>
-                <span class="assign-menu-item-meta">{{ c.profitPercent }}%</span>
-                <v-icon v-if="coInvestorState.allSame && coInvestorState.value === c.id" icon="mdi-check" size="14" class="assign-menu-item-check" />
-              </button>
-              <div class="assign-menu-divider" />
-              <button class="assign-menu-create" @click="showCoInvestorDialog = true">
-                <v-icon icon="mdi-plus" size="14" />
-                Создать со-инвестора
+                <v-icon icon="mdi-wallet-outline" size="16" class="assign-menu-item-icon" />
+                <span class="assign-menu-item-name">{{ b.name }}</span>
+                <span v-if="b.isDefault" class="assign-menu-item-meta">по умолчанию</span>
+                <v-icon v-if="cashBoxState.allSame && cashBoxState.value === b.id" icon="mdi-check" size="14" class="assign-menu-item-check" />
               </button>
             </div>
           </v-card>
@@ -339,7 +327,6 @@
 
     <!-- Inline create dialogs — created entity is auto-applied to all rows -->
     <FolderCreateDialog v-model="showFolderDialog" @created="onFolderCreated" />
-    <CoInvestorCreateDialog v-model="showCoInvestorDialog" @created="onCoInvestorCreated" />
   </div>
 </template>
 
@@ -354,11 +341,11 @@ import { useImportDraft, type DraftRow, type RowAction } from '@/composables/use
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useFolders } from '@/composables/useFolders'
-import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useCashBoxesStore } from '@/stores/cashboxes'
+import { storeToRefs } from 'pinia'
 import FolderCreateDialog from '@/components/FolderCreateDialog.vue'
-import CoInvestorCreateDialog from '@/components/CoInvestorCreateDialog.vue'
 import { formatDateShort } from '@/utils/formatters'
-import type { DealFolder, CoInvestor } from '@/types'
+import type { DealFolder } from '@/types'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-quartz.css'
 
@@ -368,7 +355,8 @@ const { draft, loading, saving, committing, fetchDraft, savePatches, commit, can
 const { show: showToast } = useToast()
 const { isDark } = useIsDark()
 const { folders, fetchFolders } = useFolders()
-const { coInvestors, fetchCoInvestors } = useCoInvestors()
+const cashBoxesStore = useCashBoxesStore()
+const { items: cashBoxes } = storeToRefs(cashBoxesStore)
 
 const draftId = computed(() => route.params.id as string)
 const rows = computed<DraftRow[]>(() => draft.value?.normalizedData ?? [])
@@ -389,8 +377,8 @@ const readyCount = computed(() =>
 const errorCount = computed(() => rows.value.filter((r) => r.errors.length > 0).length)
 const duplicatesCount = computed(() => rows.value.filter((r) => !!r.duplicate).length)
 
-// ── Aggregate state for folder/coInvestor across all rows ──
-function aggregateField<K extends 'folderId' | 'coInvestorId'>(field: K) {
+// ── Aggregate state for folder/cashBox across all rows ──
+function aggregateField<K extends 'folderId' | 'cashBoxId'>(field: K) {
   return computed(() => {
     const total = rows.value.length
     if (total === 0) return { total: 0, allSame: true, value: null, topCount: 0, distinct: 0 }
@@ -415,7 +403,7 @@ function aggregateField<K extends 'folderId' | 'coInvestorId'>(field: K) {
 }
 
 const folderState = aggregateField('folderId')
-const coInvestorState = aggregateField('coInvestorId')
+const cashBoxState = aggregateField('cashBoxId')
 
 const folderLabel = computed(() => {
   const s = folderState.value
@@ -436,18 +424,21 @@ const folderLabel = computed(() => {
   }
 })
 
-const coInvestorLabel = computed(() => {
-  const s = coInvestorState.value
+const cashBoxLabel = computed(() => {
+  const s = cashBoxState.value
   if (s.total === 0) return null
+  // Treat a null/missing cashBoxId as the partner's default cashbox so the
+  // chip always shows a real cashbox name (mirror backend fallback).
+  const defaultBox = cashBoxes.value.find((b) => b.isDefault)
+  const resolved = (id: string | null) => (id ? cashBoxes.value.find((b) => b.id === id) : defaultBox) ?? defaultBox
   if (s.allSame) {
-    if (s.value === null) return { kind: 'empty' as const, text: 'Без со-инвестора' }
-    const c = coInvestors.value.find((x) => x.id === s.value)
-    return { kind: 'all' as const, text: c?.name ?? '?', subtitle: c ? `${c.profitPercent}%` : '' }
+    const b = resolved(s.value)
+    return { kind: 'all' as const, text: b?.name ?? 'Касса' }
   }
-  const main = s.value !== null ? coInvestors.value.find((x) => x.id === s.value) : null
+  const main = resolved(s.value)
   return {
     kind: 'mixed' as const,
-    text: main ? `${main.name} · ${s.topCount} из ${s.total}` : `Без со-инвестора · ${s.topCount} из ${s.total}`,
+    text: main ? `${main.name} · ${s.topCount} из ${s.total}` : `Касса · ${s.topCount} из ${s.total}`,
     distinct: s.distinct,
   }
 })
@@ -537,18 +528,13 @@ async function onDeleteRow(rowIdx: number) {
 
 // ── Inline create dialogs ──
 const showFolderDialog = ref(false)
-const showCoInvestorDialog = ref(false)
 
 async function onFolderCreated(folder: DealFolder) {
   // Apply newly created folder to all rows
   await applyBulk('folderId', folder.id)
 }
 
-async function onCoInvestorCreated(coInvestor: CoInvestor) {
-  await applyBulk('coInvestorId', coInvestor.id)
-}
-
-async function applyBulk(field: 'folderId' | 'coInvestorId', value: string | null) {
+async function applyBulk(field: 'folderId' | 'cashBoxId', value: string | null) {
   // Flush any pending edits first so they don't overwrite the bulk
   await flushPatches()
   const patches = rows.value.map((r) => ({ rowIdx: r.rowIdx, data: { [field]: value } as Partial<DraftRow> }))
@@ -827,28 +813,27 @@ const columnDefs = computed<(ColDef | ColGroupDef)[]>(() => {
       headerTooltip: 'Папка для группировки сделок. Можно изменить после импорта.',
     },
     {
-      headerName: 'Со-инвестор',
-      field: 'coInvestorId',
+      headerName: 'Касса',
+      field: 'cashBoxId',
       width: 200,
       editable: true,
       cellEditor: 'agSelectCellEditor',
       cellEditorParams: () => ({
-        values: [null, ...coInvestors.value.map((c) => c.id)],
+        values: cashBoxes.value.map((b) => b.id),
       }),
       valueFormatter: (p: any) => {
-        if (!p.value) return '—'
-        return coInvestors.value.find((c) => c.id === p.value)?.name ?? '?'
+        if (!p.value) return cashBoxes.value.find((b) => b.isDefault)?.name ?? '—'
+        return cashBoxes.value.find((b) => b.id === p.value)?.name ?? '?'
       },
       cellRenderer: (p: any) => {
-        if (!p.value) {
-          return '<span style="color: rgba(127,127,127,0.5);">—</span>'
-        }
-        const c = coInvestors.value.find((x) => x.id === p.value)
-        if (!c) return '?'
-        return `<span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:6px;height:6px;border-radius:50%;background:#047857;display:inline-block;"></span><span>${escapeHtml(c.name)}</span><span style="font-size:11px;color:rgba(127,127,127,0.7);">${c.profitPercent}%</span></span>`
+        const b = p.value
+          ? cashBoxes.value.find((x) => x.id === p.value)
+          : cashBoxes.value.find((x) => x.isDefault)
+        if (!b) return '<span style="color: rgba(127,127,127,0.5);">—</span>'
+        return `<span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:6px;height:6px;border-radius:50%;background:#047857;display:inline-block;"></span><span>${escapeHtml(b.name)}</span></span>`
       },
       cellClass: 'cell-assignment',
-      headerTooltip: 'Со-инвестор, делящий прибыль по этой сделке.',
+      headerTooltip: 'Касса, в которую попадёт сделка. По умолчанию — основная касса партнёра.',
     },
   ]
   // Trailing actions column — pinned right so the delete button is always
@@ -938,7 +923,7 @@ onMounted(() => {
     router.push('/import')
   })
   fetchFolders()
-  fetchCoInvestors()
+  cashBoxesStore.fetchAll()
 })
 
 onBeforeUnmount(() => {

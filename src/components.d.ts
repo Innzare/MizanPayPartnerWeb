@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    CashBoxEditDialog: typeof import('./components/CashBoxEditDialog.vue')['default']
     CashflowJournal: typeof import('./components/CashflowJournal.vue')['default']
     ChatPanel: typeof import('./components/ChatPanel.vue')['default']
     ClientPicker: typeof import('./components/ClientPicker.vue')['default']

@@ -10,6 +10,7 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useCapital } from '@/composables/useCapital'
 import { useFolders } from '@/composables/useFolders'
+import { useCashBoxesStore } from '@/stores/cashboxes'
 import { api } from '@/api/client'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
@@ -156,18 +157,25 @@ const markupOptions = [10, 15, 20, 25]
 const termOptions = [3, 4, 6, 9, 12, 18, 24]
 
 // Co-investors
+// Phase 3: deal-CI relationship is implicit via cashbox. The frontend lists
+// the cashbox's CIs informationally — no per-deal selection any more.
 interface CoInvestorOption {
   id: string
   name: string
   phone: string | null
-  profitPercent: number
+  profitPercent: number | null
+  cashBoxId: string
 }
 const allCoInvestors = ref<CoInvestorOption[]>([])
-const selectedCoInvestorIds = ref<string[]>([])
 
 // Folder (single — a deal lives in at most one folder, or none)
 const { folders: allFolders, fetchFolders } = useFolders()
 const selectedFolderId = ref<string | null>(null)
+
+// Cashbox — every deal lives in exactly one cashbox. Defaults to the partner's
+// «Основная» on mount; partner picks another if they want.
+const cashboxesStore = useCashBoxesStore()
+const selectedCashBoxId = ref<string | null>(null)
 
 onMounted(async () => {
   try {
@@ -175,8 +183,19 @@ onMounted(async () => {
       api.get<any[]>('/co-investors'),
       fetchCapital(),
       fetchFolders(),
+      cashboxesStore.fetchAll(),
     ])
-    allCoInvestors.value = data.map(ci => ({ id: ci.id, name: ci.name, phone: ci.phone, profitPercent: ci.profitPercent }))
+    allCoInvestors.value = data.map((ci: any) => ({
+      id: ci.id,
+      name: ci.name,
+      phone: ci.phone,
+      profitPercent: ci.profitPercent,
+      cashBoxId: ci.cashBoxId,
+    }))
+    // Default to the partner's «Основная» cashbox
+    if (!selectedCashBoxId.value) {
+      selectedCashBoxId.value = cashboxesStore.getDefault()?.id ?? cashboxesStore.items[0]?.id ?? null
+    }
   } catch { /* ignore */ }
 
   // Load deal data for edit mode
@@ -204,6 +223,10 @@ onMounted(async () => {
       if (deal.clientProfile) selectedClientProfile.value = deal.clientProfile
       if (deal.guarantorProfile) selectedGuarantorProfile.value = deal.guarantorProfile
       selectedFolderId.value = (deal as any).folderId || null
+      // Preserve the deal's cashbox so the partner can change it from the
+      // edit form too. Falls back to the default cashbox if the field is
+      // missing (e.g. pre-cashboxes data).
+      selectedCashBoxId.value = (deal as any).cashBoxId || cashboxesStore.getDefault()?.id || null
 
       // Wholesale price / profit-split mode (Phase 3). Fields are
       // optional — only show the wholesale section if the deal already
@@ -226,8 +249,13 @@ onMounted(async () => {
   }
 })
 
-const selectedCoInvestors = computed(() =>
-  allCoInvestors.value.filter(ci => selectedCoInvestorIds.value.includes(ci.id))
+// Phase 3: deal-CI linkage is via cashbox membership. The UI shows the CIs
+// of the selected cashbox informationally so the partner sees who'll share
+// profit, but there's no per-deal selection any more.
+const cashBoxCoInvestors = computed(() =>
+  selectedCashBoxId.value
+    ? allCoInvestors.value.filter((ci) => ci.cashBoxId === selectedCashBoxId.value)
+    : [],
 )
 
 const selectedFolder = computed<DealFolder | null>(() =>
@@ -235,15 +263,6 @@ const selectedFolder = computed<DealFolder | null>(() =>
     ? allFolders.value.find(f => f.id === selectedFolderId.value) ?? null
     : null
 )
-
-function toggleCoInvestor(id: string) {
-  const idx = selectedCoInvestorIds.value.indexOf(id)
-  if (idx >= 0) {
-    selectedCoInvestorIds.value.splice(idx, 1)
-  } else {
-    selectedCoInvestorIds.value.push(id)
-  }
-}
 
 // Markup type switch with value conversion
 function switchMarkupType(type: 'percent' | 'fixed') {
@@ -429,6 +448,12 @@ async function submitDeal() {
         wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || 0) : null,
         profitSplitBase: profitSplitBase.value,
       })
+      // Cashbox change goes through the dedicated move endpoint so it also
+      // rewrites the journal scope, not just the deal row.
+      const originalCashBoxId = (await dealsStore.fetchDeal(editId.value))?.cashBoxId ?? null
+      if (selectedCashBoxId.value && selectedCashBoxId.value !== originalCashBoxId) {
+        await cashboxesStore.moveDeal(editId.value, selectedCashBoxId.value)
+      }
       toast.success('Сделка обновлена')
       router.push(`/deals/${editId.value}`)
       return
@@ -469,16 +494,12 @@ async function submitDeal() {
       // FULL_MARGIN to share retail margin with co-investors).
       wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || undefined) : undefined,
       profitSplitBase: useWholesalePrice.value ? profitSplitBase.value : undefined,
+      cashBoxId: selectedCashBoxId.value || undefined,
     })
 
-    // Link selected co-investors
-    if (deal?.id && selectedCoInvestorIds.value.length > 0) {
-      await Promise.allSettled(
-        selectedCoInvestorIds.value.map(ciId =>
-          api.post(`/co-investors/${ciId}/deals/${deal.id}`)
-        )
-      )
-    }
+    // Phase 3: no per-deal CI linking — every CI in the deal's cashbox
+    // automatically participates in its profit. Cashbox selection above is
+    // the only explicit "who funds this" choice the partner makes.
 
     // Place into folder (or unfile if user cleared it). The /deal-folders/move
     // endpoint accepts null to detach. Best-effort — failure here doesn't
@@ -682,7 +703,7 @@ async function submitDeal() {
           <div class="capital-block-banner-title">Установите начальный капитал</div>
           <div class="capital-block-banner-text">Для создания сделки необходимо указать каким капиталом вы располагаете</div>
         </div>
-        <button class="capital-block-banner-btn" @click="$router.push('/finance')">
+        <button class="capital-block-banner-btn" @click="$router.push('/cashboxes')">
           Настроить
           <v-icon icon="mdi-arrow-right" size="16" />
         </button>
@@ -866,32 +887,70 @@ async function submitDeal() {
             </div>
           </v-card>
 
-          <!-- Co-investors -->
-          <v-card v-if="allCoInvestors.length > 0" rounded="lg" elevation="0" border class="pa-5 mt-4">
+          <!-- Phase 3: deal-CI relationship is via cashbox membership.
+               Show CIs of the selected cashbox read-only so partner sees
+               who'll share profit from this deal, without per-deal picking. -->
+          <v-card v-if="cashBoxCoInvestors.length > 0" rounded="lg" elevation="0" border class="pa-5 mt-4">
             <div class="section-header-sm">
               <v-icon icon="mdi-account-group-outline" size="18" />
-              <span>Со-инвесторы</span>
-              <span class="text-caption text-medium-emphasis ml-1">(необязательно)</span>
+              <span>Инвесторы кассы</span>
+              <span class="text-caption text-medium-emphasis ml-1">
+                ({{ cashBoxCoInvestors.length }}) автоматически делят прибыль
+              </span>
             </div>
             <div class="coinvestor-list">
-              <button
-                v-for="ci in allCoInvestors"
+              <div
+                v-for="ci in cashBoxCoInvestors"
                 :key="ci.id"
-                type="button"
-                class="coinvestor-option"
-                :class="{ active: selectedCoInvestorIds.includes(ci.id) }"
-                @click="toggleCoInvestor(ci.id)"
+                class="coinvestor-option coinvestor-option--readonly"
               >
-                <div class="coinvestor-option-check">
-                  <v-icon :icon="selectedCoInvestorIds.includes(ci.id) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline'" size="20" />
-                </div>
                 <div class="coinvestor-option-info">
                   <div class="coinvestor-option-name">{{ ci.name }}</div>
-                  <div class="coinvestor-option-meta">{{ ci.profitPercent }}% от прибыли</div>
+                  <div class="coinvestor-option-meta">
+                    <template v-if="ci.profitPercent != null && ci.profitPercent > 0">
+                      Фикс {{ ci.profitPercent }}% от прибыли
+                    </template>
+                    <template v-else>
+                      По вкладу капитала
+                    </template>
+                  </div>
                 </div>
-                <div v-if="selectedCoInvestorIds.includes(ci.id)" class="coinvestor-option-share">
+                <div
+                  v-if="ci.profitPercent != null && ci.profitPercent > 0"
+                  class="coinvestor-option-share"
+                >
                   {{ formatCurrency(Math.round(markup * ci.profitPercent / 100)) }}
                 </div>
+              </div>
+            </div>
+          </v-card>
+
+          <!-- Cashbox — every deal lives in exactly one cashbox. Always visible
+               so the partner sees "where is this deal going" explicitly, even
+               when there's only the default «Основная» (single chip selected). -->
+          <v-card v-if="cashboxesStore.items.length > 0" rounded="lg" elevation="0" border class="pa-5 mt-4">
+            <div class="section-header-sm">
+              <v-icon icon="mdi-wallet-outline" size="18" />
+              <span>Касса</span>
+              <span class="text-caption text-medium-emphasis ml-1">— из какой кассы покупаем</span>
+            </div>
+            <div class="folder-list">
+              <button
+                v-for="b in cashboxesStore.items"
+                :key="b.id"
+                type="button"
+                class="folder-chip"
+                :class="{ active: selectedCashBoxId === b.id }"
+                :style="{
+                  '--folder-color': b.color,
+                  borderColor: selectedCashBoxId === b.id ? b.color : undefined,
+                  background: selectedCashBoxId === b.id ? `${b.color}14` : undefined,
+                  color: selectedCashBoxId === b.id ? b.color : undefined,
+                }"
+                @click="selectedCashBoxId = b.id"
+              >
+                <v-icon :icon="b.icon" size="16" />
+                <span>{{ b.name }}</span>
               </button>
             </div>
           </v-card>
@@ -1088,18 +1147,23 @@ async function submitDeal() {
         </div>
       </div>
 
-      <!-- Co-investors -->
-      <div v-if="selectedCoInvestors.length > 0" class="review-coinvestors">
+      <!-- Phase 3: investors of the deal's cashbox (all participate). -->
+      <div v-if="cashBoxCoInvestors.length > 0" class="review-coinvestors">
         <div class="review-coinvestors__title">
           <v-icon icon="mdi-account-group-outline" size="16" />
-          Со-инвесторы ({{ selectedCoInvestors.length }})
+          Инвесторы кассы ({{ cashBoxCoInvestors.length }})
         </div>
         <div class="review-coinvestors__list">
-          <div v-for="ci in selectedCoInvestors" :key="ci.id" class="review-coinvestor-chip">
+          <div v-for="ci in cashBoxCoInvestors" :key="ci.id" class="review-coinvestor-chip">
             <div class="review-coinvestor-chip__avatar">{{ ci.name[0] }}</div>
             <div class="review-coinvestor-chip__info">
               <span class="review-coinvestor-chip__name">{{ ci.name }}</span>
-              <span class="review-coinvestor-chip__share">{{ ci.profitPercent }}% · {{ formatCurrency(Math.round(markup * ci.profitPercent / 100)) }}</span>
+              <span class="review-coinvestor-chip__share">
+                <template v-if="ci.profitPercent != null && ci.profitPercent > 0">
+                  {{ ci.profitPercent }}% · {{ formatCurrency(Math.round(markup * ci.profitPercent / 100)) }}
+                </template>
+                <template v-else>по вкладу</template>
+              </span>
             </div>
           </div>
         </div>
@@ -1284,16 +1348,21 @@ async function submitDeal() {
           <div v-if="selectedGuarantorProfile.phone" class="preview-client-phone">{{ selectedGuarantorProfile.phone }}</div>
         </div>
 
-        <!-- Co-investors -->
-        <div v-if="selectedCoInvestors.length" class="preview-coinvestors">
+        <!-- Phase 3: cashbox investors participate automatically. -->
+        <div v-if="cashBoxCoInvestors.length" class="preview-coinvestors">
           <div class="preview-section-label">
             <v-icon icon="mdi-account-group-outline" size="14" />
-            Со-инвесторы ({{ selectedCoInvestors.length }})
+            Инвесторы кассы ({{ cashBoxCoInvestors.length }})
           </div>
           <div class="preview-coinvestor-list">
-            <div v-for="ci in selectedCoInvestors" :key="ci.id" class="preview-coinvestor">
+            <div v-for="ci in cashBoxCoInvestors" :key="ci.id" class="preview-coinvestor">
               <span class="preview-coinvestor-name">{{ ci.name }}</span>
-              <span class="preview-coinvestor-share">{{ ci.profitPercent }}%</span>
+              <span class="preview-coinvestor-share">
+                <template v-if="ci.profitPercent != null && ci.profitPercent > 0">
+                  {{ ci.profitPercent }}%
+                </template>
+                <template v-else>по вкладу</template>
+              </span>
             </div>
           </div>
         </div>
@@ -1753,7 +1822,29 @@ async function submitDeal() {
 @media (max-width: 700px) {
   .stepper-label { display: none; }
   .stepper-line { width: 16px; min-width: 12px; margin: 0 4px; }
-  .stepper-header { justify-content: center; }
+  .stepper-header {
+    justify-content: center;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+  }
+  .stepper-dot {
+    width: 32px; height: 32px; min-width: 32px;
+    border-radius: 9px;
+  }
+}
+
+/* Title row на мобиле — иконка чуть меньше, тайтл компактнее. */
+@media (max-width: 599px) {
+  .step-title-row {
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .step-icon-wrap {
+    width: 38px; height: 38px; min-width: 38px;
+    border-radius: 10px;
+  }
+  .step-title { font-size: 16px; }
+  .step-subtitle { font-size: 12px; }
 }
 
 /* Step content */
@@ -2232,6 +2323,19 @@ async function submitDeal() {
   cursor: pointer; transition: all 0.15s;
 }
 .btn-secondary:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+
+/* Mobile: кнопки шага равной ширины 50/50, чуть компактнее. */
+@media (max-width: 599px) {
+  .step-actions {
+    gap: 8px;
+  }
+  .step-actions .btn-primary,
+  .step-actions .btn-secondary {
+    flex: 1 1 50%;
+    padding: 0 12px;
+    font-size: 13px;
+  }
+}
 
 /* Dark mode */
 .dark .toggle-btn.active {

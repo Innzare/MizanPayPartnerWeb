@@ -55,7 +55,8 @@ export interface DraftRow {
 
   // assignments (set in editor)
   folderId?: string | null
-  coInvestorId?: string | null
+  // Phase 3: deals are bound to cashboxes, not directly to CIs.
+  cashBoxId?: string | null
 }
 
 export interface DraftStats {

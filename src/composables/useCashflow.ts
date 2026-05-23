@@ -41,6 +41,7 @@ export interface JournalFilters {
   to?: string
   dealId?: string
   coInvestorId?: string
+  cashBoxId?: string
   search?: string
   limit?: number
   offset?: number
@@ -61,6 +62,7 @@ export function useCashflow() {
     if (f.to) params.set('to', f.to)
     if (f.dealId) params.set('dealId', f.dealId)
     if (f.coInvestorId) params.set('coInvestorId', f.coInvestorId)
+    if (f.cashBoxId) params.set('cashBoxId', f.cashBoxId)
     if (f.search) params.set('search', f.search)
     if (f.limit != null) params.set('limit', String(f.limit))
     if (f.offset != null) params.set('offset', String(f.offset))

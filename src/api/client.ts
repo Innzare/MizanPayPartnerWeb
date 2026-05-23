@@ -46,7 +46,16 @@ async function request<T>(
   });
 
   const isAuthPath = path.startsWith('/auth/');
-  if (response.status === 401 && !skipAuthRedirect && !isAuthPath) {
+  // Public endpoints (e.g. /public/co-investors/:token/...) are token-based,
+  // not JWT — a 401 there has nothing to do with the user's partner session.
+  // Skip the /login redirect so the page can render its own error state.
+  const isPublicPath = path.startsWith('/public/');
+  // If there's no token in storage at all, the user is anonymous — they have
+  // no session to expire, so redirecting them to /login on a background 401
+  // makes no sense (and breaks public pages like /investor/:token that the
+  // shared partner layout might brush against).
+  const hasToken = !!token;
+  if (response.status === 401 && !skipAuthRedirect && !isAuthPath && !isPublicPath && hasToken) {
     if (!isRefreshing) {
       isRefreshing = true;
       const refreshed = await tryRefreshToken();
@@ -117,6 +126,18 @@ export const api = {
     formData.append('file', file);
     const result = await uploadRequest<{ url: string }>(
       `/upload?folder=${encodeURIComponent(folder)}`,
+      formData,
+    );
+    return result.url;
+  },
+  uploadDocument: async (file: File, folder: string): Promise<string> => {
+    // `/upload` rejects PDFs (images-only filter). Documents (PDF/DOC/DOCX
+    // etc.) go through the dedicated `/upload/document` endpoint that
+    // accepts them with a 20MB limit.
+    const formData = new FormData();
+    formData.append('file', file);
+    const result = await uploadRequest<{ url: string }>(
+      `/upload/document?folder=${encodeURIComponent(folder)}`,
       formData,
     );
     return result.url;

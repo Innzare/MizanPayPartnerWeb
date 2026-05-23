@@ -550,4 +550,18 @@ function reset() {
 @media (max-width: 500px) {
   .payment-type-options { grid-template-columns: 1fr; }
 }
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .page-header { margin-bottom: 14px; }
+  .page-icon-wrap { width: 38px; height: 38px; min-width: 38px; border-radius: 10px; }
+  .page-title { font-size: 16px; }
+  .page-subtitle { font-size: 12px; }
+
+  .result-hero { padding: 18px 16px; }
+  .result-hero-value { font-size: 26px; }
+  .result-rows { padding: 12px 16px; }
+  .result-profit-section { padding: 12px 16px 16px; }
+  .result-profit-row { grid-template-columns: 1fr; gap: 8px; }
+}
 </style>

@@ -7,9 +7,8 @@ import { useToast } from '@/composables/useToast'
  *
  * Flow:
  *   1. Caller produces a PDF Blob (via pdfMake `getBlob` or jsPDF `output('blob')`).
- *   2. We turn it into a File and POST to `/upload?folder=whatsapp-docs` —
- *      same upload path the partner already uses for contract photos, so
- *      no new storage rules needed.
+ *   2. We turn it into a File and POST to `/upload/document?folder=whatsapp-docs`
+ *      — dedicated PDF upload endpoint (`/upload` itself is image-only).
  *   3. We POST the resulting URL + filename + dealId to `/whatsapp/send-document`,
  *      which checks ownership server-side and forwards to WaSender.
  *
@@ -37,7 +36,7 @@ export function useSendPdfWhatsApp() {
       const file = new File([args.blob], args.fileName, {
         type: args.blob.type || 'application/pdf',
       })
-      const url = await api.upload(file, 'whatsapp-docs')
+      const url = await api.uploadDocument(file, 'whatsapp-docs')
       const res = await api.post<{ sent: boolean; phone: string }>('/whatsapp/send-document', {
         dealId: args.dealId,
         documentUrl: url,

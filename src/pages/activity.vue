@@ -4,6 +4,7 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useRouter } from 'vue-router'
 import { formatCurrency, timeAgo } from '@/utils/formatters'
 import { userName, clientProfileName } from '@/types'
@@ -11,6 +12,7 @@ import type { ActivityType, ActivityLog, Deal, Payment } from '@/types'
 
 const { isDark } = useIsDark()
 const toast = useToast()
+const { isMobile } = useIsMobile()
 const router = useRouter()
 const store = useActivityStore()
 const dealsStore = useDealsStore()
@@ -255,7 +257,7 @@ function navigateToEntity(item: ActivityLog) {
   } else if (item.entityType === 'PAYMENT') {
     router.push('/payments')
   } else if (item.entityType === 'TRANSACTION') {
-    router.push('/finance')
+    router.push('/cashboxes')
   } else if (item.entityType === 'CLIENT') {
     router.push('/registry')
   } else if (item.entityType === 'PRODUCT') {
@@ -381,7 +383,7 @@ function navigateToEntity(item: ActivityLog) {
     </template>
 
     <!-- ── Details modal ── -->
-    <v-dialog v-model="detailsOpen" max-width="560" scrollable>
+    <v-dialog v-model="detailsOpen" max-width="560" scrollable :fullscreen="isMobile">
       <v-card v-if="selected" rounded="lg" class="details-card">
         <!-- Header -->
         <div class="details-header" :style="{ background: getTypeMeta(selected.type).color + '10', borderBottomColor: getTypeMeta(selected.type).color + '20' }">
@@ -1066,5 +1068,41 @@ function navigateToEntity(item: ActivityLog) {
   color: #d97706;
   font-size: 12px;
   line-height: 1.4;
+}
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .tabs-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    margin-bottom: 10px;
+  }
+  .tabs-row::-webkit-scrollbar { display: none; }
+  .tab-btn { flex-shrink: 0; }
+
+  .toolbar { gap: 8px; }
+  .filter-input-wrap {
+    flex: 1 1 100% !important;
+    max-width: 100% !important;
+  }
+  .filter-select {
+    flex: 1 1 100%;
+    max-width: 100% !important;
+  }
+
+  .timeline-group-label { padding: 10px 14px 6px; }
+  .activity-row { padding: 10px 14px; gap: 10px; }
+  .activity-icon {
+    width: 34px; height: 34px; min-width: 34px;
+    border-radius: 9px;
+  }
+  .activity-title { font-size: 13px; }
+  .activity-description { font-size: 12px; }
+  .activity-footer { gap: 8px; }
+
+  .details-header { padding: 16px 16px; gap: 12px; }
+  .details-header-icon { width: 38px; height: 38px; min-width: 38px; border-radius: 10px; }
 }
 </style>

@@ -69,6 +69,10 @@ const collapsed = ref(false);
 const sidebarWidth = computed(() => (collapsed.value ? 72 : 260));
 
 onMounted(() => {
+  // Skip partner-side fetches when this layout was applied by mistake to a
+  // public route (e.g. /investor/:token). Anonymous user, partner endpoints
+  // would 401 noisily.
+  if (route.path.startsWith('/investor/')) return
   notificationsStore.fetchNotifications()
   chats.refreshUnreadCount()
   const chatPoll = window.setInterval(() => chats.refreshUnreadCount(), 60_000)
@@ -140,7 +144,7 @@ const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?:
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
   { path: "/messages", title: "Сообщения", icon: "mdi-message-text-outline", staffOnly: true },
   { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
-  { path: "/finance", title: "Мой капитал", icon: "mdi-wallet-outline", requiredFeature: "finance" },
+  { path: "/cashboxes", title: "Кассы", icon: "mdi-wallet-outline", requiredFeature: "finance" },
   { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account", requiredFeature: "registry" },
   { path: "/staff", title: "Сотрудники", icon: "mdi-account-key", ownerOnly: true, requiredFeature: "staff" },
 ];
@@ -186,7 +190,6 @@ const routeTitles: Record<string, string> = {
   "/import": "Импорт продаж",
   "/create-product": "Новый товар",
   "/co-investors": "Со-инвесторы",
-  "/finance": "Мой капитал",
   "/registry": "Реестр клиентов",
   "/staff": "Сотрудники",
   "/activity": "История действий",
@@ -206,7 +209,6 @@ const routeSubtitles: Record<string, string> = {
   "/calculator": "Расчёт условий рассрочки",
   "/settings": "Профиль и настройки",
   "/co-investors": "Управление капиталом партнёров",
-  "/finance": "Учёт доходов и расходов",
   "/registry": "Проверяйте платёжеспособность клиентов",
   "/staff": "Управление доступами сотрудников",
   "/activity": "Журнал всех действий в личном кабинете",
@@ -237,7 +239,15 @@ const confirmLogout = async () => {
 </script>
 
 <template>
-  <v-responsive class="overflow-visible" :class="{ dark: isDark }">
+  <!-- Public routes (e.g. /investor/:token) accidentally falling under this
+       default layout — render the page bare without sidebar/header/etc.
+       The auth layout (used by /login etc.) is the proper place for these,
+       but the layouts plugin can miss the meta.layout on nested route files
+       (pages/investor/[token].vue), so we guard at the template level. -->
+  <v-app v-if="$route.path.startsWith('/investor/')">
+    <router-view />
+  </v-app>
+  <v-responsive v-else class="overflow-visible" :class="{ dark: isDark }">
     <v-app>
       <!-- Sidebar -->
       <v-navigation-drawer
@@ -422,7 +432,7 @@ const confirmLogout = async () => {
               >
                 <v-icon icon="mdi-menu" size="22" />
               </button>
-              <div>
+              <div class="lyt-header-titles">
                 <h1 class="lyt-header-title">
                   {{ routeTitles[route.path] || (route.path.startsWith('/deals/') ? 'Детали сделки' : route.path.startsWith('/clients/') ? 'Профиль клиента' : 'Страница') }}
                 </h1>
@@ -450,13 +460,14 @@ const confirmLogout = async () => {
                 </span>
               </button>
 
-              <!-- Calculator -->
-              <router-link to="/calculator" class="lyt-header-icon-btn" title="Калькулятор">
+              <!-- Calculator (hidden on mobile — available via sidebar) -->
+              <router-link v-if="!isMobile" to="/calculator" class="lyt-header-icon-btn" title="Калькулятор">
                 <v-icon icon="mdi-calculator" size="20" />
               </router-link>
 
-              <!-- Activity history (hidden for staff if partner disabled /activity via accessOverrides) -->
-              <v-tooltip v-if="authStore.canAccess('/activity')" :text="subscription.canAccess('activity') ? 'История действий' : 'Доступно с плана Стандарт'" location="bottom">
+              <!-- Activity history (hidden on mobile — available via sidebar.
+                   Also hidden for staff if partner disabled /activity via accessOverrides). -->
+              <v-tooltip v-if="!isMobile && authStore.canAccess('/activity')" :text="subscription.canAccess('activity') ? 'История действий' : 'Доступно с плана Стандарт'" location="bottom">
                 <template #activator="{ props: tip }">
                   <component
                     :is="subscription.canAccess('activity') ? 'router-link' : 'button'"
@@ -472,8 +483,8 @@ const confirmLogout = async () => {
                 </template>
               </v-tooltip>
 
-              <!-- Zakat (owner-only) -->
-              <router-link v-if="authStore.isOwner" to="/zakat" class="lyt-header-icon-btn" title="Закят">
+              <!-- Zakat (owner-only; hidden on mobile — available via sidebar) -->
+              <router-link v-if="!isMobile && authStore.isOwner" to="/zakat" class="lyt-header-icon-btn" title="Закят">
                 <v-icon icon="mdi-moon-waning-crescent" size="20" />
               </router-link>
 
@@ -1028,6 +1039,11 @@ const confirmLogout = async () => {
   color: #1a1a2e;
   letter-spacing: -0.3px;
   line-height: 1.2;
+  /* На мобиле длинные заголовки («Управление подпиской») могут
+     выталкивать кнопки справа за пределы экрана — обрезаем. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .lyt-header-subtitle {
@@ -1698,11 +1714,63 @@ const confirmLogout = async () => {
 /* ===== MOBILE ===== */
 @media (max-width: 767px) {
   .lyt-header {
-    padding: 12px 16px;
+    padding: 10px 12px;
+    gap: 8px;
   }
 
   .lyt-header-title {
     font-size: 17px;
+  }
+
+  .lyt-header-left {
+    /* Заголовок съёживается, но не вылазит. Без min-width: 0 длинные
+       названия пушат правую часть хедера за пределы экрана. */
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 auto;
+    /* Без явного min-width: 0 на wrapper'е .lyt-header-titles
+       text-overflow: ellipsis не сработает — flex-ребёнок по умолчанию
+       не сжимается ниже content-width. */
+  }
+  .lyt-header-titles {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+
+  .lyt-header-right {
+    /* Чуть теснее на мобиле — три кнопки (уведомления, +, профиль)
+       помещаются с зазором, не наезжая друг на друга. */
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  /* Бургер крупнее остальных — это primary nav-кнопка. */
+  .lyt-burger-btn {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  /* Кнопки справа компактнее: уведомления, +, профиль. */
+  .lyt-header-icon-btn,
+  .lyt-header-add-btn {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+  }
+  .lyt-header-user {
+    min-width: 36px;
+    min-height: 36px;
+  }
+  .lyt-header-user-avatar {
+    width: 32px;
+    height: 32px;
+  }
+  /* Скрываем шеврон и имя пользователя на мобиле — оставляем только аватар. */
+  .lyt-header-user-chevron,
+  .lyt-header-user-name {
+    display: none;
   }
 
   .lyt-logout-dialog {

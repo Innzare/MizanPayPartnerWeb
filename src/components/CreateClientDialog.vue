@@ -2,6 +2,7 @@
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import type { ClientProfile } from '@/types'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { PHONE_MASK } from '@/utils/formatters'
 
 const props = defineProps<{
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 
 const store = useClientProfilesStore()
 const toast = useToast()
+const { isMobile } = useIsMobile()
 
 const show = computed({
   get: () => props.modelValue,
@@ -72,7 +74,7 @@ async function save() {
 </script>
 
 <template>
-  <v-dialog v-model="show" max-width="600" scrollable persistent>
+  <v-dialog v-model="show" max-width="600" scrollable persistent :fullscreen="isMobile">
     <v-card rounded="lg">
       <v-card-title class="d-flex align-center justify-space-between pa-5 pb-3">
         <span class="text-h6">Новый клиент</span>

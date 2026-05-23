@@ -63,7 +63,7 @@ export const useAuthStore = defineStore('auth', () => {
     if (!role) return '/login'
     const overrides = user.value?.accessOverrides || []
     const SUBSCRIPTION_GATED = new Set([
-      '/analytics', '/import', '/activity', '/registry', '/co-investors', '/finance',
+      '/analytics', '/import', '/activity', '/registry', '/co-investors',
     ])
     const allowed = (ROLE_ROUTE_ACCESS[role] || []).filter((r) => !overrides.includes(r))
     const ungated = allowed.filter((r) => !SUBSCRIPTION_GATED.has(r))

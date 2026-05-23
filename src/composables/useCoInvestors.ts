@@ -14,7 +14,7 @@ export function useCoInvestors() {
     finally { loading.value = false }
   }
 
-  async function createCoInvestor(data: { name: string; phone?: string; capital: number; profitPercent: number }) {
+  async function createCoInvestor(data: { name: string; phone?: string; capital: number; profitPercent: number | null; cashBoxId?: string; nextPayoutDate?: string | null }) {
     const created = await api.post<CoInvestor>('/co-investors', data)
     coInvestors.value.push(created)
     return created

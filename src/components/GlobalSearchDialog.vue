@@ -4,6 +4,7 @@
     @update:model-value="(v) => emit('update:modelValue', v)"
     max-width="640"
     transition="fade-transition"
+    :fullscreen="isMobile"
   >
     <v-card rounded="xl" class="gs-card">
       <!-- Search input -->
@@ -138,6 +139,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { formatCurrency, formatPhone } from '@/utils/formatters'
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -146,6 +148,7 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const { isMobile } = useIsMobile()
 
 interface DealResult {
   id: string

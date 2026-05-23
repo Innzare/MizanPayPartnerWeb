@@ -3,6 +3,7 @@
     :model-value="modelValue"
     @update:model-value="(v) => emit('update:modelValue', v)"
     max-width="560"
+    :fullscreen="isMobile"
   >
     <v-card rounded="lg" class="quick-actions-card pa-6">
       <button class="dialog-close-sm" @click="emit('update:modelValue', false)">
@@ -116,9 +117,9 @@
           </div>
         </div>
 
-        <!-- Folder + Co-investors pickers (single-line dropdowns) -->
+        <!-- Folder + Cashbox pickers (single-line dropdowns) -->
         <div
-          v-if="allFolders.length > 0 || allCoInvestors.length > 0"
+          v-if="allFolders.length > 0 || allCashBoxes.length > 1"
           class="qa-pickers mb-4"
         >
           <!-- Folder dropdown (single-select) -->
@@ -167,33 +168,36 @@
             </div>
           </v-menu>
 
-          <!-- Co-investors dropdown (multi-select) -->
-          <v-menu v-if="allCoInvestors.length > 0" :close-on-content-click="false" offset="6">
+          <!-- Cashbox dropdown (single-select). Phase 3: deal goes into a
+               cashbox; CIs of that cashbox automatically share its profit. -->
+          <v-menu v-if="allCashBoxes.length > 1" :close-on-content-click="true" offset="6">
             <template #activator="{ props: menuProps }">
               <button type="button" class="qa-picker-trigger" v-bind="menuProps">
-                <v-icon icon="mdi-account-group-outline" size="14" />
-                <span v-if="selectedCoInvestorIds.length > 0" class="qa-picker-active">
-                  Со-инвесторы · {{ selectedCoInvestorIds.length }}
+                <v-icon
+                  icon="mdi-wallet-outline"
+                  size="14"
+                  :style="selectedCashBox ? { color: selectedCashBox.color } : undefined"
+                />
+                <span v-if="selectedCashBox" :style="{ color: selectedCashBox.color }">
+                  {{ selectedCashBox.name }}
                 </span>
-                <span v-else class="qa-picker-placeholder">Со-инвесторы</span>
+                <span v-else class="qa-picker-placeholder">Касса</span>
                 <v-icon icon="mdi-chevron-down" size="14" class="qa-picker-caret" />
               </button>
             </template>
             <div class="qa-menu">
               <button
-                v-for="ci in allCoInvestors"
-                :key="ci.id"
+                v-for="b in allCashBoxes"
+                :key="b.id"
                 type="button"
                 class="qa-menu-item"
-                :class="{ selected: selectedCoInvestorIds.includes(ci.id) }"
-                @click="toggleCoInvestor(ci.id)"
+                :class="{ selected: selectedCashBoxId === b.id }"
+                @click="selectedCashBoxId = b.id"
               >
-                <v-icon
-                  :icon="selectedCoInvestorIds.includes(ci.id) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline'"
-                  size="14"
-                />
-                <span>{{ ci.name }}</span>
-                <span class="qa-menu-item-pct">{{ ci.profitPercent }}%</span>
+                <v-icon :icon="b.icon" size="14" :style="{ color: b.color }" />
+                <span>{{ b.name }}</span>
+                <span v-if="b.isDefault" class="qa-menu-item-pct">осн.</span>
+                <v-icon v-if="selectedCashBoxId === b.id" icon="mdi-check" size="14" class="ml-auto" />
               </button>
             </div>
           </v-menu>
@@ -379,6 +383,9 @@ import { api } from '@/api/client'
 import { useDealsStore } from '@/stores/deals'
 import { useToast } from '@/composables/useToast'
 import { useFolders } from '@/composables/useFolders'
+import { useCashBoxesStore } from '@/stores/cashboxes'
+import { storeToRefs } from 'pinia'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { CURRENCY_MASK, formatPhone, formatCurrency, formatDate } from '@/utils/formatters'
 import ClientPicker from './ClientPicker.vue'
 import type { ClientProfile, DealFolder } from '@/types'
@@ -394,6 +401,7 @@ const emit = defineEmits<{
 const router = useRouter()
 const dealsStore = useDealsStore()
 const { show: showToast } = useToast()
+const { isMobile } = useIsMobile()
 
 function openDeal(id: string) {
   emit('update:modelValue', false)
@@ -438,34 +446,36 @@ const sale = reactive({
 })
 const creating = ref(false)
 
-// Co-investors + folder bindings (mirror create-deal page)
-interface CoInvestorOption { id: string; name: string; profitPercent: number }
-const allCoInvestors = ref<CoInvestorOption[]>([])
-const selectedCoInvestorIds = ref<string[]>([])
+// Cashbox + folder bindings. Phase 3: deal-CI relationship is via cashbox
+// membership, so the partner picks WHERE the deal lives (cashbox) — CIs of
+// that cashbox automatically share its profit.
 const { folders: allFolders, fetchFolders } = useFolders()
 const selectedFolderId = ref<string | null>(null)
+const cashBoxesStore = useCashBoxesStore()
+const { items: allCashBoxes } = storeToRefs(cashBoxesStore)
+const selectedCashBoxId = ref<string | null>(null)
 
-// Cache co-investors + folders once on first dialog open. The dialog
-// can be reopened many times, so don't re-fetch on every open.
+const selectedCashBox = computed(() =>
+  selectedCashBoxId.value
+    ? allCashBoxes.value.find((b) => b.id === selectedCashBoxId.value) ?? null
+    : null,
+)
+
+// Cache options once on first dialog open. The dialog can be reopened
+// many times, so don't re-fetch on every open.
 const optionsLoaded = ref(false)
 async function ensureOptionsLoaded() {
   if (optionsLoaded.value) return
   try {
-    const [cis] = await Promise.all([
-      api.get<any[]>('/co-investors'),
-      fetchFolders(),
-    ])
-    allCoInvestors.value = cis.map((c) => ({ id: c.id, name: c.name, profitPercent: c.profitPercent }))
+    await Promise.all([fetchFolders(), cashBoxesStore.fetchAll()])
+    // Default to the partner's «Основная» cashbox so simple sales just work.
+    if (!selectedCashBoxId.value) {
+      selectedCashBoxId.value = cashBoxesStore.getDefault()?.id ?? allCashBoxes.value[0]?.id ?? null
+    }
     optionsLoaded.value = true
   } catch { /* non-blocking */ }
 }
 onMounted(ensureOptionsLoaded)
-
-function toggleCoInvestor(id: string) {
-  const idx = selectedCoInvestorIds.value.indexOf(id)
-  if (idx >= 0) selectedCoInvestorIds.value.splice(idx, 1)
-  else selectedCoInvestorIds.value.push(id)
-}
 
 function resetSale() {
   sale.clientProfileId = null
@@ -475,8 +485,9 @@ function resetSale() {
   sale.markupPercent = 15
   sale.numberOfPayments = 6
   sale.downPayment = ''
-  selectedCoInvestorIds.value = []
   selectedFolderId.value = null
+  // Keep cashbox selection across "Создать и ещё" — most partners stick to
+  // one cashbox per session. Default cashbox is restored on next dialog open.
 }
 
 const selectedFolder = computed<DealFolder | null>(() =>
@@ -532,27 +543,19 @@ async function onCreateSale(keepOpen: boolean) {
       markupPercent: sale.markupPercent,
       numberOfPayments: sale.numberOfPayments,
       downPayment: unmaskCurrency(sale.downPayment) || undefined,
+      cashBoxId: selectedCashBoxId.value ?? undefined,
     })
 
-    // Link selected co-investors + place into folder. Best-effort: failures
-    // here don't invalidate the just-created deal, partner can re-attach
-    // from the deal page.
-    if (deal?.id) {
-      if (selectedCoInvestorIds.value.length > 0) {
-        await Promise.allSettled(
-          selectedCoInvestorIds.value.map((ciId) =>
-            api.post(`/co-investors/${ciId}/deals/${deal.id}`),
-          ),
-        )
-      }
-      if (selectedFolderId.value) {
-        try {
-          await api.post('/deal-folders/move', {
-            dealId: deal.id,
-            folderId: selectedFolderId.value,
-          })
-        } catch { /* non-blocking */ }
-      }
+    // Place into selected folder. Best-effort — a folder failure doesn't
+    // invalidate the just-created deal, partner can re-attach from the
+    // deal page.
+    if (deal?.id && selectedFolderId.value) {
+      try {
+        await api.post('/deal-folders/move', {
+          dealId: deal.id,
+          folderId: selectedFolderId.value,
+        })
+      } catch { /* non-blocking */ }
     }
 
     showToast('Продажа создана', 'success')

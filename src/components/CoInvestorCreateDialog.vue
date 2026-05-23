@@ -4,6 +4,7 @@
     @update:model-value="(v) => emit('update:modelValue', v)"
     max-width="480"
     persistent
+    :fullscreen="isMobile"
   >
     <v-card rounded="lg" class="cicd">
       <div class="cicd-header">
@@ -53,30 +54,58 @@
         </div>
 
         <div class="cicd-field mb-2">
-          <label class="cicd-label">Процент от прибыли <span style="color: #ef4444;">*</span></label>
-          <div class="cicd-presets mb-2">
+          <label class="cicd-label">Доля прибыли <span style="color: #ef4444;">*</span></label>
+          <div class="cicd-mode-toggle mb-3">
             <button
-              v-for="p in PERCENT_PRESETS"
-              :key="p"
-              class="cicd-chip"
-              :class="{ 'cicd-chip--active': form.profitPercent === p }"
-              @click="form.profitPercent = p"
+              type="button"
+              class="cicd-mode-btn"
+              :class="{ 'cicd-mode-btn--active': form.mode === 'fixed' }"
+              @click="form.mode = 'fixed'"
             >
-              {{ p }}%
+              <v-icon icon="mdi-handshake-outline" size="14" />
+              Фикс. процент
+            </button>
+            <button
+              type="button"
+              class="cicd-mode-btn"
+              :class="{ 'cicd-mode-btn--active': form.mode === 'weight' }"
+              @click="form.mode = 'weight'"
+            >
+              <v-icon icon="mdi-scale-balance" size="14" />
+              По капиталу
             </button>
           </div>
-          <div class="cicd-input-wrap">
-            <input
-              v-model.number="form.profitPercent"
-              type="number"
-              class="cicd-input"
-              placeholder="30"
-              min="1"
-              max="99"
-            />
-            <span class="cicd-suffix">%</span>
+
+          <template v-if="form.mode === 'fixed'">
+            <div class="cicd-presets mb-2">
+              <button
+                v-for="p in PERCENT_PRESETS"
+                :key="p"
+                class="cicd-chip"
+                :class="{ 'cicd-chip--active': form.profitPercent === p }"
+                @click="form.profitPercent = p"
+              >
+                {{ p }}%
+              </button>
+            </div>
+            <div class="cicd-input-wrap">
+              <input
+                v-model.number="form.profitPercent"
+                type="number"
+                class="cicd-input"
+                placeholder="30"
+                min="1"
+                max="99"
+              />
+              <span class="cicd-suffix">%</span>
+            </div>
+            <div class="cicd-hint">От 1% до 99%. Этот процент со-инвестор будет забирать с каждой сделки кассы первым.</div>
+          </template>
+
+          <div v-else class="cicd-hint cicd-hint--info">
+            <v-icon icon="mdi-information-outline" size="14" />
+            Со-инвестор получит долю пропорционально вложенному капиталу — из остатка после со-инвесторов с фиксированным процентом.
           </div>
-          <div class="cicd-hint">От 1% до 99%. Ваша доля: {{ 100 - (form.profitPercent || 0) }}%</div>
         </div>
       </div>
 
@@ -96,6 +125,7 @@ import { reactive, ref, computed, watch, nextTick } from 'vue'
 import { vMaska } from 'maska/vue'
 import { useCoInvestors } from '@/composables/useCoInvestors'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { PHONE_MASK, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import type { CoInvestor } from '@/types'
 
@@ -107,22 +137,32 @@ const emit = defineEmits<{
 
 const { createCoInvestor } = useCoInvestors()
 const { show: showToast } = useToast()
+const { isMobile } = useIsMobile()
 
 const PERCENT_PRESETS = [10, 20, 30, 40, 50]
 
-const form = reactive({ name: '', phone: '', capital: 0, profitPercent: 30 })
+const form = reactive<{
+  name: string
+  phone: string
+  capital: number
+  mode: 'fixed' | 'weight'
+  profitPercent: number
+}>({ name: '', phone: '', capital: 0, mode: 'fixed', profitPercent: 30 })
 const saving = ref(false)
 const nameInputRef = ref<HTMLInputElement | null>(null)
 
-const canSave = computed(
-  () => !!form.name.trim() && form.capital > 0 && form.profitPercent >= 1 && form.profitPercent <= 99,
-)
+const canSave = computed(() => {
+  if (!form.name.trim() || form.capital <= 0) return false
+  if (form.mode === 'fixed') return form.profitPercent >= 1 && form.profitPercent <= 99
+  return true
+})
 
 watch(() => props.modelValue, (open) => {
   if (open) {
     form.name = ''
     form.phone = ''
     form.capital = 0
+    form.mode = 'fixed'
     form.profitPercent = 30
     nextTick(() => nameInputRef.value?.focus())
   }
@@ -140,7 +180,7 @@ async function onSave() {
       name: form.name.trim(),
       phone: form.phone || undefined,
       capital: form.capital,
-      profitPercent: form.profitPercent,
+      profitPercent: form.mode === 'fixed' ? form.profitPercent : null,
     })
     showToast('Со-инвестор создан', 'success')
     emit('created', created)
@@ -195,6 +235,38 @@ async function onSave() {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.5);
   margin-top: 6px;
+}
+
+.cicd-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 4px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-radius: 10px;
+}
+.cicd-mode-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 10px; border-radius: 7px; border: none;
+  background: transparent;
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer; transition: all 0.15s;
+}
+.cicd-mode-btn:hover { color: rgba(var(--v-theme-on-surface), 0.85); }
+.cicd-mode-btn--active {
+  background: rgb(var(--v-theme-surface));
+  color: #047857;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+.cicd-hint--info {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 10px 12px;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  line-height: 1.4;
 }
 
 .cicd-presets { display: flex; gap: 6px; flex-wrap: wrap; }

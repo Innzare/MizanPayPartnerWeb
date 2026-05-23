@@ -2,6 +2,7 @@
 import { api } from '@/api/client'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import { StarterKit } from '@tiptap/starter-kit'
 import { Underline } from '@tiptap/extension-underline'
@@ -21,6 +22,7 @@ import { CONTRACT_TEMPLATES, CONTRACT_VARIABLES, type ContractTemplate } from '@
 
 const { isDark } = useIsDark()
 const toast = useToast()
+const { isMobile } = useIsMobile()
 
 // State
 const loading = ref(true)
@@ -369,7 +371,7 @@ onBeforeUnmount(() => { editor.value?.destroy() })
     </template>
 
     <!-- Template picker dialog -->
-    <v-dialog v-model="showTemplateDialog" max-width="600">
+    <v-dialog v-model="showTemplateDialog" max-width="600" :fullscreen="isMobile">
       <v-card rounded="xl" class="pa-6">
         <div class="d-flex align-center justify-space-between mb-4">
           <div style="font-size: 18px; font-weight: 700;">Выберите шаблон</div>
@@ -642,5 +644,35 @@ onBeforeUnmount(() => { editor.value?.destroy() })
   .cb-vars-panel { position: static; max-height: none; }
   .cb-paper { padding: 24px 20px; }
   .cb-template-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+  .cb-header {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+  .cb-title { font-size: 15px; }
+  .cb-subtitle { font-size: 12px; }
+  .cb-header > * { flex: 1 1 100%; }
+  .cb-header > div:last-child {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .cb-btn { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 8px 10px; }
+
+  .cb-toolbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    padding: 6px 8px;
+  }
+  .cb-toolbar::-webkit-scrollbar { display: none; }
+  .cb-toolbar-group { flex-shrink: 0; }
+
+  .cb-paper { padding: 18px 14px; }
 }
 </style>

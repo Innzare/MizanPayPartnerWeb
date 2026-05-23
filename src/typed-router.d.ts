@@ -22,6 +22,8 @@ declare module 'vue-router/auto-routes' {
     '/activity': RouteRecordInfo<'/activity', '/activity', Record<never, never>, Record<never, never>>,
     '/analytics': RouteRecordInfo<'/analytics', '/analytics', Record<never, never>, Record<never, never>>,
     '/calculator': RouteRecordInfo<'/calculator', '/calculator', Record<never, never>, Record<never, never>>,
+    '/cashboxes/': RouteRecordInfo<'/cashboxes/', '/cashboxes', Record<never, never>, Record<never, never>>,
+    '/cashboxes/[id]': RouteRecordInfo<'/cashboxes/[id]', '/cashboxes/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/clients': RouteRecordInfo<'/clients', '/clients', Record<never, never>, Record<never, never>, '/clients/' | '/clients/[id]'>,
     '/clients/': RouteRecordInfo<'/clients/', '/clients', Record<never, never>, Record<never, never>>,
     '/clients/[id]': RouteRecordInfo<'/clients/[id]', '/clients/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
@@ -34,10 +36,10 @@ declare module 'vue-router/auto-routes' {
     '/deals': RouteRecordInfo<'/deals', '/deals', Record<never, never>, Record<never, never>, '/deals/' | '/deals/[id]'>,
     '/deals/': RouteRecordInfo<'/deals/', '/deals', Record<never, never>, Record<never, never>>,
     '/deals/[id]': RouteRecordInfo<'/deals/[id]', '/deals/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
-    '/finance': RouteRecordInfo<'/finance', '/finance', Record<never, never>, Record<never, never>>,
     '/forgot-password': RouteRecordInfo<'/forgot-password', '/forgot-password', Record<never, never>, Record<never, never>>,
     '/import/': RouteRecordInfo<'/import/', '/import', Record<never, never>, Record<never, never>>,
     '/import/drafts/[id]': RouteRecordInfo<'/import/drafts/[id]', '/import/drafts/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/investor/[token]': RouteRecordInfo<'/investor/[token]', '/investor/:token', { token: ParamValue<true> }, { token: ParamValue<false> }>,
     '/login': RouteRecordInfo<'/login', '/login', Record<never, never>, Record<never, never>>,
     '/messages': RouteRecordInfo<'/messages', '/messages', Record<never, never>, Record<never, never>>,
     '/notifications': RouteRecordInfo<'/notifications', '/notifications', Record<never, never>, Record<never, never>>,
@@ -78,6 +80,14 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/calculator.vue': {
       routes: '/calculator'
+      views: never
+    }
+    'src/pages/cashboxes/index.vue': {
+      routes: '/cashboxes/'
+      views: never
+    }
+    'src/pages/cashboxes/[id].vue': {
+      routes: '/cashboxes/[id]'
       views: never
     }
     'src/pages/clients.vue': {
@@ -128,10 +138,6 @@ declare module 'vue-router/auto-routes' {
       routes: '/deals/[id]'
       views: never
     }
-    'src/pages/finance.vue': {
-      routes: '/finance'
-      views: never
-    }
     'src/pages/forgot-password.vue': {
       routes: '/forgot-password'
       views: never
@@ -142,6 +148,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/import/drafts/[id].vue': {
       routes: '/import/drafts/[id]'
+      views: never
+    }
+    'src/pages/investor/[token].vue': {
+      routes: '/investor/[token]'
       views: never
     }
     'src/pages/login.vue': {

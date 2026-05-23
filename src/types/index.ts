@@ -105,7 +105,7 @@ export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
 // Routes accessible per role (owner = all routes). The home page `/` is
 // owner-only — staff is redirected to /deals (or first accessible route).
 export const ROLE_ROUTE_ACCESS: Record<StaffRole, string[]> = {
-  MANAGER: ['/analytics', '/deals', '/clients', '/payments', '/products', '/requests', '/co-investors', '/finance', '/registry', '/notifications', '/activity', '/calculator', '/create-deal', '/create-product', '/import', '/messages'],
+  MANAGER: ['/analytics', '/deals', '/clients', '/payments', '/products', '/requests', '/co-investors', '/cashboxes', '/registry', '/notifications', '/activity', '/calculator', '/create-deal', '/create-product', '/import', '/messages'],
   OPERATOR: ['/analytics', '/deals', '/clients', '/payments', '/notifications', '/activity', '/calculator', '/messages'],
 }
 
@@ -118,7 +118,7 @@ export const STAFF_TOGGLEABLE_ROUTES: { path: string; label: string; icon: strin
   { path: '/clients', label: 'Клиенты', icon: 'mdi-account-group' },
   { path: '/payments', label: 'Платежи', icon: 'mdi-cash-multiple' },
   { path: '/co-investors', label: 'Со-инвесторы', icon: 'mdi-account-group-outline' },
-  { path: '/finance', label: 'Мой капитал', icon: 'mdi-wallet-outline' },
+  { path: '/cashboxes', label: 'Кассы', icon: 'mdi-wallet-outline' },
   { path: '/registry', label: 'Реестр клиентов', icon: 'mdi-shield-account' },
   { path: '/activity', label: 'История действий', icon: 'mdi-history' },
 ]
@@ -186,9 +186,13 @@ export interface Deal {
   paymentInterval: PaymentInterval
   paymentType: PaymentType
   firstPaymentDate?: string
+  dealDate?: string
   status: DealStatus
   folderId?: string | null
   folder?: DealFolder | null
+  // Cashbox the deal belongs to (Phase 1 cashboxes). Nullable in API
+  // responses until all clients are upgraded; backend always populates it.
+  cashBoxId?: string | null
   // Linked co-investors (only id+name as returned by findMyDeals)
   coInvestors?: { coInvestor: { id: string; name: string } }[]
   // Staff member assigned as the responsible party for this deal
@@ -221,31 +225,34 @@ export const PAYOUT_SCHEDULE_LABELS: Record<PayoutSchedule, string> = {
   ANNUAL: 'Раз в год',
 }
 
-export type CoInvestorMode = 'PER_DEAL' | 'POOL'
 export type PoolModel = 'PARTICIPATING' | 'MANAGING'
-
-export const CO_INVESTOR_MODE_LABELS: Record<CoInvestorMode, string> = {
-  PER_DEAL: 'По сделкам',
-  POOL: 'Общий пул',
-}
 
 export const POOL_MODEL_LABELS: Record<PoolModel, string> = {
   PARTICIPATING: 'Совместная мудараба',
   MANAGING: 'Управление с комиссией',
 }
 
+// Phase 3: single CI model. profitPercent is optional —
+//   • set (1..99) → fixed share of every deal in the cashbox.
+//   • null        → weight-based (share by capital ratio).
+// Every CI lives in exactly one cashbox and participates in all its deals.
 export interface CoInvestor {
   id: string
   name: string
   phone: string | null
   capital: number
-  profitPercent: number
+  profitPercent: number | null
+  cashBoxId: string
   payoutSchedule?: PayoutSchedule
-  mode?: CoInvestorMode
+  // Planned date of the next dividend payout. Auto-advances after each
+  // actual payDividends call by one `payoutSchedule` period.
+  nextPayoutDate?: string | null
   // Live balances. Backend returns these via the `...ci` spread on findAll.
   currentCapital?: number
   realizedProfit?: number
   totalPayout?: number
+  // Public read-only share link. Partner can hand the URL to the CI.
+  shareToken?: string | null
   createdAt: string
 }
 
@@ -273,7 +280,7 @@ export interface CoInvestorJournal {
 }
 
 export interface CoInvestorSummary {
-  coInvestor: { id: string; name: string; phone: string | null; profitPercent: number; payoutSchedule?: PayoutSchedule; mode?: CoInvestorMode }
+  coInvestor: { id: string; name: string; phone: string | null; profitPercent: number | null; payoutSchedule?: PayoutSchedule; nextPayoutDate?: string | null }
   currentCapital: number
   capitalIn: number
   capitalOut: number
@@ -282,6 +289,17 @@ export interface CoInvestorSummary {
   balanceOwed: number
   activeDeployment: number
   activeDealsCount: number
+  // Phase 3: CI's effective share of cashbox profit (0..100). Mirrors
+  // accrueProfitForCoInvestors so the UI breakdown matches journal entries.
+  effectivePct: number
+  activeDealsBreakdown: Array<{
+    id: string
+    dealNumber: number
+    productName: string
+    purchasePrice: number
+    dealDate: string
+    stake: number
+  }>
 }
 
 // Payment
