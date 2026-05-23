@@ -960,8 +960,10 @@ function renderStars(rating: number): string[] {
 .rg-page {
   max-width: 1200px;
   margin: 0 auto;
-  padding-top: 32px;
-  padding-bottom: 32px;
+  padding: 32px 24px;
+}
+@media (max-width: 768px) {
+  .rg-page { padding: 16px 14px; }
 }
 
 /* ── Hero search ── */
@@ -1849,12 +1851,48 @@ function renderStars(rating: number): string[] {
 
 /* ── Mobile ── */
 @media (max-width: 768px) {
+  /* Hero */
+  .rg-hero {
+    padding: 20px 18px;
+    margin-bottom: 16px;
+    border-radius: 14px;
+  }
+  .rg-hero::before { width: 220px; height: 220px; }
+  .rg-hero::after { width: 180px; height: 180px; }
+  .rg-hero-title { font-size: 18px; margin-bottom: 4px; }
+  .rg-hero-subtitle { font-size: 12.5px; margin-bottom: 14px; line-height: 1.4; }
+  .rg-search-input {
+    padding: 12px 42px 12px 42px;
+    font-size: 14px;
+    border-radius: 10px;
+  }
+  .rg-search-icon { left: 12px; }
+  .rg-search-spinner { right: 12px; }
+
+  /* Mode switch — full-width, 2 кнопки на всю ширину */
+  .rg-mode-switch {
+    width: 100%;
+    gap: 4px;
+  }
+  .rg-mode-btn {
+    flex: 1;
+    justify-content: center;
+    padding: 0 10px;
+    font-size: 12.5px;
+    height: 36px;
+    gap: 5px;
+  }
+  .rg-mode-btn .v-icon { font-size: 16px !important; }
+  .rg-mode-count { min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
+
+  /* Stats row */
   .stats-row { grid-template-columns: 1fr; gap: 8px; }
   .stat-card { padding: 12px 14px; gap: 12px; }
   .stat-icon { width: 36px; height: 36px; min-width: 36px; border-radius: 9px; }
   .stat-value { font-size: 17px; }
   .stat-label { font-size: 11px; }
 
+  /* Tabs (status filter) */
   .rg-tabs {
     flex-wrap: nowrap;
     -webkit-overflow-scrolling: touch;
@@ -1863,6 +1901,7 @@ function renderStars(rating: number): string[] {
   .rg-tabs::-webkit-scrollbar { display: none; }
   .rg-tab { padding: 7px 12px; font-size: 12.5px; }
 
+  /* Type filter (platform/external) */
   .rg-type-filter {
     overflow-x: auto;
     flex-wrap: nowrap;
@@ -1872,13 +1911,51 @@ function renderStars(rating: number): string[] {
   .rg-type-filter::-webkit-scrollbar { display: none; }
   .rg-type-btn { flex-shrink: 0; padding: 7px 11px; font-size: 11.5px; }
 
+  /* Card header */
   .rg-header { padding: 12px 14px; gap: 10px; }
   .rg-avatar { width: 40px; height: 40px; min-width: 40px; border-radius: 11px; font-size: 14px; }
   .rg-name { font-size: 14px; }
-  .rg-meta { font-size: 12px; }
+  .rg-meta { font-size: 12px; line-height: 1.4; }
   .rg-status-badge { font-size: 10px; padding: 2px 7px; }
 
+  /* Expanded section — компактнее */
+  .rg-expanded { padding: 0 14px 14px; }
+  .rg-stats-mobile { gap: 6px; margin: 12px 0; }
+  .rg-stat-m { padding: 8px 10px; }
+  .rg-stat-m-label { font-size: 10.5px; }
+  .rg-stat-m-value { font-size: 13.5px; }
+
+  .rg-detail-section { margin-top: 12px; }
+  .rg-section-title { font-size: 12px; margin-bottom: 8px; }
+  .rg-detail-grid { gap: 6px; }
+  .rg-detail-item { padding: 8px 10px; }
+  .rg-detail-label { font-size: 10.5px; }
+  .rg-detail-value { font-size: 14px; }
+
+  .rg-bl-reason { padding: 10px 12px; font-size: 12.5px; }
+
+  /* Hints / disclaimers */
   .rg-disclaimer { padding: 10px 12px; gap: 8px; }
-  .rg-global-hint { padding: 10px 12px; font-size: 12px; }
+  .rg-disclaimer-title { font-size: 12px; }
+  .rg-disclaimer-text { font-size: 11.5px; line-height: 1.4; }
+  .rg-global-hint { padding: 10px 12px; font-size: 12px; gap: 8px; }
+
+  /* Empty state */
+  .rg-empty { padding: 32px 16px; }
+  .rg-empty-icon { width: 64px; height: 64px; margin-bottom: 12px; }
+  .rg-empty-title { font-size: 16px; }
+  .rg-empty-subtitle { font-size: 13px; }
+}
+
+/* Очень узкие экраны (<480px) — ещё компактнее */
+@media (max-width: 480px) {
+  .rg-hero { padding: 16px 14px; }
+  .rg-hero-title { font-size: 16px; }
+  .rg-hero-subtitle { display: none; }
+
+  .rg-mode-btn span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .rg-stats-mobile { grid-template-columns: repeat(2, 1fr); }
+  .rg-detail-grid { grid-template-columns: 1fr; }
 }
 </style>

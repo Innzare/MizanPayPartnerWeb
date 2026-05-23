@@ -2,8 +2,9 @@
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
+import { useAuthStore } from '@/stores/auth'
 import { type ClientProfile, type ClientProfileStats, clientProfileName, type Deal } from '@/types'
-import { formatCurrency, formatDate, formatPhone, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatPhone, timeAgo, PHONE_MASK } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
@@ -14,6 +15,7 @@ const router = useRouter()
 const clientsStore = useClientProfilesStore()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
+const authStore = useAuthStore()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 
@@ -28,7 +30,9 @@ const resolvedProfileId = ref<string | null>(null)
 // Edit mode
 const editing = ref(false)
 const saving = ref(false)
+const publishing = ref(false)
 const form = ref({
+  phone: '',
   firstName: '',
   lastName: '',
   patronymic: '',
@@ -110,12 +114,19 @@ function cleanPhone(phone: string) {
   return phone.replace(/\D/g, '')
 }
 
-// Only external clients (no userId) can be edited by investor
-const canEdit = computed(() => profile.value && !profile.value.userId)
+// Only the creator can edit a non-platform profile. Platform clients (with userId)
+// are read-only — their data comes from the User entity.
+const canEdit = computed(() => {
+  if (!profile.value) return false
+  if (profile.value.userId) return false
+  const me = (authStore.user as any)?.id
+  return profile.value.createdByInvestorId === me
+})
 
 function startEditing() {
   if (!profile.value) return
   form.value = {
+    phone: profile.value.phone || '',
     firstName: profile.value.firstName || '',
     lastName: profile.value.lastName || '',
     patronymic: profile.value.patronymic || '',
@@ -136,10 +147,14 @@ async function saveProfile() {
     toast.error('Имя и фамилия обязательны')
     return
   }
+  if (!form.value.phone || form.value.phone.replace(/\D/g, '').length < 10) {
+    toast.error('Укажите корректный номер телефона')
+    return
+  }
   saving.value = true
   try {
     const data: Record<string, string | undefined> = {}
-    const fields = ['firstName', 'lastName', 'patronymic', 'birthDate', 'passportSeries',
+    const fields = ['phone', 'firstName', 'lastName', 'patronymic', 'birthDate', 'passportSeries',
       'passportNumber', 'passportIssuedBy', 'passportIssuedAt', 'registrationAddress',
       'residentialAddress', 'inn'] as const
     for (const key of fields) data[key] = form.value[key] || undefined
@@ -150,6 +165,22 @@ async function saveProfile() {
     toast.error(e.message || 'Ошибка сохранения')
   } finally {
     saving.value = false
+  }
+}
+
+// Publish / unpublish to global registry
+async function togglePublish() {
+  if (!profile.value || !resolvedProfileId.value) return
+  publishing.value = true
+  try {
+    profile.value = profile.value.isPublic
+      ? await clientsStore.unpublish(resolvedProfileId.value)
+      : await clientsStore.publish(resolvedProfileId.value)
+    toast.success(profile.value.isPublic ? 'Профиль опубликован в реестре' : 'Профиль убран из реестра')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось изменить публикацию')
+  } finally {
+    publishing.value = false
   }
 }
 
@@ -262,6 +293,21 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
               </button>
             </div>
           </v-card>
+
+          <!-- Publish to registry -->
+          <div v-if="canEdit && profile" class="publish-card">
+            <div class="publish-card-row">
+              <v-icon :icon="profile.isPublic ? 'mdi-earth' : 'mdi-earth-off'" size="20" :color="profile.isPublic ? '#047857' : '#9ca3af'" />
+              <div class="publish-card-text">
+                <div class="publish-card-title">{{ profile.isPublic ? 'В глобальном реестре' : 'Только для вас' }}</div>
+                <div class="publish-card-sub">{{ profile.isPublic ? 'Другие партнёры видят этот профиль в реестре' : 'Можно опубликовать в общий реестр для всех партнёров' }}</div>
+              </div>
+              <button class="publish-btn" :class="{ 'publish-btn--active': profile.isPublic }" :disabled="publishing" @click="togglePublish">
+                <v-progress-circular v-if="publishing" indeterminate size="14" width="2" />
+                <template v-else>{{ profile.isPublic ? 'Убрать' : 'Опубликовать' }}</template>
+              </button>
+            </div>
+          </div>
 
           <!-- Blacklist alert -->
           <v-alert
@@ -449,9 +495,23 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
                   <v-text-field v-model="form.patronymic" label="Отчество" density="compact" variant="outlined" rounded="lg" />
                 </v-col>
                 <v-col cols="12" sm="6">
-                  <v-text-field v-model="form.birthDate" label="Дата рождения" type="date" density="compact" variant="outlined" rounded="lg" />
+                  <v-text-field
+                    v-model="form.phone"
+                    v-maska="PHONE_MASK"
+                    label="Телефон *"
+                    type="tel"
+                    placeholder="+7 (___) ___-__-__"
+                    density="compact"
+                    variant="outlined"
+                    rounded="lg"
+                    hint="Идентификатор клиента в системе"
+                    persistent-hint
+                  />
                 </v-col>
                 <v-col cols="12" sm="6">
+                  <v-text-field v-model="form.birthDate" label="Дата рождения" type="date" density="compact" variant="outlined" rounded="lg" />
+                </v-col>
+                <v-col cols="12">
                   <v-text-field v-model="form.inn" label="ИНН" density="compact" variant="outlined" rounded="lg" />
                 </v-col>
               </v-row>
@@ -585,6 +645,47 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-size: 28px; font-weight: 700;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.publish-card {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.publish-card-row {
+  display: flex; align-items: center; gap: 12px;
+}
+.publish-card-text { flex: 1; min-width: 0; }
+.publish-card-title {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.publish-card-sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 2px;
+}
+.publish-btn {
+  flex-shrink: 0;
+  height: 32px; padding: 0 14px;
+  border-radius: 8px; border: none;
+  background: #047857; color: #fff;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.publish-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.publish-btn:hover:not(:disabled) { background: #065f46; }
+.publish-btn--active {
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+}
+.publish-btn--active:hover:not(:disabled) {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.85);
 }
 
 .contact-row {

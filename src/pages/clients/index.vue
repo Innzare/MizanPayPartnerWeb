@@ -215,6 +215,16 @@ const selectedDealPaidTotal = computed(() =>
       </div>
     </div>
 
+    <!-- Hint -->
+    <div class="clients-hint">
+      <v-icon icon="mdi-information-outline" size="18" />
+      <div>
+        Здесь отображаются только клиенты с активными или завершёнными сделками.
+        Для полного списка перейдите в
+        <router-link to="/registry" class="clients-hint-link">реестр клиентов</router-link>.
+      </div>
+    </div>
+
     <!-- Main card -->
     <v-card rounded="lg" elevation="0" border>
       <div class="pa-4">
@@ -521,6 +531,33 @@ const selectedDealPaidTotal = computed(() =>
    (например «Остаток к получению» с 7-значной цифрой) не помещались
    в 2-col layout и переносились или обрезались. */
 @media (max-width: 600px) { .stats-row { grid-template-columns: 1fr; gap: 8px; } }
+
+.clients-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+.clients-hint .v-icon {
+  color: #3b82f6;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.clients-hint-link {
+  color: #3b82f6;
+  text-decoration: none;
+  font-weight: 600;
+}
+.clients-hint-link:hover {
+  text-decoration: underline;
+}
 
 /* Строка поиска: на десктопе input ограничен 360px и слева, счётчик справа.
    На мобиле input — на всю ширину, счётчик уходит под него. */

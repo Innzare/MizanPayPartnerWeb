@@ -18,7 +18,8 @@ export interface CreateClientProfileInput {
   inn?: string
 }
 
-export type UpdateClientProfileInput = Partial<Omit<CreateClientProfileInput, 'phone'>>
+// Phone is now editable (per-partner uniqueness only)
+export type UpdateClientProfileInput = Partial<CreateClientProfileInput>
 
 export const useClientProfilesStore = defineStore('clientProfiles', () => {
   const myClients = ref<ClientProfile[]>([])
@@ -67,12 +68,56 @@ export const useClientProfilesStore = defineStore('clientProfiles', () => {
     return updated
   }
 
+  // Search the global registry — public profiles from other partners.
+  async function searchGlobalRegistry(query: string, limit = 20): Promise<ClientProfile[]> {
+    if (!query.trim()) return []
+    return api.get<ClientProfile[]>(
+      `/client-profiles/global-registry?q=${encodeURIComponent(query)}&limit=${limit}`,
+    )
+  }
+
+  // Publish this profile to the global registry (creator only).
+  async function publish(id: string): Promise<ClientProfile> {
+    const updated = await api.post<ClientProfile>(`/client-profiles/${id}/publish`, {})
+    const idx = myClients.value.findIndex((c) => c.id === id)
+    if (idx >= 0) myClients.value[idx] = updated
+    return updated
+  }
+
+  // Remove this profile from the global registry (creator only).
+  async function unpublish(id: string): Promise<ClientProfile> {
+    const updated = await api.post<ClientProfile>(`/client-profiles/${id}/unpublish`, {})
+    const idx = myClients.value.findIndex((c) => c.id === id)
+    if (idx >= 0) myClients.value[idx] = updated
+    return updated
+  }
+
+  // Clone a public profile from the global registry into my own copy.
+  // Used by ClientPicker when partner selects a registry result for a deal.
+  async function cloneFromGlobal(sourceProfileId: string): Promise<ClientProfile> {
+    const profile = await api.post<ClientProfile>('/client-profiles/clone-from-global', {
+      sourceProfileId,
+    })
+    if (!myClients.value.find((c) => c.id === profile.id)) {
+      myClients.value.unshift(profile)
+    }
+    return profile
+  }
+
+  async function deleteClient(id: string): Promise<void> {
+    await api.delete(`/client-profiles/${id}`)
+    myClients.value = myClients.value.filter((c) => c.id !== id)
+  }
+
   function getClient(id: string): ClientProfile | undefined {
     return myClients.value.find((c) => c.id === id)
   }
 
   return {
     myClients, isLoading, error,
-    fetchMyClients, search, findByPhone, findById, getStats, create, update, getClient,
+    fetchMyClients, search, findByPhone, findById, getStats,
+    create, update, deleteClient,
+    searchGlobalRegistry, publish, unpublish, cloneFromGlobal,
+    getClient,
   }
 })
