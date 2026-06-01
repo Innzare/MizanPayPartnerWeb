@@ -67,8 +67,8 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
     return updated
   }
 
-  async function archive(id: string): Promise<void> {
-    await api.delete<{ archived: true }>(`/cashboxes/${id}`)
+  async function remove(id: string): Promise<void> {
+    await api.delete<{ deleted: true }>(`/cashboxes/${id}`)
     items.value = items.value.filter((b) => b.id !== id)
   }
 
@@ -93,7 +93,7 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
 
   return {
     items, isLoading, error,
-    fetchAll, findById, create, update, archive, transfer, moveDeal,
+    fetchAll, findById, create, update, remove, transfer, moveDeal,
     getById, getDefault,
   }
 })

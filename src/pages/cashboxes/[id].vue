@@ -613,19 +613,20 @@ const pendingCiList = computed(() =>
     .sort((a, b) => b.pendingPayout - a.pendingPayout),
 )
 
-// ─── Archive ──────────────────────────────────────────────────────────────
-async function handleArchive() {
+// ─── Delete ──────────────────────────────────────────────────────────────
+async function handleDelete() {
   if (!box.value || box.value.isDefault) {
     toast.error('Нельзя удалить основную кассу')
     return
   }
-  const msg = box.value.dealsCount > 0
-    ? `Удалить кассу «${box.value.name}»? Её ${box.value.dealsCount} сделок останутся доступны, но касса будет архивирована. Действие необратимо.`
-    : `Удалить кассу «${box.value.name}»? Действие необратимо.`
-  if (!confirm(msg)) return
+  if (box.value.activeDealsCount > 0) {
+    toast.error(`Нельзя удалить кассу с активными сделками (${box.value.activeDealsCount}). Сначала переместите их в другую кассу.`)
+    return
+  }
+  if (!confirm(`Удалить кассу «${box.value.name}»? Действие необратимо.`)) return
   try {
-    await store.archive(box.value.id)
-    toast.success('Касса архивирована')
+    await store.remove(box.value.id)
+    toast.success('Касса удалена')
     router.push('/cashboxes')
   } catch (e: any) {
     toast.error(e.message || 'Не удалось удалить')
@@ -674,7 +675,7 @@ async function handleArchive() {
           <button
             v-if="!box.isDefault"
             class="cb-action-btn cb-action-btn--danger"
-            @click="handleArchive"
+            @click="handleDelete"
             title="Удалить кассу"
           >
             <v-icon icon="mdi-delete-outline" size="17" />

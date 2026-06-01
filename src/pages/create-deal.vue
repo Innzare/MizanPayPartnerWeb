@@ -8,7 +8,7 @@ import { useRouter, useRoute } from 'vue-router'
 import type { PaymentType, ClientProfile, DealFolder } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
-import { useCapital } from '@/composables/useCapital'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { api } from '@/api/client'
@@ -18,19 +18,42 @@ import CreateClientDialog from '@/components/CreateClientDialog.vue'
 const authStore = useAuthStore()
 
 const { isDark } = useIsDark()
+const { isMobile } = useIsMobile()
 const toast = useToast()
-const { capital, isCapitalSet, fetchCapital } = useCapital()
+// Per-cashbox capital. Loaded for the currently selected cashbox so the
+// "доступно" hint and the insufficient-capital warning reflect what's
+// actually in that box (not the partner's global capital).
+const cashBoxCapital = ref<{ availableCapital: number } | null>(null)
+const cashBoxCapitalLoading = ref(false)
 
-// Capital is fetched in the co-investors onMounted below
+async function fetchCashBoxCapital(cashBoxId: string | null) {
+  if (!cashBoxId) {
+    cashBoxCapital.value = null
+    return
+  }
+  cashBoxCapitalLoading.value = true
+  try {
+    cashBoxCapital.value = await api.get(`/cashboxes/${cashBoxId}/capital`)
+  } catch {
+    cashBoxCapital.value = null
+  } finally {
+    cashBoxCapitalLoading.value = false
+  }
+}
 
 const capitalInsufficient = computed(() => {
-  if (!isCapitalSet.value || !capital.value) return false
-  return (purchasePrice.value || 0) > capital.value.availableCapital
+  if (!cashBoxCapital.value) return false
+  return (purchasePrice.value || 0) > cashBoxCapital.value.availableCapital
+})
+
+const capitalDeficit = computed(() => {
+  if (!cashBoxCapital.value) return 0
+  return Math.max(0, (purchasePrice.value || 0) - cashBoxCapital.value.availableCapital)
 })
 
 const capitalAfterDeal = computed(() => {
-  if (!capital.value) return 0
-  return capital.value.availableCapital - (purchasePrice.value || 0)
+  if (!cashBoxCapital.value) return 0
+  return cashBoxCapital.value.availableCapital - (purchasePrice.value || 0)
 })
 const dealsStore = useDealsStore()
 const router = useRouter()
@@ -181,7 +204,6 @@ onMounted(async () => {
   try {
     const [data] = await Promise.all([
       api.get<any[]>('/co-investors'),
-      fetchCapital(),
       fetchFolders(),
       cashboxesStore.fetchAll(),
     ])
@@ -196,6 +218,7 @@ onMounted(async () => {
     if (!selectedCashBoxId.value) {
       selectedCashBoxId.value = cashboxesStore.getDefault()?.id ?? cashboxesStore.items[0]?.id ?? null
     }
+    if (selectedCashBoxId.value) await fetchCashBoxCapital(selectedCashBoxId.value)
   } catch { /* ignore */ }
 
   // Load deal data for edit mode
@@ -305,6 +328,10 @@ watch([purchasePrice, markupValue, markupType], () => {
   manualTotalPrice.value = null
 })
 
+// Reload the cashbox's available capital whenever the partner picks a
+// different cashbox so the hint and warning reflect the right balance.
+watch(selectedCashBoxId, (id) => { void fetchCashBoxCapital(id) })
+
 // Computed deal preview
 const markup = computed(() => {
   const purchase = purchasePrice.value || 0
@@ -399,14 +426,32 @@ function prevStep() { if (step.value > 1) step.value-- }
 
 function canProceed() {
   if (step.value === 1) return step1Valid.value
-  if (step.value === 2) return step2Valid.value && isCapitalSet.value && !capitalInsufficient.value
+  // Insufficient capital is no longer a hard block — partner is warned at
+  // submit time (dialog) and can still proceed; the cashbox simply goes
+  // into negative balance.
+  if (step.value === 2) return step2Valid.value
   if (step.value === 3) return step3Valid.value
   return true
 }
 
 const submitting = ref(false)
+const insufficientCapitalDialog = ref(false)
 
-async function submitDeal() {
+function confirmOverdraftAndSubmit() {
+  insufficientCapitalDialog.value = false
+  void submitDeal(true)
+}
+
+async function submitDeal(acknowledgedOverdraft = false) {
+  // Insufficient-capital warning. Backend no longer blocks creation —
+  // it just lets the cashbox go negative. Partners asked for a heads-up
+  // so they don't accidentally overdraft. Edit mode skips the dialog
+  // (the deal already exists; changing it shouldn't re-prompt).
+  if (!isEditMode.value && capitalInsufficient.value && !acknowledgedOverdraft) {
+    insufficientCapitalDialog.value = true
+    return
+  }
+
   try {
     // Phase 4 — guard against silent CI recompute. When editing an
     // existing deal, changing wholesalePrice or profitSplitBase causes
@@ -694,21 +739,6 @@ async function submitDeal() {
         </div>
       </div>
 
-      <!-- Capital block -->
-      <div v-if="!isCapitalSet" class="capital-block-banner mb-4">
-        <div class="capital-block-banner-icon">
-          <v-icon icon="mdi-lock-outline" size="22" />
-        </div>
-        <div class="capital-block-banner-content">
-          <div class="capital-block-banner-title">Установите начальный капитал</div>
-          <div class="capital-block-banner-text">Для создания сделки необходимо указать каким капиталом вы располагаете</div>
-        </div>
-        <button class="capital-block-banner-btn" @click="$router.push('/cashboxes')">
-          Настроить
-          <v-icon icon="mdi-arrow-right" size="16" />
-        </button>
-      </div>
-
           <v-card rounded="lg" elevation="0" border class="pa-5">
             <div class="form-grid">
               <div class="form-field full-width">
@@ -717,14 +747,15 @@ async function submitDeal() {
                   <input :value="purchasePrice || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => purchasePrice = parseMasked(e)" type="text" inputmode="numeric" class="field-input" :class="{ 'field-input--error': capitalInsufficient }" placeholder="0" />
                   <span class="input-suffix">₽</span>
                 </div>
-                <!-- Capital hint -->
-                <div v-if="isCapitalSet && capital" class="capital-hint" :class="{ 'capital-hint--error': capitalInsufficient }">
+                <!-- Capital hint — shows the SELECTED cashbox's available capital.
+                     Overdraft is allowed; the hint just warns the partner. -->
+                <div v-if="cashBoxCapital" class="capital-hint" :class="{ 'capital-hint--error': capitalInsufficient }">
                   <v-icon :icon="capitalInsufficient ? 'mdi-alert-circle' : 'mdi-wallet-outline'" size="14" />
                   <template v-if="capitalInsufficient">
-                    Недостаточно капитала. Доступно: {{ formatCurrency(capital.availableCapital) }}
+                    Касса уйдёт в минус. Доступно: {{ formatCurrency(cashBoxCapital.availableCapital) }}
                   </template>
                   <template v-else>
-                    Доступно: {{ formatCurrency(capital.availableCapital) }}
+                    Доступно в кассе: {{ formatCurrency(cashBoxCapital.availableCapital) }}
                   </template>
                 </div>
               </div>
@@ -882,44 +913,6 @@ async function submitDeal() {
                     <div class="first-payment-hint__date">{{ firstPaymentDate }}</div>
                     <div class="first-payment-hint__sub">Дата по умолчанию · измените при необходимости</div>
                   </div>
-                </div>
-              </div>
-            </div>
-          </v-card>
-
-          <!-- Phase 3: deal-CI relationship is via cashbox membership.
-               Show CIs of the selected cashbox read-only so partner sees
-               who'll share profit from this deal, without per-deal picking. -->
-          <v-card v-if="cashBoxCoInvestors.length > 0" rounded="lg" elevation="0" border class="pa-5 mt-4">
-            <div class="section-header-sm">
-              <v-icon icon="mdi-account-group-outline" size="18" />
-              <span>Инвесторы кассы</span>
-              <span class="text-caption text-medium-emphasis ml-1">
-                ({{ cashBoxCoInvestors.length }}) автоматически делят прибыль
-              </span>
-            </div>
-            <div class="coinvestor-list">
-              <div
-                v-for="ci in cashBoxCoInvestors"
-                :key="ci.id"
-                class="coinvestor-option coinvestor-option--readonly"
-              >
-                <div class="coinvestor-option-info">
-                  <div class="coinvestor-option-name">{{ ci.name }}</div>
-                  <div class="coinvestor-option-meta">
-                    <template v-if="ci.profitPercent != null && ci.profitPercent > 0">
-                      Фикс {{ ci.profitPercent }}% от прибыли
-                    </template>
-                    <template v-else>
-                      По вкладу капитала
-                    </template>
-                  </div>
-                </div>
-                <div
-                  v-if="ci.profitPercent != null && ci.profitPercent > 0"
-                  class="coinvestor-option-share"
-                >
-                  {{ formatCurrency(Math.round(markup * ci.profitPercent / 100)) }}
                 </div>
               </div>
             </div>
@@ -1214,7 +1207,7 @@ async function submitDeal() {
         Далее
         <v-icon icon="mdi-arrow-right" size="18" />
       </button>
-      <button v-else class="btn-primary btn-primary--success" :disabled="submitting" @click="submitDeal">
+      <button v-else class="btn-primary btn-primary--success" :disabled="submitting" @click="submitDeal()">
         <v-progress-circular v-if="submitting" indeterminate size="16" width="2" color="white" class="mr-1" />
         <v-icon v-else icon="mdi-check" size="18" />
         {{ submitting ? (isEditMode ? 'Сохранение...' : 'Создание...') : (isEditMode ? 'Сохранить изменения' : 'Создать сделку') }}
@@ -1308,10 +1301,10 @@ async function submitDeal() {
         </div>
 
         <!-- Capital after deal -->
-        <div v-if="isCapitalSet && capital && (purchasePrice || 0) > 0" class="preview-capital">
+        <div v-if="cashBoxCapital && (purchasePrice || 0) > 0" class="preview-capital">
           <v-icon icon="mdi-wallet-outline" size="14" />
-          <span class="preview-capital-label">Капитал после сделки</span>
-          <span class="preview-capital-value">{{ formatCurrency(capitalAfterDeal) }}</span>
+          <span class="preview-capital-label">Капитал кассы после сделки</span>
+          <span class="preview-capital-value" :class="{ 'preview-capital-value--negative': capitalAfterDeal < 0 }">{{ formatCurrency(capitalAfterDeal) }}</span>
         </div>
 
         <!-- Dates -->
@@ -1371,6 +1364,31 @@ async function submitDeal() {
 
     </div><!-- /wizard-layout -->
     </template>
+
+    <!-- Insufficient-capital warning. Cashbox is allowed to go negative;
+         this dialog is purely advisory so the partner can confirm. -->
+    <v-dialog v-model="insufficientCapitalDialog" max-width="440" :fullscreen="isMobile">
+      <v-card rounded="lg" class="pa-6 text-center overdraft-dialog">
+        <div class="overdraft-icon mb-4">
+          <v-icon icon="mdi-alert-circle-outline" size="28" color="#f59e0b" />
+        </div>
+        <div class="text-h6 font-weight-bold mb-2">Недостаточно капитала в кассе</div>
+        <div class="text-body-2 text-medium-emphasis mb-5">
+          В выбранной кассе доступно
+          <strong class="overdraft-amount">{{ formatCurrency(cashBoxCapital?.availableCapital ?? 0) }}</strong>,
+          а для этой сделки нужно
+          <strong class="overdraft-amount">{{ formatCurrency(purchasePrice || 0) }}</strong>.
+        </div>
+        <div class="overdraft-deficit mb-6">
+          <v-icon icon="mdi-trending-down" size="14" />
+          Касса уйдёт в минус на <strong>{{ formatCurrency(capitalDeficit) }}</strong>
+        </div>
+        <div class="d-flex ga-3">
+          <button class="btn-secondary flex-grow-1" @click="insufficientCapitalDialog = false">Отмена</button>
+          <button class="btn-warning flex-grow-1" @click="confirmOverdraftAndSubmit">Создать всё равно</button>
+        </div>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -2722,4 +2740,33 @@ async function submitDeal() {
 .dark .coinvestor-option.active { background: rgba(4, 120, 87, 0.1); }
 .dark .review-coinvestors { background: #1e1e2e; border-color: #2e2e42; }
 .dark .review-coinvestor-chip { background: rgba(4, 120, 87, 0.1); border-color: rgba(4, 120, 87, 0.2); }
+
+/* ── Insufficient-capital dialog ── */
+.overdraft-icon {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: rgba(245, 158, 11, 0.1);
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto;
+}
+.overdraft-amount {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.overdraft-deficit {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 10px;
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  font-size: 13px; font-weight: 600;
+}
+.overdraft-deficit strong { font-weight: 700; }
+
+.btn-warning {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 4px; padding: 11px 22px; border-radius: 10px; border: none;
+  font-size: 14px; font-weight: 600; color: white; background: #f59e0b;
+  cursor: pointer; transition: all 0.15s;
+}
+.btn-warning:hover { background: #d97706; box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3); }
 </style>

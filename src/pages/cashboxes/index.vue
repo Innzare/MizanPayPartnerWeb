@@ -53,19 +53,20 @@ function openDetail(id: string) {
   router.push(`/cashboxes/${id}`)
 }
 
-async function handleArchive(box: CashBoxSummary, e: Event) {
+async function handleDelete(box: CashBoxSummary, e: Event) {
   e.stopPropagation()
   if (box.isDefault) {
     toast.error('Нельзя удалить основную кассу')
     return
   }
-  const msg = box.dealsCount > 0
-    ? `Удалить кассу «${box.name}»? Касса будет архивирована — её ${box.dealsCount} сделок останутся доступны, но касса исчезнет из выбора при создании новых сделок. Действие необратимо.`
-    : `Удалить кассу «${box.name}»? Действие необратимо.`
-  if (!confirm(msg)) return
+  if (box.activeDealsCount > 0) {
+    toast.error(`Нельзя удалить кассу с активными сделками (${box.activeDealsCount}). Сначала переместите их в другую кассу.`)
+    return
+  }
+  if (!confirm(`Удалить кассу «${box.name}»? Действие необратимо.`)) return
   try {
-    await store.archive(box.id)
-    toast.success('Касса архивирована')
+    await store.remove(box.id)
+    toast.success('Касса удалена')
   } catch (e: any) {
     toast.error(e.message || 'Не удалось удалить')
   }
@@ -158,25 +159,30 @@ function cashboxProgressPct(box: CashBoxSummary): number {
             </div>
 
             <!-- Menu -->
-            <v-menu @click.stop>
+            <v-menu :close-on-content-click="true" location="bottom end" offset="6">
               <template #activator="{ props }">
                 <button class="cb-card-menu" v-bind="props" @click.stop>
                   <v-icon icon="mdi-dots-vertical" size="18" />
                 </button>
               </template>
-              <v-list density="compact" rounded="lg">
-                <v-list-item @click="openEdit(box, $event as any)" prepend-icon="mdi-pencil-outline">
-                  <v-list-item-title>Изменить</v-list-item-title>
-                </v-list-item>
-                <v-list-item
-                  v-if="!box.isDefault"
-                  @click="handleArchive(box, $event as any)"
-                  prepend-icon="mdi-delete-outline"
-                  base-color="error"
-                >
-                  <v-list-item-title>Удалить</v-list-item-title>
-                </v-list-item>
-              </v-list>
+              <v-card rounded="lg" elevation="4" class="cb-menu" @click.stop>
+                <div class="cb-menu-body">
+                  <button class="cb-menu-item" @click="openEdit(box, $event as any)">
+                    <v-icon icon="mdi-pencil-outline" size="16" />
+                    <span>Изменить</span>
+                  </button>
+                  <template v-if="!box.isDefault">
+                    <div class="cb-menu-divider" />
+                    <button
+                      class="cb-menu-item cb-menu-item--danger"
+                      @click="handleDelete(box, $event as any)"
+                    >
+                      <v-icon icon="mdi-delete-outline" size="16" />
+                      <span>Удалить</span>
+                    </button>
+                  </template>
+                </div>
+              </v-card>
             </v-menu>
           </div>
 
@@ -339,6 +345,29 @@ function cashboxProgressPct(box: CashBoxSummary): number {
 }
 .cb-card-menu:hover { background: rgba(0,0,0,0.05); color: #111; }
 .cb-page.dark .cb-card-menu:hover { background: rgba(255,255,255,0.08); color: #f5f5f5; }
+
+.cb-menu {
+  width: 200px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.cb-menu-body { padding: 6px; }
+.cb-menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 9px 12px; border-radius: 8px; border: none; background: none;
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  cursor: pointer; text-align: left; transition: background 0.1s;
+}
+.cb-menu-item:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+.cb-menu-item--danger { color: rgb(var(--v-theme-error)); }
+.cb-menu-item--danger:hover { background: rgba(var(--v-theme-error), 0.08); }
+.cb-menu-divider {
+  height: 1px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  margin: 4px 6px;
+}
 
 .cb-card-amount {
   font-size: 24px; font-weight: 800; color: #111;

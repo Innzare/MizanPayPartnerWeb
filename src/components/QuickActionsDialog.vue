@@ -69,8 +69,21 @@
                 inputmode="numeric"
                 placeholder="0"
                 class="field-input"
+                :class="{ 'field-input--error': saleCapitalInsufficient }"
               />
               <span class="input-suffix">₽</span>
+            </div>
+            <div
+              v-if="saleCashBoxCapital"
+              class="text-caption mt-1"
+              :class="saleCapitalInsufficient ? 'text-error' : 'text-medium-emphasis'"
+            >
+              <template v-if="saleCapitalInsufficient">
+                Касса уйдёт в минус. Доступно: {{ formatCurrency(saleCashBoxCapital.availableCapital) }}
+              </template>
+              <template v-else>
+                Доступно в кассе: {{ formatCurrency(saleCashBoxCapital.availableCapital) }}
+              </template>
             </div>
           </div>
           <div class="flex-grow-1">
@@ -374,6 +387,32 @@
       </template>
     </v-card>
   </v-dialog>
+
+  <!-- Insufficient-capital warning. Backend lets the cashbox go negative;
+       this dialog just lets the partner confirm before we send them
+       there. -->
+  <v-dialog v-model="insufficientCapitalDialog" max-width="440" :fullscreen="isMobile">
+    <v-card rounded="lg" class="pa-6 text-center">
+      <div class="overdraft-icon mb-4">
+        <v-icon icon="mdi-alert-circle-outline" size="28" color="#f59e0b" />
+      </div>
+      <div class="text-h6 font-weight-bold mb-2">Недостаточно капитала в кассе</div>
+      <div class="text-body-2 text-medium-emphasis mb-5">
+        В выбранной кассе доступно
+        <strong class="overdraft-amount">{{ formatCurrency(saleCashBoxCapital?.availableCapital ?? 0) }}</strong>,
+        а для этой сделки нужно
+        <strong class="overdraft-amount">{{ formatCurrency(salePreview.purchase) }}</strong>.
+      </div>
+      <div class="overdraft-deficit mb-6">
+        <v-icon icon="mdi-trending-down" size="14" />
+        Касса уйдёт в минус на <strong>{{ formatCurrency(saleCapitalDeficit) }}</strong>
+      </div>
+      <div class="d-flex ga-3">
+        <button class="btn-secondary flex-grow-1" @click="insufficientCapitalDialog = false">Отмена</button>
+        <button class="btn-warning flex-grow-1" @click="confirmSaleOverdraft">Создать всё равно</button>
+      </div>
+    </v-card>
+  </v-dialog>
 </template>
 
 <script setup lang="ts">
@@ -461,6 +500,23 @@ const selectedCashBox = computed(() =>
     : null,
 )
 
+// Per-cashbox available capital — drives the overdraft warning before
+// creating a sale. Backend lets the cashbox go negative; we just give
+// the partner a heads-up so they don't do it accidentally.
+const saleCashBoxCapital = ref<{ availableCapital: number } | null>(null)
+async function fetchSaleCashBoxCapital(id: string | null) {
+  if (!id) { saleCashBoxCapital.value = null; return }
+  try {
+    saleCashBoxCapital.value = await api.get(`/cashboxes/${id}/capital`)
+  } catch {
+    saleCashBoxCapital.value = null
+  }
+}
+watch(selectedCashBoxId, (id) => { void fetchSaleCashBoxCapital(id) })
+
+const insufficientCapitalDialog = ref(false)
+const pendingKeepOpen = ref(false)
+
 // Cache options once on first dialog open. The dialog can be reopened
 // many times, so don't re-fetch on every open.
 const optionsLoaded = ref(false)
@@ -472,6 +528,7 @@ async function ensureOptionsLoaded() {
     if (!selectedCashBoxId.value) {
       selectedCashBoxId.value = cashBoxesStore.getDefault()?.id ?? allCashBoxes.value[0]?.id ?? null
     }
+    if (selectedCashBoxId.value) await fetchSaleCashBoxCapital(selectedCashBoxId.value)
     optionsLoaded.value = true
   } catch { /* non-blocking */ }
 }
@@ -523,6 +580,16 @@ const salePreview = computed(() => {
   return { purchase, markup, totalPrice, monthly, numberOfPayments }
 })
 
+const saleCapitalInsufficient = computed(() => {
+  if (!saleCashBoxCapital.value) return false
+  return salePreview.value.purchase > saleCashBoxCapital.value.availableCapital
+})
+
+const saleCapitalDeficit = computed(() => {
+  if (!saleCashBoxCapital.value) return 0
+  return Math.max(0, salePreview.value.purchase - saleCashBoxCapital.value.availableCapital)
+})
+
 const canCreateSale = computed(() => {
   return (
     !!sale.clientProfileId &&
@@ -532,8 +599,15 @@ const canCreateSale = computed(() => {
   )
 })
 
-async function onCreateSale(keepOpen: boolean) {
+async function onCreateSale(keepOpen: boolean, acknowledgedOverdraft = false) {
   if (!canCreateSale.value) return
+  // Overdraft warning. Backend allows the cashbox to go negative; the
+  // partner just needs to acknowledge before we silently send them there.
+  if (saleCapitalInsufficient.value && !acknowledgedOverdraft) {
+    pendingKeepOpen.value = keepOpen
+    insufficientCapitalDialog.value = true
+    return
+  }
   creating.value = true
   try {
     const deal = await dealsStore.createDirectDeal({
@@ -559,6 +633,9 @@ async function onCreateSale(keepOpen: boolean) {
     }
 
     showToast('Продажа создана', 'success')
+    // Refresh cashbox capital after a successful sale so subsequent
+    // "Создать и ещё" reflects the new balance without re-picking the box.
+    if (selectedCashBoxId.value) await fetchSaleCashBoxCapital(selectedCashBoxId.value)
     if (keepOpen) {
       resetSale()
     } else {
@@ -569,6 +646,11 @@ async function onCreateSale(keepOpen: boolean) {
   } finally {
     creating.value = false
   }
+}
+
+function confirmSaleOverdraft() {
+  insufficientCapitalDialog.value = false
+  void onCreateSale(pendingKeepOpen.value, true)
 }
 
 // ─── Payment ──────────────────────────────────────────
@@ -1011,4 +1093,32 @@ async function onMarkPaid(r: QuickSearchResult) {
   margin-left: auto;
   font-size: 11px; font-weight: 700; opacity: 0.7;
 }
+
+/* ── Insufficient-capital dialog ── */
+.overdraft-icon {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: rgba(245, 158, 11, 0.1);
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto;
+}
+.overdraft-amount {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.overdraft-deficit {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 10px;
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  font-size: 13px; font-weight: 600;
+}
+.overdraft-deficit strong { font-weight: 700; }
+.btn-warning {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 4px; padding: 11px 22px; border-radius: 10px; border: none;
+  font-size: 14px; font-weight: 600; color: white; background: #f59e0b;
+  cursor: pointer; transition: all 0.15s;
+}
+.btn-warning:hover { background: #d97706; box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3); }
 </style>
