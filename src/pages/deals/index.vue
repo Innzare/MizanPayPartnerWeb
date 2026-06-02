@@ -260,8 +260,16 @@ const tabFilters = [
   { label: 'Активные', key: 'active' },
   { label: 'Завершённые', key: 'completed' },
   { label: 'Все', key: 'all' },
-  { label: 'Корзина', key: 'trash' },
 ]
+
+// Trash is now a top-level toggle (separate button above the card) rather
+// than a tab, because it has its own page logic — no folder/cashbox/staff
+// filters, different bulk actions, separate count. tab.value === 3 keeps
+// the existing baseDeals/watcher behaviour.
+const TRASH_TAB_INDEX = 3
+function toggleTrash() {
+  tab.value = isTrashTab.value ? 0 : TRASH_TAB_INDEX
+}
 
 const sortOptions = [
   { title: 'Новые', value: 'newest' },
@@ -420,8 +428,23 @@ const selectedDealPaidTotal = computed(() =>
       </div>
     </div>
 
-    <!-- Filters row (top right, above main card): folder + co-investor -->
-    <div v-if="!isTrashTab" class="d-flex justify-end ga-2 mb-3 flex-wrap">
+    <!-- Top toolbar row: trash on the left, filter chips on the right. -->
+    <div class="d-flex justify-space-between align-center ga-2 mb-3 flex-wrap">
+      <!-- Trash toggle — always visible so the partner can enter/leave the
+           bin from anywhere. Acts as a chip-button styled like the filters
+           on the right; active when the bin is currently open. -->
+      <button class="fb-btn" :class="{ 'fb-btn--active': isTrashTab }" @click="toggleTrash">
+        <v-icon :icon="isTrashTab ? 'mdi-arrow-left' : 'mdi-trash-can-outline'" size="16" />
+        <span v-if="isTrashTab">Назад</span>
+        <span v-else>Корзина</span>
+        <span v-if="!isTrashTab && dealsStore.trash.length" class="fb-btn-count">
+          {{ dealsStore.trash.length }}
+        </span>
+      </button>
+
+      <!-- Filter chips (hidden in trash view — those filters don't apply
+           to soft-deleted deals). -->
+      <div v-if="!isTrashTab" class="d-flex justify-end ga-2 flex-wrap">
       <!-- Cashbox filter -->
       <v-menu v-if="cashBoxes.length > 1" :close-on-content-click="true">
         <template #activator="{ props: mp }">
@@ -555,6 +578,7 @@ const selectedDealPaidTotal = computed(() =>
           </div>
         </v-card>
       </v-menu>
+      </div>
     </div>
 
     <!-- Main card -->
@@ -562,7 +586,7 @@ const selectedDealPaidTotal = computed(() =>
       <div class="pa-4">
         <!-- Tabs + toolbar -->
         <div class="d-flex flex-wrap ga-2 align-center mb-4">
-          <div class="d-flex ga-2">
+          <div v-if="!isTrashTab" class="d-flex ga-2">
             <button
               v-for="(f, i) in tabFilters"
               :key="f.key"
@@ -571,8 +595,14 @@ const selectedDealPaidTotal = computed(() =>
               @click="tab = i"
             >
               {{ f.label }}
-              <span class="tab-count">{{ i === 0 ? dealsStore.activeDeals.length : i === 1 ? dealsStore.completedDeals.length : i === 2 ? dealsStore.investorDeals.length : dealsStore.trash.length }}</span>
+              <span class="tab-count">{{ i === 0 ? dealsStore.activeDeals.length : i === 1 ? dealsStore.completedDeals.length : dealsStore.investorDeals.length }}</span>
             </button>
+          </div>
+          <!-- Trash header replaces the status tabs while the bin is open. -->
+          <div v-else class="d-flex align-center ga-2">
+            <v-icon icon="mdi-trash-can-outline" size="18" style="opacity: 0.5;" />
+            <span class="text-subtitle-2 font-weight-bold">Корзина</span>
+            <span class="tab-count">{{ dealsStore.trash.length }}</span>
           </div>
 
           <v-spacer class="d-none d-md-block" />
@@ -1756,6 +1786,13 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 .fb-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.fb-btn-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  font-size: 11px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
 
 .fb-dropdown { width: 240px; padding: 0; overflow: hidden; }
 .fb-dropdown-header {

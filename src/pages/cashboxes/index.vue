@@ -59,8 +59,8 @@ async function handleDelete(box: CashBoxSummary, e: Event) {
     toast.error('Нельзя удалить основную кассу')
     return
   }
-  if (box.activeDealsCount > 0) {
-    toast.error(`Нельзя удалить кассу с активными сделками (${box.activeDealsCount}). Сначала переместите их в другую кассу.`)
+  if (box.dealsCount > 0) {
+    toast.error(`В кассе ${box.dealsCount} сделок. Перенесите их в другую кассу или удалите.`)
     return
   }
   if (!confirm(`Удалить кассу «${box.name}»? Действие необратимо.`)) return

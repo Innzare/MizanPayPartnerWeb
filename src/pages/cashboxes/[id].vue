@@ -99,7 +99,6 @@ const cashBoxCoInvestors = ref<CashBoxCoInvestor[]>([])
 const loading = ref(true)
 
 const showEdit = ref(false)
-const showTransfer = ref(false)
 
 // Detail panel state (waterfall right column)
 const wfExpanded = ref<string | null>(null)
@@ -240,52 +239,6 @@ const activeDealsCostRecovered = computed(() => {
   if (!capitalDetails.value) return 0
   return capitalDetails.value.deals.filter(d => d.status === 'ACTIVE').reduce((s, d) => s + dealCostRecovered(d), 0)
 })
-
-// ─── Transfer dialog ─────────────────────────────────────────────────────
-const transferToId = ref<string | null>(null)
-const transferAmount = ref<number | null>(null)
-const transferNote = ref('')
-const transferring = ref(false)
-
-const transferTargets = computed(() =>
-  store.items.filter((b) => b.id !== id.value && !b.archivedAt),
-)
-const transferToTarget = computed(() =>
-  transferToId.value ? transferTargets.value.find((b) => b.id === transferToId.value) ?? null : null,
-)
-
-function openTransfer() {
-  if (transferTargets.value.length === 0) {
-    toast.error('Сначала создайте ещё одну кассу для перевода')
-    return
-  }
-  transferToId.value = transferTargets.value[0]?.id ?? null
-  transferAmount.value = null
-  transferNote.value = ''
-  showTransfer.value = true
-}
-
-async function handleTransfer() {
-  if (!transferToId.value || !transferAmount.value || transferAmount.value <= 0) {
-    toast.error('Заполните получателя и сумму')
-    return
-  }
-  transferring.value = true
-  try {
-    await store.transfer(id.value, {
-      toCashBoxId: transferToId.value,
-      amount: transferAmount.value,
-      note: transferNote.value.trim() || undefined,
-    })
-    toast.success('Перевод выполнен')
-    showTransfer.value = false
-    await loadAll()
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось выполнить перевод')
-  } finally {
-    transferring.value = false
-  }
-}
 
 // ─── Categories (shared across all cashboxes for this investor) ───────────
 interface Category {
@@ -619,8 +572,8 @@ async function handleDelete() {
     toast.error('Нельзя удалить основную кассу')
     return
   }
-  if (box.value.activeDealsCount > 0) {
-    toast.error(`Нельзя удалить кассу с активными сделками (${box.value.activeDealsCount}). Сначала переместите их в другую кассу.`)
+  if (box.value.dealsCount > 0) {
+    toast.error(`В кассе ${box.value.dealsCount} сделок. Перенесите их в другую кассу или удалите.`)
     return
   }
   if (!confirm(`Удалить кассу «${box.value.name}»? Действие необратимо.`)) return
@@ -664,10 +617,6 @@ async function handleDelete() {
           </div>
         </div>
         <div class="cb-header-actions">
-          <button class="cb-action-btn" @click="openTransfer" title="Перевод в другую кассу">
-            <v-icon icon="mdi-swap-horizontal" size="17" />
-            Перевод
-          </button>
           <button class="cb-action-btn" @click="showEdit = true" title="Изменить кассу">
             <v-icon icon="mdi-pencil-outline" size="17" />
             Изменить
@@ -1255,103 +1204,6 @@ async function handleDelete() {
 
     <!-- Edit dialog -->
     <CashBoxEditDialog v-model="showEdit" :cashbox="box" @saved="(b) => { box = b; loadDetails() }" />
-
-    <!-- ── Transfer dialog ── -->
-    <v-dialog v-model="showTransfer" max-width="500" persistent :fullscreen="isMobile">
-      <v-card rounded="lg" elevation="0">
-        <div class="fn-dialog-header">
-          <div class="fn-dialog-title">Перевод в другую кассу</div>
-          <button class="fn-dialog-close" @click="showTransfer = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-        </div>
-
-        <div class="pa-5">
-          <div class="mb-4">
-            <label class="fn-field-label">Из кассы</label>
-            <div class="fn-static-value">{{ box?.name }}</div>
-          </div>
-
-          <div class="mb-4">
-            <label class="fn-field-label">В кассу *</label>
-            <v-menu :close-on-content-click="true">
-              <template #activator="{ props: act }">
-                <button v-bind="act" type="button" class="fn-field-select-btn">
-                  <template v-if="transferToTarget">
-                    <span class="fn-field-select-icon" :style="{ color: transferToTarget.color }">
-                      <v-icon :icon="transferToTarget.icon" size="16" />
-                    </span>
-                    <span class="fn-field-select-value">{{ transferToTarget.name }}</span>
-                  </template>
-                  <span v-else class="fn-field-select-value fn-field-select-value--placeholder">
-                    Выберите кассу
-                  </span>
-                  <v-icon icon="mdi-chevron-down" size="16" class="fn-field-select-chevron" />
-                </button>
-              </template>
-              <v-card rounded="lg" elevation="4" class="cfj-menu fn-select-menu">
-                <button
-                  v-for="t in transferTargets"
-                  :key="t.id"
-                  class="cfj-menu-item"
-                  :class="{ 'cfj-menu-item--active': transferToId === t.id }"
-                  @click="transferToId = t.id"
-                >
-                  <span class="cfj-menu-item-icon" :style="{ color: t.color }">
-                    <v-icon :icon="t.icon" size="14" />
-                  </span>
-                  <span class="cfj-menu-item-name">{{ t.name }}</span>
-                  <v-icon
-                    v-if="transferToId === t.id"
-                    icon="mdi-check"
-                    size="14"
-                    class="cfj-menu-item-check"
-                  />
-                </button>
-              </v-card>
-            </v-menu>
-          </div>
-
-          <div class="mb-4">
-            <label class="fn-field-label">Сумма *</label>
-            <div class="fn-field-input-wrap">
-              <input
-                :value="transferAmount === null ? '' : transferAmount.toLocaleString('ru-RU')"
-                @input="(e: any) => transferAmount = parseInt(String(e.target.value).replace(/\D/g, ''), 10) || null"
-                type="text"
-                inputmode="numeric"
-                placeholder="0"
-                class="fn-field-input"
-              />
-              <span class="fn-field-suffix">₽</span>
-            </div>
-          </div>
-
-          <div class="mb-2">
-            <label class="fn-field-label">Комментарий</label>
-            <input
-              v-model="transferNote"
-              type="text"
-              placeholder="Например: расчёт за июнь"
-              maxlength="200"
-              class="fn-field-input"
-            />
-          </div>
-        </div>
-
-        <div class="fn-dialog-actions">
-          <button class="fn-btn fn-btn--ghost" @click="showTransfer = false">Отмена</button>
-          <button
-            class="fn-btn fn-btn--primary"
-            :disabled="transferring"
-            @click="handleTransfer"
-          >
-            <v-progress-circular v-if="transferring" indeterminate size="16" width="2" class="mr-2" color="white" />
-            Перевести
-          </button>
-        </div>
-      </v-card>
-    </v-dialog>
 
     <!-- ── Create/Edit Transaction Dialog (matches old finance.vue) ── -->
     <v-dialog v-model="showTxDialog" max-width="520" persistent :fullscreen="isMobile">

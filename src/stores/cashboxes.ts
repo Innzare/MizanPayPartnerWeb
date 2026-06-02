@@ -26,12 +26,6 @@ export interface CreateCashBoxInput {
 
 export type UpdateCashBoxInput = Partial<CreateCashBoxInput>
 
-export interface TransferInput {
-  toCashBoxId: string
-  amount: number
-  note?: string
-}
-
 export const useCashBoxesStore = defineStore('cashboxes', () => {
   const items = ref<CashBoxSummary[]>([])
   const isLoading = ref(false)
@@ -72,12 +66,6 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
     items.value = items.value.filter((b) => b.id !== id)
   }
 
-  async function transfer(fromId: string, input: TransferInput): Promise<void> {
-    await api.post(`/cashboxes/${fromId}/transfer`, input)
-    // Refresh both cashboxes' summaries
-    await fetchAll()
-  }
-
   async function moveDeal(dealId: string, toCashBoxId: string): Promise<void> {
     await api.post(`/deals/${dealId}/move-cashbox`, { cashBoxId: toCashBoxId })
     await fetchAll()
@@ -93,7 +81,7 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
 
   return {
     items, isLoading, error,
-    fetchAll, findById, create, update, remove, transfer, moveDeal,
+    fetchAll, findById, create, update, remove, moveDeal,
     getById, getDefault,
   }
 })
