@@ -10,6 +10,7 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useFolders } from '@/composables/useFolders'
+import { useDealDraft } from '@/composables/useDealDraft'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { api } from '@/api/client'
 import ClientPicker from '@/components/ClientPicker.vue'
@@ -200,6 +201,16 @@ const selectedFolderId = ref<string | null>(null)
 const cashboxesStore = useCashBoxesStore()
 const selectedCashBoxId = ref<string | null>(null)
 
+// Forward declarations resolved later — see "Draft persistence" block
+// below all form refs. We need to call applyDraftToForm() from inside
+// onMounted, but onMounted is set up here at the top alongside the rest
+// of the cashbox init. Function declarations hoist, but `const`
+// references hold values that aren't bound until the assignment line
+// runs — so we'd hit a TDZ error if we touched manualTotalPrice etc.
+// here. Hoisted `function` declaration sidesteps that as long as we
+// only invoke it inside async callbacks (`onMounted` callback runs
+// AFTER setup finishes, by which time every const has its value).
+
 onMounted(async () => {
   try {
     const [data] = await Promise.all([
@@ -269,6 +280,16 @@ onMounted(async () => {
       toast.error(e.message || 'Не удалось загрузить сделку')
       router.push('/deals')
     }
+    // Editing a real deal — never a draft, don't restore.
+    return
+  }
+
+  // Auto-restore a previously saved draft. Runs after dependencies (CIs,
+  // folders, cashboxes) are loaded so the form has the lists it needs to
+  // render the restored selections.
+  if (dealDraft.hasDraft.value) {
+    applyDraftToForm()
+    if (selectedCashBoxId.value) await fetchCashBoxCapital(selectedCashBoxId.value)
   }
 })
 
@@ -378,6 +399,143 @@ const selectedGuarantorProfileId = ref<string | null>(null)
 // Selected profiles (resolved by ClientPicker)
 const selectedClientProfile = ref<ClientProfile | null>(null)
 const selectedGuarantorProfile = ref<ClientProfile | null>(null)
+
+// ─── Draft persistence ──────────────────────────────────────────────
+// All form refs are declared above, so it's safe to take references to
+// them here (no temporal-dead-zone issue) and to register the watcher.
+// Restore happens in onMounted (skipped in edit-mode — that's a real
+// deal, not a draft); save is debounced through scheduleDraftSave.
+const dealDraft = useDealDraft(authStore.user?.id ?? null)
+let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
+// `isRestoringDraft` shields the watcher from re-saving everything it
+// just loaded. We flip it back on a microtask so Vue's flush-pre
+// watcher runs while it's still true.
+let isRestoringDraft = false
+
+function applyDraftToForm() {
+  const d = dealDraft.draft.value
+  if (!d) return
+  isRestoringDraft = true
+  try {
+    productName.value = d.productName
+    productDescription.value = d.productDescription
+    category.value = d.category
+    city.value = d.city
+    purchasePrice.value = d.purchasePrice
+    markupType.value = d.markupType
+    markupValue.value = d.markupValue
+    manualTotalPrice.value = d.manualTotalPrice
+    downPayment.value = d.downPayment
+    termMonths.value = d.termMonths
+    paymentType.value = d.paymentType as any
+    paymentInterval.value = d.paymentInterval
+    dealDate.value = d.dealDate
+    customFirstPayment.value = d.customFirstPayment
+    useWholesalePrice.value = d.useWholesalePrice
+    wholesalePrice.value = d.wholesalePrice
+    profitSplitBase.value = d.profitSplitBase
+    selectedClientProfileId.value = d.selectedClientProfileId
+    selectedGuarantorProfileId.value = d.selectedGuarantorProfileId
+    selectedClientProfile.value = d.selectedClientProfile
+    selectedGuarantorProfile.value = d.selectedGuarantorProfile
+    selectedFolderId.value = d.selectedFolderId
+    selectedCashBoxId.value = d.selectedCashBoxId
+    step.value = d.step
+  } finally {
+    setTimeout(() => { isRestoringDraft = false }, 0)
+  }
+}
+
+function scheduleDraftSave() {
+  if (isEditMode.value) return
+  if (isRestoringDraft) return
+  if (draftSaveTimer) clearTimeout(draftSaveTimer)
+  draftSaveTimer = setTimeout(() => {
+    dealDraft.save({
+      step: step.value,
+      productName: productName.value,
+      productDescription: productDescription.value,
+      category: category.value,
+      city: city.value,
+      purchasePrice: purchasePrice.value,
+      markupType: markupType.value,
+      markupValue: markupValue.value,
+      manualTotalPrice: manualTotalPrice.value,
+      downPayment: downPayment.value,
+      termMonths: termMonths.value,
+      paymentType: paymentType.value,
+      paymentInterval: paymentInterval.value,
+      dealDate: dealDate.value,
+      customFirstPayment: customFirstPayment.value,
+      useWholesalePrice: useWholesalePrice.value,
+      wholesalePrice: wholesalePrice.value,
+      profitSplitBase: profitSplitBase.value,
+      selectedClientProfileId: selectedClientProfileId.value,
+      selectedGuarantorProfileId: selectedGuarantorProfileId.value,
+      selectedClientProfile: selectedClientProfile.value,
+      selectedGuarantorProfile: selectedGuarantorProfile.value,
+      selectedFolderId: selectedFolderId.value,
+      selectedCashBoxId: selectedCashBoxId.value,
+    })
+  }, 500)
+}
+
+function confirmResetDraft() {
+  if (!confirm('Очистить черновик и начать заново?')) return
+  resetDraftAndForm()
+}
+
+function resetDraftAndForm() {
+  dealDraft.clear()
+  productName.value = ''
+  productDescription.value = ''
+  category.value = ''
+  city.value = ''
+  purchasePrice.value = null
+  markupType.value = 'percent'
+  markupValue.value = 15
+  manualTotalPrice.value = null
+  downPayment.value = null
+  termMonths.value = 6
+  paymentType.value = 'EQUAL' as PaymentType
+  paymentInterval.value = 'MONTHLY'
+  dealDate.value = new Date().toISOString().slice(0, 10)
+  customFirstPayment.value = ''
+  useWholesalePrice.value = false
+  wholesalePrice.value = null
+  profitSplitBase.value = 'MARKUP_ONLY'
+  selectedClientProfileId.value = null
+  selectedGuarantorProfileId.value = null
+  selectedClientProfile.value = null
+  selectedGuarantorProfile.value = null
+  selectedFolderId.value = null
+  selectedCashBoxId.value = cashboxesStore.getDefault()?.id ?? cashboxesStore.items[0]?.id ?? null
+  step.value = 1
+}
+
+// Auto-save watcher. Two notes:
+//   1) No `deep: true`. All 23 refs hold primitives or reassigned object
+//      references — the only objects (selectedClientProfile,
+//      selectedGuarantorProfile) are swapped via `.value = newProfile`,
+//      not mutated in-place. Deep-watching the full ClientProfile
+//      structure on every keystroke would walk through paspord/address/
+//      etc. for no benefit.
+//   2) Debounced inside scheduleDraftSave so the actual localStorage
+//      write happens at most once per 500ms.
+watch(
+  [
+    productName, productDescription, category, city,
+    purchasePrice, markupType, markupValue, manualTotalPrice,
+    downPayment, termMonths, paymentType, paymentInterval,
+    dealDate, customFirstPayment,
+    useWholesalePrice, wholesalePrice, profitSplitBase,
+    selectedClientProfileId, selectedGuarantorProfileId,
+    selectedClientProfile, selectedGuarantorProfile,
+    selectedFolderId, selectedCashBoxId,
+    step,
+  ],
+  scheduleDraftSave,
+)
 
 const clientPickerRef = ref<InstanceType<typeof ClientPicker> | null>(null)
 
@@ -558,6 +716,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
       } catch { /* non-blocking */ }
     }
 
+    // Deal is committed — drop the draft so the floater hides and a
+    // fresh navigation to /create-deal starts blank.
+    dealDraft.clear()
     toast.success('Сделка создана')
     router.push('/deals')
   } catch (e: any) {
@@ -597,6 +758,20 @@ async function submitDeal(acknowledgedOverdraft = false) {
     </div>
 
     <template v-else>
+    <!-- Restored-draft hint. Shown when the wizard was rehydrated from a
+         previously saved draft, so the partner knows where the
+         pre-filled values came from and how to discard them. Hidden in
+         edit-mode (real deal) and once they save/clear. -->
+    <div v-if="!isEditMode && dealDraft.hasDraft.value" class="draft-restored-banner">
+      <v-icon icon="mdi-content-save-outline" size="16" />
+      <span>
+        Восстановлены данные из черновика.
+        <span class="draft-restored-note">Фото и договоры нужно прикрепить заново.</span>
+      </span>
+      <button class="draft-restored-reset" @click="confirmResetDraft">
+        Начать заново
+      </button>
+    </div>
     <!-- Custom stepper header -->
     <div class="stepper-header">
       <div
@@ -1791,6 +1966,39 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .dark .preview-coinvestor {
   background: rgba(255, 255, 255, 0.04);
 }
+
+/* Restored-draft hint shown above the stepper when the wizard was
+   rehydrated from a previously saved draft. */
+.draft-restored-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(14, 165, 233, 0.08);
+  color: rgba(14, 165, 233, 0.95);
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 14px;
+}
+.draft-restored-banner > span { flex: 1; }
+.draft-restored-note {
+  display: inline-block;
+  margin-left: 4px;
+  color: rgba(14, 165, 233, 0.7);
+  font-weight: 400;
+}
+.draft-restored-reset {
+  border: none;
+  background: transparent;
+  color: rgba(14, 165, 233, 0.95);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.draft-restored-reset:hover { color: rgb(14, 165, 233); }
 
 /* Stepper header */
 .stepper-header {

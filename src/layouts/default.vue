@@ -14,6 +14,8 @@ import CreateClientDialog from "@/components/CreateClientDialog.vue";
 import QuickActionsDialog from "@/components/QuickActionsDialog.vue";
 import GlobalSearchDialog from "@/components/GlobalSearchDialog.vue";
 import SubscriptionStatusBanner from "@/components/SubscriptionStatusBanner.vue";
+import DealDraftFloater from "@/components/DealDraftFloater.vue";
+import DealsSidebar from "@/components/DealsSidebar.vue";
 import type { PlanFeatures } from "@/types";
 import { minPlanLabelForFeature } from "@/types";
 
@@ -30,6 +32,10 @@ const quickActionsMenu = ref(false);
 const showCreateClientDialog = ref(false);
 const showQuickActions = ref(false);
 const showGlobalSearch = ref(false);
+// Quick-access deal sidebar — opens via the burger button on the right
+// side of the header; the component decides what to render based on
+// the current `open` value.
+const dealsSidebarOpen = ref(false);
 const quickActionsMode = ref<'sale' | 'payment'>('sale');
 const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 const shortcutModifier = computed(() => (isMac ? '⌘' : 'Ctrl'));
@@ -548,6 +554,18 @@ const confirmLogout = async () => {
                 </div>
               </v-menu>
 
+              <!-- Quick-access deal sidebar trigger. Sits flush against
+                   the user avatar so partners can flip from any page
+                   straight into a recently-visited deal or a quick
+                   search. -->
+              <button
+                class="lyt-header-icon-btn"
+                title="Быстрый доступ к сделкам"
+                @click="dealsSidebarOpen = true"
+              >
+                <v-icon icon="mdi-format-list-bulleted-square" size="20" />
+              </button>
+
               <div class="lyt-header-divider" />
 
               <v-menu offset="8">
@@ -605,6 +623,16 @@ const confirmLogout = async () => {
           </router-view>
         </div>
       </v-main>
+
+      <!-- In-progress deal draft reminder. The component decides whether
+           to render itself (no draft / on the wizard already → hidden).
+           Mounted only for authenticated partners so the singleton-ref
+           in useDealDraft doesn't get partnered to a null id. -->
+      <DealDraftFloater v-if="authStore.user" />
+
+      <!-- Quick-access deals sidebar. Mounted but hidden by default;
+           the trigger in the header header flips the `open` ref. -->
+      <DealsSidebar v-if="authStore.user" v-model:open="dealsSidebarOpen" />
 
       <!-- Logout confirm -->
       <v-dialog v-model="logoutDialog" max-width="400">

@@ -18,6 +18,8 @@ declare module 'vue' {
     CoInvestorCreateDialog: typeof import('./components/CoInvestorCreateDialog.vue')['default']
     CoInvestorJournalEmbed: typeof import('./components/CoInvestorJournalEmbed.vue')['default']
     CreateClientDialog: typeof import('./components/CreateClientDialog.vue')['default']
+    DealDraftFloater: typeof import('./components/DealDraftFloater.vue')['default']
+    DealsSidebar: typeof import('./components/DealsSidebar.vue')['default']
     FolderCreateDialog: typeof import('./components/FolderCreateDialog.vue')['default']
     GlobalSearchDialog: typeof import('./components/GlobalSearchDialog.vue')['default']
     GlobalToast: typeof import('./components/GlobalToast.vue')['default']

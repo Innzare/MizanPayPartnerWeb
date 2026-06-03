@@ -7,6 +7,7 @@ import { formatCurrency, formatDate, formatDateShort, formatMonths, formatPercen
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { userName, clientProfileName, type Deal } from '@/types'
 import { useAuthStore } from '@/stores/auth'
+import { useRecentDeals } from '@/composables/useRecentDeals'
 import { generateContract } from '@/utils/contractPdf'
 import { generateReceipt } from '@/utils/receiptPdf'
 import { exportTemplatePdf } from '@/utils/templatePdfExport'
@@ -50,6 +51,11 @@ const pageLoading = ref(true)
 
 const cashboxesStore = useCashBoxesStore()
 
+// Record this visit in the partner's MRU list so the quick-access
+// sidebar's "Недавние" tab is fresh next time they open it. Cheap —
+// just appends to a localStorage-backed ref.
+const recentDeals = useRecentDeals(authStore.user?.id ?? null)
+
 onMounted(async () => {
   try {
     await Promise.all([
@@ -57,6 +63,7 @@ onMounted(async () => {
       paymentsStore.fetchPaymentsForDeal(dealId.value),
       cashboxesStore.items.length === 0 ? cashboxesStore.fetchAll() : Promise.resolve(),
     ])
+    if (dealId.value) recentDeals.recordVisit(dealId.value)
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки сделки')
   } finally {
@@ -320,6 +327,18 @@ const currentMonthlyPayment = computed(() => {
   return next?.amount ?? 0
 })
 
+// Term label — picks the right Russian plural form for the deal's
+// interval. MONTHLY → месяцев, WEEKLY → недель, BIWEEKLY → 2-недельных
+// периодов; falls back to нейтральное «платежей».
+const termLabel = computed(() => {
+  const n = deal.value?.numberOfPayments ?? 0
+  const interval = deal.value?.paymentInterval || 'MONTHLY'
+  if (interval === 'WEEKLY') return pluralizeRu(n, 'неделя', 'недели', 'недель')
+  if (interval === 'BIWEEKLY') return `× 2 ${pluralizeRu(n, 'неделя', 'недели', 'недель')}`
+  if (interval === 'MONTHLY') return pluralizeRu(n, 'месяц', 'месяца', 'месяцев')
+  return pluralizeRu(n, 'платёж', 'платежа', 'платежей')
+})
+
 // Overdue summary — count + total amount. Shown only when > 0.
 const overdueStats = computed(() => {
   const overdue = payments.value.filter(p => p.status === 'OVERDUE')
@@ -329,14 +348,23 @@ const overdueStats = computed(() => {
   }
 })
 
-// Days overdue for a single payment (positive integer). 0 if not overdue.
-function daysOverdue(p: { dueDate: string; status: string }): number {
-  if (p.status !== 'OVERDUE') return 0
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
+// Days a payment was late by. Positive integer; 0 if on time.
+//   • OVERDUE → today − dueDate (still waiting for client)
+//   • PAID with paidAt > dueDate → paidAt − dueDate (paid late after all)
+//   • everything else (PENDING, CLOSED_EARLY, PAID on time) → 0
+function daysOverdue(p: { dueDate: string; status: string; paidAt?: string | null }): number {
   const due = new Date(p.dueDate)
   due.setHours(0, 0, 0, 0)
-  const diff = Math.floor((today.getTime() - due.getTime()) / 86400000)
+  let reference: Date | null = null
+  if (p.status === 'OVERDUE') {
+    reference = new Date()
+    reference.setHours(0, 0, 0, 0)
+  } else if (p.status === 'PAID' && p.paidAt) {
+    reference = new Date(p.paidAt)
+    reference.setHours(0, 0, 0, 0)
+  }
+  if (!reference) return 0
+  const diff = Math.floor((reference.getTime() - due.getTime()) / 86400000)
   return Math.max(diff, 0)
 }
 
@@ -528,6 +556,96 @@ async function confirmUndoReschedule(p: typeof payments.value[0]) {
   }
 }
 
+// Add tail payment dialog. Partner uses this when the original schedule
+// has run out but the client still owes — chronic underpayment, side fee,
+// installment extension, etc.
+const addPaymentDialog = ref(false)
+const addPaymentAmount = ref<number | null>(null)
+const addPaymentDueDate = ref('')
+const addPaymentNote = ref('')
+const addPaymentSubmitting = ref(false)
+
+// How much debt the current schedule doesn't yet cover. Compares the
+// SUM of all payment amounts (PAID + PENDING + OVERDUE — including
+// CLOSED_EARLY which is amount 0) against the deal balance. Different
+// from deal.remainingAmount: the latter is "how much the client still
+// owes us in real money", which counts existing PENDING rows as still
+// outstanding. We need "is there a hole in the schedule".
+// How many rows the partner appended beyond the original plan. We can't
+// flag individual rows reliably (a delete + later add reuses different
+// numbers), so we surface this as an aggregate count next to the
+// schedule header instead.
+const extraPaymentsCount = computed(() => {
+  if (!deal.value) return 0
+  return Math.max(0, payments.value.length - (deal.value.numberOfPayments ?? 0))
+})
+
+const uncoveredByPlan = computed(() => {
+  if (!deal.value) return 0
+  const balance = (deal.value.totalPrice ?? 0) - (deal.value.downPayment ?? 0)
+  const sumExisting = payments.value.reduce((s, p) => s + (p.amount ?? 0), 0)
+  return Math.max(0, balance - sumExisting)
+})
+const canAddPayment = computed(() => {
+  if (!deal.value) return false
+  if (deal.value.deletedAt) return false
+  if (deal.value.status === 'CANCELLED') return false
+  return uncoveredByPlan.value > 0
+})
+const addPaymentDisabledReason = computed(() => {
+  if (!deal.value) return ''
+  if (deal.value.deletedAt) return 'Сделка находится в корзине'
+  if (deal.value.status === 'CANCELLED') return 'Сделка отменена'
+  if (uncoveredByPlan.value <= 0) {
+    return 'Существующие платежи в графике уже покрывают всю сумму сделки — добавление лишних создаст фантомный долг.'
+  }
+  return ''
+})
+
+function openAddPayment() {
+  // Default sum = the uncovered piece of the balance (balance minus the
+  // total of every existing payment, paid or not). NOT remainingAmount —
+  // that would double-count PENDING rows that already cover part of the
+  // deal. Date = +1 interval from the latest payment's dueDate.
+  addPaymentAmount.value = uncoveredByPlan.value > 0
+    ? Math.round(uncoveredByPlan.value)
+    : null
+  const latest = [...payments.value].sort(
+    (a, b) => new Date(b.dueDate).getTime() - new Date(a.dueDate).getTime(),
+  )[0]
+  const anchor = latest ? new Date(latest.dueDate) : new Date()
+  const interval = deal.value?.paymentInterval || 'MONTHLY'
+  if (interval === 'WEEKLY') anchor.setDate(anchor.getDate() + 7)
+  else if (interval === 'BIWEEKLY') anchor.setDate(anchor.getDate() + 14)
+  else anchor.setMonth(anchor.getMonth() + 1)
+  addPaymentDueDate.value = toDateInput(anchor)
+  addPaymentNote.value = ''
+  addPaymentDialog.value = true
+}
+
+async function confirmAddPayment() {
+  if (!deal.value || !addPaymentAmount.value || addPaymentAmount.value <= 0 || !addPaymentDueDate.value) return
+  addPaymentSubmitting.value = true
+  try {
+    await paymentsStore.addPayment(deal.value.id, {
+      amount: addPaymentAmount.value,
+      // Stamp midday on the chosen calendar day so timezone shifts can't
+      // push the stored date to the day before/after.
+      dueDate: new Date(`${addPaymentDueDate.value}T12:00:00`).toISOString(),
+      note: addPaymentNote.value.trim() || undefined,
+    })
+    // Re-fetch the deal so paidPayments / remainingAmount / status flip
+    // (the deal may have been re-opened from COMPLETED back to ACTIVE).
+    await dealsStore.fetchDeal(deal.value.id)
+    toast.success('Платёж добавлен')
+    addPaymentDialog.value = false
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось добавить платёж')
+  } finally {
+    addPaymentSubmitting.value = false
+  }
+}
+
 // Mark as paid dialog
 const markPaidDialog = ref(false)
 const markPaidTarget = ref<typeof payments.value[0] | null>(null)
@@ -541,7 +659,26 @@ const proofEnlargeDialog = ref(false)
 const proofEnlargeUrl = ref('')
 
 const markPaidAmount = ref<number | null>(null)
-const markPaidOnTime = ref(false)
+// Actual payment date — defaults to today on dialog open. Partner can
+// roll it back to dueDate to skip the late-payment hit on client rating,
+// or set any specific calendar day they actually received the money.
+const markPaidPaidAt = ref('')
+
+// `<input type="date">` wants YYYY-MM-DD in the browser's local TZ — Date
+// values from the API are ISO with time, so we need a thin convertor.
+function toDateInput(d: string | Date): string {
+  const date = typeof d === 'string' ? new Date(d) : d
+  const yyyy = date.getFullYear()
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const dd = String(date.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+function formatShortDate(d: string | Date): string {
+  const date = typeof d === 'string' ? new Date(d) : d
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
+}
+// Today (local) as a YYYY-MM-DD string. Used as a quick-set preset.
+const todayDateInput = computed(() => toDateInput(new Date()))
 
 const outOfOrderDialog = ref(false)
 const outOfOrderPending = ref<typeof payments.value[0] | null>(null)
@@ -571,7 +708,10 @@ function openMarkPaidImmediate(p: typeof payments.value[0]) {
   markPaidAmount.value = Math.round(p.amount)
   markPaidProofFile.value = null
   markPaidProofPreview.value = ''
-  markPaidOnTime.value = false
+  // Default to today — partner almost always marks the moment they
+  // physically received the money.
+  markPaidPaidAt.value = todayDateInput.value
+  createTailPayment.value = false
   markPaidDialog.value = true
 }
 
@@ -599,6 +739,42 @@ const earlyCloseInfo = computed(() => {
     excess: Math.max(totalAfter - balance, 0),
   }
 })
+
+// Tail-payment helper: when partner underpays the LAST remaining PENDING/
+// OVERDUE row, the schedule runs out before the debt does. Offer to
+// auto-append a new payment for the leftover so they don't have to dig
+// into «Добавить платёж» every time.
+const tailPaymentInfo = computed(() => {
+  const target = markPaidTarget.value
+  const enteredAmount = markPaidAmount.value
+  if (!target || !deal.value || !enteredAmount || enteredAmount <= 0) {
+    return { applicable: false, deficit: 0, suggestedDate: '' }
+  }
+  // Are there any other unpaid rows that would absorb the deficit via the
+  // backend's redistribute logic? If so, no tail needed.
+  const otherUnpaid = payments.value.filter(
+    p => p.id !== target.id && (p.status === 'PENDING' || p.status === 'OVERDUE'),
+  )
+  if (otherUnpaid.length > 0) {
+    return { applicable: false, deficit: 0, suggestedDate: '' }
+  }
+  const balance = deal.value.totalPrice - (deal.value.downPayment || 0)
+  const sumAlreadyPaid = payments.value
+    .filter(p => p.id !== target.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
+    .reduce((s, p) => s + p.amount, 0)
+  const deficit = Math.round(balance - sumAlreadyPaid - enteredAmount)
+  if (deficit <= 0) return { applicable: false, deficit: 0, suggestedDate: '' }
+
+  // Default tail date = one interval after THIS payment's dueDate (the
+  // last in the schedule by construction here).
+  const anchor = new Date(target.dueDate)
+  const interval = deal.value.paymentInterval || 'MONTHLY'
+  if (interval === 'WEEKLY') anchor.setDate(anchor.getDate() + 7)
+  else if (interval === 'BIWEEKLY') anchor.setDate(anchor.getDate() + 14)
+  else anchor.setMonth(anchor.getMonth() + 1)
+  return { applicable: true, deficit, suggestedDate: toDateInput(anchor) }
+})
+const createTailPayment = ref(false)
 
 function dismissOutOfOrder() {
   outOfOrderDialog.value = false
@@ -637,6 +813,48 @@ async function confirmUnmarkPaid(p: typeof payments.value[0]) {
   }
 }
 
+// Delete an unpaid payment row. Backend rejects PAID — partner must
+// unmarkPaid first. We confirm even for unpaid since the row may have
+// real history (e.g. rescheduled note, manual amount adjustment).
+const removingPayment = ref<string | null>(null)
+// Only "extra" rows (added on top of the original installment plan) can
+// be deleted. Sister guard on the backend; UI just hides the button on
+// the rows that aren't deletable so the partner doesn't get a 400.
+const canDeleteAnyPayment = computed(() => {
+  if (!deal.value) return false
+  if (deal.value.deletedAt) return false
+  if (deal.value.status === 'CANCELLED') return false
+  return payments.value.length > (deal.value.numberOfPayments ?? 0)
+})
+
+async function confirmRemovePayment(p: typeof payments.value[0]) {
+  if (!confirm(`Удалить платёж #${p.number} на ${formatCurrency(p.amount)}?`)) return
+  removingPayment.value = p.id
+  try {
+    await paymentsStore.removePayment(p.id, p.dealId)
+    await dealsStore.fetchDeal(p.dealId)
+    toast.success('Платёж удалён')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось удалить платёж')
+  } finally {
+    removingPayment.value = null
+  }
+}
+
+// Banner shown under the schedule when the schedule itself doesn't add
+// up to the deal balance — i.e. there's a hole even before considering
+// what's PAID. Covers two cases:
+//   1) All rows are off (PAID/CLOSED_EARLY) but partner underpaid →
+//      no tail row was created.
+//   2) Partner removed a row and the leftover wasn't covered elsewhere.
+// In both cases we offer "add a tail payment" or "forgive and close".
+const showLeftoverBanner = computed(() => {
+  if (!deal.value) return false
+  if (deal.value.deletedAt) return false
+  if (deal.value.status !== 'ACTIVE' && deal.value.status !== 'DISPUTED') return false
+  return uncoveredByPlan.value > 0
+})
+
 function onProofFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -668,15 +886,37 @@ async function confirmMarkPaid() {
     }
     const paidAmount = markPaidAmount.value && markPaidAmount.value !== markPaidTarget.value.amount
       ? markPaidAmount.value : undefined
-    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, {
+    // Capture the tail-payment intent BEFORE markAsPaid — once payment is
+    // marked, payments.value mutates and the computed turns stale.
+    const tail = createTailPayment.value ? { ...tailPaymentInfo.value } : null
+    const dealId = markPaidTarget.value.dealId
+    await paymentsStore.markAsPaid(markPaidTarget.value.id, dealId, {
       amount: paidAmount,
       proofScreenshot,
-      onTime: markPaidOnTime.value || undefined,
+      // Send midday on the chosen date so timezone shifts don't move the
+      // stored timestamp to the day before/after.
+      paidAt: markPaidPaidAt.value
+        ? new Date(`${markPaidPaidAt.value}T12:00:00`).toISOString()
+        : undefined,
     })
+    if (tail && tail.applicable && tail.deficit > 0) {
+      // Append a follow-up row for the leftover so the partner can keep
+      // tracking the debt. Best-effort: a failure here doesn't undo the
+      // markPaid we just did, so surface it as a separate toast.
+      try {
+        await paymentsStore.addPayment(dealId, {
+          amount: tail.deficit,
+          dueDate: new Date(`${tail.suggestedDate}T12:00:00`).toISOString(),
+          note: 'Остаток после недоплат',
+        })
+      } catch (e: any) {
+        toast.error(e.message || 'Платёж отмечен, но не удалось добавить остаток')
+      }
+    }
     // Refresh THIS deal (paidPayments/status/remainingAmount may have flipped
     // — e.g. to COMPLETED on overpayment closure) without reloading the whole
     // deals list.
-    await dealsStore.fetchDeal(markPaidTarget.value.dealId)
+    await dealsStore.fetchDeal(dealId)
     toast.success('Платёж отмечен как оплаченный')
     markPaidDialog.value = false
     markPaidTarget.value = null
@@ -769,8 +1009,8 @@ function pluralizeRu(n: number, one: string, few: string, many: string) {
   return many
 }
 
-function openStatusDialog() {
-  closeMode.value = 'paid_early'
+function openStatusDialog(preselect?: 'paid_early' | 'forgive' | 'force') {
+  closeMode.value = preselect ?? 'paid_early'
   statusDialog.value = true
 }
 
@@ -1122,6 +1362,14 @@ const timeline = computed(() => {
                 после переоценки
               </div>
             </div>
+            <!-- Term — original plan length. Uses `numberOfPayments`
+                 (frozen at creation, not shifted by add/delete), so it
+                 always shows what the partner originally committed to. -->
+            <div class="finance-card">
+              <div class="finance-label">Срок</div>
+              <div class="finance-value">{{ deal.numberOfPayments }}</div>
+              <div class="finance-sub">{{ termLabel }}</div>
+            </div>
             <div class="finance-card">
               <div class="finance-label">Оплачено</div>
               <div class="finance-value" style="color: #047857;">{{ formatCurrency(totalPaid) }}</div>
@@ -1276,9 +1524,36 @@ const timeline = computed(() => {
 
           <!-- Payment schedule -->
           <v-card v-if="payments.length" rounded="lg" elevation="0" border class="mb-6">
-            <div class="pa-5 pb-0">
-              <div class="section-title">График платежей</div>
-              <div class="section-subtitle mb-4">Полный список по сделке</div>
+            <div class="pa-5 pb-0 d-flex align-start justify-space-between ga-3 flex-wrap">
+              <div>
+                <div class="section-title">График платежей</div>
+                <div class="section-subtitle mb-4">Полный список по сделке</div>
+              </div>
+              <div v-if="deal && !deal.deletedAt && deal.status !== 'CANCELLED'" class="d-flex align-center ga-2">
+                <button
+                  class="add-payment-btn"
+                  :disabled="!canAddPayment"
+                  :title="canAddPayment ? 'Добавить дополнительный платёж' : ''"
+                  @click="canAddPayment && openAddPayment()"
+                >
+                  <v-icon icon="mdi-plus" size="16" />
+                  Добавить платёж
+                </button>
+                <!-- Hover hint that explains the disabled state. Shown
+                     only when the button is actually disabled so the
+                     partner doesn't see a useless «?» otherwise. -->
+                <v-tooltip v-if="!canAddPayment" location="bottom" max-width="280">
+                  <template #activator="{ props: tprops }">
+                    <v-icon
+                      v-bind="tprops"
+                      icon="mdi-information-outline"
+                      size="18"
+                      class="add-payment-info"
+                    />
+                  </template>
+                  <span>{{ addPaymentDisabledReason }}</span>
+                </v-tooltip>
+              </div>
             </div>
 
             <v-table density="default" class="schedule-table schedule-table--desktop">
@@ -1306,11 +1581,14 @@ const timeline = computed(() => {
                       <v-icon icon="mdi-calendar-arrow-right" size="12" />
                       было {{ formatDate(p.rescheduledFrom) }}
                     </div>
-                    <!-- Phase 3.x: explicit days-overdue chip so partner sees
-                         «насколько» а не только «overdue». -->
-                    <div v-if="p.status === 'OVERDUE'" class="overdue-chip">
+                    <!-- Days-late chip — surfaced for any payment that's
+                         late, regardless of whether it's still OVERDUE or
+                         already PAID after the due date. Lets the partner
+                         see the delay history at a glance. -->
+                    <div v-if="daysOverdue(p) > 0" class="overdue-chip">
                       <v-icon icon="mdi-clock-alert-outline" size="11" />
-                      просрочен на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
+                      {{ p.status === 'PAID' ? 'оплачен с задержкой' : 'просрочен' }}
+                      на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
                     </div>
                   </td>
                   <td class="text-end font-weight-bold text-no-wrap">{{ formatCurrency(p.amount) }}</td>
@@ -1351,6 +1629,16 @@ const timeline = computed(() => {
                       >
                         <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
                         <v-icon v-else icon="mdi-calendar-refresh" size="16" />
+                      </button>
+                      <button
+                        v-if="canDeleteAnyPayment"
+                        class="action-btn action-btn--danger"
+                        title="Удалить платёж"
+                        :disabled="removingPayment === p.id"
+                        @click="confirmRemovePayment(p)"
+                      >
+                        <v-progress-circular v-if="removingPayment === p.id" indeterminate size="12" width="2" />
+                        <v-icon v-else icon="mdi-trash-can-outline" size="16" />
                       </button>
                     </div>
                     <div v-else-if="p.status === 'PAID'" class="d-flex align-center justify-center">
@@ -1394,9 +1682,10 @@ const timeline = computed(() => {
                     <v-icon icon="mdi-calendar-arrow-right" size="12" />
                     было {{ formatDate(p.rescheduledFrom) }}
                   </div>
-                  <div v-if="p.status === 'OVERDUE'" class="overdue-chip">
+                  <div v-if="daysOverdue(p) > 0" class="overdue-chip">
                     <v-icon icon="mdi-clock-alert-outline" size="11" />
-                    просрочен на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
+                    {{ p.status === 'PAID' ? 'оплачен с задержкой' : 'просрочен' }}
+                    на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
                   </div>
                 </div>
 
@@ -1446,6 +1735,16 @@ const timeline = computed(() => {
                     <v-icon v-else icon="mdi-calendar-refresh" size="16" />
                     Вернуть
                   </button>
+                  <button
+                    v-if="canDeleteAnyPayment"
+                    class="action-btn action-btn--danger"
+                    :disabled="removingPayment === p.id"
+                    @click="confirmRemovePayment(p)"
+                  >
+                    <v-progress-circular v-if="removingPayment === p.id" indeterminate size="12" width="2" />
+                    <v-icon v-else icon="mdi-trash-can-outline" size="16" />
+                    Удалить
+                  </button>
                 </div>
                 <div v-else-if="p.status === 'PAID'" class="sched-card-actions">
                   <button
@@ -1456,6 +1755,61 @@ const timeline = computed(() => {
                     <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
                     <v-icon v-else icon="mdi-undo" size="16" />
                     Отменить оплату
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Outstanding-balance banner. Surfaces when the schedule has
+                 been fully marked off but the deal still has a remaining
+                 amount — common with clients who chronically underpay.
+                 Gives the partner the two reasonable next moves. -->
+            <!-- Schedule-was-extended notice. Surfaces the fact that
+                 the partner added rows on top of the original plan.
+                 Aggregate by design: deletes + re-adds reuse number
+                 slots so we can't safely tag individual rows. -->
+            <div v-if="extraPaymentsCount > 0 && deal" class="extras-banner pa-5">
+              <div class="extras-banner-icon">
+                <v-icon icon="mdi-playlist-plus" size="22" color="#0ea5e9" />
+              </div>
+              <div class="extras-banner-content">
+                <div class="extras-banner-title">
+                  График расширен на {{ extraPaymentsCount }}
+                  {{ pluralizeRu(extraPaymentsCount, 'платёж', 'платежа', 'платежей') }}
+                </div>
+                <div class="extras-banner-text">
+                  Изначально сделка была заключена на
+                  <strong>{{ deal.numberOfPayments }}</strong>
+                  {{ pluralizeRu(deal.numberOfPayments, 'платёж', 'платежа', 'платежей') }},
+                  сейчас в графике
+                  <strong>{{ payments.length }}</strong>
+                  {{ pluralizeRu(payments.length, 'строка', 'строки', 'строк') }}.
+                  {{ extraPaymentsCount }}
+                  {{ pluralizeRu(extraPaymentsCount, 'платёж', 'платежа', 'платежей') }}
+                  добавлен{{ extraPaymentsCount === 1 ? '' : 'о' }} вручную поверх исходного плана.
+                </div>
+              </div>
+            </div>
+
+            <div v-if="showLeftoverBanner && deal" class="leftover-banner pa-5">
+              <div class="leftover-banner-icon">
+                <v-icon icon="mdi-alert-circle-outline" size="22" color="#f59e0b" />
+              </div>
+              <div class="leftover-banner-content">
+                <div class="leftover-banner-title">Не вся сумма оплачена</div>
+                <div class="leftover-banner-text">
+                  В графике не хватает строк на
+                  <strong>{{ formatCurrency(uncoveredByPlan) }}</strong>
+                  — все существующие платежи в сумме меньше стоимости сделки.
+                </div>
+                <div class="leftover-banner-actions">
+                  <button class="leftover-btn leftover-btn--primary" @click="openAddPayment">
+                    <v-icon icon="mdi-plus" size="16" />
+                    Добавить платёж
+                  </button>
+                  <button class="leftover-btn leftover-btn--ghost" @click="openStatusDialog('forgive')">
+                    <v-icon icon="mdi-handshake-outline" size="16" />
+                    Закрыть с прощением долга
                   </button>
                 </div>
               </div>
@@ -2333,6 +2687,63 @@ const timeline = computed(() => {
             </div>
           </div>
 
+          <!-- Actual paid-at date. Defaults to today; partner can roll
+               back to dueDate to skip the late-payment hit on rating, or
+               set whatever real date they received the money. -->
+          <div class="mb-5">
+            <label class="field-label">Фактическая дата оплаты</label>
+            <input
+              v-model="markPaidPaidAt"
+              type="date"
+              class="field-input"
+            />
+            <!-- One-tap presets for the two most common cases. -->
+            <div v-if="markPaidTarget" class="paidat-presets mt-2">
+              <button
+                type="button"
+                class="paidat-preset"
+                :class="{ 'paidat-preset--active': markPaidPaidAt === toDateInput(markPaidTarget.dueDate) }"
+                @click="markPaidPaidAt = toDateInput(markPaidTarget.dueDate)"
+              >
+                <v-icon icon="mdi-calendar-check" size="14" />
+                В срок ({{ formatShortDate(markPaidTarget.dueDate) }})
+              </button>
+              <button
+                type="button"
+                class="paidat-preset"
+                :class="{ 'paidat-preset--active': markPaidPaidAt === todayDateInput }"
+                @click="markPaidPaidAt = todayDateInput"
+              >
+                <v-icon icon="mdi-calendar-today" size="14" />
+                Сегодня
+              </button>
+            </div>
+            <div
+              v-if="markPaidTarget && markPaidPaidAt && new Date(markPaidPaidAt) > new Date(markPaidTarget.dueDate)"
+              class="text-caption mt-1"
+              style="color: #f59e0b;"
+            >
+              Оплата с задержкой — повлияет на рейтинг клиента
+            </div>
+          </div>
+
+          <!-- Tail-payment offer: this is the last unpaid row and the
+               entered amount leaves a deficit. One-tap to append a
+               follow-up payment for the leftover. -->
+          <div v-if="tailPaymentInfo.applicable" class="tail-banner mb-5">
+            <label class="tail-banner-row">
+              <input v-model="createTailPayment" type="checkbox" class="tail-banner-cb" />
+              <div class="tail-banner-text">
+                <div class="tail-banner-title">
+                  Создать дополнительный платёж на {{ formatCurrency(tailPaymentInfo.deficit) }}
+                </div>
+                <div class="tail-banner-sub">
+                  Дата: {{ formatShortDate(tailPaymentInfo.suggestedDate) }} · по тому же интервалу
+                </div>
+              </div>
+            </label>
+          </div>
+
           <!-- Early closure warning: this payment covers the remaining balance -->
           <div v-if="earlyCloseInfo.willClose" class="early-close-banner mb-5">
             <v-icon icon="mdi-flag-checkered" color="#0ea5e9" size="20" class="mt-1 flex-shrink-0" />
@@ -2396,28 +2807,71 @@ const timeline = computed(() => {
             />
           </div>
 
-          <!-- On-time toggle (show when payment is overdue) -->
-          <div v-if="markPaidTarget && markPaidTarget.status === 'OVERDUE'" class="ontime-toggle mb-5" :class="{ 'ontime-toggle--active': markPaidOnTime }" @click="markPaidOnTime = !markPaidOnTime">
-            <div class="ontime-toggle-icon">
-              <v-icon :icon="markPaidOnTime ? 'mdi-check-circle' : 'mdi-clock-alert-outline'" size="18" :color="markPaidOnTime ? '#047857' : '#f59e0b'" />
-            </div>
-            <div class="ontime-toggle-content">
-              <div class="ontime-toggle-title">Оплачено без просрочки</div>
-              <div class="ontime-toggle-desc">Не повлияет на рейтинг клиента</div>
-            </div>
-            <div class="ontime-toggle-switch">
-              <div class="ontime-switch-track" :class="{ 'ontime-switch-track--on': markPaidOnTime }">
-                <div class="ontime-switch-thumb" />
-              </div>
-            </div>
-          </div>
-
           <div class="d-flex ga-3">
             <button class="btn-secondary flex-grow-1" @click="markPaidDialog = false">Отмена</button>
             <button class="btn-primary flex-grow-1" :disabled="markPaidUploading" @click="confirmMarkPaid">
               <v-progress-circular v-if="markPaidUploading" indeterminate size="16" width="2" color="white" class="mr-1" />
               <v-icon v-else icon="mdi-check" size="16" />
               {{ markPaidUploading ? 'Загрузка...' : 'Подтвердить оплату' }}
+            </button>
+          </div>
+        </v-card>
+      </v-dialog>
+
+      <!-- Add tail payment dialog. Triggered by «Добавить платёж» next to
+           the schedule. Defaults to outstanding balance + next interval
+           after the latest payment's dueDate. -->
+      <v-dialog v-model="addPaymentDialog" max-width="440" :fullscreen="isMobile">
+        <v-card rounded="lg" class="pa-6">
+          <div class="d-flex align-center ga-2 mb-1">
+            <v-icon icon="mdi-cash-plus" color="primary" size="22" />
+            <div class="text-h6 font-weight-bold">Добавить платёж</div>
+          </div>
+          <div class="text-body-2 text-medium-emphasis mb-4">
+            Дополнительная строка в график — например, если у клиента остался долг после окончания плана.
+          </div>
+
+          <div class="mb-4">
+            <label class="field-label">Сумма платежа</label>
+            <div class="input-with-suffix">
+              <input
+                :value="addPaymentAmount || ''"
+                v-maska="CURRENCY_MASK"
+                @maska="(e: any) => addPaymentAmount = parseMasked(e)"
+                type="text"
+                inputmode="numeric"
+                class="field-input"
+              />
+              <span class="input-suffix">₽</span>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="field-label">Дата платежа</label>
+            <input v-model="addPaymentDueDate" type="date" class="field-input" />
+          </div>
+
+          <div class="mb-5">
+            <label class="field-label">Комментарий (необязательно)</label>
+            <input
+              v-model="addPaymentNote"
+              type="text"
+              maxlength="200"
+              placeholder="Например: остаток после недоплат"
+              class="field-input"
+            />
+          </div>
+
+          <div class="d-flex ga-3">
+            <button class="btn-secondary flex-grow-1" @click="addPaymentDialog = false">Отмена</button>
+            <button
+              class="btn-primary flex-grow-1"
+              :disabled="addPaymentSubmitting || !addPaymentAmount || !addPaymentDueDate"
+              @click="confirmAddPayment"
+            >
+              <v-progress-circular v-if="addPaymentSubmitting" indeterminate size="16" width="2" color="white" class="mr-1" />
+              <v-icon v-else icon="mdi-plus" size="16" />
+              Добавить
             </button>
           </div>
         </v-card>
@@ -2936,79 +3390,202 @@ const timeline = computed(() => {
   background: rgba(239, 68, 68, 0.18);
 }
 
-/* On-time toggle */
-.ontime-toggle {
+/* "Schedule was extended" info banner under the schedule */
+.extras-banner {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease;
-  user-select: none;
+  align-items: flex-start;
+  gap: 14px;
+  border-top: 1px solid rgba(14, 165, 233, 0.18);
+  background: rgba(14, 165, 233, 0.04);
 }
-.ontime-toggle:hover {
-  background: rgba(var(--v-theme-on-surface), 0.02);
-}
-.ontime-toggle--active {
-  border-color: rgba(4, 120, 87, 0.3);
-  background: rgba(4, 120, 87, 0.04);
-}
-.ontime-toggle-icon {
+.extras-banner-icon {
   width: 36px;
   height: 36px;
   border-radius: 8px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
+  background: rgba(14, 165, 233, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
-.ontime-toggle--active .ontime-toggle-icon {
-  background: rgba(4, 120, 87, 0.1);
+.extras-banner-content { flex: 1; min-width: 0; }
+.extras-banner-title {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  margin-bottom: 4px;
 }
-.ontime-toggle-content {
-  flex: 1;
-  min-width: 0;
-}
-.ontime-toggle-title {
+.extras-banner-text {
   font-size: 13px;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.87);
-  line-height: 1.3;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  line-height: 1.45;
 }
-.ontime-toggle-desc {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  line-height: 1.3;
-  margin-top: 1px;
+.extras-banner-text strong {
+  color: rgba(var(--v-theme-on-surface), 0.95);
+  font-weight: 700;
 }
-.ontime-switch-track {
+
+/* "Outstanding balance, no rows left" banner under the schedule */
+.leftover-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  border-top: 1px solid rgba(245, 158, 11, 0.18);
+  background: rgba(245, 158, 11, 0.04);
+}
+.leftover-banner-icon {
   width: 36px;
-  height: 20px;
-  border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.15);
-  position: relative;
-  transition: background 0.2s ease;
+  height: 36px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
-.ontime-switch-track--on {
-  background: #047857;
+.leftover-banner-content { flex: 1; min-width: 0; }
+.leftover-banner-title {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  margin-bottom: 4px;
 }
-.ontime-switch-thumb {
+.leftover-banner-text {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  line-height: 1.45;
+  margin-bottom: 12px;
+}
+.leftover-banner-text strong {
+  color: rgba(var(--v-theme-on-surface), 0.95);
+  font-weight: 700;
+}
+.leftover-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.leftover-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.leftover-btn--primary {
+  border: none;
+  background: #047857;
+  color: white;
+}
+.leftover-btn--primary:hover { background: #036249; }
+.leftover-btn--ghost {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.18);
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.leftover-btn--ghost:hover {
+  border-color: rgba(var(--v-theme-on-surface), 0.3);
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
+
+/* Tail-payment offer banner inside markPaid modal */
+.tail-banner {
+  border: 1px solid rgba(4, 120, 87, 0.25);
+  background: rgba(4, 120, 87, 0.05);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.tail-banner-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.tail-banner-cb {
+  margin-top: 3px;
   width: 16px;
   height: 16px;
-  border-radius: 50%;
-  background: white;
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  transition: transform 0.2s cubic-bezier(0.23, 1, 0.32, 1);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  accent-color: #047857;
+  cursor: pointer;
+  flex-shrink: 0;
 }
-.ontime-switch-track--on .ontime-switch-thumb {
-  transform: translateX(16px);
+.tail-banner-text { flex: 1; min-width: 0; }
+.tail-banner-title {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.tail-banner-sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-top: 1px;
+}
+
+/* «Добавить платёж» button in the schedule header */
+.add-payment-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(4, 120, 87, 0.25);
+  background: rgba(4, 120, 87, 0.06);
+  color: #047857;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.add-payment-btn:hover {
+  background: rgba(4, 120, 87, 0.12);
+  border-color: rgba(4, 120, 87, 0.4);
+}
+.add-payment-btn:disabled {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-color: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: not-allowed;
+}
+.add-payment-btn:disabled:hover {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-color: rgba(var(--v-theme-on-surface), 0.1);
+}
+.add-payment-info {
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: help;
+}
+.add-payment-info:hover { color: rgba(var(--v-theme-on-surface), 0.7); }
+
+/* Quick-set preset buttons for the actual-paid-at date input */
+.paidat-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.paidat-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.paidat-preset:hover {
+  border-color: rgba(var(--v-theme-on-surface), 0.22);
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.paidat-preset--active {
+  background: rgba(4, 120, 87, 0.08);
+  border-color: rgba(4, 120, 87, 0.3);
+  color: #047857;
 }
 
 /* Reminder buttons */

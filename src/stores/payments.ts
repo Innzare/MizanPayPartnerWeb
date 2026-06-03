@@ -86,7 +86,7 @@ export const usePaymentsStore = defineStore('payments', () => {
   async function markAsPaid(
     paymentId: string,
     dealId: string,
-    options?: { amount?: number; method?: string; proofScreenshot?: string; note?: string; onTime?: boolean }
+    options?: { amount?: number; method?: string; proofScreenshot?: string; note?: string; onTime?: boolean; paidAt?: string }
   ) {
     try {
       await api.patch<Payment>(`/payments/${paymentId}/paid`, options || {})
@@ -160,6 +160,42 @@ export const usePaymentsStore = defineStore('payments', () => {
     payments.value = { ...payments.value, [dealId]: newPayments }
   }
 
+  /**
+   * Remove a payment row from a deal. Server rejects PAID rows; partner
+   * has to unmarkPaid first. Re-fetches the schedule because the deletion
+   * shifts remainingAfter on every row that came after the removed one.
+   */
+  async function removePayment(paymentId: string, dealId: string) {
+    try {
+      await api.delete(`/payments/${paymentId}`)
+      await fetchPaymentsForDeal(dealId)
+    } catch (e: any) {
+      error.value = e.message || 'Не удалось удалить платёж'
+      throw e
+    }
+  }
+
+  /**
+   * Append a new payment row to a deal's schedule. Used when the original
+   * installment plan ran out before the client's debt did (chronic
+   * underpayment) or for ad-hoc side payments. Re-fetches the full
+   * schedule because the backend may have shifted `remainingAfter` across
+   * the whole list.
+   */
+  async function addPayment(
+    dealId: string,
+    input: { amount: number; dueDate: string; note?: string },
+  ) {
+    try {
+      const created = await api.post<Payment>(`/payments/deal/${dealId}`, input)
+      await fetchPaymentsForDeal(dealId)
+      return created
+    } catch (e: any) {
+      error.value = e.message || 'Не удалось добавить платёж'
+      throw e
+    }
+  }
+
   return {
     payments,
     loading,
@@ -174,6 +210,8 @@ export const usePaymentsStore = defineStore('payments', () => {
     getPaymentsForDeal,
     getNextPayment,
     markAsPaid,
+    addPayment,
+    removePayment,
     unmarkPaid,
     reschedulePayment,
     undoReschedulePayment,

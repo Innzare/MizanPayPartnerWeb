@@ -26,13 +26,43 @@ async function tryRefreshToken(): Promise<boolean> {
   }
 }
 
-let isRefreshing = false;
+// Shared refresh promise. When several requests hit 401 in parallel
+// (typical on page load — 5 stores fetch at once), they all await the
+// SAME refresh call here instead of each one racing to /auth/refresh.
+// First caller starts the refresh; everyone else gets the result, then
+// retries their own request. Previous boolean-flag version made every
+// non-first caller fall through to logout, which is why partners got
+// kicked even though refresh would have worked.
+let refreshPromise: Promise<boolean> | null = null;
+
+function ensureRefresh(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = tryRefreshToken().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+function clearSessionAndRedirect(): never {
+  localStorage.removeItem('access_token');
+  localStorage.removeItem('refresh_token');
+  localStorage.removeItem('user');
+  window.location.href = '/login';
+  throw new Error('Сессия истекла');
+}
 
 async function request<T>(
   method: string,
   path: string,
   body?: unknown,
   skipAuthRedirect = false,
+  // `_retried` caps the refresh→retry chain at one round per request. If
+  // the brand-new access token from refresh STILL gets a 401 back (e.g.
+  // the partner got blocked server-side during the refresh, or there's
+  // clock skew), bail out instead of looping. Private — callers should
+  // not set this.
+  _retried = false,
 ): Promise<T> {
   const token = getToken();
 
@@ -56,19 +86,18 @@ async function request<T>(
   // shared partner layout might brush against).
   const hasToken = !!token;
   if (response.status === 401 && !skipAuthRedirect && !isAuthPath && !isPublicPath && hasToken) {
-    if (!isRefreshing) {
-      isRefreshing = true;
-      const refreshed = await tryRefreshToken();
-      isRefreshing = false;
-      if (refreshed) {
-        return request<T>(method, path, body, skipAuthRedirect);
-      }
+    if (_retried) {
+      // We already burned one refresh-and-retry for this request and the
+      // fresh token also got rejected. Don't loop.
+      clearSessionAndRedirect();
     }
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    localStorage.removeItem('user');
-    window.location.href = '/login';
-    throw new Error('Сессия истекла');
+    // Every parallel 401 awaits the same refresh; only the actual refresh
+    // failure (no/invalid refresh token, server error) triggers logout.
+    const refreshed = await ensureRefresh();
+    if (refreshed) {
+      return request<T>(method, path, body, skipAuthRedirect, true);
+    }
+    clearSessionAndRedirect();
   }
 
   if (!response.ok) {
@@ -80,7 +109,7 @@ async function request<T>(
   return response.json();
 }
 
-async function uploadRequest<T>(path: string, formData: FormData): Promise<T> {
+async function uploadRequest<T>(path: string, formData: FormData, _retried = false): Promise<T> {
   const token = getToken();
 
   const response = await fetch(`${API_URL}${path}`, {
@@ -92,17 +121,10 @@ async function uploadRequest<T>(path: string, formData: FormData): Promise<T> {
   });
 
   if (response.status === 401) {
-    if (!isRefreshing) {
-      isRefreshing = true;
-      const refreshed = await tryRefreshToken();
-      isRefreshing = false;
-      if (refreshed) return uploadRequest<T>(path, formData);
-    }
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    localStorage.removeItem('user');
-    window.location.href = '/login';
-    throw new Error('Сессия истекла');
+    if (_retried) clearSessionAndRedirect();
+    const refreshed = await ensureRefresh();
+    if (refreshed) return uploadRequest<T>(path, formData, true);
+    clearSessionAndRedirect();
   }
 
   if (!response.ok) {
