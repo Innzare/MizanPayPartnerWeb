@@ -78,13 +78,24 @@ const showDialog = ref(false)
 
 const filteredClients = computed(() => {
   if (!search.value) return clientsStore.clientsInfo
-  const s = search.value.toLowerCase()
-  return clientsStore.clientsInfo.filter(
-    (c) =>
-      (c.user.firstName + ' ' + c.user.lastName).toLowerCase().includes(s) ||
-      c.user.city.toLowerCase().includes(s) ||
-      c.user.phone.includes(s)
-  )
+  // Token-AND: split the query into whitespace-separated pieces and
+  // require each piece to land somewhere in the combined haystack.
+  // Without this "Маашев Шамиль" misses because firstName/lastName are
+  // stored separately and the old `(firstName + ' ' + lastName)`
+  // composite locks in one specific order.
+  const tokens = search.value.toLowerCase().split(/\s+/).filter(Boolean)
+  return clientsStore.clientsInfo.filter((c) => {
+    const haystack = [
+      c.user.firstName,
+      c.user.lastName,
+      c.user.phone,
+      c.user.city,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    return tokens.every((t) => haystack.includes(t))
+  })
 })
 
 // Summary stats

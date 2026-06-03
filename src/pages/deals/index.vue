@@ -629,12 +629,12 @@ const selectedDealPaidTotal = computed(() =>
           </v-menu>
 
           <div class="d-flex flex-wrap ga-2 align-center">
-            <div class="filter-input-wrap" style="max-width: 240px; min-width: 160px;">
+            <div class="filter-input-wrap" style="max-width: 520px; min-width: 320px; flex: 1;">
               <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
               <input
                 v-model="search"
                 type="text"
-                placeholder="Поиск..."
+                placeholder="Поиск по товару, клиенту, номеру..."
                 class="filter-input"
               />
             </div>

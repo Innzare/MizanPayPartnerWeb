@@ -1019,7 +1019,12 @@ function renderStars(rating: number): string[] {
   left: 16px;
   top: 50%;
   transform: translateY(-50%);
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.85);
+  /* Otherwise the icon swallows clicks meant for the underlying input,
+     and users wonder why focus jumps but the caret doesn't go where
+     they tapped. */
+  pointer-events: none;
+  z-index: 1;
 }
 .rg-search-input {
   width: 100%;
