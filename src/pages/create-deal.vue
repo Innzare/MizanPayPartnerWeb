@@ -284,12 +284,30 @@ onMounted(async () => {
     return
   }
 
-  // Auto-restore a previously saved draft. Runs after dependencies (CIs,
-  // folders, cashboxes) are loaded so the form has the lists it needs to
-  // render the restored selections.
-  if (dealDraft.hasDraft.value) {
+  // Auto-restore is gated on `?resume=1` — set by the DealDraftFloater
+  // when the partner explicitly clicks "Продолжить". Any other entry
+  // (header "Create deal" button, deep link, etc.) starts the wizard
+  // empty even when a draft exists. The draft itself stays in storage
+  // and the floater keeps offering to resume it, so nothing is lost —
+  // the partner just has to opt in.
+  const wantsResume = route.query.resume === '1'
+  const stored = dealDraft.draft.value
+  const storedHasContent =
+    !!stored &&
+    (
+      (stored.productName?.trim().length ?? 0) > 0 ||
+      (stored.purchasePrice ?? 0) > 0 ||
+      !!stored.selectedClientProfileId
+    )
+  if (wantsResume && storedHasContent) {
     applyDraftToForm()
+    wasRestoredOnMount.value = true
     if (selectedCashBoxId.value) await fetchCashBoxCapital(selectedCashBoxId.value)
+  } else if (!storedHasContent && dealDraft.hasDraft.value) {
+    // Empty legacy draft (one-field {selectedCashBoxId} fallout from
+    // before scheduleDraftSave learned to skip empty saves). Clean it
+    // up so the floater doesn't light up for nothing.
+    dealDraft.clear()
   }
 })
 
@@ -411,6 +429,12 @@ let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
 // just loaded. We flip it back on a microtask so Vue's flush-pre
 // watcher runs while it's still true.
 let isRestoringDraft = false
+// Banner-visibility flag — only true when the wizard actually hydrated
+// real form values from storage on this mount. Without it, the banner
+// would also show when the watcher auto-saves the default cashbox on
+// first visit and then re-reads it back, even though the partner had
+// no real draft.
+const wasRestoredOnMount = ref(false)
 
 function applyDraftToForm() {
   const d = dealDraft.draft.value
@@ -451,6 +475,22 @@ function scheduleDraftSave() {
   if (isRestoringDraft) return
   if (draftSaveTimer) clearTimeout(draftSaveTimer)
   draftSaveTimer = setTimeout(() => {
+    // Don't persist a draft that's effectively empty. On first mount
+    // we auto-fill selectedCashBoxId with the partner's default
+    // cashbox; the watcher used to treat that as "form was edited"
+    // and saved a 1-field draft, which then surfaced the restore
+    // banner on every subsequent visit even though the partner never
+    // typed anything. If the partner had real draft content earlier
+    // and is now clearing the form, we drop the storage row too.
+    const hasRealContent =
+      productName.value.trim().length > 0 ||
+      (purchasePrice.value ?? 0) > 0 ||
+      !!selectedClientProfileId.value
+    if (!hasRealContent) {
+      if (dealDraft.hasDraft.value) dealDraft.clear()
+      wasRestoredOnMount.value = false
+      return
+    }
     dealDraft.save({
       step: step.value,
       productName: productName.value,
@@ -487,6 +527,7 @@ function confirmResetDraft() {
 
 function resetDraftAndForm() {
   dealDraft.clear()
+  wasRestoredOnMount.value = false
   productName.value = ''
   productDescription.value = ''
   category.value = ''
@@ -762,7 +803,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
          previously saved draft, so the partner knows where the
          pre-filled values came from and how to discard them. Hidden in
          edit-mode (real deal) and once they save/clear. -->
-    <div v-if="!isEditMode && dealDraft.hasDraft.value" class="draft-restored-banner">
+    <div v-if="!isEditMode && wasRestoredOnMount" class="draft-restored-banner">
       <v-icon icon="mdi-content-save-outline" size="16" />
       <span>
         Восстановлены данные из черновика.

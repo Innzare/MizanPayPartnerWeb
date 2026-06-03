@@ -61,7 +61,12 @@ const updatedLabel = computed(() => {
 })
 
 function open() {
-  router.push('/create-deal')
+  // `resume=1` tells the wizard's onMounted to actually rehydrate the
+  // form from the draft. Without the flag (e.g. partner clicks the
+  // header "Create deal" button), the wizard starts empty even when
+  // a draft is sitting in storage — the draft only resurfaces when the
+  // partner explicitly chooses to continue it from the floater.
+  router.push({ path: '/create-deal', query: { resume: '1' } })
 }
 
 function discard() {
