@@ -24,6 +24,10 @@ type TabId = typeof validTabs[number]
 const initTab = validTabs.includes(route.query.tab as TabId) ? route.query.tab as TabId : 'profile'
 const activeTab = ref<TabId>(initTab)
 
+// WhatsApp settings moved to /broadcasts — redirect any deep link there.
+const _settingsRouter = useRouter()
+if (initTab === 'whatsapp') _settingsRouter.replace('/broadcasts')
+
 // WhatsApp
 const waStatus = ref<'disconnected' | 'connecting' | 'connected' | 'loading'>('loading')
 const waQrCode = ref<string | null>(null)
@@ -266,7 +270,7 @@ async function confirmDeleteAccount() {
 const tabs = [
   { id: 'profile' as const, label: 'Профиль', icon: 'mdi-account-outline' },
   { id: 'security' as const, label: 'Безопасность', icon: 'mdi-shield-lock-outline' },
-  { id: 'whatsapp' as const, label: 'WhatsApp', icon: 'mdi-whatsapp' },
+  // WhatsApp moved to the dedicated /broadcasts section (connection + auto-reminders).
   { id: 'export' as const, label: 'Экспорт', icon: 'mdi-download-outline' },
   { id: 'contract' as const, label: 'Договор', icon: 'mdi-file-cog-outline' },
   { id: 'subscription' as const, label: 'Подписка', icon: 'mdi-crown-outline' },

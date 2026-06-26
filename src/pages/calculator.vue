@@ -26,6 +26,98 @@ const downPaymentPercent = computed(() =>
     : '0'
 )
 
+// Down-payment dual mode (rubles / percent), same UX as the markup field.
+// `inputs.downPayment` stays the ₽ value calculateBasic reads. In percent mode
+// it's the exact typed amount (`manualDp`) if present, otherwise derived from
+// `dpPercent` and the live total price. `manualDp` mirrors the markup field's
+// `manualTotalPrice` override: without it, percent rounding makes the displayed
+// ₽ drift from what was typed (10 000 → 11 500) and the maska input snaps back.
+const downPaymentType = ref<'fixed' | 'percent'>('fixed')
+const dpPercent = ref(10)
+const manualDp = ref<number | null>(null)
+// Set when the partner tries to enter more than the total price. The value
+// itself is clamped to the max, but we keep this flag so the error stays
+// visible until they enter a valid amount.
+const dpExceeded = ref(false)
+
+// Re-derive the ₽ amount from the percent (when in percent mode) whenever the
+// percent or total price changes. The exact-typed override takes precedence.
+watch([dpPercent, manualDp, () => result.value.totalPrice, downPaymentType], () => {
+  if (downPaymentType.value !== 'percent') return
+  const total = result.value.totalPrice || 0
+  if (manualDp.value !== null) {
+    inputs.value.downPayment = total > 0 ? Math.min(manualDp.value, total) : manualDp.value
+    return
+  }
+  let pct = dpPercent.value || 0
+  if (pct < 0) pct = 0
+  if (pct > 100) pct = 100
+  inputs.value.downPayment = Math.round(total * pct / 100)
+})
+
+// Editing markup/total re-derives the amount from the percent and clears the
+// stale over-limit warning (the new total may now accommodate the amount).
+watch(() => result.value.totalPrice, () => { manualDp.value = null; dpExceeded.value = false })
+
+function switchDownPaymentType(type: 'fixed' | 'percent') {
+  if (downPaymentType.value === type) return
+  const total = result.value.totalPrice || 0
+  dpExceeded.value = false
+  if (type === 'percent') {
+    dpPercent.value = total > 0
+      ? Math.min(100, Math.round(inputs.value.downPayment / total * 100 * 100) / 100)
+      : 0
+    manualDp.value = inputs.value.downPayment // keep the exact ₽ across the toggle
+  }
+  downPaymentType.value = type
+}
+
+const dpPercentModel = computed({
+  get: () => dpPercent.value,
+  set: (v: number | null) => {
+    let pct = Number(v) || 0
+    if (pct < 0) pct = 0
+    dpExceeded.value = pct > 100 // attempted more than 100% of the total
+    if (pct > 100) pct = 100
+    dpPercent.value = pct
+    manualDp.value = null // percent now drives the amount
+  },
+})
+
+// ₽ field in percent mode — editing it stores the exact value (no rounding
+// drift) and back-computes the percent for display. Over-total input is
+// clamped to the total and flagged so the error shows.
+const dpRublesModel = computed({
+  get: () => inputs.value.downPayment,
+  set: (rub: number) => {
+    const total = result.value.totalPrice || 0
+    let v = rub || 0
+    if (v < 0) v = 0
+    dpExceeded.value = total > 0 && v > total
+    if (total > 0 && v > total) v = total
+    manualDp.value = v
+    dpPercent.value = total > 0 ? Math.round((v / total) * 100 * 100) / 100 : 0
+  },
+})
+
+// Fixed-mode ₽ input — clamped to [0, totalPrice]; over-total is flagged.
+function setDownPaymentFixed(value: number) {
+  const total = result.value.totalPrice || 0
+  let v = value > 0 ? value : 0
+  dpExceeded.value = total > 0 && v > total
+  if (total > 0 && v > total) v = total
+  inputs.value.downPayment = v
+}
+
+const downPaymentError = computed(() => {
+  const total = result.value.totalPrice || 0
+  if (total <= 0) return ''
+  if (dpExceeded.value || inputs.value.downPayment > total) {
+    return `Взнос не может превышать итоговую цену (${formatCurrency(total)})`
+  }
+  return ''
+})
+
 // Total price ↔ markup sync
 const totalPriceInput = computed(() => result.value.totalPrice || '')
 
@@ -60,6 +152,10 @@ function reset() {
     downPayment: 10000,
     paymentType: 'equal',
   }
+  downPaymentType.value = 'fixed'
+  dpPercent.value = 10
+  manualDp.value = null
+  dpExceeded.value = false
 }
 </script>
 
@@ -171,22 +267,81 @@ function reset() {
 
           <!-- Down payment -->
           <div class="form-field mb-4">
-            <label class="field-label">Первоначальный взнос</label>
-            <div class="input-with-suffix">
-              <input
-                :value="inputs.downPayment || ''"
-                v-maska="CURRENCY_MASK"
-                @maska="(e: any) => inputs.downPayment = parseMasked(e)"
-                type="text"
-                inputmode="numeric"
-                class="field-input"
-                placeholder="10 000"
-              />
-              <span class="input-suffix">₽</span>
+            <div class="field-label-row">
+              <label class="field-label">Первоначальный взнос</label>
+              <div class="markup-type-toggle">
+                <button
+                  class="toggle-btn"
+                  :class="{ active: downPaymentType === 'percent' }"
+                  @click="switchDownPaymentType('percent')"
+                >%</button>
+                <button
+                  class="toggle-btn"
+                  :class="{ active: downPaymentType === 'fixed' }"
+                  @click="switchDownPaymentType('fixed')"
+                >₽</button>
+              </div>
             </div>
-            <div v-if="inputs.downPayment > 0" class="field-hint">
-              {{ downPaymentPercent }}% от итоговой цены
-            </div>
+
+            <!-- Fixed (₽) mode -->
+            <template v-if="downPaymentType === 'fixed'">
+              <div class="input-with-suffix" :class="{ 'input-with-suffix--error': downPaymentError }">
+                <input
+                  :value="inputs.downPayment || ''"
+                  v-maska="CURRENCY_MASK"
+                  @maska="(e: any) => setDownPaymentFixed(parseMasked(e))"
+                  type="text"
+                  inputmode="numeric"
+                  class="field-input"
+                  placeholder="10 000"
+                />
+                <span class="input-suffix">₽</span>
+              </div>
+              <div v-if="inputs.downPayment > 0 && !downPaymentError" class="field-hint">
+                {{ downPaymentPercent }}% от итоговой цены
+              </div>
+            </template>
+
+            <!-- Percent (%) mode: percent input + auto-computed ₽ amount -->
+            <template v-else>
+              <div class="chip-options mb-2">
+                <button
+                  v-for="opt in [10, 20, 30, 50]" :key="opt"
+                  class="chip-option"
+                  :class="{ active: dpPercent === opt }"
+                  @click="dpPercentModel = opt"
+                >{{ opt }}%</button>
+              </div>
+              <div class="input-with-suffix" :class="{ 'input-with-suffix--error': downPaymentError }">
+                <input
+                  v-model.number="dpPercentModel"
+                  type="number"
+                  class="field-input"
+                  placeholder="10"
+                  min="0"
+                  max="100"
+                />
+                <span class="input-suffix">%</span>
+              </div>
+              <label class="field-label mt-3 d-block">Сумма взноса</label>
+              <div class="input-with-suffix">
+                <input
+                  :value="dpRublesModel || ''"
+                  v-maska="CURRENCY_MASK"
+                  @maska="(e: any) => dpRublesModel = parseMasked(e)"
+                  type="text"
+                  inputmode="numeric"
+                  class="field-input"
+                  placeholder="0"
+                />
+                <span class="input-suffix">₽</span>
+              </div>
+              <div class="field-hint">
+                Рассчитано от итоговой цены {{ formatCurrency(result.totalPrice) }}
+              </div>
+            </template>
+
+            <div v-if="downPaymentError" class="field-error-text">{{ downPaymentError }}</div>
           </div>
 
           <!-- Term -->
@@ -346,6 +501,15 @@ function reset() {
 }
 .field-hint {
   font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.input-with-suffix--error .field-input {
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08) !important;
+}
+.field-error-text {
+  margin-top: 6px;
+  font-size: 12px; font-weight: 500;
+  color: #ef4444;
 }
 .field-hint-styled {
   display: flex; align-items: center; gap: 6px;

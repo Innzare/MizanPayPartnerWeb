@@ -145,7 +145,14 @@ function removeContract(index: number) {
 const purchasePrice = ref<number | null>(null)
 const markupType = ref<'percent' | 'fixed'>('percent')
 const markupValue = ref(15)
+// Down payment supports two input modes, mirroring the markup field:
+//   'fixed'   — partner types the amount in ₽ directly (downPayment is the truth)
+//   'percent' — partner types a % of the total price; downPaymentPercent is the
+//               truth and the ₽ amount is derived, so it auto-updates when the
+//               total price changes (markup/purchase edits).
+const downPaymentType = ref<'fixed' | 'percent'>('fixed')
 const downPayment = ref<number | null>(null)
+const downPaymentPercent = ref<number | null>(null)
 const termMonths = ref(6)
 const paymentType = ref<PaymentType>('EQUAL')
 const paymentInterval = ref('MONTHLY')
@@ -247,6 +254,8 @@ onMounted(async () => {
       markupType.value = 'percent'
       markupValue.value = Math.round(deal.markupPercent * 100) / 100
       downPayment.value = deal.downPayment || null
+      downPaymentType.value = 'fixed'
+      downPaymentPercent.value = null
       termMonths.value = deal.numberOfPayments
       paymentType.value = deal.paymentType as PaymentType
       paymentInterval.value = deal.paymentInterval || 'MONTHLY'
@@ -395,9 +404,116 @@ const totalPrice = computed(() =>
     ? manualTotalPrice.value
     : (purchasePrice.value || 0) + markup.value,
 )
-const downPaymentAmount = computed(() => downPayment.value || 0)
+// Exact ₽ amount the partner typed into the "Сумма взноса" field (percent mode).
+// null = derive the amount from the percent. Mirrors the `manualTotalPrice`
+// override used by the markup field: without it, percent rounding would make
+// the displayed ₽ drift away from what was typed (10 000 → 11 500), and the
+// maska-bound input would snap back to the derived value.
+const manualDownPayment = ref<number | null>(null)
+// Set when the partner tries to enter more than the total price. The value is
+// clamped to the max; this flag keeps the error visible until they enter a
+// valid amount.
+const downPaymentExceeded = ref(false)
+
+// Canonical ₽ value sent to the backend. In percent mode it's the exact typed
+// amount if present, otherwise derived from the percent and the live total
+// price (so it tracks markup/price edits). Always clamped to [0, totalPrice].
+const downPaymentAmount = computed(() => {
+  const total = totalPrice.value || 0
+  const raw = downPaymentType.value === 'percent'
+    ? (manualDownPayment.value !== null
+        ? manualDownPayment.value
+        : Math.round(total * (downPaymentPercent.value || 0) / 100))
+    : (downPayment.value || 0)
+  if (raw < 0) return 0
+  if (total > 0 && raw > total) return total
+  return raw
+})
 const remainingAmount = computed(() => totalPrice.value - downPaymentAmount.value)
 const monthlyPayment = computed(() => termMonths.value > 0 ? remainingAmount.value / termMonths.value : 0)
+
+// When the total price changes (markup/purchase edits), drop the manual ₽
+// override so the amount re-derives from the percent, clear the stale over-limit
+// warning, and re-clamp a fixed-mode amount that the new (lower) total no longer
+// fits.
+watch(totalPrice, (total) => {
+  manualDownPayment.value = null
+  downPaymentExceeded.value = false
+  if (downPaymentType.value === 'fixed' && total > 0 && (downPayment.value || 0) > total) {
+    downPayment.value = total
+  }
+})
+
+// Switch the input mode, converting the current value so the ₽ amount is
+// preserved across the toggle (percent ⇄ rubles), like switchMarkupType does.
+function switchDownPaymentType(type: 'fixed' | 'percent') {
+  if (downPaymentType.value === type) return
+  const total = totalPrice.value || 0
+  downPaymentExceeded.value = false
+  if (type === 'percent') {
+    const current = downPayment.value || 0
+    downPaymentPercent.value = total > 0
+      ? Math.min(100, Math.round(current / total * 100 * 100) / 100)
+      : 0
+    manualDownPayment.value = current // keep the exact ₽ across the toggle
+  } else {
+    downPayment.value = downPaymentAmount.value
+  }
+  downPaymentType.value = type
+}
+
+// Percent field (percent mode). Setter clamps to [0, 100] and clears the manual
+// ₽ override so the percent drives the amount again.
+const downPaymentPercentModel = computed({
+  get: () => downPaymentPercent.value,
+  set: (v: number | null) => {
+    let pct = Number(v) || 0
+    if (pct < 0) pct = 0
+    downPaymentExceeded.value = pct > 100 // attempted more than 100% of the total
+    if (pct > 100) pct = 100
+    downPaymentPercent.value = pct
+    manualDownPayment.value = null
+  },
+})
+
+// "Сумма взноса" field (percent mode) — the ₽ amount. Editing it stores the
+// exact value (no rounding drift) and back-computes the percent for display.
+const downPaymentRublesModel = computed({
+  get: () => downPaymentAmount.value,
+  set: (rub: number) => {
+    const total = totalPrice.value || 0
+    let v = rub || 0
+    if (v < 0) v = 0
+    downPaymentExceeded.value = total > 0 && v > total
+    if (total > 0 && v > total) v = total
+    manualDownPayment.value = v
+    downPaymentPercent.value = total > 0 ? Math.round((v / total) * 100 * 100) / 100 : 0
+  },
+})
+
+// Fixed-mode ₽ input — clamped to [0, totalPrice]; over-total is flagged.
+function setDownPaymentFixed(value: number) {
+  const total = totalPrice.value || 0
+  let v = value || 0
+  if (v < 0) v = 0
+  downPaymentExceeded.value = total > 0 && v > total
+  if (total > 0 && v > total) v = total
+  downPayment.value = v
+}
+
+const downPaymentPercentOptions = [10, 20, 30, 50]
+
+// The amount is always clamped to [0, totalPrice], so the stored value can't be
+// invalid. This message is purely informational: it tells the partner that
+// their last input was capped because it exceeded the total.
+const downPaymentError = computed(() => {
+  const total = totalPrice.value || 0
+  if (total <= 0) return ''
+  if (downPaymentExceeded.value || (downPayment.value || 0) > total) {
+    return `Взнос не может превышать итоговую цену (${formatCurrency(total)})`
+  }
+  return ''
+})
 
 const firstPaymentDate = computed(() => {
   if (customFirstPayment.value) {
@@ -450,6 +566,8 @@ function applyDraftToForm() {
     markupValue.value = d.markupValue
     manualTotalPrice.value = d.manualTotalPrice
     downPayment.value = d.downPayment
+    downPaymentType.value = d.downPaymentType ?? 'fixed'
+    downPaymentPercent.value = d.downPaymentPercent ?? null
     termMonths.value = d.termMonths
     paymentType.value = d.paymentType as any
     paymentInterval.value = d.paymentInterval
@@ -502,6 +620,8 @@ function scheduleDraftSave() {
       markupValue: markupValue.value,
       manualTotalPrice: manualTotalPrice.value,
       downPayment: downPayment.value,
+      downPaymentType: downPaymentType.value,
+      downPaymentPercent: downPaymentPercent.value,
       termMonths: termMonths.value,
       paymentType: paymentType.value,
       paymentInterval: paymentInterval.value,
@@ -537,6 +657,10 @@ function resetDraftAndForm() {
   markupValue.value = 15
   manualTotalPrice.value = null
   downPayment.value = null
+  downPaymentType.value = 'fixed'
+  downPaymentPercent.value = null
+  manualDownPayment.value = null
+  downPaymentExceeded.value = false
   termMonths.value = 6
   paymentType.value = 'EQUAL' as PaymentType
   paymentInterval.value = 'MONTHLY'
@@ -567,7 +691,7 @@ watch(
   [
     productName, productDescription, category, city,
     purchasePrice, markupType, markupValue, manualTotalPrice,
-    downPayment, termMonths, paymentType, paymentInterval,
+    downPayment, downPaymentType, downPaymentPercent, termMonths, paymentType, paymentInterval,
     dealDate, customFirstPayment,
     useWholesalePrice, wholesalePrice, profitSplitBase,
     selectedClientProfileId, selectedGuarantorProfileId,
@@ -617,6 +741,9 @@ function getClientDisplayName(p: ClientProfile | null): string {
 
 // Validation
 const step1Valid = computed(() => !!productName.value)
+// No need to gate on the down-payment error any more: the amount is clamped to
+// the total price on input, so it can never reach an invalid state. The error
+// is shown only as informational feedback.
 const step2Valid = computed(() => (purchasePrice.value ?? 0) > 0 && termMonths.value > 0)
 const step3Valid = computed(() => !!selectedClientProfileId.value)
 
@@ -1089,11 +1216,76 @@ async function submitDeal(acknowledgedOverdraft = false) {
               </div>
 
               <div class="form-field full-width">
-                <label class="field-label">Первоначальный взнос</label>
-                <div class="input-with-suffix">
-                  <input :value="downPayment || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => downPayment = parseMasked(e)" type="text" inputmode="numeric" class="field-input" placeholder="0" />
-                  <span class="input-suffix">₽</span>
+                <div class="field-label-row">
+                  <label class="field-label">Первоначальный взнос</label>
+                  <div class="markup-type-toggle">
+                    <button class="toggle-btn" :class="{ active: downPaymentType === 'percent' }" @click="switchDownPaymentType('percent')">%</button>
+                    <button class="toggle-btn" :class="{ active: downPaymentType === 'fixed' }" @click="switchDownPaymentType('fixed')">₽</button>
+                  </div>
                 </div>
+
+                <!-- Fixed (₽) mode -->
+                <template v-if="downPaymentType === 'fixed'">
+                  <div class="input-with-suffix" :class="{ 'input-with-suffix--error': downPaymentError }">
+                    <input
+                      :value="downPayment || ''"
+                      v-maska="CURRENCY_MASK"
+                      @maska="(e: any) => setDownPaymentFixed(parseMasked(e))"
+                      type="text"
+                      inputmode="numeric"
+                      class="field-input"
+                      placeholder="0"
+                    />
+                    <span class="input-suffix">₽</span>
+                  </div>
+                  <div v-if="downPaymentAmount > 0 && totalPrice > 0 && !downPaymentError" class="field-hint-styled">
+                    <v-icon icon="mdi-information-outline" size="14" />
+                    {{ Math.round(downPaymentAmount / totalPrice * 100 * 10) / 10 }}% от итоговой цены
+                  </div>
+                </template>
+
+                <!-- Percent (%) mode: percent input + auto-computed ₽ amount -->
+                <template v-else>
+                  <div class="chip-group">
+                    <button
+                      v-for="opt in downPaymentPercentOptions" :key="opt"
+                      class="chip-option" :class="{ active: downPaymentPercent === opt }"
+                      @click="downPaymentPercentModel = opt"
+                    >{{ opt }}%</button>
+                  </div>
+                  <div class="input-with-suffix mt-2" :class="{ 'input-with-suffix--error': downPaymentError }">
+                    <input
+                      :value="downPaymentPercent ?? ''"
+                      @input="(e: any) => downPaymentPercentModel = e.target.value === '' ? null : Number(e.target.value)"
+                      type="number"
+                      inputmode="decimal"
+                      class="field-input"
+                      placeholder="10"
+                      min="0"
+                      max="100"
+                    />
+                    <span class="input-suffix">%</span>
+                  </div>
+                  <label class="field-label mt-3 d-block">Сумма взноса</label>
+                  <div class="input-with-suffix">
+                    <input
+                      :value="downPaymentRublesModel || ''"
+                      v-maska="CURRENCY_MASK"
+                      @maska="(e: any) => downPaymentRublesModel = parseMasked(e)"
+                      type="text"
+                      inputmode="numeric"
+                      class="field-input"
+                      placeholder="0"
+                    />
+                    <span class="input-suffix">₽</span>
+                  </div>
+                  <div class="field-hint-styled">
+                    <v-icon icon="mdi-information-outline" size="14" />
+                    Сумма рассчитывается от итоговой цены {{ formatCurrency(totalPrice) }}
+                  </div>
+                </template>
+
+                <div v-if="downPaymentError" class="field-error-text">{{ downPaymentError }}</div>
               </div>
 
               <div class="form-field full-width">
@@ -2867,6 +3059,17 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .field-input--error {
   border-color: rgba(239, 68, 68, 0.4) !important;
   box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08) !important;
+}
+
+.input-with-suffix--error .field-input {
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08) !important;
+}
+.field-error-text {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #ef4444;
 }
 
 .dark .capital-block-banner {

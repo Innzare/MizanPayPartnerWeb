@@ -104,11 +104,11 @@ const handleLogin = async () => {
       <div class="login-form-wrapper">
         <!-- Mobile logo -->
         <div class="d-md-none text-center mb-8">
-          <div class="d-flex align-center justify-center ga-2 mb-2">
-            <v-img :src="logo" width="36" height="36" />
-            <img :src="logoText" alt="MizanPay" style="height: 22px; width: auto;" />
+          <div class="d-flex align-center justify-center ga-2">
+            <img :src="logo" width="56" height="56" />
+            <img :src="logoText" alt="MizanPay" style="height: 32px; width: auto;" />
           </div>
-          <p class="text-body-2" style="color: #5f7a6b">Панель инвестора</p>
+          <p class="text-body-2 font-weight-semibold" style="color: #5f7a6b">Панель партнера</p>
         </div>
 
         <div class="mb-8">

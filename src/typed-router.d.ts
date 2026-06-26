@@ -21,6 +21,7 @@ declare module 'vue-router/auto-routes' {
     '/': RouteRecordInfo<'/', '/', Record<never, never>, Record<never, never>>,
     '/activity': RouteRecordInfo<'/activity', '/activity', Record<never, never>, Record<never, never>>,
     '/analytics': RouteRecordInfo<'/analytics', '/analytics', Record<never, never>, Record<never, never>>,
+    '/broadcasts': RouteRecordInfo<'/broadcasts', '/broadcasts', Record<never, never>, Record<never, never>>,
     '/calculator': RouteRecordInfo<'/calculator', '/calculator', Record<never, never>, Record<never, never>>,
     '/cashboxes/': RouteRecordInfo<'/cashboxes/', '/cashboxes', Record<never, never>, Record<never, never>>,
     '/cashboxes/[id]': RouteRecordInfo<'/cashboxes/[id]', '/cashboxes/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
@@ -76,6 +77,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/analytics.vue': {
       routes: '/analytics'
+      views: never
+    }
+    'src/pages/broadcasts.vue': {
+      routes: '/broadcasts'
       views: never
     }
     'src/pages/calculator.vue': {

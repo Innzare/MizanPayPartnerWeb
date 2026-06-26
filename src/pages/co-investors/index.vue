@@ -40,6 +40,9 @@ interface CoInvestorStats {
   totalProfit: number
   coInvestorShare: number
   myShare: number
+  // Effective profit share % of this CI in its cashbox (fixed % as-is, or the
+  // computed weight-based %). Partner's share of the cashbox = 100 − Σ(CIs).
+  effectivePct: number
 }
 
 interface DealInfo {
@@ -73,6 +76,12 @@ interface CoInvestor {
   // Phase 2: every CI lives in exactly one cashbox. Drives the filter chips,
   // the badge on each card, and the create/move dialogs.
   cashBoxId: string
+  // Live balances + payout schedule, returned via the `...ci` spread on findAll.
+  currentCapital?: number
+  realizedProfit?: number
+  totalPayout?: number
+  payoutSchedule?: 'MONTHLY' | 'QUARTERLY' | 'SEMIANNUAL' | 'ANNUAL'
+  nextPayoutDate?: string | null
   stats: CoInvestorStats
   dealsList: DealInfo[]
 }
@@ -682,7 +691,7 @@ function payoutLabel(s: string | undefined): string {
                     </span>
                     <span v-else class="ci-mode-badge ci-mode-badge--pool">
                       <v-icon icon="mdi-scale-balance" size="11" />
-                      По вкладу
+                      По вкладу · {{ ci.stats.effectivePct }}%
                     </span>
                     <span
                       v-if="getCashBox(ci.cashBoxId)"
@@ -836,30 +845,29 @@ function payoutLabel(s: string | undefined): string {
                     </button>
                   </div>
 
-                  <!-- Profit distribution bar — only meaningful for fixed-% CIs.
-                       Weight-based CIs depend on capital ratios that change over
-                       time, so the per-deal split isn't a stable percentage. -->
-                  <div
-                    class="ci-profit-bar mb-4"
-                    v-if="ci.stats.totalProfit > 0 && ci.profitPercent != null && ci.profitPercent > 0"
-                  >
+                  <!-- Profit split bar. Works for both modes: fixed-% CIs show
+                       their static %, weight-based CIs show the computed
+                       effectivePct (capital-weighted). The partner side is the
+                       complement (100 − investor%); with multiple CIs in one
+                       cashbox it also covers the other CIs' shares. -->
+                  <div class="ci-profit-bar mb-4" v-if="ci.stats.effectivePct >= 0">
                     <div class="d-flex justify-space-between align-center mb-2">
                       <span class="ci-profit-label">Распределение прибыли</span>
-                      <span class="ci-profit-total">{{ formatCurrency(ci.stats.totalProfit) }}</span>
+                      <span class="ci-profit-total" v-if="ci.stats.totalProfit > 0">{{ formatCurrency(ci.stats.totalProfit) }}</span>
                     </div>
                     <div class="ci-profit-track">
                       <div
                         class="ci-profit-fill ci-profit-fill--partner"
-                        :style="{ width: ci.profitPercent + '%' }"
+                        :style="{ width: ci.stats.effectivePct + '%' }"
                       />
                       <div
                         class="ci-profit-fill ci-profit-fill--my"
-                        :style="{ width: (100 - ci.profitPercent) + '%' }"
+                        :style="{ width: (100 - ci.stats.effectivePct) + '%' }"
                       />
                     </div>
                     <div class="d-flex justify-space-between mt-1">
-                      <span class="ci-profit-legend" style="color: #6366f1;">Инвестору: {{ ci.profitPercent }}%</span>
-                      <span class="ci-profit-legend" style="color: #047857;">Моя доля: {{ 100 - ci.profitPercent }}%</span>
+                      <span class="ci-profit-legend" style="color: #6366f1;">Инвестору: {{ ci.stats.effectivePct }}%</span>
+                      <span class="ci-profit-legend" style="color: #047857;">Моя доля: {{ Math.round((100 - ci.stats.effectivePct) * 100) / 100 }}%</span>
                     </div>
                   </div>
 

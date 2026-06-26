@@ -13,7 +13,6 @@ import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
-import SendRemindersDialog from '@/components/SendRemindersDialog.vue'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
@@ -60,22 +59,8 @@ loadStaffList()
 
 const pageLoading = ref(true)
 
-// Dialog flow replaces the old "blast everyone" button — partner now picks
-// who gets a reminder, sees the list with phones, and confirms.
-const showRemindersDialog = ref(false)
-
-function openRemindersDialog() {
-  showRemindersDialog.value = true
-}
-
-// Kept as a no-op wrapper for now — `sendingBulk` is referenced in the
-// template's loading state for the trigger button, but the dialog handles
-// its own sending state. Remove this when the trigger button is migrated.
-const sendingBulk = ref(false)
-
-async function sendBulkReminders() {
-  openRemindersDialog()
-}
+// The reminder flow now lives on the dedicated /broadcasts page — the
+// "Напомнить всем" button just navigates there.
 
 onMounted(async () => {
   try {
@@ -732,10 +717,9 @@ const rescheduleReasonOptions = [
           </button>
         </template>
       </v-tooltip>
-      <button v-else class="btn-whatsapp" :disabled="sendingBulk" @click="sendBulkReminders">
-        <v-progress-circular v-if="sendingBulk" indeterminate size="14" width="2" color="white" />
-        <v-icon v-else icon="mdi-whatsapp" size="18" />
-        {{ sendingBulk ? 'Рассылка...' : 'Напомнить всем' }}
+      <button v-else class="btn-whatsapp" @click="router.push('/broadcasts')">
+        <v-icon icon="mdi-whatsapp" size="18" />
+        Напомнить всем
       </button>
       <v-spacer />
       <!-- Filter group (cashbox + staff + folder).
@@ -1737,7 +1721,6 @@ const rescheduleReasonOptions = [
     </template>
 
     <!-- WhatsApp bulk reminders dialog (preview + per-row selection) -->
-    <SendRemindersDialog v-model="showRemindersDialog" />
   </div>
 </template>
 

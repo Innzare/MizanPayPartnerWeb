@@ -43,6 +43,10 @@ export interface DealDraft {
   markupValue: number
   manualTotalPrice: number | null
   downPayment: number | null
+  // Down-payment input mode + the percent value (used when mode === 'percent').
+  // Optional so drafts saved before this field shipped still restore cleanly.
+  downPaymentType?: 'fixed' | 'percent'
+  downPaymentPercent?: number | null
   termMonths: number
   paymentType: string
   paymentInterval: string

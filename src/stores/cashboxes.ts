@@ -17,6 +17,20 @@ export interface CashBoxSummary {
   dealsCount: number
 }
 
+// One deal's contribution to the cashbox figures — used by the "В работе"
+// info modal on the list page.
+export interface CashBoxDealBreakdown {
+  id: string
+  productName: string
+  client: string | null
+  purchasePrice: number
+  totalPrice: number
+  downPayment: number
+  received: number
+  status: string
+  progress: number
+}
+
 export interface CreateCashBoxInput {
   name: string
   color?: string
@@ -46,6 +60,15 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
 
   async function findById(id: string): Promise<CashBoxSummary> {
     return api.get<CashBoxSummary>(`/cashboxes/${id}`)
+  }
+
+  // Per-deal breakdown for the "В работе" info modal. The list page's
+  // inProgress counts ACTIVE deals as (purchasePrice − received), so the modal
+  // filters to ACTIVE and reuses the same per-deal `received` (which includes
+  // the down payment, since it's booked as PAYMENT_IN).
+  async function fetchDeals(id: string): Promise<CashBoxDealBreakdown[]> {
+    const details = await api.get<{ deals: CashBoxDealBreakdown[] }>(`/cashboxes/${id}/capital/details`)
+    return details.deals ?? []
   }
 
   async function create(data: CreateCashBoxInput): Promise<CashBoxSummary> {
@@ -81,7 +104,7 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
 
   return {
     items, isLoading, error,
-    fetchAll, findById, create, update, remove, moveDeal,
+    fetchAll, findById, fetchDeals, create, update, remove, moveDeal,
     getById, getDefault,
   }
 })

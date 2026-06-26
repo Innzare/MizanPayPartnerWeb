@@ -105,8 +105,8 @@ export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
 // Routes accessible per role (owner = all routes). The home page `/` is
 // owner-only — staff is redirected to /deals (or first accessible route).
 export const ROLE_ROUTE_ACCESS: Record<StaffRole, string[]> = {
-  MANAGER: ['/analytics', '/deals', '/clients', '/payments', '/products', '/requests', '/co-investors', '/cashboxes', '/registry', '/notifications', '/activity', '/calculator', '/create-deal', '/create-product', '/import', '/messages'],
-  OPERATOR: ['/analytics', '/deals', '/clients', '/payments', '/notifications', '/activity', '/calculator', '/messages'],
+  MANAGER: ['/analytics', '/deals', '/clients', '/payments', '/broadcasts', '/products', '/requests', '/co-investors', '/cashboxes', '/registry', '/notifications', '/activity', '/calculator', '/create-deal', '/create-product', '/import', '/messages'],
+  OPERATOR: ['/analytics', '/deals', '/clients', '/payments', '/broadcasts', '/notifications', '/activity', '/calculator', '/messages'],
 }
 
 // Sections that the partner can disable per-staff via accessOverrides.

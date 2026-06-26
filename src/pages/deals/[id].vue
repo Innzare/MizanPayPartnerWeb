@@ -675,7 +675,7 @@ function toDateInput(d: string | Date): string {
 }
 function formatShortDate(d: string | Date): string {
   const date = typeof d === 'string' ? new Date(d) : d
-  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
+  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
 }
 // Today (local) as a YYYY-MM-DD string. Used as a quick-set preset.
 const todayDateInput = computed(() => toDateInput(new Date()))

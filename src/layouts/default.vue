@@ -148,6 +148,7 @@ const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?:
   { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
   { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
+  { path: "/broadcasts", title: "Рассылки", icon: "mdi-whatsapp", requiredFeature: "whatsapp" },
   { path: "/messages", title: "Сообщения", icon: "mdi-message-text-outline", staffOnly: true },
   { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
   { path: "/cashboxes", title: "Кассы", icon: "mdi-wallet-outline", requiredFeature: "finance" },
@@ -186,6 +187,7 @@ const routeTitles: Record<string, string> = {
   "/deals": "Сделки",
   "/clients": "Клиенты",
   "/payments": "Платежи",
+  "/broadcasts": "Рассылки",
   "/products": "Каталог",
   "/requests": "Заявки",
   "/calculator": "Калькулятор",
@@ -566,53 +568,6 @@ const confirmLogout = async () => {
                 <v-icon icon="mdi-format-list-bulleted-square" size="20" />
               </button>
 
-              <div class="lyt-header-divider" />
-
-              <v-menu offset="8">
-                <template v-slot:activator="{ props }">
-                  <button class="lyt-header-user" v-bind="props">
-                    <div class="lyt-header-user-avatar" style="position: relative;">
-                      {{ userInitials }}
-                      <div v-if="hasPlan" class="lyt-avatar-plan-dot">
-                        <v-icon icon="mdi-crown" size="8" color="#fff" />
-                      </div>
-                    </div>
-                    <v-icon
-                      icon="mdi-chevron-down"
-                      size="16"
-                      class="lyt-header-user-chevron"
-                    />
-                  </button>
-                </template>
-
-                <div class="lyt-dropdown">
-                  <div class="lyt-dropdown-header">
-                    <div class="lyt-dropdown-avatar">
-                      {{ userInitials }}
-                    </div>
-                    <div>
-                      <p class="lyt-dropdown-name">
-                        {{ authStore.userName || "Администратор" }}
-                        <span v-if="hasPlan" class="lyt-dropdown-plan-badge">
-                          <v-icon icon="mdi-crown" size="10" />
-                          {{ planBadgeLabel }}
-                        </span>
-                      </p>
-                      <p class="lyt-dropdown-email">
-                        {{ authStore.user?.phone ? '+7 ' + authStore.user.phone.slice(1, 4) + ' ***' : '' }}
-                      </p>
-                    </div>
-                  </div>
-                  <div class="lyt-dropdown-divider" />
-                  <button
-                    class="lyt-dropdown-item lyt-dropdown-item--danger"
-                    @click="logoutDialog = true"
-                  >
-                    <v-icon icon="mdi-logout" size="18" />
-                    <span>Выйти</span>
-                  </button>
-                </div>
-              </v-menu>
             </div>
           </header>
 
@@ -724,8 +679,10 @@ const confirmLogout = async () => {
 
 .lyt-sidebar--collapsed .lyt-sidebar-user {
   justify-content: center;
-  padding: 12px 0;
+  margin: 8px;
+  padding: 8px;
 }
+.lyt-sidebar--collapsed .lyt-sidebar-user > div { width: auto; }
 
 .lyt-sidebar--collapsed .lyt-sidebar-user-info {
   width: 0;
@@ -940,27 +897,34 @@ const confirmLogout = async () => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px;
-  border-top: 1px solid #f0f0f0;
-  margin-top: 8px;
+  margin: 8px 10px 4px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(4, 120, 87, 0.05);
+  border: 1px solid rgba(4, 120, 87, 0.1);
   position: relative;
   transition:
+    background 0.2s ease,
     padding 0.25s ease,
-    justify-content 0.25s ease;
+    margin 0.25s ease;
 }
+.lyt-sidebar-user:hover { background: rgba(4, 120, 87, 0.09); }
+.lyt-sidebar-user > div { width: 100%; align-items: center; }
 
 .lyt-sidebar-user-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #047857, #ff4081);
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #047857 0%, #10b981 55%, #ff4081 130%);
   color: #fff;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: 0 3px 8px rgba(4, 120, 87, 0.3);
 }
 
 .lyt-sidebar-user-info {
@@ -1546,8 +1510,10 @@ const confirmLogout = async () => {
 }
 
 .dark .lyt-sidebar-user {
-  border-top-color: #2e2e42;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
 }
+.dark .lyt-sidebar-user:hover { background: rgba(255, 255, 255, 0.07); }
 
 .dark .lyt-sidebar-user-name {
   color: #e4e4e7;

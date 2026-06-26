@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
+import { useCashBoxesStore, type CashBoxSummary, type CashBoxDealBreakdown } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useCapital } from '@/composables/useCapital'
@@ -76,6 +76,54 @@ function cashboxProgressPct(box: CashBoxSummary): number {
   const denom = box.initialCapital
   if (denom <= 0) return 0
   return Math.min(100, Math.round((box.inProgress / denom) * 100))
+}
+
+// Общий капитал = свободные деньги (баланс) + капитал, который сейчас в сделках.
+function cashboxTotalCapital(box: CashBoxSummary): number {
+  return box.balance + box.inProgress
+}
+
+// ─── "В работе" info modal ───────────────────────────────────────────
+const showInfo = ref(false)
+const infoBox = ref<CashBoxSummary | null>(null)
+const infoDeals = ref<CashBoxDealBreakdown[]>([])
+const infoLoading = ref(false)
+
+// Only ACTIVE deals contribute to the list-page inProgress; each adds
+// (purchasePrice − received). Sorted by the biggest chunk still in work.
+const infoActiveDeals = computed(() =>
+  infoDeals.value
+    .filter(d => d.status === 'ACTIVE')
+    .map(d => ({ ...d, inWork: d.purchasePrice - d.received }))
+    .sort((a, b) => b.inWork - a.inWork)
+)
+
+function dealsWord(n: number): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return 'сделка'
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'сделки'
+  return 'сделок'
+}
+
+function goToDeal(dealId: string) {
+  showInfo.value = false
+  router.push(`/deals/${dealId}`)
+}
+
+async function openInfo(box: CashBoxSummary, e: Event) {
+  e.stopPropagation()
+  infoBox.value = box
+  showInfo.value = true
+  infoLoading.value = true
+  infoDeals.value = []
+  try {
+    infoDeals.value = await store.fetchDeals(box.id)
+  } catch (err: any) {
+    toast.error(err.message || 'Не удалось загрузить сделки')
+  } finally {
+    infoLoading.value = false
+  }
 }
 </script>
 
@@ -188,6 +236,10 @@ function cashboxProgressPct(box: CashBoxSummary): number {
 
           <div class="cb-card-amount">{{ formatCurrency(box.balance) }}</div>
           <div class="cb-card-sub">Текущий баланс</div>
+          <div class="cb-card-total">
+            <v-icon icon="mdi-cash-multiple" size="13" />
+            Общий капитал: <b>{{ formatCurrency(cashboxTotalCapital(box)) }}</b>
+          </div>
 
           <!-- Mini progress bar showing capital deployment -->
           <div class="cb-card-progress">
@@ -197,7 +249,12 @@ function cashboxProgressPct(box: CashBoxSummary): number {
             />
           </div>
           <div class="cb-card-progress-meta">
-            <span>В работе: {{ formatCurrency(box.inProgress) }}</span>
+            <span class="cb-card-inwork">
+              В работе: {{ formatCurrency(box.inProgress) }}
+              <button class="cb-info-btn" title="Из чего складывается сумма" @click.stop="openInfo(box, $event)">
+                <v-icon icon="mdi-information-outline" size="14" />
+              </button>
+            </span>
             <span>{{ cashboxProgressPct(box) }}%</span>
           </div>
 
@@ -220,6 +277,72 @@ function cashboxProgressPct(box: CashBoxSummary): number {
 
     <!-- Create/edit dialog -->
     <CashBoxEditDialog v-model="showCreate" :cashbox="editing" />
+
+    <!-- "В работе" breakdown modal -->
+    <v-dialog v-model="showInfo" max-width="560" scrollable>
+      <div class="cb-info-modal" :class="{ dark: isDark }">
+        <div class="cb-info-head">
+          <div>
+            <div class="cb-info-title">Капитал в работе</div>
+            <div class="cb-info-box-name" v-if="infoBox">
+              {{ infoBox.name }}
+              <template v-if="!infoLoading"> · {{ infoActiveDeals.length }}&nbsp;{{ dealsWord(infoActiveDeals.length) }}</template>
+            </div>
+          </div>
+          <button class="cb-info-close" @click="showInfo = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+        </div>
+
+        <!-- Hint: where the number comes from -->
+        <div class="cb-info-hint">
+          <v-icon icon="mdi-lightbulb-on-outline" size="16" />
+          <span>
+            «В работе» — это закупочный капитал по&nbsp;<b>активным</b> сделкам за вычетом уже
+            полученных платежей (включая первоначальный взнос). По мере оплаты клиентами сумма
+            уменьшается, а свободный баланс растёт.
+          </span>
+        </div>
+
+        <div class="cb-info-body">
+          <div v-if="infoLoading" class="d-flex justify-center pa-8">
+            <v-progress-circular indeterminate color="primary" size="28" />
+          </div>
+
+          <div v-else-if="infoActiveDeals.length === 0" class="cb-info-empty">
+            <v-icon icon="mdi-briefcase-outline" size="32" />
+            <div>Нет активных сделок — весь капитал свободен</div>
+          </div>
+
+          <template v-else>
+            <template v-for="(d, i) in infoActiveDeals" :key="d.id">
+              <div
+                class="cb-info-row cb-info-row--clickable"
+                @click="goToDeal(d.id)"
+              >
+                <div class="cb-info-num">{{ i + 1 }}</div>
+                <div class="cb-info-row-main">
+                  <div class="cb-info-deal-name">{{ d.productName }}</div>
+                  <div class="cb-info-deal-sub">
+                    <span v-if="d.client">{{ d.client }} · </span>
+                    закупка {{ formatCurrency(d.purchasePrice) }} · получено {{ formatCurrency(d.received) }}
+                  </div>
+                </div>
+                <div class="cb-info-row-amount" :class="{ 'cb-info-row-amount--zero': d.inWork <= 0 }">
+                  {{ d.inWork > 0 ? formatCurrency(d.inWork) : 'возвращён' }}
+                </div>
+              </div>
+              <div v-if="i < infoActiveDeals.length - 1" class="cb-info-divider" />
+            </template>
+          </template>
+        </div>
+
+        <div class="cb-info-total" v-if="infoBox">
+          <span>Итого в работе</span>
+          <b>{{ formatCurrency(infoBox.inProgress) }}</b>
+        </div>
+      </div>
+    </v-dialog>
   </div>
 </template>
 
@@ -375,6 +498,93 @@ function cashboxProgressPct(box: CashBoxSummary): number {
 }
 .cb-card-sub { font-size: 11px; color: #737373; margin-top: 2px; }
 .cb-page.dark .cb-card-amount { color: #f5f5f5; }
+
+.cb-card-total {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 8px; font-size: 12px; color: #525252;
+}
+.cb-card-total b { font-weight: 700; color: #111; }
+.cb-page.dark .cb-card-total { color: #a3a3a3; }
+.cb-page.dark .cb-card-total b { color: #f5f5f5; }
+
+/* Info "i" button next to the progress meta */
+.cb-card-inwork { display: inline-flex; align-items: center; gap: 4px; }
+.cb-info-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: none; background: transparent; color: #9ca3af;
+  cursor: pointer; transition: all 0.15s; padding: 0;
+}
+.cb-info-btn:hover { background: rgba(0,0,0,0.06); color: var(--cb-color); }
+.cb-page.dark .cb-info-btn:hover { background: rgba(255,255,255,0.1); }
+
+/* Info modal */
+.cb-info-modal { background: #fff; border-radius: 16px; overflow: hidden; }
+.cb-info-modal.dark { background: #1c1c1e; }
+.cb-info-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 20px 22px 14px;
+}
+.cb-info-title { font-size: 18px; font-weight: 800; color: #111; }
+.cb-info-modal.dark .cb-info-title { color: #f5f5f5; }
+.cb-info-box-name { font-size: 13px; color: #737373; margin-top: 2px; }
+.cb-info-close {
+  width: 32px; height: 32px; border-radius: 9px; border: none;
+  background: rgba(0,0,0,0.05); color: #525252; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+}
+.cb-info-close:hover { background: rgba(0,0,0,0.1); }
+.cb-info-modal.dark .cb-info-close { background: rgba(255,255,255,0.08); color: #d4d4d4; }
+
+.cb-info-hint {
+  display: flex; gap: 8px; align-items: flex-start;
+  margin: 0 22px 14px; padding: 12px 14px;
+  background: rgba(4, 120, 87, 0.07); border-radius: 10px;
+  font-size: 12.5px; line-height: 1.5; color: #047857;
+}
+.cb-info-modal.dark .cb-info-hint { background: rgba(16, 185, 129, 0.1); color: #34d399; }
+.cb-info-hint b { font-weight: 700; }
+
+.cb-info-body { padding: 0 10px; max-height: 46vh; overflow-y: auto; }
+.cb-info-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 32px; color: #9ca3af; font-size: 13px; text-align: center;
+}
+.cb-info-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px;
+}
+.cb-info-divider {
+  height: 1px; background: #f0f0f0; margin: 0 12px;
+}
+.cb-info-modal.dark .cb-info-divider { background: #2a2a2c; }
+.cb-info-row--clickable { cursor: pointer; border-radius: 8px; transition: background 0.12s; }
+.cb-info-row--clickable:hover { background: rgba(0,0,0,0.035); }
+.cb-info-modal.dark .cb-info-row--clickable:hover { background: rgba(255,255,255,0.05); }
+.cb-info-num {
+  flex-shrink: 0;
+  min-width: 38px;
+  font-size: 12px; font-weight: 700; color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}
+.cb-info-modal.dark .cb-info-num { color: #6b7280; }
+.cb-info-row-main { min-width: 0; flex: 1; }
+.cb-info-deal-name { font-size: 14px; font-weight: 600; color: #111; }
+.cb-info-modal.dark .cb-info-deal-name { color: #f5f5f5; }
+.cb-info-deal-sub { font-size: 11.5px; color: #737373; margin-top: 2px; }
+.cb-info-row-amount { font-size: 14px; font-weight: 800; color: #111; white-space: nowrap; }
+.cb-info-modal.dark .cb-info-row-amount { color: #f5f5f5; }
+.cb-info-row-amount--zero { color: #9ca3af; font-weight: 600; font-size: 12px; }
+
+.cb-info-total {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 22px; margin-top: 4px;
+  border-top: 1px solid #e5e5e5;
+  font-size: 14px; color: #525252;
+}
+.cb-info-total b { font-size: 18px; font-weight: 800; color: #047857; }
+.cb-info-modal.dark .cb-info-total { border-top-color: #2a2a2c; color: #a3a3a3; }
+.cb-info-modal.dark .cb-info-total b { color: #34d399; }
 
 .cb-card-progress {
   height: 5px; border-radius: 3px; overflow: hidden;

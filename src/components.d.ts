@@ -16,7 +16,6 @@ declare module 'vue' {
     ChatPanel: typeof import('./components/ChatPanel.vue')['default']
     ClientPicker: typeof import('./components/ClientPicker.vue')['default']
     CoInvestorCreateDialog: typeof import('./components/CoInvestorCreateDialog.vue')['default']
-    CoInvestorJournalEmbed: typeof import('./components/CoInvestorJournalEmbed.vue')['default']
     CreateClientDialog: typeof import('./components/CreateClientDialog.vue')['default']
     DealDraftFloater: typeof import('./components/DealDraftFloater.vue')['default']
     DealsSidebar: typeof import('./components/DealsSidebar.vue')['default']
