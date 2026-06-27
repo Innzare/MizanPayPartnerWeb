@@ -10,7 +10,6 @@ import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import HeroSummary from '@/components/HeroSummary.vue'
-import SendRemindersDialog from '@/components/SendRemindersDialog.vue'
 import { useCapital } from '@/composables/useCapital'
 import { useIsMobile } from '@/composables/useIsMobile'
 
@@ -21,8 +20,6 @@ const { isMobile } = useIsMobile()
 const { capital, isCapitalSet, fetchCapital } = useCapital()
 
 
-// WhatsApp reminders dialog — preview + per-row selection (shared with /payments).
-const showRemindersDialog = ref(false)
 
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
@@ -189,9 +186,9 @@ function getAvatarColor(name?: string) {
           <span>Уведомл.</span>
           <div v-if="notificationsStore.unreadCount" class="qa-badge">{{ notificationsStore.unreadCount }}</div>
         </button>
-        <button class="qa-mini" @click="showRemindersDialog = true" title="Напомнить о платежах">
+        <button class="qa-mini" @click="router.push('/broadcasts')" title="Рассылки и напоминания">
           <v-icon icon="mdi-whatsapp" size="18" style="color: #25d366;" />
-          <span>WhatsApp</span>
+          <span>Рассылки</span>
         </button>
       </div>
 
@@ -429,8 +426,6 @@ function getAvatarColor(name?: string) {
       </v-card>
     </v-dialog>
 
-    <!-- WhatsApp bulk reminders dialog (preview + per-row selection) -->
-    <SendRemindersDialog v-model="showRemindersDialog" />
   </div>
 </template>
 

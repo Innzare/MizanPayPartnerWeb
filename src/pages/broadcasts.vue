@@ -753,7 +753,7 @@ function goConnect() { activeTab.value = 'connection' }
                   </button>
                   <span class="bc-pay-due" :class="{ 'bc-pay-due--overdue': p.status === 'OVERDUE' }">дата платежа {{ formatDate(p.dueDate) }}</span>
                   <span v-if="p.lastReminderSentAt" class="bc-pay-sent" :title="`Напоминание по этому платежу отправлено ${formatDate(p.lastReminderSentAt)}`">
-                    <v-icon icon="mdi-check-circle" size="12" /> отправлено {{ formatDate(p.lastReminderSentAt) }}
+                    <v-icon icon="mdi-check-circle" size="12" /><span class="bc-pay-sent-txt"> отправлено {{ formatDate(p.lastReminderSentAt) }}</span>
                   </span>
                   <span class="bc-pay-amount">{{ formatCurrency(p.amount) }}</span>
                 </div>
@@ -1399,7 +1399,7 @@ function goConnect() { activeTab.value = 'connection' }
 /* Connection tab */
 .bc-conn { display: flex; flex-direction: column; gap: 16px; }
 .bc-conn--center { align-items: center; text-align: center; padding: 24px 12px; }
-.bc-conn-banner { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 12px; background: rgba(37,211,102,0.08); }
+.bc-conn-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 14px; padding: 16px; border-radius: 12px; background: rgba(37,211,102,0.08); }
 .bc-conn-ico { width: 52px; height: 52px; border-radius: 14px; background: rgba(37,211,102,0.15); color: #1eb558; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .bc-conn-ico--lg { width: 64px; height: 64px; }
 .bc-conn-info { flex: 1; min-width: 0; }
@@ -1413,9 +1413,65 @@ function goConnect() { activeTab.value = 'connection' }
 @media (max-width: 860px) {
   .bc-auto-grid { grid-template-columns: 1fr; }
 }
+
+/* Tablets / large phones — tabs scroll horizontally instead of wrapping. */
+@media (max-width: 760px) {
+  .bc-tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .bc-tabs::-webkit-scrollbar { display: none; }
+  .bc-tab { flex: 0 0 auto; white-space: nowrap; padding: 9px 13px; }
+}
+
 @media (max-width: 599px) {
-  .bc-page { padding: 16px 12px; }
+  .bc-page { padding: 14px 10px; }
+  /* Header stacks so the guide button + status chip don't crowd the title. */
+  .bc-header { flex-direction: column; align-items: stretch; gap: 10px; margin-bottom: 14px; }
+  .bc-header-right { justify-content: flex-start; }
   .bc-title { font-size: 22px; }
+  .bc-subtitle { font-size: 13px; }
+
+  /* Filters → stacked; search and send go full width. */
+  .bc-filters { padding: 14px; gap: 12px; }
+  .bc-days { flex-wrap: wrap; gap: 6px 8px; }
+  .bc-seg-btn { min-width: 30px; padding: 6px 9px; font-size: 12.5px; }
+  .bc-search-row { flex-direction: column; align-items: stretch; min-width: 0; }
+  .bc-send-btn { width: 100%; justify-content: center; padding: 12px; }
+
+  .bc-summary { padding: 10px 14px; }
+  .bc-list-head { padding: 9px 14px; flex-wrap: wrap; }
+  .bc-list { padding: 6px 8px; }
+
+  /* Not-connected / info banners — button drops below the text. */
+  .bc-warn { flex-wrap: wrap; }
+  .bc-warn-btn { margin-left: auto; }
+
+  /* Client card — tighter spacing. */
+  .bc-group-head { padding: 10px; gap: 10px; }
+  .bc-group-avatar { width: 34px; height: 34px; }
+
+  /* Payment rows — drop the due date (status dot already conveys urgency);
+     the "sent" indicator shrinks to just the check (date stays in its title). */
   .bc-pay-due { display: none; }
+  .bc-pay { gap: 8px; padding: 9px 4px; }
+  .bc-pay-sent-txt { display: none; }
+
+  /* Preview bubbles never push the card wider than the screen. */
+  .bc-bubble { max-width: 100%; }
+
+  /* Connection banner: number/badge wrap under the text on tiny screens. */
+  .bc-conn-badge { margin-left: auto; }
+
+  /* Campaign progress — actions stretch, banners realign to mobile padding. */
+  .bc-prog-head { padding: 14px 14px 10px; }
+  .bc-prog-actions { width: 100%; }
+  .bc-prog-actions .bc-btn { flex: 1 1 auto; justify-content: center; }
+  .bc-prog-bar, .bc-prog-legend, .bc-prog-warn { margin-left: 14px; margin-right: 14px; }
+  .bc-prog-list { padding: 6px 8px 12px; }
+
+  /* QR fits any phone width. */
+  .bc-qr-wrap { width: min(260px, 78vw); height: min(260px, 78vw); }
+  .bc-conn--center { padding: 16px 4px; }
+
+  /* Templates / settings cards a touch tighter. */
+  .bc-tpl-block { padding: 10px 12px; }
 }
 </style>
