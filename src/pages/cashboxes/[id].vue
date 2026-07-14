@@ -5,7 +5,8 @@ import { api } from '@/api/client'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
-import { formatCurrency, formatCurrencyShort, formatDate } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import type { CapitalSummary } from '@/types'
 import CashflowJournal from '@/components/CashflowJournal.vue'
 import CashBoxEditDialog from '@/components/CashBoxEditDialog.vue'
 
@@ -57,6 +58,12 @@ interface CapitalDeal {
   status: string
   progress: number
   payments: CapitalDealPayment[]
+  // Profit accrued to co-investors on THIS deal. Partner's cut = earned − this.
+  coInvestorProfit?: number
+  // Per-investor breakdown: name, terms (why), optional clarifying note, amount.
+  coInvestorBreakdown?: { id: string; name: string; modeLabel: string; note?: string | null; amount: number }[]
+  // Cost-fee rate of this deal (if the investor is in «commission from purchase» mode).
+  costFeeRatePct?: number | null
 }
 interface CapitalDetails {
   initialCapital: number
@@ -66,6 +73,10 @@ interface CapitalDetails {
   deployed: number
   received: number
   netProfit: number
+  // Profit accrued to co-investors (gross netProfit minus this = partner's cut).
+  coInvestorProfit?: number
+  // Partner's net profit = netProfit − coInvestorProfit.
+  partnerNetProfit?: number
   inProgress: number
   // Phase 2 cash-basis: obligation owed to CIs (accrued profit minus paid
   // dividends). Reported but NOT subtracted from availableCapital — the
@@ -77,6 +88,15 @@ interface CapitalDetails {
   availableCapital: number
   deals: CapitalDeal[]
   operations: CapitalOperation[]
+  // Co-investors of this cashbox with per-deal accrual breakdown (reserve panel).
+  coInvestors?: Array<{
+    id: string
+    name: string
+    realizedProfit: number
+    totalPayout: number
+    balanceOwed?: number
+    deals?: Array<{ id: string; productName: string; amount: number }>
+  }>
 }
 
 interface CashBoxCoInvestor {
@@ -88,11 +108,18 @@ interface CashBoxCoInvestor {
   totalPayout: number
   // Phase 3: nullable. Set (1..99) = fixed share; null = weight-based.
   profitPercent: number | null
+  // Phase 4/5: commission on by-capital share, and cost-fee mode.
+  managementFeePct?: number
+  costFeeMode?: boolean
+  costFeeDefaultRatePct?: number | null
 }
 
 // ─── State ────────────────────────────────────────────────────────────────
 const box = ref<CashBoxSummary | null>(null)
 const capitalDetails = ref<CapitalDetails | null>(null)
+// Сводка собственного капитала кассы (investedCapital / withdrawableProfit /
+// availableCapital). Нужна модалке «Капитал» — пополнить/снять.
+const capitalSummary = ref<CapitalSummary | null>(null)
 // Phase 2: co-investors living in this cashbox. Loaded from /co-investors and
 // filtered client-side by cashBoxId. Drives the "Со-инвесторы кассы" panel.
 const cashBoxCoInvestors = ref<CashBoxCoInvestor[]>([])
@@ -104,6 +131,12 @@ const showEdit = ref(false)
 const wfExpanded = ref<string | null>(null)
 const expandedInProfit = ref<Set<string>>(new Set())
 const expandedInProgress = ref<Set<string>>(new Set())
+const expandedReserveCi = ref<Set<string>>(new Set())
+function toggleReserveCi(id: string) {
+  const next = new Set(expandedReserveCi.value)
+  next.has(id) ? next.delete(id) : next.add(id)
+  expandedReserveCi.value = next
+}
 
 // Bottom tabs
 const detailsTab = ref<'journal' | 'operations' | 'deals'>('journal')
@@ -119,6 +152,7 @@ async function loadAll() {
       loadDetails(),
       loadCategories(),
       loadCashBoxCoInvestors(),
+      loadCapitalSummary(),
     ])
     box.value = b
   } catch (e: any) {
@@ -134,6 +168,14 @@ async function loadDetails() {
     capitalDetails.value = await api.get<CapitalDetails>(`/cashboxes/${id.value}/capital/details`)
   } catch (e: any) {
     toast.error(e.message || 'Не удалось загрузить детали кассы')
+  }
+}
+
+async function loadCapitalSummary() {
+  try {
+    capitalSummary.value = await store.fetchCapital(id.value)
+  } catch {
+    // silent — модалка капитала просто не покажет новые поля
   }
 }
 
@@ -153,6 +195,9 @@ async function loadCashBoxCoInvestors() {
         realizedProfit: ci.realizedProfit,
         totalPayout: ci.totalPayout,
         profitPercent: ci.profitPercent,
+        managementFeePct: ci.managementFeePct,
+        costFeeMode: ci.costFeeMode,
+        costFeeDefaultRatePct: ci.costFeeDefaultRatePct,
       }))
   } catch {
     // silent — CI section just won't render
@@ -165,6 +210,7 @@ async function loadCashBoxCoInvestors() {
 async function refreshAfterMutation() {
   await Promise.all([
     loadDetails(),
+    loadCapitalSummary(),
     store.fetchAll(),
   ])
   // Re-sync local `box` with the refreshed store data so the header values
@@ -202,6 +248,31 @@ function dealCostRecovered(d: CapitalDeal): number {
 function dealProfitEarned(d: CapitalDeal): number {
   if (d.totalPrice <= 0) return 0
   return Math.round(d.received * (dealTotalMargin(d) / d.totalPrice))
+}
+// Partner's own cut on this deal = earned profit minus co-investors' share.
+function dealPartnerProfit(d: CapitalDeal): number {
+  return Math.max(0, dealProfitEarned(d) - (d.coInvestorProfit ?? 0))
+}
+// Доля партнёра в прибыли конкретной сделки (для полоски в раскладе).
+function dealPartnerPct(d: CapitalDeal): number {
+  const gross = dealProfitEarned(d)
+  if (gross <= 0) return 100
+  return Math.round((dealPartnerProfit(d) / gross) * 100)
+}
+// Cost-fee-раскладку («возврат закупки») показываем только когда инвестор
+// в этой сделке ОДИН и он cost-fee (иначе легаси-микс нарисовал бы возврат
+// закупки чужому by-capital инвестору).
+function isSoleCostFee(d: CapitalDeal): boolean {
+  return d.costFeeRatePct != null && (d.coInvestorBreakdown?.length ?? 0) === 1
+}
+// Числовое пояснение доли инвестора для фикс/по-вкладу (как у cost-fee выше):
+// «30% от 15 000 ₽» для фикса, «≈14% от 15 000 ₽ по вкладу» — для по-вкладу.
+function dealCiFormula(d: CapitalDeal, ci: { modeLabel: string; amount: number }): string {
+  const earned = dealProfitEarned(d)
+  if (earned <= 0) return ''
+  const pct = Math.round((ci.amount / earned) * 100)
+  if (ci.modeLabel.startsWith('Фикс')) return `${pct}% от ${formatCurrencyShort(earned)}`
+  return `≈${pct}% от ${formatCurrencyShort(earned)} по вкладу`
 }
 function dealInProgress(d: CapitalDeal): number {
   return Math.max(dealRealCost(d) - dealCostRecovered(d), 0)
@@ -527,27 +598,41 @@ const ciShareLabels = computed(() => {
     0,
   )
   const remainderPct = Math.max(100 - fixedTotal, 0)
+  // By-capital pool EXCLUDES cost-fee CIs (their capital isn't part of the
+  // pooled split) and, mirroring the engine, includes the partner's own
+  // capital only when the cashbox flag is set.
   const weightSum = cis
-    .filter((ci) => ci.profitPercent == null)
+    .filter((ci) => ci.profitPercent == null && !ci.costFeeMode)
     .reduce((s, ci) => s + (ci.currentCapital || 0), 0)
+  const partnerCap = box.value?.partnerParticipatesByCapital ? box.value?.initialCapital ?? 0 : 0
+  const pool = weightSum + partnerCap
 
-  const labels: Record<string, { label: string; kind: 'fixed' | 'weight'; icon: string }> = {}
+  const labels: Record<string, { label: string; kind: 'fixed' | 'weight' | 'costfee'; icon: string }> = {}
   for (const ci of cis) {
-    if (ci.profitPercent != null && ci.profitPercent > 0) {
+    if (ci.costFeeMode) {
+      // Cost-fee: rate is per-deal, so the cashbox view just names the mode.
+      labels[ci.id] = {
+        label: `Комиссия от закупки${ci.costFeeDefaultRatePct != null ? ` ${ci.costFeeDefaultRatePct}%` : ''}`,
+        kind: 'costfee',
+        icon: 'mdi-tag-outline',
+      }
+    } else if (ci.profitPercent != null && ci.profitPercent > 0) {
       labels[ci.id] = {
         label: `Фикс ${ci.profitPercent}%`,
         kind: 'fixed',
         icon: 'mdi-handshake-outline',
       }
-    } else if (weightSum > 0) {
-      const pct = ((ci.currentCapital || 0) / weightSum) * remainderPct
+    } else if (pool > 0 && (ci.currentCapital || 0) > 0) {
+      // gross share by capital weight, minus the partner's commission on it.
+      const gross = ((ci.currentCapital || 0) / pool) * remainderPct
+      const eff = gross * (1 - (ci.managementFeePct ?? 0) / 100)
       labels[ci.id] = {
-        label: `По капиталу ${pct.toFixed(1)}%`,
+        label: `По вкладу ${eff.toFixed(1)}%`,
         kind: 'weight',
         icon: 'mdi-scale-balance',
       }
     } else {
-      labels[ci.id] = { label: 'По капиталу', kind: 'weight', icon: 'mdi-scale-balance' }
+      labels[ci.id] = { label: 'По вкладу', kind: 'weight', icon: 'mdi-scale-balance' }
     }
   }
   return labels
@@ -557,14 +642,100 @@ const ciShareLabels = computed(() => {
 // profit not yet paid out). Drives the "Резерв для инвесторов" breakdown
 // panel — clicking the reserve row opens this per-CI list with amounts owed.
 const pendingCiList = computed(() =>
-  cashBoxCoInvestors.value
+  // From capitalDetails.coInvestors (carries per-deal accrual breakdown), not the
+  // separate /co-investors list — so the reserve shows WHICH deals it came from.
+  (capitalDetails.value?.coInvestors ?? [])
     .map((ci) => ({
       ...ci,
-      pendingPayout: Math.max(0, (ci.realizedProfit ?? 0) - (ci.totalPayout ?? 0)),
+      pendingPayout: ci.balanceOwed ?? Math.max(0, (ci.realizedProfit ?? 0) - (ci.totalPayout ?? 0)),
+      // Обогащаем каждую сделку разбором доли этого инвестора (как в «Чистой прибыли»).
+      deals: (ci.deals ?? []).map((dl) => {
+        const dd = capitalDetails.value?.deals.find((x) => x.id === dl.id)
+        const gross = dd ? dealProfitEarned(dd) : 0
+        return {
+          id: dl.id,
+          productName: dl.productName,
+          amount: dl.amount, // прибыль инвестора с этой сделки (идёт в резерв)
+          gross, // вся прибыль сделки
+          isCostFee: dd?.costFeeRatePct != null && (dd?.coInvestorBreakdown?.length ?? 0) === 1,
+          purchasePrice: dd?.purchasePrice ?? 0,
+          partnerShare: Math.max(0, gross - dl.amount),
+          onHand: (dd?.purchasePrice ?? 0) + dl.amount, // на руки (для cost-fee)
+          mode: dd?.coInvestorBreakdown?.find((b) => b.id === ci.id)?.modeLabel ?? '',
+        }
+      }),
     }))
     .filter((ci) => ci.pendingPayout > 0)
     .sort((a, b) => b.pendingPayout - a.pendingPayout),
 )
+
+// ─── Partner capital: пополнить / снять ───────────────────────────────────
+const capDialog = ref(false)
+const capMode = ref<'topup' | 'withdraw'>('topup')
+const capAmount = ref(0)
+const capNote = ref('')
+const capSaving = ref(false)
+
+// Наглядные поля кассы (с фолбэком, если бэк ещё не отдал новые поля).
+const investedCapital = computed(() =>
+  capitalSummary.value?.investedCapital ?? capitalDetails.value?.initialCapital ?? 0,
+)
+const withdrawableProfit = computed(() =>
+  capitalSummary.value?.withdrawableProfit ?? Math.max(0, capitalDetails.value?.partnerNetProfit ?? capitalDetails.value?.netProfit ?? 0),
+)
+const availableCap = computed(() =>
+  capitalSummary.value?.availableCapital ?? capitalDetails.value?.availableCapital ?? 0,
+)
+
+// Живой расклад снятия: сначала из ДОХОДА, остаток — из вложенного капитала.
+const capProfitPart = computed(() => Math.min(capAmount.value || 0, withdrawableProfit.value))
+const capCapitalPart = computed(() => Math.max(0, (capAmount.value || 0) - withdrawableProfit.value))
+// Капитал после снятия (уменьшается только на capitalPart).
+const capProjectedInvested = computed(() =>
+  capMode.value === 'topup'
+    ? investedCapital.value + (capAmount.value || 0)
+    : investedCapital.value - capCapitalPart.value,
+)
+// Лимит снятия = доступно всего (доход + вложенный).
+const capWithdrawLimit = computed(() => availableCap.value)
+const capTouchesCapital = computed(() => capMode.value === 'withdraw' && capCapitalPart.value > 0)
+
+// Обязательство перед со-инвесторами (cash-basis: деньги ещё в кассе). Снятие
+// сервер разрешает, но если после него в кассе останется меньше — предупреждаем.
+const pendingCIPayout = computed(() => capitalDetails.value?.pendingCIPayout ?? 0)
+const capBelowCIReserve = computed(() =>
+  capMode.value === 'withdraw'
+  && pendingCIPayout.value > 0
+  && availableCap.value - (capAmount.value || 0) < pendingCIPayout.value,
+)
+
+function openCapDialog(mode: 'topup' | 'withdraw') {
+  capMode.value = mode
+  capAmount.value = 0
+  capNote.value = ''
+  capDialog.value = true
+}
+
+async function submitCapital() {
+  const amount = capAmount.value || 0
+  if (amount <= 0) { toast.error('Сумма должна быть положительной'); return }
+  if (capMode.value === 'withdraw' && amount > capWithdrawLimit.value) {
+    toast.error(`Не больше доступного: ${formatCurrency(capWithdrawLimit.value)}`)
+    return
+  }
+  capSaving.value = true
+  try {
+    const signed = capMode.value === 'withdraw' ? -amount : amount
+    capitalSummary.value = await store.adjustPartnerCapital(id.value, signed, capNote.value)
+    capDialog.value = false
+    toast.success(capMode.value === 'topup' ? 'Капитал пополнен' : 'Капитал снят')
+    await refreshAfterMutation()
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось изменить капитал')
+  } finally {
+    capSaving.value = false
+  }
+}
 
 // ─── Delete ──────────────────────────────────────────────────────────────
 async function handleDelete() {
@@ -600,6 +771,28 @@ async function handleDelete() {
         Все кассы
       </button>
 
+      <!-- Read-only banner — cashbox locked because the plan limit is exceeded -->
+      <div v-if="box.lockedAt" class="cb-locked-banner">
+        <div class="cb-locked-icon">
+          <v-icon icon="mdi-lock-outline" size="20" />
+        </div>
+        <div class="cb-locked-text">
+          <div class="cb-locked-title">Касса в режиме «только просмотр»</div>
+          <div class="cb-locked-sub">
+            Превышен лимит касс тарифа. Можно отмечать платежи и выплачивать дивиденды,
+            но нельзя создавать новые сделки.
+          </div>
+        </div>
+        <div class="cb-locked-actions">
+          <button class="cb-locked-btn cb-locked-btn--primary" @click="router.push('/cashboxes')">
+            Сделать активной
+          </button>
+          <button class="cb-locked-btn" @click="router.push({ path: '/settings', query: { tab: 'subscription' } })">
+            Повысить тариф
+          </button>
+        </div>
+      </div>
+
       <!-- Header -->
       <div class="cb-header mb-4">
         <div class="cb-header-left">
@@ -617,6 +810,10 @@ async function handleDelete() {
           </div>
         </div>
         <div class="cb-header-actions">
+          <button class="cb-action-btn cb-action-btn--capital" @click="openCapDialog('topup')" title="Пополнить или снять капитал">
+            <v-icon icon="mdi-bank-outline" size="17" />
+            Капитал
+          </button>
           <button class="cb-action-btn" @click="showEdit = true" title="Изменить кассу">
             <v-icon icon="mdi-pencil-outline" size="17" />
             Изменить
@@ -656,8 +853,11 @@ async function handleDelete() {
               :class="{ 'wf-item--active': wfExpanded === 'profit' }"
               @click="wfExpanded = wfExpanded === 'profit' ? null : 'profit'"
             >
-              <div class="wf-item-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.netProfit) }}</div>
+              <div class="wf-item-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.partnerNetProfit ?? capitalDetails.netProfit) }}</div>
               <div class="wf-item-label">Чистая прибыль</div>
+              <div v-if="(capitalDetails.coInvestorProfit ?? 0) > 0" class="wf-item-sub">
+                валовая {{ formatCurrencyShort(capitalDetails.netProfit) }} · инвесторам {{ formatCurrencyShort(capitalDetails.coInvestorProfit!) }}
+              </div>
             </button>
             <button
               class="wf-item"
@@ -791,11 +991,69 @@ async function handleDelete() {
                       >опт</span>
                     </router-link>
                     <span class="wf-acc-sub">из ожидаемой {{ formatCurrencyShort(dealTotalMargin(d)) }}</span>
+                    <span v-if="(d.coInvestorProfit ?? 0) > 0" class="wf-acc-sub">
+                      ваша {{ formatCurrencyShort(dealPartnerProfit(d)) }} · инвесторам {{ formatCurrencyShort(d.coInvestorProfit!) }}
+                    </span>
                   </div>
-                  <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(dealProfitEarned(d)) }}</span>
+                  <span class="wf-expand-val" style="color: #10b981;">+{{ formatCurrency(dealPartnerProfit(d)) }}</span>
                 </button>
 
                 <div v-if="expandedInProfit.has(d.id)" class="wf-acc-body">
+                  <!-- Прозрачный расклад: вся прибыль → доли инвесторов (и почему) → ваша -->
+                  <div v-if="(d.coInvestorBreakdown?.length ?? 0) > 0" class="ps-deal">
+                    <!-- Экономика сделки -->
+                    <div class="ps-econ">
+                      <div class="ps-econ-row">
+                        <span>Закупка</span>
+                        <span class="ps-econ-val">{{ formatCurrency(d.purchasePrice) }}</span>
+                      </div>
+                      <div class="ps-econ-row">
+                        <span>Цена с наценкой</span>
+                        <span class="ps-econ-val">{{ formatCurrency(d.totalPrice) }}</span>
+                      </div>
+                    </div>
+                    <div class="ps-deal-head">
+                      <span>Вся прибыль сделки</span>
+                      <span class="ps-deal-gross">{{ formatCurrency(dealProfitEarned(d)) }}</span>
+                    </div>
+                    <div class="ps-bar">
+                      <div class="ps-bar-you" :style="{ width: dealPartnerPct(d) + '%' }" />
+                    </div>
+                    <div class="ps-split-title">Как делится прибыль</div>
+                    <div v-for="ci in d.coInvestorBreakdown" :key="ci.id" class="ps-row">
+                      <span class="ps-dot ps-dot--ci" />
+                      <span class="ps-label">
+                        <span class="ps-name">{{ ci.name }}</span>
+                        <span class="ps-sub">{{ ci.modeLabel }}</span>
+                        <span v-if="isSoleCostFee(d)" class="ps-sub ps-sub--dim">
+                          {{ formatCurrencyShort(dealProfitEarned(d)) }} − {{ formatCurrencyShort(dealPartnerProfit(d)) }} (доля партнёра)
+                        </span>
+                        <span v-else-if="dealCiFormula(d, ci)" class="ps-sub ps-sub--dim">
+                          {{ dealCiFormula(d, ci) }}
+                        </span>
+                      </span>
+                      <span class="ps-val ps-val--ci">{{ formatCurrency(ci.amount) }}</span>
+                    </div>
+                    <div class="ps-row">
+                      <span class="ps-dot ps-dot--you" />
+                      <span class="ps-label">
+                        <span class="ps-name">Ваша прибыль</span>
+                        <span v-if="isSoleCostFee(d)" class="ps-sub">{{ d.costFeeRatePct }}% от закупки ({{ formatCurrencyShort(d.purchasePrice) }})</span>
+                        <span v-else class="ps-sub ps-sub--dim">
+                          остаток: {{ formatCurrencyShort(dealProfitEarned(d)) }} − {{ formatCurrencyShort(d.coInvestorProfit ?? 0) }} инвесторам
+                        </span>
+                      </span>
+                      <span class="ps-val ps-val--you">{{ formatCurrency(dealPartnerProfit(d)) }}</span>
+                    </div>
+                    <!-- Cost-fee: инвестор ещё и возвращает свою закупку -->
+                    <div v-if="isSoleCostFee(d)" class="ps-payout">
+                      <span class="ps-payout-label">
+                        <span class="ps-payout-name">Инвестору на руки</span>
+                        <span class="ps-payout-sub">возврат закупки {{ formatCurrencyShort(d.purchasePrice) }} + прибыль {{ formatCurrencyShort(d.coInvestorProfit ?? 0) }}</span>
+                      </span>
+                      <span class="ps-payout-val">{{ formatCurrency(d.purchasePrice + (d.coInvestorProfit ?? 0)) }}</span>
+                    </div>
+                  </div>
                   <div v-if="d.downPayment > 0" class="wf-pay-row">
                     <span class="wf-pay-status wf-pay-status--paid">✓</span>
                     <span class="wf-pay-name">Первоначальный взнос</span>
@@ -950,30 +1208,59 @@ async function handleDelete() {
               </div>
               <div class="wf-expand-subtitle">По инвесторам</div>
               <div class="wf-ci-list">
-                <router-link
-                  v-for="ci in pendingCiList"
-                  :key="ci.id"
-                  :to="`/co-investors/${ci.id}`"
-                  class="wf-ci-row"
-                >
-                  <div class="wf-ci-info">
-                    <div class="wf-ci-head">
-                      <div class="wf-ci-name">{{ ci.name }}</div>
-                      <div class="wf-ci-mode" :class="`wf-ci-mode--${ciShareLabels[ci.id]?.kind}`">
-                        <v-icon :icon="ciShareLabels[ci.id]?.icon || 'mdi-scale-balance'" size="11" />
-                        {{ ciShareLabels[ci.id]?.label }}
-                      </div>
+                <div v-for="ci in pendingCiList" :key="ci.id" class="wf-acc">
+                  <button class="wf-acc-head" @click="toggleReserveCi(ci.id)">
+                    <v-icon :icon="expandedReserveCi.has(ci.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'" size="16" class="wf-acc-chevron" />
+                    <div class="wf-acc-title">
+                      <router-link :to="`/co-investors/${ci.id}`" class="wf-expand-link" @click.stop>{{ ci.name }}</router-link>
+                      <span class="wf-acc-sub">{{ ciShareLabels[ci.id]?.label }} · начислено {{ formatCurrencyShort(ci.realizedProfit) }}</span>
                     </div>
-                    <div class="wf-ci-meta">
-                      Начислено {{ formatCurrencyShort(ci.realizedProfit) }} ·
-                      выплачено {{ formatCurrencyShort(ci.totalPayout) }}
+                    <span class="wf-expand-val" style="color: #f59e0b;">{{ formatCurrency(ci.pendingPayout) }}</span>
+                  </button>
+                  <div v-if="expandedReserveCi.has(ci.id)" class="wf-acc-body">
+                    <!-- Разбор доли инвестора по каждой сделке -->
+                    <div v-for="dl in ci.deals" :key="dl.id" class="ps-deal">
+                      <template v-if="dl.isCostFee">
+                        <div class="ps-deal-head">
+                          <span>{{ dl.productName }}</span>
+                          <span class="ps-deal-gross" style="color:#f59e0b">+{{ formatCurrency(dl.amount) }}</span>
+                        </div>
+                        <div class="ps-econ" style="margin-top:8px">
+                          <div class="ps-econ-row"><span>Закупка (возврат капитала)</span><span class="ps-econ-val">{{ formatCurrency(dl.purchasePrice) }}</span></div>
+                          <div class="ps-econ-row"><span>Наценка рассрочки</span><span class="ps-econ-val">{{ formatCurrency(dl.gross) }}</span></div>
+                          <div class="ps-econ-row"><span>− Доля партнёра</span><span class="ps-econ-val">{{ formatCurrency(dl.partnerShare) }}</span></div>
+                        </div>
+                        <div class="ps-payout">
+                          <span class="ps-payout-label">
+                            <span class="ps-payout-name">Инвестору на руки</span>
+                            <span class="ps-payout-sub">в резерв идёт прибыль {{ formatCurrencyShort(dl.amount) }}</span>
+                          </span>
+                          <span class="ps-payout-val">{{ formatCurrency(dl.onHand) }}</span>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <div class="ps-deal-head">
+                          <span>{{ dl.productName }}</span>
+                          <span class="ps-deal-gross">{{ formatCurrency(dl.gross) }}</span>
+                        </div>
+                        <div class="ps-row" style="margin-top:6px">
+                          <span class="ps-dot ps-dot--ci" />
+                          <span class="ps-label">
+                            <span class="ps-name">Доля инвестора</span>
+                            <span v-if="dl.mode" class="ps-sub">{{ dl.mode }}</span>
+                          </span>
+                          <span class="ps-val ps-val--ci">{{ formatCurrency(dl.amount) }}</span>
+                        </div>
+                      </template>
+                    </div>
+                    <!-- Итог: начислено − выплачено = к выплате -->
+                    <div class="wf-rf" style="margin-top:4px">
+                      <div class="wf-rf-row"><span>Начислено прибыли</span><span class="wf-rf-val">{{ formatCurrency(ci.realizedProfit) }}</span></div>
+                      <div class="wf-rf-row"><span>− Уже выплачено</span><span class="wf-rf-val">{{ formatCurrency(ci.totalPayout) }}</span></div>
+                      <div class="wf-rf-row wf-rf-total"><span>К выплате</span><span class="wf-rf-val">{{ formatCurrency(ci.pendingPayout) }}</span></div>
                     </div>
                   </div>
-                  <div class="wf-ci-pending">
-                    <div class="wf-ci-pending-val">{{ formatCurrency(ci.pendingPayout) }}</div>
-                    <div class="wf-ci-pending-label">к выплате</div>
-                  </div>
-                </router-link>
+                </div>
               </div>
             </template>
 
@@ -1019,7 +1306,7 @@ async function handleDelete() {
 
           <!-- Journal: scoped via prop -->
           <template v-if="detailsTab === 'journal'">
-            <CashflowJournal :cash-box-id="id" />
+            <CashflowJournal :cash-box-id="id" @changed="refreshAfterMutation" />
           </template>
 
           <!-- Operations list -->
@@ -1201,6 +1488,126 @@ async function handleDelete() {
         </div>
       </v-card>
     </template>
+
+    <!-- ── Капитал кассы: пополнить / снять ── -->
+    <v-dialog v-model="capDialog" max-width="500" persistent :fullscreen="isMobile">
+      <v-card rounded="lg" elevation="0">
+        <div class="fn-dialog-header">
+          <div class="fn-dialog-title">Капитал кассы</div>
+          <button class="fn-dialog-close" @click="capDialog = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+        </div>
+
+        <div class="pa-5">
+          <!-- Наглядная сводка: вложенный / доход к снятию / доступно -->
+          <div class="cap-summary mb-4">
+            <div class="cap-summary-item">
+              <div class="cap-summary-label">Вложенный капитал</div>
+              <div class="cap-summary-value" style="color: #3b82f6;">{{ formatCurrency(investedCapital) }}</div>
+            </div>
+            <div class="cap-summary-item">
+              <div class="cap-summary-label">Доход к снятию</div>
+              <div class="cap-summary-value" style="color: #10b981;">{{ formatCurrency(withdrawableProfit) }}</div>
+            </div>
+            <div class="cap-summary-item">
+              <div class="cap-summary-label">Доступно всего</div>
+              <div class="cap-summary-value" :style="{ color: box?.color }">{{ formatCurrency(availableCap) }}</div>
+            </div>
+          </div>
+
+          <!-- Пополнить / Снять -->
+          <div class="fn-type-toggle mb-4">
+            <button
+              class="fn-type-btn"
+              :class="{ 'fn-type-btn--active fn-type-btn--income': capMode === 'topup' }"
+              @click="capMode = 'topup'"
+            >
+              <v-icon icon="mdi-arrow-down" size="16" class="mr-1" />
+              Пополнить
+            </button>
+            <button
+              class="fn-type-btn"
+              :class="{ 'fn-type-btn--active fn-type-btn--expense': capMode === 'withdraw' }"
+              @click="capMode = 'withdraw'"
+            >
+              <v-icon icon="mdi-arrow-up" size="16" class="mr-1" />
+              Снять
+            </button>
+          </div>
+
+          <!-- Сумма -->
+          <div class="mb-3">
+            <label class="fn-field-label">Сумма *</label>
+            <div class="fn-field-input-wrap">
+              <input
+                :value="capAmount || ''"
+                v-maska="CURRENCY_MASK"
+                @maska="(e: any) => capAmount = parseMasked(e)"
+                type="text"
+                inputmode="numeric"
+                placeholder="0"
+                class="fn-field-input"
+              />
+              <span class="fn-field-suffix">₽</span>
+            </div>
+            <button
+              v-if="capMode === 'withdraw' && availableCap > 0"
+              class="cap-max-btn"
+              @click="capAmount = availableCap"
+            >Снять всё ({{ formatCurrency(availableCap) }})</button>
+          </div>
+
+          <!-- Комментарий -->
+          <div class="mb-4">
+            <label class="fn-field-label">Комментарий</label>
+            <input v-model="capNote" type="text" placeholder="Например: довнесение оборотных" class="fn-field-input" />
+          </div>
+
+          <!-- Живой расклад -->
+          <div v-if="capAmount > 0" class="cap-calc" :class="capTouchesCapital ? 'cap-calc--warn' : 'cap-calc--ok'">
+            <template v-if="capMode === 'topup'">
+              <v-icon icon="mdi-arrow-down-circle-outline" size="16" />
+              <div>Вложенный капитал вырастет до <strong>{{ formatCurrency(capProjectedInvested) }}</strong>.</div>
+            </template>
+            <template v-else-if="!capTouchesCapital">
+              <v-icon icon="mdi-check-circle-outline" size="16" />
+              <div>Снимается из дохода — вложенный капитал не тронут (останется <strong>{{ formatCurrency(investedCapital) }}</strong>).</div>
+            </template>
+            <template v-else>
+              <v-icon icon="mdi-alert-circle-outline" size="16" />
+              <div>
+                Из дохода: <strong>{{ formatCurrency(capProfitPart) }}</strong>,
+                из вложенного капитала: <strong>{{ formatCurrency(capCapitalPart) }}</strong>.
+                Капитал уменьшится до <strong>{{ formatCurrency(capProjectedInvested) }}</strong>.
+              </div>
+            </template>
+          </div>
+
+          <!-- Не блокируем (сервер разрешает cash-basis), только предупреждаем:
+               после снятия в кассе останется меньше обязательства перед со-инвесторами. -->
+          <div v-if="capBelowCIReserve" class="cap-calc cap-calc--warn mt-3">
+            <v-icon icon="mdi-account-cash-outline" size="16" />
+            <div>
+              После снятия в кассе останется меньше, чем причитается со-инвесторам
+              (<strong>{{ formatCurrency(pendingCIPayout) }}</strong>). Сначала выплатите дивиденды.
+            </div>
+          </div>
+        </div>
+
+        <div class="fn-dialog-actions">
+          <button class="fn-btn fn-btn--ghost" @click="capDialog = false" :disabled="capSaving">Отмена</button>
+          <button
+            class="fn-btn fn-btn--primary"
+            :disabled="capSaving || capAmount <= 0 || (capMode === 'withdraw' && capAmount > capWithdrawLimit)"
+            @click="submitCapital"
+          >
+            <v-progress-circular v-if="capSaving" indeterminate size="16" width="2" class="mr-2" color="white" />
+            {{ capMode === 'topup' ? 'Пополнить' : 'Снять' }}
+          </button>
+        </div>
+      </v-card>
+    </v-dialog>
 
     <!-- Edit dialog -->
     <CashBoxEditDialog v-model="showEdit" :cashbox="box" @saved="(b) => { box = b; loadDetails() }" />
@@ -1546,6 +1953,40 @@ async function handleDelete() {
 }
 .cb-back:hover { color: rgb(var(--v-theme-on-surface)); }
 
+/* Read-only (locked) banner */
+.cb-locked-banner {
+  display: flex; align-items: center; gap: 14px;
+  background: rgba(245, 158, 11, 0.09);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 14px; padding: 14px 18px; margin-bottom: 18px;
+}
+.cb-locked-icon {
+  width: 40px; height: 40px; border-radius: 11px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(245, 158, 11, 0.15); color: #b45309;
+}
+.cb-locked-text { flex: 1; min-width: 0; }
+.cb-locked-title { font-size: 14.5px; font-weight: 800; color: #92400e; }
+.cb-locked-sub { font-size: 12.5px; line-height: 1.45; color: #a16207; margin-top: 2px; }
+.cb-locked-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.cb-locked-btn {
+  height: 34px; padding: 0 14px; border-radius: 9px;
+  border: 1px solid rgba(245, 158, 11, 0.4); background: transparent;
+  color: #b45309; font-size: 12.5px; font-weight: 700; cursor: pointer;
+  transition: all 0.15s; white-space: nowrap;
+}
+.cb-locked-btn:hover { background: rgba(245, 158, 11, 0.12); }
+.cb-locked-btn--primary { background: #b45309; color: #fff; border-color: #b45309; }
+.cb-locked-btn--primary:hover { background: #92400e; }
+.cb-page.dark .cb-locked-banner { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); }
+.cb-page.dark .cb-locked-title { color: #fbbf24; }
+.cb-page.dark .cb-locked-sub { color: #d4a24e; }
+@media (max-width: 599px) {
+  .cb-locked-banner { flex-wrap: wrap; }
+  .cb-locked-actions { width: 100%; }
+  .cb-locked-btn { flex: 1; }
+}
+
 /* Header */
 .cb-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .cb-header-left { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1; }
@@ -1578,6 +2019,37 @@ async function handleDelete() {
 .cb-action-btn:hover { border-color: #047857; color: #047857; }
 .cb-action-btn--danger { color: #ef4444; }
 .cb-action-btn--danger:hover { border-color: #ef4444; color: #ef4444; }
+.cb-action-btn--capital { border-color: rgba(59, 130, 246, 0.35); color: #3b82f6; }
+.cb-action-btn--capital:hover { border-color: #3b82f6; color: #3b82f6; background: rgba(59, 130, 246, 0.06); }
+
+/* ── Модалка капитала кассы ── */
+.cap-summary {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+}
+@media (max-width: 500px) { .cap-summary { grid-template-columns: 1fr; } }
+.cap-summary-item {
+  padding: 12px 14px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.cap-summary-label { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.cap-summary-value { font-size: 16px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.cap-max-btn {
+  margin-top: 8px; padding: 0; border: none; background: none; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: #3b82f6;
+}
+.cap-max-btn:hover { text-decoration: underline; }
+.cap-calc {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 12px; border-radius: 10px;
+  font-size: 12.5px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.cap-calc .v-icon { flex-shrink: 0; margin-top: 1px; }
+.cap-calc--ok { background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); }
+.cap-calc--ok .v-icon { color: #10b981; }
+.cap-calc--warn { background: rgba(245, 158, 11, 0.09); border: 1px solid rgba(245, 158, 11, 0.28); }
+.cap-calc--warn .v-icon { color: #d97706; }
 
 /* ─── Waterfall ─────────────────────────────────────────────────────── */
 .wf {
@@ -1630,6 +2102,10 @@ async function handleDelete() {
 .wf-item-label {
   font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.55);
   margin-top: 3px; font-weight: 500;
+}
+.wf-item-sub {
+  font-size: 10px; color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 2px; font-weight: 500;
 }
 
 .wf-right {
@@ -1699,6 +2175,86 @@ async function handleDelete() {
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
 }
 .wf-acc:last-child { border-bottom: none; }
+
+/* Прозрачный расклад прибыли сделки: вся → полоска → инвесторам (и почему) → ваша */
+.ps-deal {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 10px;
+  padding: 11px 13px;
+  margin-bottom: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.ps-econ {
+  padding-bottom: 9px; margin-bottom: 9px;
+  border-bottom: 1px dashed rgba(var(--v-theme-on-surface), 0.12);
+}
+.ps-econ-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 0;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.ps-econ-val { font-weight: 600; color: rgb(var(--v-theme-on-surface)); }
+.ps-deal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.ps-deal-gross { font-size: 14px; font-weight: 800; color: rgb(var(--v-theme-on-surface)); }
+.ps-bar {
+  display: flex; height: 7px; border-radius: 4px; overflow: hidden;
+  margin: 9px 0 4px;
+  background: #f59e0b;
+}
+.ps-bar-you { background: #10b981; border-radius: 4px 0 0 4px; transition: width 0.4s; }
+.ps-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 5px 0;
+}
+.ps-row + .ps-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.05); }
+.ps-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.ps-dot--you { background: #10b981; }
+.ps-dot--ci { background: #f59e0b; }
+.ps-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ps-name { font-size: 13px; font-weight: 600; color: rgb(var(--v-theme-on-surface)); }
+.ps-sub { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.ps-sub--dim { color: rgba(var(--v-theme-on-surface), 0.4); font-style: italic; }
+.ps-split-title {
+  font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin: 4px 0 2px;
+}
+.ps-val { font-size: 14px; font-weight: 700; white-space: nowrap; }
+.ps-val--you { color: #10b981; }
+.ps-val--ci { color: #f59e0b; }
+.ps-payout {
+  display: flex; align-items: center; justify-content: space-between; gap: 9px;
+  margin-top: 8px; padding-top: 9px;
+  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.15);
+}
+.ps-payout-label { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ps-payout-name { font-size: 13px; font-weight: 700; color: rgb(var(--v-theme-on-surface)); }
+.ps-payout-sub { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.ps-payout-val { font-size: 15px; font-weight: 800; color: #3b82f6; white-space: nowrap; }
+
+/* Резерв: откуда цифра — начислено − выплачено = к выплате (по инвестору) */
+.wf-ci-row--reserve { align-items: stretch; }
+.wf-rf { margin-top: 6px; }
+.wf-rf-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 3px 0;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.wf-rf-val { font-weight: 600; color: rgb(var(--v-theme-on-surface)); }
+.wf-rf-deal {
+  padding: 1px 0 1px 10px;
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.wf-rf-deal .wf-rf-val { font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.6); }
+.wf-rf-total {
+  margin-top: 2px; padding-top: 6px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  font-size: 13px; font-weight: 700; color: rgb(var(--v-theme-on-surface));
+}
+.wf-rf-total .wf-rf-val { color: #f59e0b; font-weight: 800; }
 .wf-acc-head {
   display: flex; align-items: center; gap: 8px;
   width: 100%; padding: 10px 0;
@@ -2451,6 +3007,10 @@ async function handleDelete() {
 .wf-ci-mode--fixed {
   background: rgba(124, 58, 237, 0.1);
   color: #7c3aed;
+}
+.wf-ci-mode--costfee {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
 }
 .wf-ci-info { flex: 1; min-width: 0; }
 .wf-ci-head {

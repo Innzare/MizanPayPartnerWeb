@@ -12,10 +12,14 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     CashBoxEditDialog: typeof import('./components/CashBoxEditDialog.vue')['default']
+    CashBoxLimitBlock: typeof import('./components/CashBoxLimitBlock.vue')['default']
     CashflowJournal: typeof import('./components/CashflowJournal.vue')['default']
     ChatPanel: typeof import('./components/ChatPanel.vue')['default']
     ClientPicker: typeof import('./components/ClientPicker.vue')['default']
+    CoInvestorCashier: typeof import('./components/CoInvestorCashier.vue')['default']
     CoInvestorCreateDialog: typeof import('./components/CoInvestorCreateDialog.vue')['default']
+    CoInvestorEditDialog: typeof import('./components/CoInvestorEditDialog.vue')['default']
+    CoInvestorRemoveDialog: typeof import('./components/CoInvestorRemoveDialog.vue')['default']
     CreateClientDialog: typeof import('./components/CreateClientDialog.vue')['default']
     DealDraftFloater: typeof import('./components/DealDraftFloater.vue')['default']
     DealsSidebar: typeof import('./components/DealsSidebar.vue')['default']

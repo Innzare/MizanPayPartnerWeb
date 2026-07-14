@@ -107,6 +107,36 @@
             Со-инвестор получит долю пропорционально вложенному капиталу — из остатка после со-инвесторов с фиксированным процентом.
           </div>
         </div>
+
+        <!-- Комиссия партнёра — только для доли по капиталу. -->
+        <div v-if="form.mode === 'weight'" class="cicd-field mt-4">
+          <label class="cicd-label">Комиссия партнёра</label>
+          <div class="cicd-presets mb-2">
+            <button
+              v-for="p in FEE_PRESETS"
+              :key="p"
+              class="cicd-chip"
+              :class="{ 'cicd-chip--active': form.managementFeePct === p }"
+              @click="form.managementFeePct = p"
+            >
+              {{ p }}%
+            </button>
+          </div>
+          <div class="cicd-input-wrap">
+            <input
+              v-model.number="form.managementFeePct"
+              type="number"
+              class="cicd-input"
+              placeholder="0"
+              min="0"
+              max="100"
+            />
+            <span class="cicd-suffix">%</span>
+          </div>
+          <div class="cicd-hint">
+            Сколько вы забираете с доли этого со-инвестора по вкладу. 0% — делите чисто по капиталу; 50% — половину его расчётной доли забираете себе за управление.
+          </div>
+        </div>
       </div>
 
       <div class="cicd-actions">
@@ -140,6 +170,7 @@ const { show: showToast } = useToast()
 const { isMobile } = useIsMobile()
 
 const PERCENT_PRESETS = [10, 20, 30, 40, 50]
+const FEE_PRESETS = [0, 20, 30, 50]
 
 const form = reactive<{
   name: string
@@ -147,7 +178,8 @@ const form = reactive<{
   capital: number
   mode: 'fixed' | 'weight'
   profitPercent: number
-}>({ name: '', phone: '', capital: 0, mode: 'fixed', profitPercent: 30 })
+  managementFeePct: number
+}>({ name: '', phone: '', capital: 0, mode: 'fixed', profitPercent: 30, managementFeePct: 0 })
 const saving = ref(false)
 const nameInputRef = ref<HTMLInputElement | null>(null)
 
@@ -164,6 +196,7 @@ watch(() => props.modelValue, (open) => {
     form.capital = 0
     form.mode = 'fixed'
     form.profitPercent = 30
+    form.managementFeePct = 0
     nextTick(() => nameInputRef.value?.focus())
   }
 })
@@ -181,6 +214,8 @@ async function onSave() {
       phone: form.phone || undefined,
       capital: form.capital,
       profitPercent: form.mode === 'fixed' ? form.profitPercent : null,
+      // Commission only meaningful for by-capital share; fixed-% is already final.
+      managementFeePct: form.mode === 'weight' ? (form.managementFeePct || 0) : 0,
     })
     showToast('Со-инвестор создан', 'success')
     emit('created', created)

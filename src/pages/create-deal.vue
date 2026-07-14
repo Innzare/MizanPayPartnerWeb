@@ -11,6 +11,7 @@ import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useFolders } from '@/composables/useFolders'
 import { useDealDraft } from '@/composables/useDealDraft'
+import { useCoInvestors } from '@/composables/useCoInvestors'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { api } from '@/api/client'
 import ClientPicker from '@/components/ClientPicker.vue'
@@ -196,6 +197,9 @@ interface CoInvestorOption {
   phone: string | null
   profitPercent: number | null
   cashBoxId: string
+  managementFeePct?: number
+  costFeeMode?: boolean
+  costFeeDefaultRatePct?: number | null
 }
 const allCoInvestors = ref<CoInvestorOption[]>([])
 
@@ -207,6 +211,14 @@ const selectedFolderId = ref<string | null>(null)
 // «Основная» on mount; partner picks another if they want.
 const cashboxesStore = useCashBoxesStore()
 const selectedCashBoxId = ref<string | null>(null)
+
+// New deals can't go into a read-only (locked, over-limit) cashbox. Prefer the
+// default cashbox if it's active, otherwise the first active one.
+function pickDefaultCashBoxId(): string | null {
+  const def = cashboxesStore.getDefault()
+  if (def && !def.lockedAt) return def.id
+  return cashboxesStore.items.find((b) => !b.lockedAt && !b.archivedAt)?.id ?? null
+}
 
 // Forward declarations resolved later — see "Draft persistence" block
 // below all form refs. We need to call applyDraftToForm() from inside
@@ -231,10 +243,13 @@ onMounted(async () => {
       phone: ci.phone,
       profitPercent: ci.profitPercent,
       cashBoxId: ci.cashBoxId,
+      managementFeePct: ci.managementFeePct,
+      costFeeMode: ci.costFeeMode,
+      costFeeDefaultRatePct: ci.costFeeDefaultRatePct,
     }))
     // Default to the partner's «Основная» cashbox
     if (!selectedCashBoxId.value) {
-      selectedCashBoxId.value = cashboxesStore.getDefault()?.id ?? cashboxesStore.items[0]?.id ?? null
+      selectedCashBoxId.value = pickDefaultCashBoxId()
     }
     if (selectedCashBoxId.value) await fetchCashBoxCapital(selectedCashBoxId.value)
   } catch { /* ignore */ }
@@ -262,9 +277,16 @@ onMounted(async () => {
       dealDate.value = deal.dealDate ? new Date(deal.dealDate).toISOString().slice(0, 10) : dealDate.value
       customFirstPayment.value = deal.firstPaymentDate ? new Date(deal.firstPaymentDate).toISOString().slice(0, 10) : ''
       selectedClientProfileId.value = deal.clientProfileId || null
-      selectedGuarantorProfileId.value = deal.guarantorProfileId || null
       if (deal.clientProfile) selectedClientProfile.value = deal.clientProfile
-      if (deal.guarantorProfile) selectedGuarantorProfile.value = deal.guarantorProfile
+      // Поручители: новый упорядоченный набор, с fallback на legacy-поле.
+      if (deal.guarantors && deal.guarantors.length) {
+        selectedGuarantors.value = [...deal.guarantors]
+          .sort((a, b) => a.order - b.order)
+          .map((g) => g.clientProfile)
+          .filter((p): p is ClientProfile => !!p)
+      } else if (deal.guarantorProfile) {
+        selectedGuarantors.value = [deal.guarantorProfile]
+      }
       selectedFolderId.value = (deal as any).folderId || null
       // Preserve the deal's cashbox so the partner can change it from the
       // edit form too. Falls back to the default cashbox if the field is
@@ -285,6 +307,9 @@ onMounted(async () => {
       // Snapshot for change detection in submit (Phase 4 confirm).
       initialWholesalePrice.value = deal.wholesalePrice ?? null
       initialProfitSplitBase.value = deal.profitSplitBase ?? 'MARKUP_ONLY'
+      // Load the deal's actual co-investor participation (overrides the default
+      // set the cashbox watcher built when selectedCashBoxId was assigned above).
+      await loadParticipantsForEdit(editId.value)
     } catch (e: any) {
       toast.error(e.message || 'Не удалось загрузить сделку')
       router.push('/deals')
@@ -320,14 +345,267 @@ onMounted(async () => {
   }
 })
 
-// Phase 3: deal-CI linkage is via cashbox membership. The UI shows the CIs
-// of the selected cashbox informationally so the partner sees who'll share
-// profit, but there's no per-deal selection any more.
+// Co-investors of the selected cashbox — the candidate pool for participation.
 const cashBoxCoInvestors = computed(() =>
   selectedCashBoxId.value
     ? allCoInvestors.value.filter((ci) => ci.cashBoxId === selectedCashBoxId.value)
     : [],
 )
+
+// Phase 4: per-deal participation. The partner picks which of the cashbox's
+// co-investors share THIS deal's profit, and can override each one's percent
+// just for this deal. Defaults to "everyone participates, no override" — which
+// reproduces the legacy whole-cashbox behaviour.
+const { fetchDealCoInvestors, saveDealCoInvestors } = useCoInvestors()
+interface DealParticipantRow {
+  id: string
+  name: string
+  phone: string | null
+  profitPercent: number | null
+  participates: boolean
+  override: number | null  // per-deal fixed % override; null = use default mode
+  // Дефолтная комиссия партнёра инвестора (для weight-режима) — для плейсхолдера/подписи.
+  managementFeePct: number | null
+  // Per-deal переопределение комиссии партнёра для weight-инвестора (0..100).
+  // null ⇒ берётся дефолтная комиссия (managementFeePct).
+  mgmtFeeOverride: number | null
+  // Phase 5: cost-fee investor — instead of a % override, a rate (% of purchase).
+  costFeeMode: boolean
+  costFeeRate: number | null
+}
+const dealParticipants = ref<DealParticipantRow[]>([])
+// Whether the partner has TOUCHED participation since it was loaded/built. Used
+// (in edit) to decide if we PUT — so that reverting to default (re-including a
+// CI, clearing an override) is still persisted, which a "differs from default"
+// check would miss.
+const participantsDirty = ref(false)
+
+// Called from the UI when the partner toggles a participant or edits an override.
+function markParticipantsDirty() { participantsDirty.value = true }
+function toggleParticipant(p: DealParticipantRow) {
+  const turningOn = !p.participates
+  p.participates = turningOn
+  // A cost-fee investor takes «наценка − комиссия», leaving no room for anyone
+  // else → it must be the sole participant. Enforce both directions.
+  if (turningOn) {
+    if (p.costFeeMode) {
+      for (const o of dealParticipants.value) if (o.id !== p.id) o.participates = false
+    } else {
+      for (const o of dealParticipants.value) if (o.id !== p.id && o.costFeeMode) o.participates = false
+    }
+  }
+  participantsDirty.value = true
+}
+
+// The base actually split with co-investors: markup, or totalPrice−wholesale in
+// FULL_MARGIN mode — same base the backend accrues from. Used by cost-fee split
+// AND by the fixed-% chip so both match the backend.
+const profitSplitBaseAmount = computed(() =>
+  (useWholesalePrice.value && profitSplitBase.value === 'FULL_MARGIN' && (wholesalePrice.value || 0) > 0)
+    ? Math.max(0, totalPrice.value - (wholesalePrice.value || 0))
+    : markup.value
+)
+
+// Live split for a cost-fee participant, from the deal's current purchase and
+// profit base.
+function costFeeCalc(p: DealParticipantRow) {
+  const purchase = purchasePrice.value || 0
+  const base = profitSplitBaseAmount.value
+  const rate = p.costFeeRate != null ? Number(p.costFeeRate) : 0
+  const rawFee = Math.round((rate / 100) * purchase)
+  const partnerFee = Math.min(rawFee, base)
+  // Чистый доход инвестора = наценка − комиссия партнёра. Инвестор финансирует
+  // закупку сам и получает всю сумму сделки за вычетом комиссии партнёра, то
+  // есть возврат капитала (закупка) + этот доход.
+  const net = Math.max(base - partnerFee, 0)
+  const total = purchase + net
+  // Ставка невалидна, если комиссия ≤ 0 или ≥ наценки: в этом случае одна из
+  // сторон не зарабатывает. «≥», а не «>» — при равенстве инвестору 0 дохода.
+  const invalid = rate <= 0 || rawFee >= base
+  return { partnerFee, investorShare: net, exceedsMarkup: rawFee > base, rawFee, net, total, invalid }
+}
+
+// Rebuild the participant list from the selected cashbox's CIs — all included,
+// no overrides. Used on create and whenever the partner switches cashbox.
+function buildParticipantsFromCashbox() {
+  const cis = cashBoxCoInvestors.value
+  dealParticipants.value = cis.map((ci) => ({
+    id: ci.id,
+    name: ci.name,
+    phone: ci.phone,
+    profitPercent: ci.profitPercent,
+    // A cost-fee investor must be the sole participant. So it participates by
+    // default only when it's alone in the cashbox; in a mixed cashbox it starts
+    // off (the partner opts it in, which toggles the others off).
+    participates: ci.costFeeMode ? cis.length === 1 : true,
+    override: null,
+    managementFeePct: ci.managementFeePct ?? null,
+    mgmtFeeOverride: null,
+    costFeeMode: !!ci.costFeeMode,
+    costFeeRate: ci.costFeeMode ? ci.costFeeDefaultRatePct ?? null : null,
+  }))
+}
+
+// Edit mode: load the deal's actual participants (linked + available) so the
+// partner sees their current customisation instead of a reset-to-all default.
+async function loadParticipantsForEdit(dealId: string) {
+  try {
+    const data = await fetchDealCoInvestors(dealId)
+    const rows: DealParticipantRow[] = []
+    for (const p of data.participants) {
+      rows.push({
+        id: p.id, name: p.name, phone: p.phone, profitPercent: p.profitPercent,
+        participates: true, override: p.profitPercentOverride,
+        managementFeePct: p.managementFeePct ?? null,
+        mgmtFeeOverride: p.managementFeePctOverride ?? null,
+        costFeeMode: !!p.costFeeMode,
+        costFeeRate: p.costFeeMode ? p.costFeeRatePct ?? p.costFeeDefaultRatePct ?? null : null,
+      })
+    }
+    for (const a of data.available) {
+      rows.push({
+        id: a.id, name: a.name, phone: a.phone, profitPercent: a.profitPercent,
+        participates: false, override: null,
+        managementFeePct: a.managementFeePct ?? null,
+        mgmtFeeOverride: null,
+        costFeeMode: !!a.costFeeMode,
+        costFeeRate: a.costFeeMode ? a.costFeeDefaultRatePct ?? null : null,
+      })
+    }
+    dealParticipants.value = rows
+    // Freshly loaded server state = not dirty. A subsequent cashbox change or
+    // user toggle sets it dirty again.
+    participantsDirty.value = false
+  } catch {
+    // GET failed — we don't know the deal's real participation. The cashbox
+    // watcher may have left `dirty=true` with a default set; clear it so a
+    // blind save can't PUT that default over the deal's actual customization.
+    participantsDirty.value = false
+  }
+}
+
+// True when the partner has deviated from the default (someone excluded, an
+// override set, or a cost-fee participant that always needs its rate sent).
+const participantsCustomized = computed(() =>
+  dealParticipants.value.some((p) => !p.participates || p.override != null || p.mgmtFeeOverride != null || (p.participates && p.costFeeMode)),
+)
+
+// The CIs actually sharing this deal's profit. Cost-fee rows carry the rate for
+// the review/preview instead of a plain %.
+const participatingList = computed(() =>
+  dealParticipants.value
+    .filter((p) => p.participates)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      costFeeMode: p.costFeeMode,
+      costFeeRate: p.costFeeRate,
+      effectivePercent: p.override != null && p.override > 0
+        ? p.override
+        : (p.profitPercent != null && p.profitPercent > 0 ? p.profitPercent : null),
+      // Эффективная комиссия партнёра для weight-инвестора (override ?? дефолт).
+      effectiveMgmtFee: (p.profitPercent == null || p.profitPercent <= 0) && !p.costFeeMode
+        ? (p.mgmtFeeOverride != null && (p.mgmtFeeOverride as any) !== '' ? Number(p.mgmtFeeOverride) : p.managementFeePct)
+        : null,
+    })),
+)
+
+// The wire payload: participating CIs with per-deal override OR cost-fee rate.
+// Ровно одно per-deal поле по режиму инвестора (бэк валидирует взаимоисключимость):
+//   cost-fee   → costFeeRatePct (ставка);
+//   фикс (profitPercent>0) → profitPercentOverride;
+//   по вкладу  → managementFeePctOverride (комиссия партнёра для этой сделки).
+function buildParticipantsPayload() {
+  return dealParticipants.value
+    .filter((p) => p.participates)
+    .map((p) => {
+      if (p.costFeeMode) {
+        return { coInvestorId: p.id, costFeeRatePct: p.costFeeRate != null ? Number(p.costFeeRate) : null }
+      }
+      if (p.profitPercent != null && p.profitPercent > 0) {
+        return { coInvestorId: p.id, profitPercentOverride: p.override != null && p.override > 0 ? p.override : null }
+      }
+      // Weight-инвестор: только комиссия-override (пусто → null, берётся дефолт).
+      return { coInvestorId: p.id, managementFeePctOverride: p.mgmtFeeOverride != null && (p.mgmtFeeOverride as any) !== '' ? Number(p.mgmtFeeOverride) : null }
+    })
+}
+
+// Client-side guard so a bad value reaches the partner as a clear message
+// instead of a swallowed 400. Returns an error string, or null when valid.
+function validateParticipantOverrides(): string | null {
+  // Sole-participant rule for cost-fee (server enforces too — catch it early).
+  const on = dealParticipants.value.filter((p) => p.participates)
+  const costFeeOn = on.find((p) => p.costFeeMode)
+  if (costFeeOn && on.length > 1) {
+    return `«${costFeeOn.name}» (комиссия от закупки) должен быть единственным участником сделки`
+  }
+  for (const p of dealParticipants.value) {
+    if (!p.participates) continue
+    if (p.costFeeMode) {
+      if (p.costFeeRate == null || (p.costFeeRate as any) === '') {
+        return `Укажите ставку комиссии для «${p.name}»`
+      }
+      const v = Number(p.costFeeRate)
+      if (!Number.isFinite(v) || v < 0 || v > 100) {
+        return `Ставка комиссии для «${p.name}» должна быть от 0 до 100`
+      }
+      // Комиссия обязана быть строго > 0 и строго < наценки, чтобы заработали
+      // обе стороны. Иначе блокируем сабмит (не просто предупреждаем).
+      if (costFeeCalc(p).invalid) {
+        return `Комиссия для «${p.name}» должна быть больше 0 и меньше наценки`
+      }
+      continue
+    }
+    // Фикс-инвестор: override — фикс % на сделку (1..99).
+    if (p.profitPercent != null && p.profitPercent > 0) {
+      if (p.override == null || (p.override as any) === '') continue
+      const v = Number(p.override)
+      if (!Number.isFinite(v) || v < 1 || v > 99) {
+        return `Процент для «${p.name}» должен быть от 1 до 99`
+      }
+      continue
+    }
+    // Weight-инвестор: mgmtFeeOverride — комиссия партнёра % на сделку (0..100).
+    if (p.mgmtFeeOverride == null || (p.mgmtFeeOverride as any) === '') continue
+    const fee = Number(p.mgmtFeeOverride)
+    if (!Number.isFinite(fee) || fee < 0 || fee > 100) {
+      return `Комиссия партнёра для «${p.name}» должна быть от 0 до 100`
+    }
+  }
+  // Σ эффективных фикс-процентов участников не должна превышать 99% (остаток
+  // отходит weight-инвесторам/партнёру). Фикс-участник: участвует, не cost-fee,
+  // profitPercent>0; эффективный % — override ?? profitPercent.
+  const fixedSum = on.reduce((sum, p) => {
+    if (p.costFeeMode) return sum
+    if (p.profitPercent == null || p.profitPercent <= 0) return sum
+    const eff = p.override != null && (p.override as any) !== '' && Number(p.override) > 0
+      ? Number(p.override)
+      : p.profitPercent
+    return sum + (eff > 0 ? eff : 0)
+  }, 0)
+  if (fixedSum > 99) {
+    return 'Сумма фиксированных процентов участников превышает 99%'
+  }
+  return null
+}
+
+// Persist the current participant selection for an EXISTING deal. Sends the
+// full desired set; omitted CIs are detached server-side. Idempotent — safe to
+// call on every edit save.
+async function syncDealParticipants(dealId: string) {
+  if (!cashBoxCoInvestors.value.length) return
+  await saveDealCoInvestors(dealId, buildParticipantsPayload())
+}
+
+// Rebuild defaults when the partner switches cashbox — a different cashbox has
+// a different CI set, so the previous selection can't carry over. Marks dirty
+// so the new default is persisted. In edit mode the initial selectedCashBoxId
+// assignment also fires this, but loadParticipantsForEdit runs right after and
+// resets dirty to false.
+watch(selectedCashBoxId, () => {
+  buildParticipantsFromCashbox()
+  participantsDirty.value = true
+})
 
 const selectedFolder = computed<DealFolder | null>(() =>
   selectedFolderId.value
@@ -528,11 +806,41 @@ const firstPaymentDate = computed(() => {
 
 // Step 3: Client
 const selectedClientProfileId = ref<string | null>(null)
-const selectedGuarantorProfileId = ref<string | null>(null)
 
-// Selected profiles (resolved by ClientPicker)
+// Selected client profile (resolved by ClientPicker)
 const selectedClientProfile = ref<ClientProfile | null>(null)
-const selectedGuarantorProfile = ref<ClientProfile | null>(null)
+
+// Поручители — до 5, порядок = порядок добавления (первый = основной).
+const MAX_GUARANTORS = 5
+const selectedGuarantors = ref<ClientProfile[]>([])
+// v-model для пикера добавления нового поручителя (сбрасывается после добавления).
+const guarantorPickerId = ref<string | null>(null)
+// Меняем ключ после каждого добавления → пикер пересоздаётся пустым.
+const guarantorPickerKey = ref(0)
+
+const canAddGuarantor = computed(() => selectedGuarantors.value.length < MAX_GUARANTORS)
+const selectedGuarantorIds = computed(() => selectedGuarantors.value.map((g) => g.id))
+
+function addGuarantor(profile: ClientProfile | null) {
+  // Пересоздаём пикер (пустой) — сброса v-model недостаточно, автокомплит
+  // оставляет введённый текст.
+  guarantorPickerId.value = null
+  guarantorPickerKey.value++
+  if (!profile) return
+  if (selectedGuarantors.value.some((g) => g.id === profile.id)) {
+    toast.error('Этот поручитель уже добавлен')
+    return
+  }
+  if (!canAddGuarantor.value) {
+    toast.error(`Можно добавить не больше ${MAX_GUARANTORS} поручителей`)
+    return
+  }
+  selectedGuarantors.value.push(profile)
+}
+
+function removeGuarantorAt(index: number) {
+  selectedGuarantors.value.splice(index, 1)
+}
 
 // ─── Draft persistence ──────────────────────────────────────────────
 // All form refs are declared above, so it's safe to take references to
@@ -577,9 +885,15 @@ function applyDraftToForm() {
     wholesalePrice.value = d.wholesalePrice
     profitSplitBase.value = d.profitSplitBase
     selectedClientProfileId.value = d.selectedClientProfileId
-    selectedGuarantorProfileId.value = d.selectedGuarantorProfileId
     selectedClientProfile.value = d.selectedClientProfile
-    selectedGuarantorProfile.value = d.selectedGuarantorProfile
+    // Поручители: новый массив, с fallback на legacy-снимок одиночного поручителя.
+    if (d.selectedGuarantors && d.selectedGuarantors.length) {
+      selectedGuarantors.value = [...d.selectedGuarantors]
+    } else if (d.selectedGuarantorProfile) {
+      selectedGuarantors.value = [d.selectedGuarantorProfile]
+    } else {
+      selectedGuarantors.value = []
+    }
     selectedFolderId.value = d.selectedFolderId
     selectedCashBoxId.value = d.selectedCashBoxId
     step.value = d.step
@@ -631,9 +945,8 @@ function scheduleDraftSave() {
       wholesalePrice: wholesalePrice.value,
       profitSplitBase: profitSplitBase.value,
       selectedClientProfileId: selectedClientProfileId.value,
-      selectedGuarantorProfileId: selectedGuarantorProfileId.value,
       selectedClientProfile: selectedClientProfile.value,
-      selectedGuarantorProfile: selectedGuarantorProfile.value,
+      selectedGuarantors: selectedGuarantors.value,
       selectedFolderId: selectedFolderId.value,
       selectedCashBoxId: selectedCashBoxId.value,
     })
@@ -670,21 +983,19 @@ function resetDraftAndForm() {
   wholesalePrice.value = null
   profitSplitBase.value = 'MARKUP_ONLY'
   selectedClientProfileId.value = null
-  selectedGuarantorProfileId.value = null
   selectedClientProfile.value = null
-  selectedGuarantorProfile.value = null
+  selectedGuarantors.value = []
+  guarantorPickerId.value = null
   selectedFolderId.value = null
-  selectedCashBoxId.value = cashboxesStore.getDefault()?.id ?? cashboxesStore.items[0]?.id ?? null
+  selectedCashBoxId.value = pickDefaultCashBoxId()
   step.value = 1
 }
 
 // Auto-save watcher. Two notes:
-//   1) No `deep: true`. All 23 refs hold primitives or reassigned object
-//      references — the only objects (selectedClientProfile,
-//      selectedGuarantorProfile) are swapped via `.value = newProfile`,
-//      not mutated in-place. Deep-watching the full ClientProfile
-//      structure on every keystroke would walk through paspord/address/
-//      etc. for no benefit.
+//   1) `deep: true` — большинство ref'ов примитивы или переприсваиваемые
+//      объекты, но selectedGuarantors — массив, изменяемый через push/splice,
+//      поэтому нужен глубокий обход, чтобы черновик сохранял добавление/удаление
+//      поручителей.
 //   2) Debounced inside scheduleDraftSave so the actual localStorage
 //      write happens at most once per 500ms.
 watch(
@@ -694,21 +1005,19 @@ watch(
     downPayment, downPaymentType, downPaymentPercent, termMonths, paymentType, paymentInterval,
     dealDate, customFirstPayment,
     useWholesalePrice, wholesalePrice, profitSplitBase,
-    selectedClientProfileId, selectedGuarantorProfileId,
-    selectedClientProfile, selectedGuarantorProfile,
+    selectedClientProfileId,
+    selectedClientProfile, selectedGuarantors,
     selectedFolderId, selectedCashBoxId,
     step,
   ],
   scheduleDraftSave,
+  { deep: true },
 )
 
 const clientPickerRef = ref<InstanceType<typeof ClientPicker> | null>(null)
 
 function onClientSelected(profile: ClientProfile | null) {
   selectedClientProfile.value = profile
-}
-function onGuarantorSelected(profile: ClientProfile | null) {
-  selectedGuarantorProfile.value = profile
 }
 
 // Create client dialog
@@ -802,6 +1111,14 @@ async function submitDeal(acknowledgedOverdraft = false) {
       }
     }
 
+    // Phase 4: catch a bad per-deal override before we hit the server, so the
+    // partner gets a clear message instead of a swallowed 400 after save.
+    const overrideError = validateParticipantOverrides()
+    if (overrideError) {
+      toast.error(overrideError)
+      return
+    }
+
     submitting.value = true
 
     if (isEditMode.value && editId.value) {
@@ -819,11 +1136,30 @@ async function submitDeal(acknowledgedOverdraft = false) {
         wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || 0) : null,
         profitSplitBase: profitSplitBase.value,
       })
+      // Поручители (до 5) заменяются целиком через отдельный эндпоинт.
+      // Порядок = порядок в списке, первый = основной.
+      try {
+        await dealsStore.updateGuarantors(editId.value, selectedGuarantorIds.value)
+      } catch (e: any) {
+        toast.error(e.message || 'Не удалось сохранить поручителей')
+      }
       // Cashbox change goes through the dedicated move endpoint so it also
       // rewrites the journal scope, not just the deal row.
       const originalCashBoxId = (await dealsStore.fetchDeal(editId.value))?.cashBoxId ?? null
       if (selectedCashBoxId.value && selectedCashBoxId.value !== originalCashBoxId) {
         await cashboxesStore.moveDeal(editId.value, selectedCashBoxId.value)
+      }
+      // Phase 4: persist per-deal participation whenever the partner touched it
+      // (including reverting to default — a "differs from default" check would
+      // miss that). A cashbox move already re-linked to the destination's CIs;
+      // this writes the partner's exact intent on top. Surface failures instead
+      // of silently leaving the deal with the wrong participants.
+      if (participantsDirty.value) {
+        try {
+          await syncDealParticipants(editId.value)
+        } catch (e: any) {
+          toast.error(e.message || 'Не удалось сохранить участников сделки')
+        }
       }
       toast.success('Сделка обновлена')
       router.push(`/deals/${editId.value}`)
@@ -843,7 +1179,8 @@ async function submitDeal(acknowledgedOverdraft = false) {
 
     const deal = await dealsStore.createDirectDeal({
       clientProfileId: selectedClientProfileId.value || undefined,
-      guarantorProfileId: selectedGuarantorProfileId.value || undefined,
+      // До 5 поручителей (порядок = порядок добавления, первый = основной).
+      guarantorProfileIds: selectedGuarantorIds.value.length ? selectedGuarantorIds.value : undefined,
       productName: productName.value,
       productPhotos: photoUrls.length ? photoUrls : undefined,
       contractPhotos: contractUrls.length ? contractUrls : undefined,
@@ -866,11 +1203,16 @@ async function submitDeal(acknowledgedOverdraft = false) {
       wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || undefined) : undefined,
       profitSplitBase: useWholesalePrice.value ? profitSplitBase.value : undefined,
       cashBoxId: selectedCashBoxId.value || undefined,
+      // Phase 4: when the partner customised participation, send the explicit
+      // set WITH the create request so it's applied atomically — before the
+      // down-payment accrual runs. Omit otherwise → backend defaults to every
+      // cashbox CI (legacy behaviour). This replaces the old create-then-PUT,
+      // which accrued the down payment to the default set first.
+      participants: participantsCustomized.value ? buildParticipantsPayload() : undefined,
     })
 
-    // Phase 3: no per-deal CI linking — every CI in the deal's cashbox
-    // automatically participates in its profit. Cashbox selection above is
-    // the only explicit "who funds this" choice the partner makes.
+    // Participation was sent WITH the create request above (atomic, applied
+    // before the down-payment accrual) — no separate call needed here.
 
     // Place into folder (or unfile if user cleared it). The /deal-folders/move
     // endpoint accepts null to detach. Best-effort — failure here doesn't
@@ -1341,18 +1683,120 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 :key="b.id"
                 type="button"
                 class="folder-chip"
-                :class="{ active: selectedCashBoxId === b.id }"
+                :class="{ active: selectedCashBoxId === b.id, 'folder-chip--locked': !!b.lockedAt }"
+                :disabled="!!b.lockedAt"
+                :title="b.lockedAt ? 'Касса в режиме «только просмотр» — новые сделки недоступны' : ''"
                 :style="{
                   '--folder-color': b.color,
                   borderColor: selectedCashBoxId === b.id ? b.color : undefined,
                   background: selectedCashBoxId === b.id ? `${b.color}14` : undefined,
                   color: selectedCashBoxId === b.id ? b.color : undefined,
                 }"
-                @click="selectedCashBoxId = b.id"
+                @click="!b.lockedAt && (selectedCashBoxId = b.id)"
               >
-                <v-icon :icon="b.icon" size="16" />
+                <v-icon :icon="b.lockedAt ? 'mdi-lock-outline' : b.icon" size="16" />
                 <span>{{ b.name }}</span>
+                <span v-if="b.lockedAt" class="folder-chip-tag">только просмотр</span>
               </button>
+            </div>
+          </v-card>
+
+          <!-- Phase 4: per-deal co-investor participation. Only shown when the
+               chosen cashbox actually has co-investors. -->
+          <v-card v-if="dealParticipants.length > 0" rounded="lg" elevation="0" border class="pa-5 mt-4">
+            <div class="section-header-sm">
+              <v-icon icon="mdi-account-group-outline" size="18" />
+              <span>Участники прибыли</span>
+              <span class="text-caption text-medium-emphasis ml-1">— кто делит прибыль этой сделки</span>
+            </div>
+            <div class="participants-list">
+              <div
+                v-for="p in dealParticipants"
+                :key="p.id"
+                class="participant-row"
+                :class="{ 'participant-row--off': !p.participates }"
+              >
+                <button
+                  type="button"
+                  class="participant-check"
+                  :class="{ active: p.participates }"
+                  @click="toggleParticipant(p)"
+                >
+                  <v-icon :icon="p.participates ? 'mdi-check' : 'mdi-plus'" size="15" />
+                </button>
+                <div class="participant-info">
+                  <div class="participant-name">{{ p.name }}</div>
+                  <div class="participant-sub">
+                    <template v-if="p.costFeeMode">Комиссия от закупки</template>
+                    <template v-else-if="p.profitPercent != null && p.profitPercent > 0">По умолчанию фикс {{ p.profitPercent }}%</template>
+                    <template v-else>По умолчанию по вкладу<template v-if="(p.managementFeePct ?? 0) > 0"> · комиссия {{ p.managementFeePct }}%</template></template>
+                  </div>
+                  <!-- Live split for a participating cost-fee investor -->
+                  <template v-if="p.participates && p.costFeeMode && p.costFeeRate != null">
+                    <div v-if="costFeeCalc(p).invalid" class="participant-costfee-error">
+                      Комиссия должна быть больше 0 и меньше наценки
+                    </div>
+                    <div v-else class="participant-costfee-calc">
+                      <div>Партнёр заработает: {{ formatCurrency(costFeeCalc(p).partnerFee) }}</div>
+                      <div>Инвестор получит: {{ formatCurrency(costFeeCalc(p).total) }}</div>
+                      <div class="participant-costfee-sub">
+                        возврат капитала {{ formatCurrency(purchasePrice || 0) }} + доход {{ formatCurrency(costFeeCalc(p).net) }}
+                      </div>
+                    </div>
+                  </template>
+                </div>
+                <!-- Поле справа по режиму: cost-fee → ставка; фикс → % override;
+                     по вкладу → комиссия партнёра для этой сделки. -->
+                <div v-if="p.participates && p.costFeeMode" class="participant-override">
+                  <input
+                    v-model.number="p.costFeeRate"
+                    @input="markParticipantsDirty"
+                    type="number"
+                    min="0"
+                    max="100"
+                    class="participant-override-input"
+                    :class="{ 'participant-override-input--error': p.costFeeRate != null && costFeeCalc(p).invalid }"
+                    placeholder="ставка"
+                  />
+                  <span class="participant-override-suffix">%</span>
+                </div>
+                <div v-else-if="p.participates && p.profitPercent != null && p.profitPercent > 0" class="participant-override">
+                  <input
+                    v-model.number="p.override"
+                    @input="markParticipantsDirty"
+                    type="number"
+                    min="1"
+                    max="99"
+                    class="participant-override-input"
+                    :placeholder="String(p.profitPercent)"
+                  />
+                  <span class="participant-override-suffix">%</span>
+                </div>
+                <!-- По вкладу → комиссия партнёра % для этой сделки (0..100). -->
+                <div
+                  v-else-if="p.participates"
+                  class="participant-override participant-override--fee"
+                  title="Комиссия партнёра для этой сделки"
+                >
+                  <span class="participant-override-cap">комиссия</span>
+                  <div class="participant-override-field">
+                    <input
+                      v-model.number="p.mgmtFeeOverride"
+                      @input="markParticipantsDirty"
+                      type="number"
+                      min="0"
+                      max="100"
+                      class="participant-override-input"
+                      :placeholder="(p.managementFeePct ?? 0) > 0 ? String(p.managementFeePct) : '0'"
+                    />
+                    <span class="participant-override-suffix">%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="participants-hint">
+              По умолчанию прибыль делят все со-инвесторы кассы. Уберите лишних или задайте отдельный процент для этой сделки.
+              Инвестор в режиме «комиссия от закупки» задаёт ставку % от закупки и должен быть единственным участником.
             </div>
           </v-card>
 
@@ -1420,17 +1864,50 @@ async function submitDeal(acknowledgedOverdraft = false) {
         />
       </v-card>
 
-      <!-- Guarantor -->
+      <!-- Guarantors (до 5) -->
       <v-card rounded="lg" elevation="0" border class="pa-5 mb-4">
-        <div class="text-subtitle-2 font-weight-bold mb-3">
+        <div class="text-subtitle-2 font-weight-bold mb-1">
           <v-icon icon="mdi-shield-account-outline" size="18" class="mr-1" />
-          Поручитель <span class="text-caption text-medium-emphasis font-weight-regular">(необязательно)</span>
+          Поручители <span class="text-caption text-medium-emphasis font-weight-regular">(необязательно, до {{ MAX_GUARANTORS }})</span>
         </div>
+        <div class="text-caption text-medium-emphasis mb-3">
+          Добавьте до {{ MAX_GUARANTORS }} поручителей. Первый в списке — основной.
+        </div>
+
+        <!-- Список выбранных поручителей -->
+        <div v-if="selectedGuarantors.length" class="guarantor-chips mb-3">
+          <div
+            v-for="(g, idx) in selectedGuarantors"
+            :key="g.id"
+            class="guarantor-chip"
+          >
+            <div class="guarantor-chip__avatar">{{ g.firstName?.[0] }}{{ g.lastName?.[0] }}</div>
+            <div class="guarantor-chip__info">
+              <div class="guarantor-chip__name">
+                {{ getClientDisplayName(g) }}
+                <span v-if="idx === 0" class="guarantor-chip__badge">основной</span>
+              </div>
+              <div v-if="g.phone" class="guarantor-chip__phone">{{ g.phone }}</div>
+            </div>
+            <button class="guarantor-chip__remove" type="button" @click="removeGuarantorAt(idx)">
+              <v-icon icon="mdi-close" size="16" />
+            </button>
+          </div>
+        </div>
+
+        <!-- Пикер добавления нового поручителя. :key форсит пересоздание после
+             каждого добавления — Vuetify-автокомплит иначе оставляет текст. -->
         <ClientPicker
-          v-model="selectedGuarantorProfileId"
-          label="Поиск поручителя по телефону или имени..."
-          @selected="onGuarantorSelected"
+          v-if="canAddGuarantor"
+          :key="guarantorPickerKey"
+          v-model="guarantorPickerId"
+          label="Добавить поручителя — поиск по телефону или имени..."
+          @selected="addGuarantor"
         />
+        <div v-else class="guarantor-limit-hint">
+          <v-icon icon="mdi-information-outline" size="14" />
+          Достигнут лимит: не больше {{ MAX_GUARANTORS }} поручителей
+        </div>
       </v-card>
 
       <!-- Create new client button -->
@@ -1533,37 +2010,45 @@ async function submitDeal(acknowledgedOverdraft = false) {
         </div>
       </div>
 
-      <!-- Guarantor card -->
-      <div v-if="selectedGuarantorProfile" class="review-client-card mt-3">
+      <!-- Guarantor cards (все поручители) -->
+      <div
+        v-for="(g, idx) in selectedGuarantors"
+        :key="g.id"
+        class="review-client-card mt-3"
+      >
         <div class="review-client-card__icon">
           <div class="review-client-card__avatar" style="background: #6366f1;">
-            {{ selectedGuarantorProfile.firstName?.[0] }}{{ selectedGuarantorProfile.lastName?.[0] }}
+            {{ g.firstName?.[0] }}{{ g.lastName?.[0] }}
           </div>
         </div>
         <div class="review-client-card__info">
-          <div class="review-client-card__name">{{ selectedGuarantorProfile.lastName }} {{ selectedGuarantorProfile.firstName }} {{ selectedGuarantorProfile.patronymic || '' }}</div>
+          <div class="review-client-card__name">{{ g.lastName }} {{ g.firstName }} {{ g.patronymic || '' }}</div>
           <div class="review-client-card__meta">
-            <v-icon icon="mdi-shield-account-outline" size="12" /> Поручитель · {{ selectedGuarantorProfile.phone }}
+            <v-icon icon="mdi-shield-account-outline" size="12" />
+            {{ idx === 0 ? 'Поручитель (основной)' : 'Поручитель' }} · {{ g.phone }}
           </div>
         </div>
       </div>
 
       <!-- Phase 3: investors of the deal's cashbox (all participate). -->
-      <div v-if="cashBoxCoInvestors.length > 0" class="review-coinvestors">
+      <div v-if="participatingList.length > 0" class="review-coinvestors">
         <div class="review-coinvestors__title">
           <v-icon icon="mdi-account-group-outline" size="16" />
-          Инвесторы кассы ({{ cashBoxCoInvestors.length }})
+          Участники прибыли ({{ participatingList.length }})
         </div>
         <div class="review-coinvestors__list">
-          <div v-for="ci in cashBoxCoInvestors" :key="ci.id" class="review-coinvestor-chip">
+          <div v-for="ci in participatingList" :key="ci.id" class="review-coinvestor-chip">
             <div class="review-coinvestor-chip__avatar">{{ ci.name[0] }}</div>
             <div class="review-coinvestor-chip__info">
               <span class="review-coinvestor-chip__name">{{ ci.name }}</span>
               <span class="review-coinvestor-chip__share">
-                <template v-if="ci.profitPercent != null && ci.profitPercent > 0">
-                  {{ ci.profitPercent }}% · {{ formatCurrency(Math.round(markup * ci.profitPercent / 100)) }}
+                <template v-if="ci.costFeeMode">
+                  комиссия {{ ci.costFeeRate ?? 0 }}% от закупки
                 </template>
-                <template v-else>по вкладу</template>
+                <template v-else-if="ci.effectivePercent != null">
+                  {{ ci.effectivePercent }}% · {{ formatCurrency(Math.round(profitSplitBaseAmount * ci.effectivePercent / 100)) }}
+                </template>
+                <template v-else>по вкладу<template v-if="(ci.effectiveMgmtFee ?? 0) > 0"> · комиссия {{ ci.effectiveMgmtFee }}%</template></template>
               </span>
             </div>
           </div>
@@ -1739,30 +2224,36 @@ async function submitDeal(acknowledgedOverdraft = false) {
           <div v-if="selectedClientProfile.phone" class="preview-client-phone">{{ selectedClientProfile.phone }}</div>
         </div>
 
-        <!-- Guarantor -->
-        <div v-if="selectedGuarantorProfile" class="preview-client">
+        <!-- Guarantors -->
+        <div v-if="selectedGuarantors.length" class="preview-client">
           <div class="preview-section-label">
             <v-icon icon="mdi-account-supervisor-outline" size="14" />
-            Поручитель
+            Поручители ({{ selectedGuarantors.length }})
           </div>
-          <div class="preview-client-name">{{ getClientDisplayName(selectedGuarantorProfile) }}</div>
-          <div v-if="selectedGuarantorProfile.phone" class="preview-client-phone">{{ selectedGuarantorProfile.phone }}</div>
+          <div v-for="(g, idx) in selectedGuarantors" :key="g.id" class="preview-guarantor-item">
+            <div class="preview-client-name">
+              {{ getClientDisplayName(g) }}
+              <span v-if="idx === 0" class="preview-guarantor-main">· основной</span>
+            </div>
+            <div v-if="g.phone" class="preview-client-phone">{{ g.phone }}</div>
+          </div>
         </div>
 
-        <!-- Phase 3: cashbox investors participate automatically. -->
-        <div v-if="cashBoxCoInvestors.length" class="preview-coinvestors">
+        <!-- Phase 4: co-investors sharing THIS deal's profit. -->
+        <div v-if="participatingList.length" class="preview-coinvestors">
           <div class="preview-section-label">
             <v-icon icon="mdi-account-group-outline" size="14" />
-            Инвесторы кассы ({{ cashBoxCoInvestors.length }})
+            Участники прибыли ({{ participatingList.length }})
           </div>
           <div class="preview-coinvestor-list">
-            <div v-for="ci in cashBoxCoInvestors" :key="ci.id" class="preview-coinvestor">
+            <div v-for="ci in participatingList" :key="ci.id" class="preview-coinvestor">
               <span class="preview-coinvestor-name">{{ ci.name }}</span>
               <span class="preview-coinvestor-share">
-                <template v-if="ci.profitPercent != null && ci.profitPercent > 0">
-                  {{ ci.profitPercent }}%
+                <template v-if="ci.costFeeMode">комиссия {{ ci.costFeeRate ?? 0 }}%</template>
+                <template v-else-if="ci.effectivePercent != null">
+                  {{ ci.effectivePercent }}%
                 </template>
-                <template v-else>по вкладу</template>
+                <template v-else>по вкладу<template v-if="(ci.effectiveMgmtFee ?? 0) > 0"> · комиссия {{ ci.effectiveMgmtFee }}%</template></template>
               </span>
             </div>
           </div>
@@ -2161,6 +2652,95 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .preview-client-phone {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.preview-guarantor-item {
+  margin-bottom: 6px;
+}
+.preview-guarantor-item:last-child {
+  margin-bottom: 0;
+}
+.preview-guarantor-main {
+  font-size: 11px;
+  color: #6366f1;
+  font-weight: 600;
+}
+
+/* Guarantor multi-select chips */
+.guarantor-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.guarantor-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.guarantor-chip__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #6366f1;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+.guarantor-chip__info {
+  flex: 1;
+  min-width: 0;
+}
+.guarantor-chip__name {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.guarantor-chip__badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.12);
+  border-radius: 6px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+}
+.guarantor-chip__phone {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.guarantor-chip__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.guarantor-chip__remove:hover {
+  background: rgba(var(--v-theme-error), 0.1);
+  color: rgb(var(--v-theme-error));
+}
+.guarantor-limit-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  padding: 8px 0;
 }
 
 .preview-coinvestor-list {
@@ -3146,6 +3726,18 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .folder-chip.active {
   font-weight: 600;
 }
+.folder-chip--locked {
+  opacity: 0.55; cursor: not-allowed;
+}
+.folder-chip--locked:hover {
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border-color: rgba(var(--v-theme-on-surface), 0.12);
+}
+.folder-chip-tag {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 1px 6px; border-radius: 5px;
+  background: rgba(245, 158, 11, 0.15); color: #b45309;
+}
 
 /* ─── Co-investors in Review (Step 4) ─── */
 .review-coinvestors {
@@ -3221,4 +3813,59 @@ async function submitDeal(acknowledgedOverdraft = false) {
   cursor: pointer; transition: all 0.15s;
 }
 .btn-warning:hover { background: #d97706; box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3); }
+
+/* Phase 4: per-deal participants */
+.participants-list { display: flex; flex-direction: column; gap: 8px; }
+.participant-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 10px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  transition: opacity 0.15s;
+}
+.participant-row--off { opacity: 0.5; }
+.participant-check {
+  width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+  border: 1.5px solid rgba(var(--v-theme-on-surface), 0.15);
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.4);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: all 0.15s;
+}
+.participant-check.active { background: #047857; border-color: #047857; color: #fff; }
+.participant-info { flex: 1; min-width: 0; }
+.participant-name { font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.9); }
+.participant-sub { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 1px; }
+.participant-costfee-calc { font-size: 11px; color: #047857; margin-top: 3px; line-height: 1.45; }
+.participant-costfee-calc div { white-space: nowrap; }
+.participant-costfee-sub { color: rgba(var(--v-theme-on-surface), 0.5); font-size: 10px; }
+.participant-costfee-warn { color: #b45309; }
+.participant-costfee-error { font-size: 11px; color: #dc2626; margin-top: 3px; font-weight: 500; }
+.participant-override { position: relative; display: flex; align-items: center; width: 72px; flex-shrink: 0; }
+/* Weight-инвестор: подпись «комиссия» над полем, ниже — сам ввод со суффиксом %. */
+.participant-override--fee { flex-direction: column; align-items: flex-end; gap: 2px; }
+.participant-override-cap {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.01em;
+  color: rgba(var(--v-theme-on-surface), 0.45); line-height: 1;
+}
+.participant-override-field { position: relative; display: flex; align-items: center; width: 100%; }
+.participant-override-input {
+  width: 100%; padding: 6px 22px 6px 10px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  font-size: 13px; text-align: right; outline: none;
+  color: rgba(var(--v-theme-on-surface), 0.85); font-family: inherit; box-sizing: border-box;
+}
+.participant-override-input:focus { border-color: #047857; }
+.participant-override-input--error {
+  border-color: #dc2626;
+  background: rgba(220, 38, 38, 0.05);
+}
+.participant-override-input--error:focus { border-color: #dc2626; }
+.participant-override-suffix {
+  position: absolute; right: 8px; font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.35); pointer-events: none;
+}
+.participants-hint {
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 10px; line-height: 1.4;
+}
 </style>

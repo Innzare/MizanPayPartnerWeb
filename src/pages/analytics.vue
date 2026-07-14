@@ -42,6 +42,11 @@ const cashboxesStore = useCashBoxesStore()
 const selectedCashBoxId = ref<string | null>(null)
 const scopedCapital = ref<CapitalSummary | null>(null)
 
+// Accrued co-investor profit share per paid payment (paymentId → amount).
+// Same partner-net logic as cashboxes / deal page (from PROFIT_ACCRUED journal).
+// Only PAID payments have a share — pending/overdue keep gross projection.
+const ciProfitByPayment = ref<Record<string, number>>({})
+
 async function fetchScopedCapital() {
   if (!selectedCashBoxId.value) {
     scopedCapital.value = null
@@ -147,6 +152,14 @@ onMounted(async () => {
       paymentsStore.fetchPayments(),
       fetchCapital(),
       cashboxesStore.fetchAll(),
+      // Co-investor share map — degrade gracefully to gross (empty map) on error.
+      api.get<Record<string, number>>('/finance/coinvestor-profit-by-payment')
+        .then((m) => { ciProfitByPayment.value = m || {} })
+        .catch(() => { ciProfitByPayment.value = {} }),
+      // Configured co-investor ratio per deal — for projecting pending payments.
+      api.get<Record<string, number>>('/finance/deal-coinvestor-ratios')
+        .then((m) => { dealCIRatio.value = m || {} })
+        .catch(() => { dealCIRatio.value = {} }),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки данных')
@@ -222,6 +235,23 @@ function getPaymentProfit(payment: { amount: number; dealId: string; deal?: any 
   return payment.amount * (deal.markupPercent / (100 + deal.markupPercent))
 }
 
+// Co-investor share accrued on a payment (only for PAID payments). 0 if none.
+function getPaymentCIProfit(p: { id: string }) {
+  return ciProfitByPayment.value[p.id] ?? 0
+}
+
+// Partner net profit of a payment = gross margin − co-investor share.
+function getPaymentPartnerProfit(p: { id: string; amount: number; dealId: string; deal?: any }) {
+  return getPaymentProfit(p) - getPaymentCIProfit(p)
+}
+
+// CONFIGURED co-investor share ratio per deal { dealId → 0..1 }, from the
+// backend (same split math as accrual). Used to project the partner/investor
+// split for PENDING payments — realised (paid) numbers come from
+// ciProfitByPayment. A configured ratio works even for deals with no paid
+// payments yet, so an investor's share isn't hidden until the first payment.
+const dealCIRatio = ref<Record<string, number>>({})
+
 // ── KPI ──
 
 const paymentHealth = computed(() => {
@@ -273,9 +303,15 @@ interface DealProfit {
   clientName: string
   markupPercent: number
   totalReceived: number
+  paidReceived: number
+  pendingReceived: number
   profitEarned: number
   paidProfit: number
+  coInvestorProfit: number
+  partnerProfit: number
   pendingProfit: number
+  projectedCoInvestorProfit: number
+  projectedPartnerProfit: number
   paymentsCount: number
   paidCount: number
   pendingCount: number
@@ -330,18 +366,21 @@ const profitByDeal = computed(() => {
   })
 
   // Group by deal
-  const dealMap: Record<string, { received: number; profit: number; paidProfit: number; pendingProfit: number; count: number; paidCount: number; pendingCount: number }> = {}
+  const dealMap: Record<string, { received: number; paidReceived: number; pendingReceived: number; profit: number; paidProfit: number; coInvestorProfit: number; pendingProfit: number; count: number; paidCount: number; pendingCount: number }> = {}
   for (const p of paidPayments) {
-    if (!dealMap[p.dealId]) dealMap[p.dealId] = { received: 0, profit: 0, paidProfit: 0, pendingProfit: 0, count: 0, paidCount: 0, pendingCount: 0 }
+    if (!dealMap[p.dealId]) dealMap[p.dealId] = { received: 0, paidReceived: 0, pendingReceived: 0, profit: 0, paidProfit: 0, coInvestorProfit: 0, pendingProfit: 0, count: 0, paidCount: 0, pendingCount: 0 }
     const pr = getPaymentProfit(p)
     dealMap[p.dealId].received += p.amount
     dealMap[p.dealId].profit += pr
     dealMap[p.dealId].count++
     if (p.status === 'PAID') {
       dealMap[p.dealId].paidCount++
+      dealMap[p.dealId].paidReceived += p.amount
       dealMap[p.dealId].paidProfit += pr
+      dealMap[p.dealId].coInvestorProfit += getPaymentCIProfit(p)
     } else {
       dealMap[p.dealId].pendingCount++
+      dealMap[p.dealId].pendingReceived += p.amount
       dealMap[p.dealId].pendingProfit += pr
     }
   }
@@ -353,15 +392,23 @@ const profitByDeal = computed(() => {
     const paymentDeal = !deal ? paidPayments.find(p => p.dealId === dealId)?.deal : null
     const d = deal || paymentDeal
     if (!d) continue
+    const ratio = dealCIRatio.value[dealId] ?? 0
+    const projectedCoInvestorProfit = Math.round(data.pendingProfit * ratio)
     result.push({
       dealId,
       productName: d.productName || 'Товар',
       clientName: d.client ? userName(d.client) : d.clientProfile ? clientProfileName(d.clientProfile) : (d as any).externalClientName || '—',
       markupPercent: d.markupPercent || 0,
       totalReceived: data.received,
+      paidReceived: data.paidReceived,
+      pendingReceived: data.pendingReceived,
       profitEarned: data.profit,
       paidProfit: data.paidProfit,
+      coInvestorProfit: data.coInvestorProfit,
+      partnerProfit: data.paidProfit - data.coInvestorProfit,
       pendingProfit: data.pendingProfit,
+      projectedCoInvestorProfit,
+      projectedPartnerProfit: data.pendingProfit - projectedCoInvestorProfit,
       paymentsCount: data.count,
       paidCount: data.paidCount,
       pendingCount: data.pendingCount,
@@ -386,6 +433,22 @@ const profitDetailExpected = computed(() =>
 
 const profitDetailReceived = computed(() =>
   profitByDeal.value.reduce((s, d) => s + d.totalReceived, 0)
+)
+
+const profitDetailPartner = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.partnerProfit, 0)
+)
+
+const profitDetailCoInvestor = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit, 0)
+)
+
+const profitDetailProjectedPartner = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.projectedPartnerProfit, 0)
+)
+
+const profitDetailProjectedCoInvestor = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.projectedCoInvestorProfit, 0)
 )
 
 function openProfitDetail(monthKey?: string, mode: 'earned' | 'expected' | 'all' = 'earned', year?: number) {
@@ -413,6 +476,8 @@ interface MonthData {
   month: number
   label: string
   earned: number
+  coInvestorEarned: number
+  partnerEarned: number
   expected: number
   received: number
   payments: number
@@ -439,6 +504,7 @@ const yearMonths = computed((): MonthData[] => {
     const pendingInMonth = monthPayments.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
 
     const earned = paidInMonth.reduce((s, p) => s + getPaymentProfit(p), 0)
+    const coInvestorEarned = paidInMonth.reduce((s, p) => s + getPaymentCIProfit(p), 0)
     const expected = pendingInMonth.reduce((s, p) => s + getPaymentProfit(p), 0)
     const received = paidInMonth.reduce((s, p) => s + p.amount, 0)
 
@@ -446,6 +512,8 @@ const yearMonths = computed((): MonthData[] => {
       month: i,
       label: MONTH_SHORT[i],
       earned: Math.round(earned),
+      coInvestorEarned: Math.round(coInvestorEarned),
+      partnerEarned: Math.round(earned - coInvestorEarned),
       expected: Math.round(expected),
       received: Math.round(received),
       payments: paidInMonth.length + pendingInMonth.length,
@@ -458,9 +526,11 @@ const yearMonths = computed((): MonthData[] => {
 const yearTotal = computed(() => {
   return yearMonths.value.reduce((s, m) => ({
     earned: s.earned + m.earned,
+    coInvestorEarned: s.coInvestorEarned + m.coInvestorEarned,
+    partnerEarned: s.partnerEarned + m.partnerEarned,
     expected: s.expected + m.expected,
     received: s.received + m.received,
-  }), { earned: 0, expected: 0, received: 0 })
+  }), { earned: 0, coInvestorEarned: 0, partnerEarned: 0, expected: 0, received: 0 })
 })
 
 const yearMaxValue = computed(() => {
@@ -1013,18 +1083,21 @@ function bdColor(name?: string) {
 
           <div class="yc-header-stats">
             <div class="yc-stat">
-              <div class="yc-stat-value" style="color: #34d399;">{{ formatCurrencyShort(yearTotal.earned) }}</div>
-              <div class="yc-stat-label">Заработано</div>
+              <div class="yc-stat-value" style="color: #34d399;">{{ formatCurrencyShort(Math.max(0, yearTotal.partnerEarned)) }}</div>
+              <div class="yc-stat-label">Чистый доход</div>
+              <div v-if="yearTotal.coInvestorEarned > 0" class="yc-stat-sub">
+                валовая {{ formatCurrencyShort(yearTotal.earned) }} · со-инвесторам {{ formatCurrencyShort(yearTotal.coInvestorEarned) }}
+              </div>
+            </div>
+            <div class="yc-stat-divider" />
+            <div class="yc-stat">
+              <div class="yc-stat-value">{{ formatCurrencyShort(yearTotal.received) }}</div>
+              <div class="yc-stat-label">Выручка</div>
             </div>
             <div class="yc-stat-divider" />
             <div class="yc-stat">
               <div class="yc-stat-value">{{ formatCurrencyShort(yearTotal.expected) }}</div>
               <div class="yc-stat-label">Ожидается</div>
-            </div>
-            <div class="yc-stat-divider" />
-            <div class="yc-stat">
-              <div class="yc-stat-value">{{ formatCurrencyShort(yearTotal.earned + yearTotal.expected) }}</div>
-              <div class="yc-stat-label">Итого</div>
             </div>
           </div>
         </div>
@@ -1068,9 +1141,12 @@ function bdColor(name?: string) {
 
             <!-- Values -->
             <div class="yc-month-values">
-              <span v-if="m.earned > 0" class="yc-val yc-val--earned">+{{ formatCurrencyShort(m.earned) }}</span>
+              <span v-if="m.earned > 0" class="yc-val yc-val--earned">+{{ formatCurrencyShort(Math.max(0, m.partnerEarned)) }}</span>
               <span v-if="m.expected > 0" class="yc-val yc-val--expected">~{{ formatCurrencyShort(m.expected) }}</span>
               <span v-if="m.earned === 0 && m.expected === 0" class="yc-val yc-val--empty">—</span>
+            </div>
+            <div v-if="m.coInvestorEarned > 0" class="yc-month-sub">
+              валовая {{ formatCurrencyShort(m.earned) }} · со-инв. {{ formatCurrencyShort(m.coInvestorEarned) }}
             </div>
           </div>
         </div>
@@ -1079,7 +1155,7 @@ function bdColor(name?: string) {
         <div class="yc-footer">
           <div class="yc-legend">
             <span class="yc-legend-dot" style="background: #10b981;" />
-            <span>Заработано</span>
+            <span>Чистый доход партнёра</span>
           </div>
           <div class="yc-legend">
             <span class="yc-legend-dot" style="background: #3b82f6;" />
@@ -1330,17 +1406,31 @@ function bdColor(name?: string) {
           </div>
 
           <!-- Summary -->
-          <div class="pd-summary mb-4">
+          <div class="pd-summary mb-3">
             <div class="pd-summary-item">
-              <div class="pd-summary-label">Заработано</div>
-              <div class="pd-summary-value" style="color: #10b981;">{{ formatCurrency(profitDetailEarned) }}</div>
+              <div class="pd-summary-label">Чистый доход партнёра</div>
+              <div class="pd-summary-value" style="color: #10b981;">{{ formatCurrency(Math.max(0, profitDetailPartner)) }}</div>
+            </div>
+            <div v-if="profitDetailCoInvestor > 0" class="pd-summary-divider" />
+            <div v-if="profitDetailCoInvestor > 0" class="pd-summary-item">
+              <div class="pd-summary-label">Со-инвесторам</div>
+              <div class="pd-summary-value" style="color: #8b5cf6;">{{ formatCurrency(profitDetailCoInvestor) }}</div>
+            </div>
+            <div class="pd-summary-divider" />
+            <div class="pd-summary-item">
+              <div class="pd-summary-label">Общий доход</div>
+              <div class="pd-summary-value">{{ formatCurrency(profitDetailEarned) }}</div>
             </div>
             <div v-if="profitDetailExpected > 0" class="pd-summary-divider" />
             <div v-if="profitDetailExpected > 0" class="pd-summary-item">
               <div class="pd-summary-label">Ожидается</div>
               <div class="pd-summary-value" style="color: #3b82f6;">{{ formatCurrency(profitDetailExpected) }}</div>
+              <div class="pd-summary-proj">
+                партнёр: {{ formatCurrency(Math.max(0, profitDetailProjectedPartner)) }}<template v-if="profitDetailProjectedCoInvestor > 0"> · инвесторам: {{ formatCurrency(profitDetailProjectedCoInvestor) }}</template>
+              </div>
             </div>
-            <div class="pd-summary-divider" />
+          </div>
+          <div class="pd-summary pd-summary--sub mb-4">
             <div class="pd-summary-item">
               <div class="pd-summary-label">Сумма платежей</div>
               <div class="pd-summary-value">{{ formatCurrency(profitDetailReceived) }}</div>
@@ -1370,10 +1460,20 @@ function bdColor(name?: string) {
                 <div class="pd-deal-meta">
                   {{ d.clientName }} · {{ d.paymentsCount }} {{ d.paymentsCount === 1 ? 'платёж' : 'платежей' }} · наценка {{ Math.round(d.markupPercent) }}%
                 </div>
+                <div v-if="d.paidCount > 0" class="pd-deal-breakdown">
+                  <span class="pd-deal-tag">Сумма платежа {{ formatCurrency(d.paidReceived) }}</span>
+                  <span class="pd-deal-tag">Общий доход {{ formatCurrency(d.paidProfit) }}</span>
+                  <span v-if="d.coInvestorProfit > 0" class="pd-deal-tag pd-deal-tag--ci">Со-инв. {{ formatCurrency(d.coInvestorProfit) }}</span>
+                </div>
+                <div v-if="d.pendingCount > 0" class="pd-deal-pending">
+                  <span class="pd-deal-tag pd-deal-tag--pending">Ожидается · сумма платежа {{ formatCurrency(d.pendingReceived) }}</span>
+                  <span class="pd-deal-tag pd-deal-tag--pending">Общий доход {{ formatCurrency(d.pendingProfit) }}</span>
+                  <span class="pd-deal-proj">после оплаты: партнёр {{ formatCurrency(Math.max(0, d.projectedPartnerProfit)) }}<template v-if="d.projectedCoInvestorProfit > 0"> · инвесторам {{ formatCurrency(d.projectedCoInvestorProfit) }}</template></span>
+                </div>
               </div>
               <div class="pd-deal-numbers">
-                <div class="pd-deal-profit" :style="{ color: d.paidCount > 0 ? '#10b981' : '#3b82f6' }">{{ d.paidCount > 0 && d.pendingCount === 0 ? '+' : d.paidCount === 0 ? '~' : '' }}{{ formatCurrency(d.profitEarned) }}</div>
-                <div class="pd-deal-received">из {{ formatCurrency(d.totalReceived) }}</div>
+                <div class="pd-deal-profit" :style="{ color: d.paidCount > 0 ? '#10b981' : '#3b82f6' }">{{ d.paidCount > 0 && d.pendingCount === 0 ? '+' : d.paidCount === 0 ? '~' : '' }}{{ formatCurrency(d.paidCount > 0 ? Math.max(0, d.partnerProfit) : Math.max(0, d.projectedPartnerProfit)) }}</div>
+                <div class="pd-deal-received">{{ d.paidCount > 0 ? 'чистый доход' : 'после оплаты' }}</div>
               </div>
               <v-icon icon="mdi-chevron-right" size="16" class="pd-deal-chevron" />
             </div>
@@ -1754,6 +1854,11 @@ function bdColor(name?: string) {
   color: rgba(var(--v-theme-on-surface), 0.4);
   margin-top: 2px;
 }
+.yc-stat-sub {
+  font-size: 10px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  margin-top: 3px;
+}
 .yc-stat-divider {
   width: 1px; height: 28px;
   background: rgba(var(--v-theme-on-surface), 0.08);
@@ -1836,6 +1941,12 @@ function bdColor(name?: string) {
 .yc-val--empty {
   color: rgba(var(--v-theme-on-surface), 0.2);
   font-weight: 500;
+}
+.yc-month-sub {
+  font-size: 10px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  margin-top: 4px;
+  line-height: 1.3;
 }
 
 /* Footer / legend */
@@ -2023,6 +2134,13 @@ function bdColor(name?: string) {
   background: rgba(var(--v-theme-on-surface), 0.08);
   margin: 0 8px;
 }
+.pd-summary--sub {
+  padding: 12px 20px;
+}
+.pd-summary--sub .pd-summary-value {
+  font-size: 15px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
 
 .pd-list {
   display: flex;
@@ -2056,6 +2174,38 @@ function bdColor(name?: string) {
 .pd-deal-meta {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 2px;
+}
+.pd-deal-breakdown {
+  display: flex; flex-wrap: wrap; gap: 4px 6px;
+  margin-top: 6px;
+}
+.pd-deal-tag {
+  font-size: 11px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  padding: 2px 7px; border-radius: 6px;
+  white-space: nowrap;
+}
+.pd-deal-tag--ci {
+  color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.1);
+}
+.pd-deal-tag--pending {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+}
+.pd-deal-pending {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+  margin-top: 6px;
+}
+.pd-deal-proj {
+  font-size: 11px; font-style: italic;
+  color: rgba(59, 130, 246, 0.75);
+}
+.pd-summary-proj {
+  font-size: 10px; font-style: italic;
+  color: rgba(59, 130, 246, 0.7);
   margin-top: 2px;
 }
 .pd-deal-numbers {

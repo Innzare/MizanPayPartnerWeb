@@ -28,9 +28,10 @@ declare module 'vue-router/auto-routes' {
     '/clients': RouteRecordInfo<'/clients', '/clients', Record<never, never>, Record<never, never>, '/clients/' | '/clients/[id]'>,
     '/clients/': RouteRecordInfo<'/clients/', '/clients', Record<never, never>, Record<never, never>>,
     '/clients/[id]': RouteRecordInfo<'/clients/[id]', '/clients/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
-    '/co-investors': RouteRecordInfo<'/co-investors', '/co-investors', Record<never, never>, Record<never, never>, '/co-investors/' | '/co-investors/[id]'>,
+    '/co-investors': RouteRecordInfo<'/co-investors', '/co-investors', Record<never, never>, Record<never, never>, '/co-investors/' | '/co-investors/[id]' | '/co-investors/person/[id]'>,
     '/co-investors/': RouteRecordInfo<'/co-investors/', '/co-investors', Record<never, never>, Record<never, never>>,
     '/co-investors/[id]': RouteRecordInfo<'/co-investors/[id]', '/co-investors/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/co-investors/person/[id]': RouteRecordInfo<'/co-investors/person/[id]', '/co-investors/person/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/contract-builder': RouteRecordInfo<'/contract-builder', '/contract-builder', Record<never, never>, Record<never, never>>,
     '/create-deal': RouteRecordInfo<'/create-deal', '/create-deal', Record<never, never>, Record<never, never>>,
     '/create-product': RouteRecordInfo<'/create-product', '/create-product', Record<never, never>, Record<never, never>>,
@@ -108,7 +109,7 @@ declare module 'vue-router/auto-routes' {
       views: never
     }
     'src/pages/co-investors.vue': {
-      routes: '/co-investors' | '/co-investors/' | '/co-investors/[id]'
+      routes: '/co-investors' | '/co-investors/' | '/co-investors/[id]' | '/co-investors/person/[id]' | '/co-investors/person'
       views: 'default'
     }
     'src/pages/co-investors/index.vue': {
@@ -117,6 +118,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/co-investors/[id].vue': {
       routes: '/co-investors/[id]'
+      views: never
+    }
+    'src/pages/co-investors/person/[id].vue': {
+      routes: '/co-investors/person/[id]'
       views: never
     }
     'src/pages/contract-builder.vue': {

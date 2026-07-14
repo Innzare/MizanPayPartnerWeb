@@ -4,6 +4,7 @@ import pdfMake from 'pdfmake/build/pdfmake'
 import pdfFonts from 'pdfmake/build/vfs_fonts'
 import type { Deal, Payment, User } from '@/types'
 import { formatDate } from './formatters'
+import { dealGuarantors } from './dealGuarantors'
 
 pdfMake.vfs = pdfFonts
 
@@ -37,6 +38,29 @@ export function generateContract(
       : { firstName: deal.externalClientName || '', lastName: '', phone: deal.externalClientPhone || '' }
   const contractNumber = deal.id.slice(0, 8).toUpperCase()
   const today = formatDate(new Date().toISOString())
+
+  // Все поручители сделки (по порядку, первый = основной). Если поручителей
+  // нет — блок не выводится (совместимость со сделками без поручителя).
+  const guarantors = dealGuarantors(deal)
+  const guarantorsBlock: any[] = guarantors.length
+    ? [
+        { text: 'ПОРУЧИТЕЛИ', style: 'sectionTitle', margin: [0, 12, 0, 10] as [number, number, number, number] },
+        ...guarantors.map((g, i) => {
+          const passport = [g.passportSeries, g.passportNumber].filter(Boolean).join(' ')
+          const addr = g.registrationAddress || (g as any).residentialAddress || ''
+          return {
+            stack: [
+              { text: `${i + 1}. ${fullName(g)}`, bold: true, margin: [0, 0, 0, 2] as [number, number, number, number] },
+              { text: `Тел.: ${g.phone || '___________'}`, fontSize: 10, color: '#555' },
+              passport ? { text: `Паспорт: ${passport}`, fontSize: 10, color: '#555' } : null,
+              addr ? { text: `Адрес: ${addr}`, fontSize: 10, color: '#555' } : null,
+              { text: 'Подпись: _________________________', margin: [0, 6, 0, 0] as [number, number, number, number], color: '#999' },
+            ].filter(Boolean),
+            margin: [0, 0, 0, 12] as [number, number, number, number],
+          }
+        }),
+      ]
+    : []
 
   const paymentRows = payments.map((p) => [
     { text: String(p.number), alignment: 'center' as const },
@@ -248,6 +272,9 @@ export function generateContract(
         ],
         margin: [0, 0, 0, 30],
       },
+
+      // Поручители (все, по порядку) — пусто для сделок без поручителей.
+      ...guarantorsBlock,
 
       // Payment schedule (Appendix)
       { text: '', pageBreak: 'before' },

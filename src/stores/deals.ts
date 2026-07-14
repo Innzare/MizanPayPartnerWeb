@@ -147,6 +147,9 @@ export const useDealsStore = defineStore('deals', () => {
     externalClientPhone?: string
     clientProfileId?: string
     guarantorProfileId?: string
+    // До 5 поручителей (порядок = приоритет, первый = основной). Legacy
+    // guarantorProfileId по-прежнему принимается — не слать оба одновременно.
+    guarantorProfileIds?: string[]
     productName: string
     productPhotos?: string[]
     contractPhotos?: string[]
@@ -163,6 +166,10 @@ export const useDealsStore = defineStore('deals', () => {
     wholesalePrice?: number
     profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
     cashBoxId?: string
+    // Phase 4: explicit co-investor participation, applied atomically at
+    // creation (so the down-payment accrual already respects it). Omit to
+    // default to every CI of the deal's cashbox.
+    participants?: Array<{ coInvestorId: string; profitPercentOverride?: number | null; managementFeePctOverride?: number | null; costFeeRatePct?: number | null }>
   }) {
     isLoading.value = true
     error.value = null
@@ -218,8 +225,10 @@ export const useDealsStore = defineStore('deals', () => {
     trash.value = []
   }
 
-  async function updateGuarantor(dealId: string, guarantorProfileId: string | null) {
-    const updated = await api.patch<Deal>(`/deals/${dealId}/guarantor`, { guarantorProfileId })
+  // Заменить весь набор поручителей сделки (до 5). Порядок = приоритет,
+  // первый = основной. Пустой массив очищает поручителей.
+  async function updateGuarantors(dealId: string, guarantorProfileIds: string[]) {
+    const updated = await api.patch<Deal>(`/deals/${dealId}/guarantor`, { guarantorProfileIds })
     const idx = deals.value.findIndex(d => d.id === dealId)
     if (idx !== -1) deals.value[idx] = updated
     return updated
@@ -230,6 +239,6 @@ export const useDealsStore = defineStore('deals', () => {
     totalInvested, totalRevenue, totalProfit, totalRemaining, monthlyIncome, roi,
     fetchDeals, getDeal, fetchDeal, updateDealStatus, updateDeal, fetchAnalytics, createDirectDeal,
     trash, trashLoading, fetchTrash, restoreDeal, restoreBatch, permanentDelete, emptyTrash,
-    updateGuarantor,
+    updateGuarantors,
   }
 })

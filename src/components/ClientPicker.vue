@@ -42,17 +42,21 @@ onMounted(async () => {
     try {
       const profile = await store.findById(props.modelValue)
       selected.value = profile
+      search.value = clientProfileName(profile)
       items.value = tagItems([profile])
     } catch {}
   }
 })
 
 watch(() => props.modelValue, async (val) => {
-  if (!val) { selected.value = null; return }
+  // External reset (e.g. after adding a guarantor) — clear the field completely,
+  // not just the selection, so the input text/list don't linger.
+  if (!val) { selected.value = null; search.value = ''; items.value = []; return }
   if (selected.value?.id !== val) {
     try {
       const profile = await store.findById(val)
       selected.value = profile
+      search.value = clientProfileName(profile)
       if (!items.value.find(i => i.id === val)) items.value = [...tagItems([profile]), ...items.value]
     } catch { selected.value = null }
   }
@@ -88,6 +92,7 @@ async function onSelect(profile: (ClientProfile & { _source?: string }) | null) 
     try {
       const cloned = await store.cloneFromGlobal(profile.id)
       selected.value = cloned
+      search.value = clientProfileName(cloned)
       if (!items.value.find((i) => i.id === cloned.id)) {
         items.value = [{ ...cloned, _source: 'mine' }, ...items.value]
       }
@@ -105,12 +110,14 @@ async function onSelect(profile: (ClientProfile & { _source?: string }) | null) 
   }
   // Platform clients (Variant X) or own clients — link directly
   selected.value = profile
+  search.value = clientProfileName(profile)
   emit('update:modelValue', profile.id)
   emit('selected', profile)
 }
 
 function selectProfile(profile: ClientProfile) {
   selected.value = profile
+  search.value = clientProfileName(profile)
   if (!items.value.find(i => i.id === profile.id)) items.value = [...tagItems([profile]), ...items.value]
   emit('update:modelValue', profile.id)
   emit('selected', profile)

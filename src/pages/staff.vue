@@ -5,6 +5,7 @@ import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useChats } from '@/composables/useChats'
+import { useCashBoxesStore } from '@/stores/cashboxes'
 import ChatPanel from '@/components/ChatPanel.vue'
 import type { StaffMember, StaffRole, DealsAccessMode, Deal, DealStatus } from '@/types'
 import { STAFF_ROLE_LABELS, ROLE_ROUTE_ACCESS, STAFF_TOGGLEABLE_ROUTES } from '@/types'
@@ -13,6 +14,7 @@ import { formatCurrency } from '@/utils/formatters'
 const { isDark } = useIsDark()
 const toast = useToast()
 const { isMobile } = useIsMobile()
+const cashBoxesStore = useCashBoxesStore()
 
 const staff = ref<StaffMember[]>([])
 const pageLoading = ref(true)
@@ -32,6 +34,7 @@ const editForm = ref({
   dealsAccessMode: 'ALL' as DealsAccessMode,
   accessOverrides: [] as string[],
   canCreateDeals: true,
+  cashBoxOverrides: [] as string[],
 })
 
 // Routes available to toggle for the current edit target — intersection of
@@ -51,6 +54,27 @@ function toggleRoute(path: string) {
   if (idx >= 0) editForm.value.accessOverrides.splice(idx, 1)
   else editForm.value.accessOverrides.push(path)
 }
+
+// ── Cashbox access (deny-list) ──
+const allCashBoxes = computed(() => cashBoxesStore.items)
+
+function isCashBoxEnabled(id: string): boolean {
+  return !editForm.value.cashBoxOverrides.includes(id)
+}
+
+function toggleCashBox(id: string) {
+  const idx = editForm.value.cashBoxOverrides.indexOf(id)
+  if (idx >= 0) editForm.value.cashBoxOverrides.splice(idx, 1)
+  else editForm.value.cashBoxOverrides.push(id)
+}
+
+// Count of cashboxes visible to the staff (total − hidden).
+const visibleCashBoxCount = computed(() => {
+  const hidden = editForm.value.cashBoxOverrides.filter((id) =>
+    allCashBoxes.value.some((b) => b.id === id),
+  ).length
+  return allCashBoxes.value.length - hidden
+})
 
 // Delete
 const deleteDialog = ref(false)
@@ -258,8 +282,13 @@ function openEdit(member: StaffMember) {
     dealsAccessMode: member.dealsAccessMode || 'ALL',
     accessOverrides: [...(member.accessOverrides || [])],
     canCreateDeals: member.canCreateDeals !== false,
+    cashBoxOverrides: [...(member.cashBoxOverrides || [])],
   }
   editDialog.value = true
+  // Load cashboxes for the access section if not already fetched.
+  if (!cashBoxesStore.items.length) {
+    cashBoxesStore.fetchAll().catch(() => {})
+  }
 }
 
 async function saveEdit() {
@@ -715,6 +744,41 @@ onBeforeUnmount(() => {
             <div class="sf-routes-hint">Снимите галку, чтобы скрыть раздел у работника</div>
           </div>
 
+          <div class="mb-5">
+            <div class="d-flex align-center justify-space-between mb-3">
+              <div class="sf-section-label">Доступ к кассам</div>
+              <span
+                v-if="allCashBoxes.length && visibleCashBoxCount < allCashBoxes.length"
+                class="sf-cashbox-count"
+              >
+                видит {{ visibleCashBoxCount }} из {{ allCashBoxes.length }}
+              </span>
+            </div>
+
+            <div v-if="allCashBoxes.length" class="sf-routes-grid">
+              <button
+                v-for="b in allCashBoxes"
+                :key="b.id"
+                type="button"
+                class="sf-route-card"
+                :class="{ 'sf-route-card--off': !isCashBoxEnabled(b.id) }"
+                @click="toggleCashBox(b.id)"
+              >
+                <span class="sf-cashbox-dot" :style="{ background: b.color }">
+                  <v-icon :icon="b.icon" size="12" color="white" />
+                </span>
+                <span class="sf-route-label">{{ b.name }}</span>
+                <v-icon
+                  :icon="isCashBoxEnabled(b.id) ? 'mdi-check-circle' : 'mdi-close-circle-outline'"
+                  size="16"
+                  class="sf-route-mark"
+                />
+              </button>
+            </div>
+            <div v-else class="sf-routes-hint">Касс пока нет</div>
+            <div v-if="allCashBoxes.length" class="sf-routes-hint">Снимите галку, чтобы скрыть кассу у работника</div>
+          </div>
+
           <div class="sf-active-toggle mb-6" :class="{ 'sf-active-toggle--off': !editForm.isActive }" @click="editForm.isActive = !editForm.isActive">
             <div class="sf-active-toggle-dot" :style="{ background: editForm.isActive ? '#10b981' : '#ef4444' }" />
             <div class="sf-active-toggle-text">
@@ -1155,6 +1219,27 @@ onBeforeUnmount(() => {
   margin-top: 8px;
   font-size: 11px;
   color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+/* ── Cashbox access ── */
+.sf-cashbox-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  padding: 2px 8px;
+  border-radius: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.sf-cashbox-dot {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ── Split layout shell ── */

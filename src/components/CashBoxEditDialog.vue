@@ -28,6 +28,10 @@ const name = ref('')
 const color = ref('#3b82f6')
 const icon = ref('mdi-wallet-outline')
 const initialCapital = ref<number | null>(null)
+// Phase 4: does the partner's own capital join the by-capital profit split in
+// this cashbox? true = partner invests alongside co-investors; false = partner
+// only manages (their cut comes from each CI's commission).
+const partnerParticipates = ref(true)
 const submitting = ref(false)
 
 // Palette of preset colors + icons — consistent with deal folders
@@ -67,11 +71,13 @@ watch(
       color.value = props.cashbox.color
       icon.value = props.cashbox.icon
       initialCapital.value = props.cashbox.initialCapital
+      partnerParticipates.value = props.cashbox.partnerParticipatesByCapital ?? true
     } else {
       name.value = ''
       color.value = '#3b82f6'
       icon.value = 'mdi-wallet-outline'
       initialCapital.value = null
+      partnerParticipates.value = true
     }
   },
 )
@@ -89,6 +95,7 @@ async function handleSave() {
       color: color.value,
       icon: icon.value,
       initialCapital: initialCapital.value ?? 0,
+      partnerParticipatesByCapital: partnerParticipates.value,
     }
     const box = props.cashbox
       ? await store.update(props.cashbox.id, payload)
@@ -170,6 +177,43 @@ async function handleSave() {
           />
           <div class="cb-hint">
             Сумма с которой начинает работать касса. Если касса для конкретного партнёра — введите ту сумму, что он внёс.
+          </div>
+        </div>
+
+        <!-- Phase 4: partner capital participation in the profit split -->
+        <div class="cb-field">
+          <label class="cb-label">Ваше участие капиталом</label>
+          <div class="cb-part-toggle">
+            <button
+              type="button"
+              class="cb-part-opt"
+              :class="{ active: partnerParticipates }"
+              @click="partnerParticipates = true"
+            >
+              <v-icon icon="mdi-handshake" size="18" />
+              <span class="cb-part-name">Вкладываю капитал</span>
+              <span class="cb-part-sub">Мой капитал участвует в делёже по вкладу</span>
+            </button>
+            <button
+              type="button"
+              class="cb-part-opt"
+              :class="{ active: !partnerParticipates }"
+              @click="partnerParticipates = false"
+            >
+              <v-icon icon="mdi-briefcase-outline" size="18" />
+              <span class="cb-part-name">Только управляю</span>
+              <span class="cb-part-sub">Мой доход — комиссия с доли инвесторов</span>
+            </button>
+          </div>
+          <div class="cb-hint">
+            Влияет только на инвесторов «по вкладу». При «Вкладываю капитал» ваш начальный капитал считается
+            как ещё один вклад в пуле. При «Только управляю» весь капитал — инвесторский, а вы забираете
+            комиссию, заданную у каждого инвестора.
+          </div>
+          <div v-if="partnerParticipates && !(initialCapital && initialCapital > 0)" class="cb-warn">
+            <v-icon icon="mdi-alert-outline" size="14" />
+            Начальный капитал кассы — 0. При «Вкладываю капитал» ваш вклад в делёж по вкладу тоже 0,
+            поэтому вся прибыль «по вкладу» уйдёт инвесторам. Укажите ваш капитал выше или переключитесь на «Только управляю».
           </div>
         </div>
 
@@ -281,6 +325,30 @@ async function handleSave() {
 
 .cb-hint { font-size: 11px; color: #737373; line-height: 1.4; }
 .cb-dialog.dark .cb-hint { color: #737373; }
+
+/* Partner participation toggle */
+.cb-part-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.cb-part-opt {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  padding: 10px 12px; border-radius: 10px;
+  border: 1.5px solid #e5e5e5; background: transparent;
+  cursor: pointer; text-align: left; transition: all 0.15s;
+  color: #525252;
+}
+.cb-part-opt:hover { border-color: #a3a3a3; }
+.cb-part-opt.active { border-color: #047857; background: rgba(4, 120, 87, 0.06); color: #047857; }
+.cb-part-name { font-size: 13px; font-weight: 700; }
+.cb-part-sub { font-size: 11px; color: #737373; line-height: 1.3; }
+.cb-part-opt.active .cb-part-sub { color: #047857; }
+.cb-dialog.dark .cb-part-opt { border-color: #2a2a2c; color: #a3a3a3; }
+.cb-dialog.dark .cb-part-opt.active { border-color: #047857; color: #10b981; }
+.cb-warn {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1); color: #b45309;
+  font-size: 11px; line-height: 1.4;
+}
+.cb-dialog.dark .cb-warn { color: #fbbf24; }
 
 /* Color palette */
 .cb-palette {

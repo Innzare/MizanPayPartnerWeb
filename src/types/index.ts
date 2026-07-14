@@ -66,7 +66,7 @@ export interface User {
   subscriptionPlan: SubscriptionPlan
   subscriptionExpiry?: string
   initialCapital?: number | null
-  planLimits?: { maxActiveDeals: number; responseCost: number }
+  planLimits?: { maxActiveDeals: number; responseCost: number; maxCashBoxes: number }
   planFeatures?: PlanFeatures
   daysUntilExpiry?: number | null
   staffId?: string
@@ -93,6 +93,8 @@ export interface StaffMember {
   accessOverrides?: string[]
   // Whether the partner allows this staff to create deals/imports.
   canCreateDeals?: boolean
+  // Cashbox ids hidden from this staff (deny-list). Empty = sees all cashboxes.
+  cashBoxOverrides?: string[]
   createdAt: string
   updatedAt: string
 }
@@ -181,6 +183,8 @@ export interface Deal {
   clientProfile?: ClientProfile
   guarantorProfileId?: string
   guarantorProfile?: ClientProfile
+  // До 5 поручителей, упорядочены (order 0 = основной = legacy guarantorProfile).
+  guarantors?: { id: string; order: number; clientProfileId: string; clientProfile: ClientProfile }[]
   numberOfPayments: number
   paidPayments: number
   paymentInterval: PaymentInterval
@@ -242,6 +246,13 @@ export interface CoInvestor {
   phone: string | null
   capital: number
   profitPercent: number | null
+  // Phase 4: partner's commission on THIS CI's by-capital share (0..100). Does
+  // not apply to a fixed-percent CI. 0 = partner takes no cut (old mudaraba).
+  managementFeePct?: number
+  // Phase 5: cost-fee mode — partner takes rate% × purchasePrice per deal, the
+  // investor gets the rest of the markup. Actual rate is per-deal.
+  costFeeMode?: boolean
+  costFeeDefaultRatePct?: number | null
   cashBoxId: string
   payoutSchedule?: PayoutSchedule
   // Planned date of the next dividend payout. Auto-advances after each
@@ -254,6 +265,88 @@ export interface CoInvestor {
   // Public read-only share link. Partner can hand the URL to the CI.
   shareToken?: string | null
   createdAt: string
+}
+
+// ── Unified investor person (participation across several cashboxes) ──
+// A person groups several STAKES — one per cashbox. Capital/percent/mode/accruals
+// live on each stake; the person is a shared header + one public share link.
+
+// Per-cashbox stake as returned in the persons LIST (`GET /co-investors/persons`).
+export interface PersonStake {
+  id: string
+  cashBox: { id: string; name: string; color: string; icon?: string }
+  capital: number
+  currentCapital: number
+  realizedProfit: number
+  totalPayout: number
+  balanceOwed: number
+  profitPercent: number | null
+  managementFeePct?: number
+  costFeeMode?: boolean
+  costFeeDefaultRatePct?: number | null
+}
+
+// Per-cashbox stake as returned in the person DETAIL
+// (`GET /co-investors/persons/:personId`) — carries the summary-level fields.
+export interface PersonStakeDetail extends PersonStake {
+  currentCapital: number
+  realizedProfit: number
+  totalPayout: number
+  balanceOwed: number
+  activeDeployment: number
+  activeDealsCount: number
+  effectivePct: number
+  shareBreakdown?: ShareBreakdown | null
+  activeDealsBreakdown: CoInvestorSummary['activeDealsBreakdown']
+}
+
+export interface InvestorPersonTotals {
+  capital: number
+  currentCapital: number
+  realizedProfit: number
+  totalPayout: number
+  balanceOwed: number
+  // Only present on the detail totals.
+  activeDeployment?: number
+}
+
+// Row in `GET /co-investors/persons`.
+export interface InvestorPerson {
+  id: string
+  name: string
+  phone: string | null
+  shareToken: string | null
+  payoutSchedule?: PayoutSchedule
+  nextPayoutDate?: string | null
+  cashBoxCount: number
+  totals: InvestorPersonTotals
+  stakes: PersonStake[]
+}
+
+// `GET /co-investors/persons/:personId`.
+export interface InvestorPersonDetail {
+  person: {
+    id: string
+    name: string
+    phone: string | null
+    shareToken: string | null
+    payoutSchedule?: PayoutSchedule
+    nextPayoutDate?: string | null
+  }
+  totals: InvestorPersonTotals
+  stakes: PersonStakeDetail[]
+}
+
+// Body for `POST /co-investors/persons/:personId/stakes`.
+export interface AddStakeInput {
+  cashBoxId: string
+  capital: number
+  profitPercent?: number | null
+  managementFeePct?: number
+  costFeeMode?: boolean
+  costFeeDefaultRatePct?: number | null
+  payoutSchedule?: PayoutSchedule
+  nextPayoutDate?: string | null
 }
 
 export type CoInvestorEntryType = 'CAPITAL_IN' | 'CAPITAL_OUT' | 'PROFIT_ACCRUED' | 'DIVIDEND_PAID'
@@ -292,13 +385,89 @@ export interface CoInvestorSummary {
   // Phase 3: CI's effective share of cashbox profit (0..100). Mirrors
   // accrueProfitForCoInvestors so the UI breakdown matches journal entries.
   effectivePct: number
+  // Derivation of effectivePct for the detail page (where "16.67%" comes from).
+  shareBreakdown?: ShareBreakdown | null
   activeDealsBreakdown: Array<{
     id: string
     dealNumber: number
     productName: string
     purchasePrice: number
     dealDate: string
+    totalPrice?: number
     stake: number
+    // Expected profit for THIS investor from this deal (for cost-fee = his income).
+    expectedProfit?: number
+    // Вся прибыль сделки (наценка) и способ деления — для разбора доли.
+    dealProfit?: number
+    modeLabel?: string
+    // Cost-fee deals carry the per-deal split for the «В работе» modal.
+    costFee?: { ratePct: number; partnerFee: number; investorShare: number }
+  }>
+}
+
+// How a co-investor's effective profit % is derived.
+export type ShareBreakdown =
+  | { mode: 'fixed'; fixedPct: number; effectivePct: number }
+  | {
+      mode: 'weight'
+      capital: number            // this CI's capital in the pool
+      partnerCapital: number     // partner's capital in the pool (0 if not participating)
+      partnerParticipates: boolean
+      otherCICapital: number     // sum of other by-capital CIs' capital
+      poolCapital: number        // denominator = capital + partnerCapital + otherCICapital
+      remainingPct: number       // 100 − Σ fixed-% investors (what by-capital pool splits)
+      hasFixedInvestors: boolean
+      grossPct: number           // remainingPct × capital / poolCapital (before commission)
+      commissionPct: number      // partner's commission on this CI
+      effectivePct: number       // grossPct × (1 − commission)
+    }
+  // Phase 5: cost-fee — rate is per-deal, so the cashbox-level view just names
+  // the mode + default rate; real numbers are per-deal in activeDealsBreakdown.
+  | { mode: 'cost_fee'; defaultRatePct: number | null }
+
+// Phase 4: per-deal co-investor participation.
+// A co-investor participating in a specific deal, with an optional per-deal
+// override of their profit percent and the resulting effective percent.
+export interface DealParticipant {
+  id: string
+  name: string
+  phone: string | null
+  profitPercent: number | null
+  managementFeePct?: number
+  capital: number
+  currentCapital?: number
+  // Per-deal override of the fixed percent. null = use the CI's default mode.
+  profitPercentOverride: number | null
+  // Per-deal override of the partner's commission for a WEIGHT investor
+  // (profitPercent == null, не cost-fee). null ⇒ дефолтная комиссия CI
+  // (managementFeePct). Взаимоисключимо с profitPercentOverride/costFeeRatePct.
+  managementFeePctOverride?: number | null
+  // override ?? profitPercent — the fixed percent applied to THIS deal
+  // (null ⇒ this CI shares by capital weight).
+  effectivePercent: number | null
+  // Phase 5: cost-fee. costFeeMode marks the investor; costFeeRatePct is the
+  // rate applied to THIS deal (prefilled from the CI's default).
+  costFeeMode?: boolean
+  costFeeDefaultRatePct?: number | null
+  costFeeRatePct?: number | null
+}
+
+// GET/PUT co-investors/deal/:dealId response.
+export interface DealCoInvestors {
+  cashBoxId: string | null
+  partnerParticipatesByCapital: boolean
+  participants: DealParticipant[]
+  // Co-investors of the deal's cashbox not currently participating — the
+  // partner can attach them.
+  available: Array<{
+    id: string
+    name: string
+    phone: string | null
+    profitPercent: number | null
+    managementFeePct?: number
+    capital: number
+    costFeeMode?: boolean
+    costFeeDefaultRatePct?: number | null
   }>
 }
 
@@ -584,10 +753,18 @@ export interface CapitalSummary {
   deployed: number
   received: number
   netProfit: number
+  // Profit accrued to co-investors (subtract from netProfit to get partner's cut).
+  coInvestorProfit?: number
+  // Partner's net profit = netProfit − coInvestorProfit.
+  partnerNetProfit?: number
   inProgress: number
   coInvestorPayout: number
   manualBalance: number
   availableCapital: number
+  // Капитал кассы: вложенный (seed + пополнения − снятое из капитала) и доход,
+  // который можно снять без уменьшения капитала. Заполняются /cashboxes/:id/capital.
+  investedCapital?: number
+  withdrawableProfit?: number
 }
 
 // Helpers

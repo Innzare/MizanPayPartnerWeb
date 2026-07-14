@@ -57,11 +57,15 @@ export interface DealDraft {
   profitSplitBase: 'MARKUP_ONLY' | 'FULL_MARGIN'
 
   selectedClientProfileId: string | null
-  selectedGuarantorProfileId: string | null
+  // Legacy-поля одиночного поручителя. Оставлены опциональными для чтения
+  // старых сохранённых черновиков; новые черновики пишут selectedGuarantors.
+  selectedGuarantorProfileId?: string | null
+  selectedGuarantorProfile?: ClientProfile | null
   // Snapshots of the picker objects so the floater can show a name and
   // the wizard can render the picker state without an extra fetch.
   selectedClientProfile: ClientProfile | null
-  selectedGuarantorProfile: ClientProfile | null
+  // Поручители (до 5), порядок = приоритет. Опционально для старых черновиков.
+  selectedGuarantors?: ClientProfile[]
 
   selectedFolderId: string | null
   selectedCashBoxId: string | null

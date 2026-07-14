@@ -3,9 +3,10 @@ import { useDealsStore } from '@/stores/deals'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { usePaymentsStore } from '@/stores/payments'
 import { useClientsStore } from '@/stores/clients'
-import { formatCurrency, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { userName, clientProfileName, type Deal } from '@/types'
+import { userName, clientProfileName, type Deal, type ClientProfile } from '@/types'
+import { dealGuarantors } from '@/utils/dealGuarantors'
 import { useAuthStore } from '@/stores/auth'
 import { useRecentDeals } from '@/composables/useRecentDeals'
 import { generateContract } from '@/utils/contractPdf'
@@ -183,43 +184,60 @@ async function deleteDeal() {
   }
 }
 
-// ── Guarantor ──
+// ── Guarantors (до 5) ──
+const MAX_GUARANTORS = 5
 const guarantorSaving = ref(false)
 const showCreateGuarantorDialog = ref(false)
+// v-model для пикера добавления нового поручителя (сбрасывается после добавления).
+const guarantorPickerId = ref<string | null>(null)
 
-async function onGuarantorSelected(profile: import('@/types').ClientProfile | null) {
-  if (!profile || !deal.value) return
-  guarantorSaving.value = true
-  try {
-    const updated = await dealsStore.updateGuarantor(deal.value.id, profile.id)
-    deal.value = updated
-    toast.success('Поручитель привязан')
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось привязать поручителя')
-  } finally {
-    guarantorSaving.value = false
-  }
-}
+// Упорядоченный список поручителей сделки (с fallback на legacy-поле).
+const guarantorsList = computed<ClientProfile[]>(() =>
+  deal.value ? dealGuarantors(deal.value) : [],
+)
+const canAddGuarantor = computed(() => guarantorsList.value.length < MAX_GUARANTORS)
 
-async function onGuarantorCreated(profile: import('@/types').ClientProfile) {
-  await onGuarantorSelected(profile)
-}
-
-async function removeGuarantor() {
+// Заменить весь набор поручителей (PATCH). Порядок = порядок в массиве ids.
+async function saveGuarantors(ids: string[], successMsg: string) {
   if (!deal.value) return
   guarantorSaving.value = true
   try {
-    const updated = await dealsStore.updateGuarantor(deal.value.id, null)
+    const updated = await dealsStore.updateGuarantors(deal.value.id, ids)
     deal.value = updated
-    toast.success('Поручитель убран')
+    toast.success(successMsg)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось убрать поручителя')
+    toast.error(e.message || 'Не удалось сохранить поручителей')
   } finally {
     guarantorSaving.value = false
   }
 }
 
-// ── Co-Investors (Phase 3: read-only, all CIs of the deal's cashbox) ──
+async function onGuarantorSelected(profile: ClientProfile | null) {
+  guarantorPickerId.value = null
+  if (!profile || !deal.value) return
+  const current = guarantorsList.value
+  if (current.some((g) => g.id === profile.id)) {
+    toast.error('Этот поручитель уже добавлен')
+    return
+  }
+  if (current.length >= MAX_GUARANTORS) {
+    toast.error(`Можно добавить не больше ${MAX_GUARANTORS} поручителей`)
+    return
+  }
+  await saveGuarantors([...current.map((g) => g.id), profile.id], 'Поручитель добавлен')
+}
+
+async function onGuarantorCreated(profile: ClientProfile) {
+  await onGuarantorSelected(profile)
+}
+
+async function removeGuarantorAt(index: number) {
+  const ids = guarantorsList.value.map((g) => g.id)
+  ids.splice(index, 1)
+  await saveGuarantors(ids, 'Поручитель убран')
+}
+
+// ── Co-Investors (Phase 4: read-only list of THIS deal's participants) ──
 interface CoInvestorInfo {
   id: string
   name: string
@@ -227,12 +245,78 @@ interface CoInvestorInfo {
   profitPercent: number | null
   capital: number
   cashBoxId?: string
+  // Phase 4 per-deal fields (present in the /co-investors/deal/:id response).
+  managementFeePct?: number
+  managementFeePctOverride?: number | null
+  currentCapital?: number
+  profitPercentOverride?: number | null
+  // Fixed % that actually applies to THIS deal (override ?? default). null =
+  // the CI takes a weight-based share.
+  effectivePercent?: number | null
+  // Phase 5: cost-fee — partner takes rate% of purchase, investor gets the rest.
+  costFeeMode?: boolean
+  costFeeDefaultRatePct?: number | null
+  costFeeRatePct?: number | null
+}
+
+interface DealCoInvestorsResponse {
+  cashBoxId: string | null
+  partnerParticipatesByCapital: boolean
+  partnerCapital?: number
+  participants: CoInvestorInfo[]
+  available: CoInvestorInfo[]
 }
 
 // `dealCoInvestors` now holds the CIs of this deal's cashbox — they all
 // participate by virtue of cashbox membership, there's no per-deal link.
 const dealCoInvestors = ref<CoInvestorInfo[]>([])
+// Pool inputs for computing a weight (по вкладу) investor's exact share.
+const dealPartnerParticipates = ref(true)
+const dealPartnerCapital = ref(0)
 const coInvestorLoading = ref(false)
+
+// Cost-fee комиссия партнёра с этой сделки = min(ставка% × закупка, база).
+// База по умолчанию — splitBase (наценка или полная маржа при FULL_MARGIN),
+// чтобы совпадать с бэком, который считает от profitBase.
+function costFeeBaseAmount(): number {
+  return dealProfitBreakdown.value?.splitBase ?? deal.value?.markup ?? 0
+}
+function costFeePartnerFee(ci: CoInvestorInfo, base = costFeeBaseAmount()): number {
+  const d = deal.value
+  if (!d) return 0
+  const rate = ci.costFeeRatePct ?? ci.costFeeDefaultRatePct ?? 0
+  return Math.min(Math.round((rate / 100) * (d.purchasePrice || 0)), base)
+}
+// Cost-fee: сумма инвестору с этой сделки = база − комиссия партнёра.
+function costFeeInvestorAmount(ci: CoInvestorInfo, base = costFeeBaseAmount()): number {
+  return Math.max(0, base - costFeePartnerFee(ci, base))
+}
+// Доля ЛЮБОГО со-инвестора в этой сделке (фикс / по вкладу / cost-fee) —
+// из единой карты, посчитанной в dealProfitBreakdown как в движке.
+function ciDealShare(ci: CoInvestorInfo): number {
+  return dealProfitBreakdown.value?.shares[ci.id] ?? 0
+}
+// Основание доли инвестора в этой сделке (способ деления).
+function ciModeLabel(ci: CoInvestorInfo): string {
+  if (ci.costFeeMode || ci.costFeeRatePct != null) return 'Комиссия от закупки'
+  const eff = ci.effectivePercent ?? ci.profitPercent
+  if (eff != null && eff > 0) return `Фикс ${eff}%${ci.profitPercentOverride != null ? ' (в сделке)' : ''}`
+  const fee = ci.managementFeePctOverride ?? ci.managementFeePct ?? 0
+  return `По вкладу${fee > 0 ? ` · комиссия ${fee}%${ci.managementFeePctOverride != null ? ' (в сделке)' : ''}` : ''}`
+}
+// Числовая формула, откуда взялась сумма инвестора (как в разделе «Чистая
+// прибыль» кассы): «30% от 15К», «≈14% от 15К по вкладу», «15К − 5К (доля партнёра)».
+function ciFormula(ci: CoInvestorInfo): string {
+  const base = dealProfitBreakdown.value?.splitBase ?? 0
+  if (base <= 0) return ''
+  if (ci.costFeeMode || ci.costFeeRatePct != null) {
+    return `${formatCurrencyShort(base)} − ${formatCurrencyShort(costFeePartnerFee(ci, base))} (доля партнёра)`
+  }
+  const eff = ci.effectivePercent ?? ci.profitPercent
+  if (eff != null && eff > 0) return `${eff}% от ${formatCurrencyShort(base)}`
+  const pct = Math.round((ciDealShare(ci) / base) * 100)
+  return `≈${pct}% от ${formatCurrencyShort(base)} по вкладу`
+}
 
 // ── Staff assignee ──
 interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
@@ -272,9 +356,12 @@ const assignedStaffName = computed(() => {
 
 async function loadCoInvestors() {
   try {
-    // Phase 3: endpoint returns CIs of this deal's cashbox.
-    dealCoInvestors.value = await api.get<CoInvestorInfo[]>(`/co-investors/deal/${dealId.value}`)
-  } catch { /* ignore */ }
+    // Phase 4: endpoint returns an object; participants = THIS deal's linked CIs.
+    const res = await api.get<DealCoInvestorsResponse>(`/co-investors/deal/${dealId.value}`)
+    dealCoInvestors.value = Array.isArray(res?.participants) ? res.participants : []
+    dealPartnerParticipates.value = res?.partnerParticipatesByCapital ?? true
+    dealPartnerCapital.value = res?.partnerCapital ?? 0
+  } catch { dealCoInvestors.value = [] }
 }
 
 // Load co-investors on mount
@@ -407,8 +494,56 @@ const dealProfitBreakdown = computed(() => {
 
   // Sum of percent across PER_DEAL CIs (POOL handled separately, not
   // displayed in this card — the partner has /co-investors for that).
-  const ciTotalPercent = dealCoInvestors.value.reduce((s, ci) => s + (ci.profitPercent || 0), 0)
-  const ciAmount = Math.round((splitBase * ciTotalPercent) / 100)
+  // Cost-fee investors have no percent (both effectivePercent & profitPercent
+  // are null): their share is a fixed amount (наценка − комиссия партнёра),
+  // computed separately and added to the CI pool below.
+  const isCostFee = (ci: CoInvestorInfo) => ci.costFeeMode || ci.costFeeRatePct != null
+  const percentCIs = dealCoInvestors.value.filter((ci) => !isCostFee(ci))
+  const costFeeCIs = dealCoInvestors.value.filter(isCostFee)
+
+  // Per-CI share amount (id → ₽) so both the total and the per-investor cards
+  // read the SAME numbers. Mirrors the engine: fixed % first, then the by-capital
+  // pool splits the remainder (minus each weight CI's management fee).
+  const shares: Record<string, number> = {}
+
+  // 1) Fixed-% CIs take their percent of the split base.
+  const fixedCIs = percentCIs.filter((ci) => (ci.effectivePercent ?? ci.profitPercent ?? 0) > 0)
+  const ciTotalPercent = fixedCIs.reduce((s, ci) => s + (ci.effectivePercent ?? ci.profitPercent ?? 0), 0)
+  const ciPercentAmount = Math.round((splitBase * ciTotalPercent) / 100)
+  for (const ci of fixedCIs) shares[ci.id] = Math.round((splitBase * (ci.effectivePercent ?? ci.profitPercent ?? 0)) / 100)
+
+  // 2) Cost-fee CIs (fixed «наценка − комиссия партнёра» amount).
+  // Pass splitBase explicitly — costFeeBaseAmount() reads dealProfitBreakdown,
+  // which is exactly the computed we're inside (would recurse).
+  const ciCostFeeAmount = costFeeCIs.reduce((s, ci) => {
+    const amt = costFeeInvestorAmount(ci, splitBase)
+    shares[ci.id] = amt
+    return s + amt
+  }, 0)
+
+  // 3) By-capital («по вкладу») CIs split whatever the fixed CIs left, weighted
+  // by their capital vs the pool (Σ their capital + partner's capital if the
+  // partner participates by capital), minus each CI's per-deal management fee.
+  const weightCIs = percentCIs.filter(
+    (ci) => (ci.effectivePercent ?? ci.profitPercent) == null && (ci.currentCapital ?? 0) > 0,
+  )
+  let ciWeightAmount = 0
+  if (weightCIs.length) {
+    const remaining = Math.max(0, splitBase - ciPercentAmount)
+    const pool = weightCIs.reduce((s, ci) => s + (ci.currentCapital ?? 0), 0)
+      + (dealPartnerParticipates.value ? dealPartnerCapital.value : 0)
+    if (remaining > 0 && pool > 0) {
+      for (const ci of weightCIs) {
+        const fee = ci.managementFeePctOverride ?? ci.managementFeePct ?? 0
+        const amt = Math.round(remaining * ((ci.currentCapital ?? 0) / pool) * (1 - fee / 100))
+        shares[ci.id] = amt
+        ciWeightAmount += amt
+      }
+    }
+  }
+
+  const ciAmount = ciPercentAmount + ciCostFeeAmount + ciWeightAmount
+  const hasCiShare = ciAmount > 0
 
   const partnerFromSplit = splitBase - ciAmount
   const partnerRetailDirect = isFullMargin ? 0 : retailMargin
@@ -427,6 +562,12 @@ const dealProfitBreakdown = computed(() => {
     splitBase,
     ciTotalPercent,
     ciAmount,
+    ciPercentAmount,
+    ciCostFeeAmount,
+    ciWeightAmount,
+    shares,
+    hasWeight: weightCIs.length > 0,
+    hasCiShare,
     partnerRetailDirect,
     partnerFromSplit,
     totalPartner,
@@ -1445,20 +1586,44 @@ const timeline = computed(() => {
                 </span>
               </div>
 
-              <!-- CI share -->
-              <div v-if="dealProfitBreakdown.ciTotalPercent > 0" class="profit-row profit-row--negative">
+              <!-- Per-investor share with numeric formulas (как в разделе
+                   «Чистая прибыль» кассы) — для ЛЮБОГО способа деления. -->
+              <div
+                v-for="ci in dealCoInvestors"
+                :key="ci.id"
+                class="profit-row profit-row--negative"
+              >
                 <div class="profit-label">
-                  Доля со-инвесторов
+                  {{ ci.name }}
                   <span class="profit-formula">
-                    ({{ dealProfitBreakdown.ciTotalPercent }}% от {{ formatCurrency(dealProfitBreakdown.splitBase) }})
+                    {{ ciModeLabel(ci) }}<template v-if="ciFormula(ci)"> · {{ ciFormula(ci) }}</template>
                   </span>
                 </div>
-                <div class="profit-amount">−{{ formatCurrency(dealProfitBreakdown.ciAmount) }}</div>
+                <div class="profit-amount">−{{ formatCurrency(ciDealShare(ci)) }}</div>
+              </div>
+
+              <!-- Cost-fee: инвестор ещё и возвращает свою закупку -->
+              <div
+                v-for="ci in dealCoInvestors.filter((c) => c.costFeeMode || c.costFeeRatePct != null)"
+                :key="'payout-' + ci.id"
+                class="profit-mode-hint"
+              >
+                <v-icon icon="mdi-cash-refund" size="13" />
+                <span>
+                  {{ ci.name }} на руки: возврат закупки {{ formatCurrencyShort(deal.purchasePrice) }}
+                  + прибыль {{ formatCurrencyShort(ciDealShare(ci)) }}
+                  = {{ formatCurrency(deal.purchasePrice + ciDealShare(ci)) }}
+                </span>
               </div>
 
               <!-- Total partner -->
               <div class="profit-row profit-row--total">
-                <div class="profit-label">Ваша прибыль (потенциал)</div>
+                <div class="profit-label">
+                  Ваша прибыль (потенциал)
+                  <span v-if="dealProfitBreakdown.hasCiShare" class="profit-formula">
+                    (вся прибыль {{ formatCurrencyShort(dealProfitBreakdown.splitBase + dealProfitBreakdown.partnerRetailDirect) }} − инвесторам {{ formatCurrencyShort(dealProfitBreakdown.ciAmount) }})
+                  </span>
+                </div>
                 <div class="profit-amount profit-amount--total">
                   {{ formatCurrency(dealProfitBreakdown.totalPartner) }}
                 </div>
@@ -2063,70 +2228,81 @@ const timeline = computed(() => {
             </template>
           </v-card>
 
-          <!-- Guarantor card -->
+          <!-- Guarantors card (до 5) -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="d-flex align-center justify-space-between mb-4">
               <div class="d-flex align-center ga-2">
                 <v-icon icon="mdi-shield-account" size="18" style="color: #6366f1;" />
-                <div class="section-title">Поручитель</div>
+                <div class="section-title">
+                  Поручители
+                  <span v-if="guarantorsList.length" class="text-caption text-medium-emphasis">({{ guarantorsList.length }}/{{ MAX_GUARANTORS }})</span>
+                </div>
               </div>
-              <v-btn
-                v-if="deal.guarantorProfile && !deal.deletedAt"
-                variant="text"
-                size="x-small"
-                color="error"
-                prepend-icon="mdi-close"
-                @click="removeGuarantor"
-                :loading="guarantorSaving"
-              >
-                Убрать
-              </v-btn>
             </div>
 
-            <!-- Existing guarantor -->
-            <template v-if="deal.guarantorProfile">
-              <router-link :to="`/clients/${deal.guarantorProfileId}`" class="profile-card-link">
-                <div class="d-flex align-center ga-3 mb-4">
-                  <div class="profile-avatar profile-avatar--guarantor">{{ (deal.guarantorProfile.firstName || '')[0] || '' }}{{ (deal.guarantorProfile.lastName || '')[0] || '' }}</div>
-                  <div class="flex-grow-1">
-                    <div class="font-weight-bold">{{ clientProfileName(deal.guarantorProfile) }}</div>
-                    <div class="text-caption text-medium-emphasis d-flex align-center ga-2">
-                      <v-icon icon="mdi-phone" size="12" />
-                      {{ formatPhone(deal.guarantorProfile.phone) }}
-                    </div>
-                  </div>
-                  <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
+            <!-- Existing guarantors (по порядку, первый = основной) -->
+            <template v-for="(g, gi) in guarantorsList" :key="g.id">
+              <div class="guarantor-item" :class="{ 'guarantor-item--divided': gi > 0 }">
+                <div class="d-flex align-center justify-space-between mb-2">
+                  <span class="guarantor-item__badge" :class="{ 'guarantor-item__badge--main': gi === 0 }">
+                    {{ gi === 0 ? 'Основной поручитель' : `Поручитель ${gi + 1}` }}
+                  </span>
+                  <v-btn
+                    v-if="!deal.deletedAt"
+                    variant="text"
+                    size="x-small"
+                    color="error"
+                    prepend-icon="mdi-close"
+                    :loading="guarantorSaving"
+                    @click="removeGuarantorAt(gi)"
+                  >
+                    Убрать
+                  </v-btn>
                 </div>
-              </router-link>
 
-              <div class="profile-details-list">
-                <template v-if="deal.guarantorProfile.passportSeries || deal.guarantorProfile.passportNumber">
-                  <div class="profile-detail-row">
-                    <span class="profile-detail-label">Паспорт</span>
-                    <span class="profile-detail-value">{{ deal.guarantorProfile.passportSeries }} {{ deal.guarantorProfile.passportNumber }}</span>
+                <router-link :to="`/clients/${g.id}`" class="profile-card-link">
+                  <div class="d-flex align-center ga-3 mb-3">
+                    <div class="profile-avatar profile-avatar--guarantor">{{ (g.firstName || '')[0] || '' }}{{ (g.lastName || '')[0] || '' }}</div>
+                    <div class="flex-grow-1">
+                      <div class="font-weight-bold">{{ clientProfileName(g) }}</div>
+                      <div class="text-caption text-medium-emphasis d-flex align-center ga-2">
+                        <v-icon icon="mdi-phone" size="12" />
+                        {{ formatPhone(g.phone) }}
+                      </div>
+                    </div>
+                    <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
                   </div>
-                  <div v-if="deal.guarantorProfile.passportIssuedBy" class="profile-detail-row">
-                    <span class="profile-detail-label">Кем выдан</span>
-                    <span class="profile-detail-value">{{ deal.guarantorProfile.passportIssuedBy }}</span>
+                </router-link>
+
+                <div class="profile-details-list">
+                  <template v-if="g.passportSeries || g.passportNumber">
+                    <div class="profile-detail-row">
+                      <span class="profile-detail-label">Паспорт</span>
+                      <span class="profile-detail-value">{{ g.passportSeries }} {{ g.passportNumber }}</span>
+                    </div>
+                    <div v-if="g.passportIssuedBy" class="profile-detail-row">
+                      <span class="profile-detail-label">Кем выдан</span>
+                      <span class="profile-detail-value">{{ g.passportIssuedBy }}</span>
+                    </div>
+                    <div v-if="g.passportIssuedAt" class="profile-detail-row">
+                      <span class="profile-detail-label">Дата выдачи</span>
+                      <span class="profile-detail-value">{{ formatDate(g.passportIssuedAt) }}</span>
+                    </div>
+                  </template>
+                  <div v-else class="profile-detail-hint">
+                    <v-icon icon="mdi-information-outline" size="14" />
+                    Паспортные данные не заполнены
                   </div>
-                  <div v-if="deal.guarantorProfile.passportIssuedAt" class="profile-detail-row">
-                    <span class="profile-detail-label">Дата выдачи</span>
-                    <span class="profile-detail-value">{{ formatDate(deal.guarantorProfile.passportIssuedAt) }}</span>
-                  </div>
-                </template>
-                <div v-else class="profile-detail-hint">
-                  <v-icon icon="mdi-information-outline" size="14" />
-                  Паспортные данные не заполнены
                 </div>
               </div>
             </template>
 
-            <!-- No guarantor — picker + create -->
-            <template v-else-if="!deal.deletedAt">
-              <div class="guarantor-picker-wrap">
+            <!-- Add guarantor — picker + create (пока не достигнут лимит) -->
+            <template v-if="!deal.deletedAt && canAddGuarantor">
+              <div class="guarantor-picker-wrap" :class="{ 'mt-4': guarantorsList.length }">
                 <ClientPicker
-                  :model-value="null"
-                  label="Найти поручителя по телефону или имени..."
+                  v-model="guarantorPickerId"
+                  :label="guarantorsList.length ? 'Добавить ещё поручителя...' : 'Найти поручителя по телефону или имени...'"
                   @selected="onGuarantorSelected"
                 />
               </div>
@@ -2142,7 +2318,14 @@ const timeline = computed(() => {
               <CreateClientDialog v-model="showCreateGuarantorDialog" @created="onGuarantorCreated" />
             </template>
 
-            <div v-else class="text-body-2 text-medium-emphasis">Не назначен</div>
+            <!-- Лимит достигнут -->
+            <div v-else-if="!deal.deletedAt && !canAddGuarantor" class="profile-detail-hint mt-3">
+              <v-icon icon="mdi-information-outline" size="14" />
+              Достигнут лимит: не больше {{ MAX_GUARANTORS }} поручителей
+            </div>
+
+            <!-- Deleted deal, no guarantors -->
+            <div v-else-if="!guarantorsList.length" class="text-body-2 text-medium-emphasis">Не назначен</div>
           </v-card>
 
           <!-- Phase 3: Investors of the deal's cashbox. Read-only — the
@@ -2184,22 +2367,39 @@ const timeline = computed(() => {
                   </div>
                 </div>
                 <div class="ci-card-stats">
-                  <template v-if="ci.profitPercent != null && ci.profitPercent > 0">
+                  <!-- Cost-fee: партнёр берёт % от закупки, инвестору — остаток наценки -->
+                  <template v-if="ci.costFeeMode || ci.costFeeRatePct != null">
                     <div class="ci-card-stat">
-                      <span class="ci-card-stat-label">Доля прибыли</span>
-                      <span class="ci-card-stat-value">{{ ci.profitPercent }}%</span>
+                      <span class="ci-card-stat-label">Способ деления</span>
+                      <span class="ci-card-stat-value">Комиссия от закупки</span>
                     </div>
-                    <div v-if="deal.markup" class="ci-card-stat">
+                    <div v-if="dealProfitBreakdown && dealProfitBreakdown.splitBase > 0" class="ci-card-stat">
+                      <span class="ci-card-stat-label">Инвестору (база − комиссия)</span>
+                      <span class="ci-card-stat-value ci-card-stat-value--accent">{{ formatCurrency(costFeeInvestorAmount(ci)) }}</span>
+                    </div>
+                  </template>
+                  <template v-else-if="(ci.effectivePercent ?? ci.profitPercent) != null && (ci.effectivePercent ?? ci.profitPercent)! > 0">
+                    <div class="ci-card-stat">
+                      <span class="ci-card-stat-label">Доля прибыли{{ ci.profitPercentOverride != null ? ' (в сделке)' : '' }}</span>
+                      <span class="ci-card-stat-value">{{ ci.effectivePercent ?? ci.profitPercent }}%</span>
+                    </div>
+                    <div v-if="dealProfitBreakdown && dealProfitBreakdown.splitBase > 0" class="ci-card-stat">
                       <span class="ci-card-stat-label">Сумма</span>
                       <span class="ci-card-stat-value ci-card-stat-value--accent">
-                        {{ formatCurrency(Math.round(deal.markup * ci.profitPercent / 100)) }}
+                        {{ formatCurrency(ciDealShare(ci)) }}
                       </span>
                     </div>
                   </template>
-                  <div v-else class="ci-card-stat">
-                    <span class="ci-card-stat-label">Способ деления</span>
-                    <span class="ci-card-stat-value">По вкладу</span>
-                  </div>
+                  <template v-else>
+                    <div class="ci-card-stat">
+                      <span class="ci-card-stat-label">Способ деления</span>
+                      <span class="ci-card-stat-value">По вкладу{{ (ci.managementFeePctOverride ?? ci.managementFeePct ?? 0) > 0 ? ` · комиссия ${ci.managementFeePctOverride ?? ci.managementFeePct}%${ci.managementFeePctOverride != null ? ' (в сделке)' : ''}` : '' }}</span>
+                    </div>
+                    <div v-if="dealProfitBreakdown && dealProfitBreakdown.splitBase > 0" class="ci-card-stat">
+                      <span class="ci-card-stat-label">Сумма (по вкладу)</span>
+                      <span class="ci-card-stat-value ci-card-stat-value--accent">{{ formatCurrency(ciDealShare(ci)) }}</span>
+                    </div>
+                  </template>
                 </div>
               </div>
             </div>
@@ -4538,6 +4738,23 @@ const timeline = computed(() => {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.35);
   padding: 8px 0;
+}
+
+/* Guarantor list items */
+.guarantor-item--divided {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  padding-top: 14px;
+  margin-top: 14px;
+}
+.guarantor-item__badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.guarantor-item__badge--main {
+  color: #6366f1;
 }
 
 /* Guarantor picker */

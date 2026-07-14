@@ -16,21 +16,18 @@ definePage({
 import { api } from '@/api/client'
 import { useIsDark } from '@/composables/useIsDark'
 import { formatCurrency, formatDate, formatPhone } from '@/utils/formatters'
-import type { CoInvestorJournalEntry, CoInvestorJournal, PayoutSchedule } from '@/types'
+import type { CoInvestorJournalEntry, CoInvestorJournal, PayoutSchedule, ShareBreakdown } from '@/types'
 import { PAYOUT_SCHEDULE_LABELS } from '@/types'
 
-interface PublicSummary {
-  coInvestor: {
-    id: string
-    name: string
-    phone: string | null
-    profitPercent: number | null
-    payoutSchedule?: PayoutSchedule
-    nextPayoutDate?: string | null
-    capital: number
-    createdAt: string
-  }
-  cashBox: { id: string; name: string; color: string; icon: string } | null
+// One cashbox stake, as returned inside the person aggregate. Carries the same
+// summary fields the old single-CI page used, so the per-cashbox view reuses them.
+interface PublicStake {
+  id: string
+  cashBox: { id: string; name: string; color: string; icon: string }
+  profitPercent: number | null
+  costFeeMode?: boolean
+  costFeeDefaultRatePct?: number | null
+  capital: number
   currentCapital: number
   capitalIn: number
   capitalOut: number
@@ -40,6 +37,7 @@ interface PublicSummary {
   activeDeployment: number
   activeDealsCount: number
   effectivePct: number
+  shareBreakdown?: ShareBreakdown | null
   activeDealsBreakdown: Array<{
     id: string
     dealNumber: number
@@ -47,7 +45,32 @@ interface PublicSummary {
     purchasePrice: number
     dealDate: string
     stake: number
+    expectedProfit?: number
+    dealProfit?: number
+    modeLabel?: string
+    costFee?: { ratePct: number; partnerFee: number; investorShare: number }
   }>
+}
+
+// `GET /public/co-investors/:token/summary` — now the person aggregate.
+interface PublicSummary {
+  person: {
+    id: string
+    name: string
+    phone: string | null
+    payoutSchedule?: PayoutSchedule
+    nextPayoutDate?: string | null
+    createdAt: string
+  }
+  totals: {
+    capital: number
+    currentCapital: number
+    realizedProfit: number
+    totalPayout: number
+    balanceOwed: number
+    activeDeployment: number
+  }
+  stakes: PublicStake[]
 }
 
 const route = useRoute()
@@ -62,24 +85,32 @@ onUnmounted(() => window.removeEventListener('resize', updateMobile))
 const token = computed(() => route.params.token as string)
 const summary = ref<PublicSummary | null>(null)
 const journal = ref<CoInvestorJournalEntry[]>([])
+const journalLoading = ref(false)
 const loading = ref(true)
 const error = ref('')
 const showActiveBreakdown = ref(false)
 
+// Which cashbox stake the investor is currently viewing (summary + journal).
+const selectedStakeId = ref<string | null>(null)
+const stake = computed<PublicStake | null>(() => {
+  const list = summary.value?.stakes ?? []
+  return list.find((s) => s.id === selectedStakeId.value) ?? list[0] ?? null
+})
+
 const payoutScheduleLabel = computed(() => {
-  const s = summary.value?.coInvestor.payoutSchedule
+  const s = summary.value?.person.payoutSchedule
   return s ? PAYOUT_SCHEDULE_LABELS[s] : null
 })
 
 const nextPayoutOverdue = computed(() => {
-  const d = summary.value?.coInvestor.nextPayoutDate
+  const d = summary.value?.person.nextPayoutDate
   if (!d) return false
   const today = new Date(); today.setHours(0, 0, 0, 0)
   return new Date(d) < today
 })
 
 const nextPayoutSub = computed(() => {
-  const d = summary.value?.coInvestor.nextPayoutDate
+  const d = summary.value?.person.nextPayoutDate
   if (!d) return ''
   const today = new Date(); today.setHours(0, 0, 0, 0)
   const target = new Date(d); target.setHours(0, 0, 0, 0)
@@ -141,21 +172,58 @@ function formatSigned(amount: number) {
   return (amount > 0 ? '+' : '') + formatCurrency(amount)
 }
 
+// Per-cashbox journal for the currently selected stake.
+async function loadJournal() {
+  const st = stake.value
+  if (!st) { journal.value = []; return }
+  journalLoading.value = true
+  try {
+    const j = await api.get<CoInvestorJournal>(
+      `/public/co-investors/${token.value}/cashflow?limit=200&stakeId=${st.id}`,
+    )
+    journal.value = j.entries
+  } catch {
+    journal.value = []
+  } finally {
+    journalLoading.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [s, j] = await Promise.all([
-      api.get<PublicSummary>(`/public/co-investors/${token.value}/summary`),
-      api.get<CoInvestorJournal>(`/public/co-investors/${token.value}/cashflow?limit=200`),
-    ])
+    const s = await api.get<PublicSummary>(`/public/co-investors/${token.value}/summary`)
     summary.value = s
-    journal.value = j.entries
+    selectedStakeId.value = s.stakes[0]?.id ?? null
+    await loadJournal()
   } catch (e: any) {
     error.value = e.message || 'Ссылка недействительна'
   } finally {
     loading.value = false
   }
+}
+
+// Reload the journal + close the breakdown when the investor switches cashbox.
+function selectStake(id: string) {
+  if (selectedStakeId.value === id) return
+  selectedStakeId.value = id
+  showActiveBreakdown.value = false
+  loadJournal()
+}
+
+const stakeModeLabel = computed(() => {
+  const st = stake.value
+  if (!st) return ''
+  if (st.costFeeMode) return 'Комиссия от закупки'
+  if (st.profitPercent != null && st.profitPercent > 0) return `Фикс ${st.profitPercent}%`
+  return 'По вкладу капитала'
+})
+
+function pluralCashboxes(n: number) {
+  if (n % 10 === 1 && n % 100 !== 11) return 'касса'
+  if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return 'кассы'
+  return 'касс'
 }
 
 onMounted(load)
@@ -174,107 +242,59 @@ onMounted(load)
     </div>
 
     <div v-else class="inv-wrap">
-      <!-- Header card -->
+      <!-- Header card: person identity + aggregated totals across all cashboxes -->
       <v-card rounded="lg" elevation="0" border class="inv-hero pa-5 mb-4">
         <div class="inv-hero-row">
-          <div class="inv-avatar" :style="{ background: getAvatarColor(summary.coInvestor.name) }">
-            {{ getInitials(summary.coInvestor.name) }}
+          <div class="inv-avatar" :style="{ background: getAvatarColor(summary.person.name) }">
+            {{ getInitials(summary.person.name) }}
           </div>
           <div class="inv-identity">
-            <div class="inv-name">{{ summary.coInvestor.name }}</div>
+            <div class="inv-name">{{ summary.person.name }}</div>
             <div class="inv-meta">
-              <span v-if="summary.coInvestor.phone">{{ formatPhone(summary.coInvestor.phone) }}</span>
-              <span v-if="summary.coInvestor.phone" class="inv-meta-dot">·</span>
-              <span>с {{ formatDate(summary.coInvestor.createdAt) }}</span>
+              <span v-if="summary.person.phone">{{ formatPhone(summary.person.phone) }}</span>
+              <span v-if="summary.person.phone" class="inv-meta-dot">·</span>
+              <span>{{ summary.stakes.length }} {{ pluralCashboxes(summary.stakes.length) }}</span>
+              <span v-if="summary.person.createdAt" class="inv-meta-dot">·</span>
+              <span v-if="summary.person.createdAt">с {{ formatDate(summary.person.createdAt) }}</span>
             </div>
           </div>
         </div>
 
-        <!-- KPI stats -->
+        <!-- Aggregated totals -->
         <div class="inv-stats mt-5">
           <div class="inv-stat">
             <div class="inv-stat-label">Текущий капитал</div>
-            <div class="inv-stat-value" style="color: #3b82f6;">{{ formatCurrency(summary.currentCapital) }}</div>
+            <div class="inv-stat-value" style="color: #3b82f6;">{{ formatCurrency(summary.totals.currentCapital) }}</div>
           </div>
-          <button
-            class="inv-stat inv-stat--clickable"
-            :disabled="summary.activeDealsCount === 0"
-            @click="showActiveBreakdown = true"
-          >
+          <div class="inv-stat">
             <div class="inv-stat-label">В работе</div>
-            <div class="inv-stat-value" style="color: #0ea5e9;">{{ formatCurrency(summary.activeDeployment) }}</div>
-            <div class="inv-stat-sub">{{ summary.activeDealsCount }} {{ pluralDeals(summary.activeDealsCount) }}</div>
-            <div v-if="summary.activeDealsCount > 0" class="inv-stat-action">
-              Подробнее
-              <v-icon icon="mdi-arrow-right" size="12" />
-            </div>
-          </button>
+            <div class="inv-stat-value" style="color: #0ea5e9;">{{ formatCurrency(summary.totals.activeDeployment) }}</div>
+          </div>
           <div class="inv-stat">
             <div class="inv-stat-label">Начислено прибыли</div>
-            <div class="inv-stat-value" style="color: #047857;">{{ formatCurrency(summary.realizedProfit) }}</div>
+            <div class="inv-stat-value" style="color: #047857;">{{ formatCurrency(summary.totals.realizedProfit) }}</div>
           </div>
           <div class="inv-stat">
             <div class="inv-stat-label">Выплачено</div>
-            <div class="inv-stat-value" style="color: #7c3aed;">{{ formatCurrency(summary.totalPayout) }}</div>
+            <div class="inv-stat-value" style="color: #7c3aed;">{{ formatCurrency(summary.totals.totalPayout) }}</div>
           </div>
           <div class="inv-stat inv-stat--accent">
             <div class="inv-stat-label">Остаток к выплате</div>
-            <div class="inv-stat-value" style="color: #f59e0b;">{{ formatCurrency(summary.balanceOwed) }}</div>
+            <div class="inv-stat-value" style="color: #f59e0b;">{{ formatCurrency(summary.totals.balanceOwed) }}</div>
           </div>
         </div>
 
-        <!-- Participation parameters -->
-        <div class="inv-params mt-5">
-          <div
-            v-if="summary.cashBox"
-            class="inv-param"
-            :style="{
-              borderColor: summary.cashBox.color + '40',
-              background: summary.cashBox.color + '0d',
-            }"
-          >
-            <div class="inv-param-icon" :style="{ background: summary.cashBox.color, color: '#fff' }">
-              <v-icon :icon="summary.cashBox.icon" size="20" />
-            </div>
-            <div class="inv-param-body">
-              <div class="inv-param-label">Касса</div>
-              <div class="inv-param-value">{{ summary.cashBox.name }}</div>
-            </div>
-          </div>
-          <div
-            class="inv-param"
-            :class="summary.coInvestor.profitPercent != null && summary.coInvestor.profitPercent > 0 ? 'inv-param--fixed' : 'inv-param--weight'"
-          >
-            <div class="inv-param-icon">
-              <v-icon
-                :icon="summary.coInvestor.profitPercent != null && summary.coInvestor.profitPercent > 0 ? 'mdi-handshake-outline' : 'mdi-scale-balance'"
-                size="20"
-              />
-            </div>
-            <div class="inv-param-body">
-              <div class="inv-param-label">Доля прибыли</div>
-              <div class="inv-param-value">
-                <template v-if="summary.coInvestor.profitPercent != null && summary.coInvestor.profitPercent > 0">
-                  Фикс {{ summary.coInvestor.profitPercent }}%
-                </template>
-                <template v-else>
-                  По вкладу капитала
-                </template>
-              </div>
-              <div class="inv-param-sub">Фактическая доля {{ summary.effectivePct.toFixed(2) }}% от прибыли кассы</div>
-            </div>
-          </div>
+        <!-- Payout schedule (person-level) -->
+        <div v-if="payoutScheduleLabel || summary.person.nextPayoutDate" class="inv-params mt-5">
           <div v-if="payoutScheduleLabel" class="inv-param inv-param--schedule">
-            <div class="inv-param-icon">
-              <v-icon icon="mdi-calendar-clock" size="20" />
-            </div>
+            <div class="inv-param-icon"><v-icon icon="mdi-calendar-clock" size="20" /></div>
             <div class="inv-param-body">
               <div class="inv-param-label">Периодичность выплат</div>
               <div class="inv-param-value">{{ payoutScheduleLabel }}</div>
             </div>
           </div>
           <div
-            v-if="summary.coInvestor.nextPayoutDate"
+            v-if="summary.person.nextPayoutDate"
             class="inv-param"
             :class="nextPayoutOverdue ? 'inv-param--overdue' : 'inv-param--next'"
           >
@@ -283,17 +303,129 @@ onMounted(load)
             </div>
             <div class="inv-param-body">
               <div class="inv-param-label">Следующая выплата</div>
-              <div class="inv-param-value">{{ formatDate(summary.coInvestor.nextPayoutDate) }}</div>
+              <div class="inv-param-value">{{ formatDate(summary.person.nextPayoutDate) }}</div>
               <div class="inv-param-sub">{{ nextPayoutSub }}</div>
             </div>
           </div>
         </div>
       </v-card>
 
-      <!-- Journal -->
+      <!-- Cashbox selector -->
+      <div v-if="summary.stakes.length > 1" class="inv-cb-tabs mb-4">
+        <button
+          v-for="s in summary.stakes"
+          :key="s.id"
+          type="button"
+          class="inv-cb-tab"
+          :class="{ 'inv-cb-tab--active': stake && stake.id === s.id }"
+          :style="stake && stake.id === s.id ? { borderColor: s.cashBox.color, color: s.cashBox.color, background: s.cashBox.color + '12' } : {}"
+          @click="selectStake(s.id)"
+        >
+          <v-icon :icon="s.cashBox.icon" size="15" :style="{ color: s.cashBox.color }" />
+          {{ s.cashBox.name }}
+        </button>
+      </div>
+
+      <!-- Selected cashbox: per-stake summary + params -->
+      <v-card v-if="stake" rounded="lg" elevation="0" border class="inv-hero pa-5 mb-4">
+        <div class="inv-cb-head mb-1">
+          <div class="inv-param-icon" :style="{ background: stake.cashBox.color, color: '#fff' }">
+            <v-icon :icon="stake.cashBox.icon" size="20" />
+          </div>
+          <div>
+            <div class="inv-cb-name">{{ stake.cashBox.name }}</div>
+            <div class="inv-cb-sub">{{ stakeModeLabel }}</div>
+          </div>
+        </div>
+
+        <!-- KPI stats for this cashbox -->
+        <div class="inv-stats mt-4">
+          <div class="inv-stat">
+            <div class="inv-stat-label">Капитал в кассе</div>
+            <div class="inv-stat-value" style="color: #3b82f6;">{{ formatCurrency(stake.currentCapital) }}</div>
+          </div>
+          <button
+            class="inv-stat inv-stat--clickable"
+            :disabled="stake.activeDealsCount === 0"
+            @click="showActiveBreakdown = true"
+          >
+            <div class="inv-stat-label">В работе</div>
+            <div class="inv-stat-value" style="color: #0ea5e9;">{{ formatCurrency(stake.activeDeployment) }}</div>
+            <div class="inv-stat-sub">{{ stake.activeDealsCount }} {{ pluralDeals(stake.activeDealsCount) }}</div>
+            <div v-if="stake.activeDealsCount > 0" class="inv-stat-action">
+              Подробнее
+              <v-icon icon="mdi-arrow-right" size="12" />
+            </div>
+          </button>
+          <div class="inv-stat">
+            <div class="inv-stat-label">Начислено прибыли</div>
+            <div class="inv-stat-value" style="color: #047857;">{{ formatCurrency(stake.realizedProfit) }}</div>
+          </div>
+          <div class="inv-stat">
+            <div class="inv-stat-label">Выплачено</div>
+            <div class="inv-stat-value" style="color: #7c3aed;">{{ formatCurrency(stake.totalPayout) }}</div>
+          </div>
+          <div class="inv-stat inv-stat--accent">
+            <div class="inv-stat-label">Остаток к выплате</div>
+            <div class="inv-stat-value" style="color: #f59e0b;">{{ formatCurrency(stake.balanceOwed) }}</div>
+          </div>
+        </div>
+
+        <!-- Share params for this cashbox -->
+        <div class="inv-params mt-5">
+          <div
+            class="inv-param"
+            :class="stake.costFeeMode ? 'inv-param--costfee' : (stake.profitPercent != null && stake.profitPercent > 0 ? 'inv-param--fixed' : 'inv-param--weight')"
+          >
+            <div class="inv-param-icon">
+              <v-icon
+                :icon="stake.costFeeMode ? 'mdi-tag-outline' : (stake.profitPercent != null && stake.profitPercent > 0 ? 'mdi-handshake-outline' : 'mdi-scale-balance')"
+                size="20"
+              />
+            </div>
+            <div class="inv-param-body">
+              <div class="inv-param-label">Доля прибыли</div>
+              <div class="inv-param-value">
+                <template v-if="stake.costFeeMode">Комиссия от закупки</template>
+                <template v-else-if="stake.profitPercent != null && stake.profitPercent > 0">
+                  Фикс {{ stake.profitPercent }}%
+                </template>
+                <template v-else>По вкладу капитала</template>
+              </div>
+              <div class="inv-param-sub">
+                <template v-if="stake.costFeeMode">
+                  Вы финансируете закупку и получаете всю сумму сделки за вычетом комиссии партнёра (ставка% × закупка)<template v-if="stake.costFeeDefaultRatePct != null"> — по умолчанию {{ stake.costFeeDefaultRatePct }}%</template>
+                </template>
+                <template v-else>Фактическая доля {{ stake.effectivePct.toFixed(2) }}% от прибыли кассы</template>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cost-fee explanation -->
+        <div v-if="stake.shareBreakdown && stake.shareBreakdown.mode === 'cost_fee'" class="inv-formula mt-5">
+          <div class="inv-formula-title">
+            <v-icon icon="mdi-tag-outline" size="14" />
+            Комиссия от закупки
+          </div>
+          <div class="inv-formula-body">
+            На каждой сделке партнёр берёт <strong>ставку % × закупочную цену</strong>. Вы финансируете закупку сами и
+            получаете <strong>всю сумму сделки за вычетом этой комиссии</strong> — возврат своего капитала плюс остаток наценки<template v-if="stake.shareBreakdown.defaultRatePct != null"> (ставка по умолчанию <strong>{{ stake.shareBreakdown.defaultRatePct }}%</strong>, задаётся под срок на каждой сделке)</template>.
+            Конкретные суммы по активным сделкам — в разделе «В работе».
+          </div>
+        </div>
+      </v-card>
+
+      <!-- Journal (per selected cashbox) -->
       <v-card rounded="lg" elevation="0" border class="pa-4">
-        <div class="inv-section-title mb-3">Журнал операций</div>
-        <div v-if="!journal.length" class="inv-empty">
+        <div class="inv-section-title mb-3">
+          Журнал операций
+          <span v-if="stake && summary.stakes.length > 1" class="inv-section-sub"> · {{ stake.cashBox.name }}</span>
+        </div>
+        <div v-if="journalLoading" class="inv-empty">
+          <v-progress-circular indeterminate color="primary" size="28" />
+        </div>
+        <div v-else-if="!journal.length" class="inv-empty">
           <v-icon icon="mdi-cash-clock" size="32" color="grey" />
           <div>Операций пока нет</div>
         </div>
@@ -322,14 +454,14 @@ onMounted(load)
       </div>
     </div>
 
-    <!-- Active deployment breakdown modal -->
+    <!-- Active deployment breakdown modal (per selected cashbox) -->
     <v-dialog v-model="showActiveBreakdown" max-width="640" :fullscreen="isMobile">
-      <v-card v-if="summary" rounded="lg">
+      <v-card v-if="stake" rounded="lg">
         <div class="inv-dialog-header">
           <div>
-            <div class="inv-dialog-title">Деньги в работе</div>
+            <div class="inv-dialog-title">Деньги в работе · {{ stake.cashBox.name }}</div>
             <div class="text-caption text-medium-emphasis mt-1">
-              Из чего складывается {{ formatCurrency(summary.activeDeployment) }}
+              Из чего складывается {{ formatCurrency(stake.activeDeployment) }}
             </div>
           </div>
           <button class="inv-dialog-close" @click="showActiveBreakdown = false">
@@ -343,18 +475,27 @@ onMounted(load)
               Как считается
             </div>
             <div class="inv-formula-body">
-              Ваша доля в кассе — <strong>{{ summary.effectivePct.toFixed(2) }}%</strong>.
-              Для каждой активной сделки: <strong>закупочная цена × {{ summary.effectivePct.toFixed(2) }}%</strong>
-              — это ваша часть в сделке. Сумма по всем активным = <strong>{{ formatCurrency(summary.activeDeployment) }}</strong>.
+              <template v-if="stake.costFeeMode">
+                Вы в режиме «комиссия от закупки» — деньги в работе равны полной закупочной цене
+                активных сделок (закупка идёт на ваши средства). По каждой сделке ниже — делёж наценки:
+                комиссия партнёра и ваш доход.
+              </template>
+              <template v-else>
+                Ваша доля в кассе — <strong>{{ stake.effectivePct.toFixed(2) }}%</strong>.
+                Для каждой активной сделки: <strong>закупочная цена × {{ stake.effectivePct.toFixed(2) }}%</strong>
+                — это ваша часть в сделке. Сумма по всем активным = <strong>{{ formatCurrency(stake.activeDeployment) }}</strong>.
+              </template>
             </div>
           </div>
           <div class="inv-list-header">
-            <span>Активные сделки ({{ summary.activeDealsCount }})</span>
-            <span class="text-caption text-medium-emphasis">Ваша доля</span>
+            <span>Активные сделки ({{ stake.activeDealsCount }})</span>
+            <span class="text-caption text-medium-emphasis">
+              {{ stake.costFeeMode ? 'Вы получите' : 'Ваша доля' }}
+            </span>
           </div>
           <div class="inv-list">
             <div
-              v-for="d in summary.activeDealsBreakdown"
+              v-for="d in stake.activeDealsBreakdown"
               :key="d.id"
               class="inv-list-row"
             >
@@ -364,10 +505,23 @@ onMounted(load)
                   {{ d.productName }}
                 </div>
                 <div class="inv-list-meta">
-                  Закупочная {{ formatCurrency(d.purchasePrice) }} · {{ formatDate(d.dealDate) }}
+                  <template v-if="d.costFee">
+                    {{ d.modeLabel ?? 'Комиссия от закупки' }} · {{ formatDate(d.dealDate) }}
+                  </template>
+                  <template v-else>
+                    Закупочная {{ formatCurrency(d.purchasePrice) }} · {{ formatDate(d.dealDate) }}
+                  </template>
+                  <template v-if="d.costFee">
+                    <br />
+                    возврат {{ formatCurrency(d.purchasePrice) }} + доход {{ formatCurrency(d.costFee.investorShare) }}
+                    (комиссия партнёра {{ d.costFee.ratePct }}% = {{ formatCurrency(d.costFee.partnerFee) }})
+                  </template>
                 </div>
               </div>
-              <div class="inv-list-stake">{{ formatCurrency(d.stake) }}</div>
+              <div class="inv-list-stake">
+                <template v-if="d.costFee">{{ formatCurrency(d.purchasePrice + d.costFee.investorShare) }}</template>
+                <template v-else>{{ formatCurrency(d.stake) }}</template>
+              </div>
             </div>
           </div>
         </div>
@@ -461,6 +615,7 @@ onMounted(load)
 }
 .inv-param--fixed .inv-param-icon { background: rgba(124,58,237,0.12); color: #7c3aed; }
 .inv-param--weight .inv-param-icon { background: rgba(99,102,241,0.12); color: #6366f1; }
+.inv-param--costfee .inv-param-icon { background: rgba(4,120,87,0.12); color: #047857; }
 .inv-param--schedule .inv-param-icon { background: rgba(245,158,11,0.12); color: #f59e0b; }
 .inv-param--next .inv-param-icon { background: rgba(16, 185, 129, 0.12); color: #10b981; }
 .inv-param--overdue {
@@ -494,6 +649,25 @@ onMounted(load)
   font-size: 14px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
+.inv-section-sub { font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.5); }
+
+/* Cashbox selector tabs */
+.inv-cb-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.inv-cb-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 999px; cursor: pointer;
+  font-size: 13px; font-weight: 600;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  transition: all 0.15s;
+}
+.inv-cb-tab:hover { border-color: rgba(var(--v-theme-on-surface), 0.3); }
+
+/* Selected cashbox header */
+.inv-cb-head { display: flex; align-items: center; gap: 12px; }
+.inv-cb-name { font-size: 17px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.95); }
+.inv-cb-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 2px; }
 .inv-empty {
   text-align: center; padding: 24px 12px;
   color: rgba(var(--v-theme-on-surface), 0.5);

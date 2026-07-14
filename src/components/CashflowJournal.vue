@@ -147,6 +147,19 @@
           <div class="cfj-row-amount" :class="{ 'cfj-row-amount--in': e.amount > 0, 'cfj-row-amount--out': e.amount < 0 }">
             {{ e.amount > 0 ? '+' : '' }}{{ formatCurrency(e.amount) }}
           </div>
+          <span
+            v-if="canCancelEntry(e)"
+            class="cfj-row-cancel"
+            :class="{ 'cfj-row-cancel--busy': cancellingId === e.id }"
+            role="button"
+            tabindex="0"
+            title="Отменить операцию"
+            @click.stop="cancelEntry(e)"
+            @keydown.enter.stop="cancelEntry(e)"
+          >
+            <v-progress-circular v-if="cancellingId === e.id" indeterminate size="13" width="2" />
+            <v-icon v-else icon="mdi-undo" size="15" />
+          </span>
         </button>
       </div>
 
@@ -169,14 +182,46 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCashflow, type CashFlowEntry, type CashFlowEntryType } from '@/composables/useCashflow'
+import { useCashBoxesStore } from '@/stores/cashboxes'
+import { useToast } from '@/composables/useToast'
 import { formatCurrency, formatCurrencyShort } from '@/utils/formatters'
 
 const router = useRouter()
+const toast = useToast()
+const cashboxesStore = useCashBoxesStore()
 const { entries, total, loading, fetchJournal } = useCashflow()
 
 // Optional scope — when passed, all journal queries are limited to a single
 // cashbox. Used by the cashbox detail page; unset means partner-wide ledger.
 const props = defineProps<{ cashBoxId?: string }>()
+// Испущен после отмены капитальной операции — родитель обновляет сводку капитала.
+const emit = defineEmits<{ changed: [] }>()
+
+// id записи, отмена которой сейчас выполняется
+const cancellingId = ref<string | null>(null)
+
+// «Отменить» показываем только в кассовом контексте (есть cashBoxId) и только
+// на партнёрских капитальных записях пополнения/снятия собственного капитала.
+function canCancelEntry(e: CashFlowEntry): boolean {
+  if (!props.cashBoxId) return false
+  return e.type === 'CAPITAL_TOPUP_OWN' || e.type === 'CAPITAL_WITHDRAW_OWN'
+}
+
+async function cancelEntry(e: CashFlowEntry) {
+  if (!props.cashBoxId || cancellingId.value) return
+  if (!confirm('Отменить операцию? Капитал вернётся к прежнему значению.')) return
+  cancellingId.value = e.id
+  try {
+    await cashboxesStore.cancelPartnerCapital(props.cashBoxId, e.id)
+    toast.success('Операция отменена')
+    await reload()
+    emit('changed')
+  } catch (err: any) {
+    toast.error(err.message || 'Не удалось отменить операцию')
+  } finally {
+    cancellingId.value = null
+  }
+}
 
 // ─── Type metadata ─────────────────────────────────────────────────────
 // Single source of truth for icons/colors/labels across the journal UI.
@@ -184,7 +229,8 @@ const TYPE_META: Record<CashFlowEntryType, { label: string; icon: string; bg: st
   DEAL_DEPLOY:        { label: 'Закупка',       icon: 'mdi-cart-arrow-down', bg: 'rgba(239, 68, 68, 0.10)',  fg: '#dc2626' },
   PAYMENT_IN:         { label: 'Платёж',        icon: 'mdi-cash-plus',       bg: 'rgba(4, 120, 87, 0.10)',   fg: '#047857' },
   DIVIDEND_OUT:       { label: 'Дивиденд',      icon: 'mdi-account-cash',    bg: 'rgba(124, 58, 237, 0.10)', fg: '#7c3aed' },
-  CAPITAL_TOPUP_OWN:  { label: 'Пополнение',    icon: 'mdi-wallet-plus',     bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
+  CAPITAL_TOPUP_OWN:  { label: 'Пополнение капитала', icon: 'mdi-wallet-plus',  bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
+  CAPITAL_WITHDRAW_OWN: { label: 'Снятие капитала', icon: 'mdi-wallet-minus',   bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
   MANUAL_INCOME:      { label: 'Ручной доход',  icon: 'mdi-cash-plus',       bg: 'rgba(16, 185, 129, 0.10)', fg: '#059669' },
   MANUAL_EXPENSE:     { label: 'Ручной расход', icon: 'mdi-cash-minus',      bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
   CAPITAL_IN:         { label: 'Капитал +',     icon: 'mdi-bank-plus',       bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
@@ -202,6 +248,7 @@ const TYPE_GROUPS: { key: CashFlowEntryType; label: string; color: string }[] = 
   { key: 'DEAL_DEPLOY',       label: 'Закупки',        color: '#dc2626' },
   { key: 'DIVIDEND_OUT',      label: 'Дивиденды',      color: '#7c3aed' },
   { key: 'CAPITAL_TOPUP_OWN', label: 'Пополнение капитала', color: '#3b82f6' },
+  { key: 'CAPITAL_WITHDRAW_OWN', label: 'Снятие капитала', color: '#d97706' },
   { key: 'MANUAL_INCOME',     label: 'Ручные доходы',  color: '#059669' },
   { key: 'MANUAL_EXPENSE',    label: 'Ручные расходы', color: '#d97706' },
 ]
@@ -504,6 +551,21 @@ onMounted(() => reload())
 }
 .cfj-row-amount--in { color: #047857; }
 .cfj-row-amount--out { color: #dc2626; }
+
+/* Cancel action (partner capital rows only) */
+.cfj-row-cancel {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; min-width: 28px; flex-shrink: 0;
+  border-radius: 8px; border: 1px solid transparent;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer; transition: all 0.15s; opacity: 0.55;
+}
+.cfj-row:hover .cfj-row-cancel { opacity: 1; }
+.cfj-row-cancel:hover {
+  border-color: rgba(220, 38, 38, 0.30);
+  background: rgba(220, 38, 38, 0.08); color: #dc2626;
+}
+.cfj-row-cancel--busy { opacity: 0.6; cursor: default; }
 
 /* Load more */
 .cfj-load-more {

@@ -3,6 +3,7 @@ import { api } from '@/api/client'
 
 export type CashFlowEntryType =
   | 'CAPITAL_TOPUP_OWN'
+  | 'CAPITAL_WITHDRAW_OWN'
   | 'DEAL_DEPLOY'
   | 'PAYMENT_IN'
   | 'DIVIDEND_OUT'

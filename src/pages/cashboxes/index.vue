@@ -7,17 +7,33 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useCapital } from '@/composables/useCapital'
 import { formatCurrency } from '@/utils/formatters'
 import CashBoxEditDialog from '@/components/CashBoxEditDialog.vue'
+import CashBoxLimitBlock from '@/components/CashBoxLimitBlock.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
 const toast = useToast()
 const { isDark } = useIsDark()
 const store = useCashBoxesStore()
+const authStore = useAuthStore()
+
+// Plan cashbox limit (−1 = unlimited). FREE 1 · Стандарт 3 · Бизнес 5 · Премиум ∞.
+// Only ACTIVE cashboxes count toward the limit (matches the backend).
+const cashBoxLimit = computed(() => authStore.user?.planLimits?.maxCashBoxes ?? -1)
+// Active = non-archived AND not read-only-locked (matches the backend limit).
+const activeCashBoxCount = computed(() => store.items.filter((b) => !b.archivedAt && !b.lockedAt).length)
+const atCashBoxLimit = computed(
+  () => cashBoxLimit.value !== -1 && activeCashBoxCount.value >= cashBoxLimit.value,
+)
 // Cross-cashbox waterfall figures (netProfit, pendingCIPayout, availableCapital).
 // Replaces the dedicated /finance page — partner sees totals here.
 const { capital, fetchCapital } = useCapital()
 
 const showCreate = ref(false)
 const editing = ref<CashBoxSummary | null>(null)
+
+// Any non-archived cashbox pushed into read-only because the active count
+// exceeds the plan limit (e.g. after a downgrade). Drives the top warning block.
+const hasLockedBoxes = computed(() => store.items.some((b) => !b.archivedAt && b.lockedAt))
 
 onMounted(() => {
   store.fetchAll().catch((e: any) => toast.error(e.message || 'Ошибка загрузки касс'))
@@ -38,7 +54,16 @@ const total = computed(() => {
   )
 })
 
+function goToSubscription() {
+  router.push({ path: '/settings', query: { tab: 'subscription' } })
+}
+
 function openCreate() {
+  if (atCashBoxLimit.value) {
+    toast.error(`Лимит касс для вашего тарифа: ${cashBoxLimit.value}. Перейдите на более высокий тариф, чтобы добавить больше.`)
+    goToSubscription()
+    return
+  }
   editing.value = null
   showCreate.value = true
 }
@@ -137,10 +162,21 @@ async function openInfo(box: CashBoxSummary, e: Event) {
           Разделите учёт по источникам средств — личные, по инвесторам или просто разные группы продаж
         </div>
       </div>
-      <button class="cb-create-btn" @click="openCreate">
-        <v-icon icon="mdi-plus" size="18" />
-        Новая касса
-      </button>
+      <div class="cb-header-actions">
+        <span
+          v-if="cashBoxLimit !== -1"
+          class="cb-limit-chip"
+          :class="{ 'cb-limit-chip--full': atCashBoxLimit }"
+          :title="atCashBoxLimit ? 'Лимит касс для вашего тарифа достигнут' : ''"
+        >
+          <v-icon :icon="atCashBoxLimit ? 'mdi-lock-outline' : 'mdi-wallet-outline'" size="13" />
+          {{ activeCashBoxCount }} / {{ cashBoxLimit }}
+        </span>
+        <button class="cb-create-btn" :class="{ 'cb-create-btn--locked': atCashBoxLimit }" @click="openCreate">
+          <v-icon :icon="atCashBoxLimit ? 'mdi-lock-outline' : 'mdi-plus'" size="18" />
+          Новая касса
+        </button>
+      </div>
     </div>
 
     <!-- Loading -->
@@ -149,6 +185,9 @@ async function openInfo(box: CashBoxSummary, e: Event) {
     </div>
 
     <template v-else>
+      <!-- Read-only cashboxes over the plan limit → pick which stay active -->
+      <CashBoxLimitBlock v-if="hasLockedBoxes" :boxes="store.items" @saved="fetchCapital" />
+
       <!-- Top: total across all cashboxes -->
       <div class="cb-total-card">
         <div class="cb-total-header">
@@ -170,7 +209,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
           </div>
           <div class="cb-metric-divider" />
           <div class="cb-metric">
-            <div class="cb-metric-value" style="color: #10b981;">+{{ formatCurrency(capital?.netProfit ?? 0) }}</div>
+            <div class="cb-metric-value" style="color: #10b981;">+{{ formatCurrency(capital?.partnerNetProfit ?? capital?.netProfit ?? 0) }}</div>
             <div class="cb-metric-label">Заработано</div>
           </div>
           <template v-if="(capital?.coInvestorPayout ?? 0) > 0">
@@ -204,6 +243,10 @@ async function openInfo(box: CashBoxSummary, e: Event) {
             <div class="cb-card-title-block">
               <div class="cb-card-title">{{ box.name }}</div>
               <div v-if="box.isDefault" class="cb-card-badge">Основная</div>
+              <div v-if="box.lockedAt" class="cb-card-lock-badge">
+                <v-icon icon="mdi-lock-outline" size="11" />
+                Только просмотр
+              </div>
             </div>
 
             <!-- Menu -->
@@ -267,10 +310,17 @@ async function openInfo(box: CashBoxSummary, e: Event) {
           </div>
         </div>
 
-        <!-- "+ Add" placeholder card -->
-        <button class="cb-card cb-card--add" @click="openCreate">
-          <v-icon icon="mdi-plus" size="32" />
-          <div class="cb-card-add-text">Новая касса</div>
+        <!-- "+ Add" placeholder card — locked with an upsell at the plan limit -->
+        <button
+          class="cb-card cb-card--add"
+          :class="{ 'cb-card--locked': atCashBoxLimit }"
+          @click="atCashBoxLimit ? goToSubscription() : openCreate()"
+        >
+          <v-icon :icon="atCashBoxLimit ? 'mdi-lock-outline' : 'mdi-plus'" size="32" />
+          <div class="cb-card-add-text">
+            {{ atCashBoxLimit ? 'Лимит касс достигнут' : 'Новая касса' }}
+          </div>
+          <div v-if="atCashBoxLimit" class="cb-card-add-sub">Повысьте тариф, чтобы добавить больше</div>
         </button>
       </div>
     </template>
@@ -367,6 +417,27 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   transition: all 0.15s;
 }
 .cb-create-btn:hover { background: #065f46; transform: translateY(-1px); }
+.cb-create-btn--locked { background: rgba(var(--v-theme-on-surface), 0.25); }
+.cb-create-btn--locked:hover { background: rgba(var(--v-theme-on-surface), 0.35); }
+
+.cb-header-actions { display: flex; align-items: center; gap: 10px; }
+.cb-limit-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 40px; padding: 0 12px; border-radius: 10px;
+  font-size: 12.5px; font-weight: 700; white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.cb-limit-chip--full {
+  color: #b45309; background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+.cb-card--locked { opacity: 0.85; }
+.cb-card-add-sub {
+  font-size: 11px; font-weight: 500; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
 
 /* Total card — top hero */
 .cb-total-card {
@@ -458,6 +529,13 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   background: var(--cb-color); color: #fff; opacity: 0.9;
 }
 .cb-page.dark .cb-card-title { color: #f5f5f5; }
+.cb-card-lock-badge {
+  display: inline-flex; align-items: center; gap: 3px; margin-top: 4px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  padding: 2px 8px; border-radius: 6px;
+  background: rgba(245, 158, 11, 0.15); color: #b45309;
+}
+.cb-page.dark .cb-card-lock-badge { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
 
 .cb-card-menu {
   width: 30px; height: 30px; border-radius: 8px;

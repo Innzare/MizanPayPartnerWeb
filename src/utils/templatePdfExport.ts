@@ -2,6 +2,7 @@ import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import type { Deal, Payment, User } from '@/types'
 import { formatDate } from './formatters'
+import { dealGuarantors } from './dealGuarantors'
 
 function curr(amount: number): string {
   return Math.round(amount).toLocaleString('ru-RU') + ' ₽'
@@ -42,7 +43,30 @@ export function replaceVariables(html: string, deal: Deal, payments: Payment[], 
     ? { firstName: cp.firstName, lastName: cp.lastName, patronymic: cp.patronymic, phone: cp.phone, passportSeries: cp.passportSeries, passportNumber: cp.passportNumber, passportIssuedAt: cp.passportIssuedAt, birthDate: (cp as any).birthDate, registrationAddress: (cp as any).registrationAddress, city: (cp as any).city }
     : deal.client || { firstName: deal.externalClientName || '', lastName: '', phone: deal.externalClientPhone || '' }
 
-  const guarantor = deal.guarantorProfile
+  // Все поручители сделки (по порядку). Основной (первый) остаётся в одиночных
+  // плейсхолдерах для совместимости со старыми шаблонами; полный список
+  // выводится через {{поручители}} / {{телефоны_поручителей}} / {{поручители_блок}}.
+  const guarantors = dealGuarantors(deal)
+  const guarantor = guarantors[0]
+
+  const escapeHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  // HTML-блок «Поручители»: ФИО, телефон, паспорт и адрес каждого. Пусто, если
+  // поручителей нет, — плейсхолдер разворачивается в пустую строку.
+  const guarantorsBlock = guarantors.length
+    ? guarantors.map((g, i) => {
+        const passport = [g.passportSeries, g.passportNumber].filter(Boolean).join(' ')
+        const addr = g.registrationAddress || (g as any).residentialAddress || ''
+        const lines = [
+          `<strong>Поручитель ${i + 1}:</strong> ${escapeHtml(fullName(g))}`,
+          g.phone ? `Тел.: ${escapeHtml(g.phone)}` : '',
+          passport ? `Паспорт: ${escapeHtml(passport)}` : '',
+          addr ? `Адрес: ${escapeHtml(addr)}` : '',
+        ].filter(Boolean)
+        return `<p style="margin: 0 0 6px;">${lines.join('<br/>')}</p>`
+      }).join('')
+    : ''
 
   const vars: Record<string, string> = {
     '{{продавец}}': fullName(investor),
@@ -57,6 +81,10 @@ export function replaceVariables(html: string, deal: Deal, payments: Payment[], 
     '{{адрес}}': client.registrationAddress || client.city || investor.city || '________________________________',
     '{{поручитель}}': guarantor ? fullName(guarantor) : '_______________',
     '{{телефон_поручителя}}': guarantor?.phone || '___________',
+    // Все поручители: ФИО через запятую / телефоны через запятую / полный блок.
+    '{{поручители}}': guarantors.length ? guarantors.map(fullName).join(', ') : '_______________',
+    '{{телефоны_поручителей}}': guarantors.length ? guarantors.map((g) => g.phone || '___________').join(', ') : '___________',
+    '{{поручители_блок}}': guarantorsBlock,
     '{{товар}}': deal.productName,
     '{{цена}}': curr(deal.totalPrice),
     '{{закупочная_цена}}': curr(deal.purchasePrice),

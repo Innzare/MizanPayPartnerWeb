@@ -3,6 +3,7 @@ import pdfMake from 'pdfmake/build/pdfmake'
 // @ts-ignore
 import pdfFonts from 'pdfmake/build/vfs_fonts'
 import type { Deal, Payment, User } from '@/types'
+import { dealGuarantors } from './dealGuarantors'
 
 pdfMake.vfs = pdfFonts
 
@@ -41,9 +42,10 @@ export function generateCompactContract(deal: Deal, payments: Payment[], investo
       ? deal.client
       : { firstName: deal.externalClientName || '', lastName: '', phone: deal.externalClientPhone || '' }
 
-  const guarantor: any = deal.guarantorProfile
-    ? { firstName: deal.guarantorProfile.firstName, lastName: deal.guarantorProfile.lastName, patronymic: deal.guarantorProfile.patronymic, phone: deal.guarantorProfile.phone }
-    : null
+  // Все поручители сделки (по порядку). Первый — основной (для полей «Тел:
+  // Поручителя» и «Поручитель:» в подписях); остальные добавляются списком ниже.
+  const guarantors = dealGuarantors(deal)
+  const guarantor: any = guarantors[0] ?? null
 
   const dealDate = new Date(deal.dealDate || deal.createdAt)
   const downPayment = deal.downPayment || 0
@@ -245,6 +247,12 @@ export function generateCompactContract(deal: Deal, payments: Payment[], investo
             },
             { text: `Поручитель: ${guarantor ? fullName(guarantor) : blankField(20)}`, fontSize: 9, margin: [0, 0, 0, 4] },
             { text: `Подпись: Поручителя: ${blankField(10)}`, fontSize: 9 },
+            // Дополнительные поручители (2..5), если есть.
+            ...guarantors.slice(1).flatMap((g, i) => [
+              { text: `Поручитель ${i + 2}: ${fullName(g)}`, fontSize: 9, margin: [0, 8, 0, 4] as [number, number, number, number] },
+              { text: `Тел: ${g.phone || blankField(12)}`, fontSize: 9, margin: [0, 0, 0, 4] as [number, number, number, number] },
+              { text: `Подпись: ${blankField(10)}`, fontSize: 9 },
+            ]),
           ],
         },
       ],
