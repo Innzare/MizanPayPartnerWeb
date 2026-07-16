@@ -284,6 +284,18 @@ export interface PersonStake {
   managementFeePct?: number
   costFeeMode?: boolean
   costFeeDefaultRatePct?: number | null
+  // Распределение прибыли по этой кассе (для раскрытия списка).
+  coInvestorShare?: number
+  myShare?: number
+  effectivePct?: number
+}
+
+// Агрегат распределения прибыли по всем кассам персоны (для KPI/полосы).
+export interface PersonDistribution {
+  totalProfit: number
+  coInvestorShare: number
+  myShare: number
+  investorPct: number
 }
 
 // Per-cashbox stake as returned in the person DETAIL
@@ -320,6 +332,7 @@ export interface InvestorPerson {
   nextPayoutDate?: string | null
   cashBoxCount: number
   totals: InvestorPersonTotals
+  distribution?: PersonDistribution
   stakes: PersonStake[]
 }
 
@@ -332,6 +345,8 @@ export interface InvestorPersonDetail {
     shareToken: string | null
     payoutSchedule?: PayoutSchedule
     nextPayoutDate?: string | null
+    // Показывать ли долю партнёра инвестору в публичном кабинете по ссылке.
+    showPartnerShareToInvestor?: boolean
   }
   totals: InvestorPersonTotals
   stakes: PersonStakeDetail[]
@@ -394,11 +409,19 @@ export interface CoInvestorSummary {
     purchasePrice: number
     dealDate: string
     totalPrice?: number
+    // Статус сделки — для фильтра «Все / Активные / Завершённые».
+    status?: 'ACTIVE' | 'COMPLETED'
     stake: number
     // Expected profit for THIS investor from this deal (for cost-fee = his income).
     expectedProfit?: number
     // Вся прибыль сделки (наценка) и способ деления — для разбора доли.
     dealProfit?: number
+    // Доля ПАРТНЁРА = прибыль − доли всех со-инвесторов. В публичном кабинете
+    // инвестора отсутствует, если у личности выключен showPartnerShareToInvestor.
+    partnerProfit?: number
+    // Прогресс к завершению сделки.
+    paidPayments?: number
+    numberOfPayments?: number
     modeLabel?: string
     // Cost-fee deals carry the per-deal split for the «В работе» modal.
     costFee?: { ratePct: number; partnerFee: number; investorShare: number }

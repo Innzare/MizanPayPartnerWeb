@@ -23,6 +23,14 @@ function stakeModeIcon(s: PersonStake): string {
   if (s.profitPercent != null && s.profitPercent > 0) return 'mdi-percent-outline'
   return 'mdi-scale-balance'
 }
+// Распределение прибыли ПО КОНКРЕТНОЙ КАССЕ (стейку) — для полосы под кассой.
+function stakeTotalProfit(s: PersonStake): number {
+  return (s.coInvestorShare ?? 0) + (s.myShare ?? 0)
+}
+function stakeInvestorPct(s: PersonStake): number {
+  const t = stakeTotalProfit(s)
+  return t > 0 ? Math.round(((s.coInvestorShare ?? 0) / t) * 100) : Math.round(s.effectivePct ?? 0)
+}
 import { Bar } from 'vue-chartjs'
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend } from 'chart.js'
 
@@ -36,6 +44,15 @@ const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
 function updateMobile() { isMobile.value = window.innerWidth < 768 }
 onMounted(() => window.addEventListener('resize', updateMobile))
 onUnmounted(() => window.removeEventListener('resize', updateMobile))
+
+// Инлайн-раскрытие строки инвестора: краткая сводка по кассам + метрики,
+// без ухода на отдельную страницу (переход остаётся ссылкой внутри).
+const expandedPersons = ref<Set<string>>(new Set())
+function togglePersonExpand(id: string) {
+  const n = new Set(expandedPersons.value)
+  n.has(id) ? n.delete(id) : n.add(id)
+  expandedPersons.value = n
+}
 const toast = useToast()
 const dealsStore = useDealsStore()
 const cashboxesStore = useCashBoxesStore()
@@ -617,53 +634,25 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
               v-for="p in filteredPersons"
               :key="p.id"
               class="ci-card"
-              @click="router.push(`/co-investors/person/${p.id}`)"
+              :class="{ 'ci-card--expanded': expandedPersons.has(p.id) }"
+              @click="togglePersonExpand(p.id)"
             >
               <div class="ci-header">
+                <button class="ci-td-chevron" :class="{ 'ci-td-chevron--open': expandedPersons.has(p.id) }" @click.stop="togglePersonExpand(p.id)">
+                  <v-icon icon="mdi-chevron-down" size="20" />
+                </button>
                 <div class="ci-avatar" :style="{ background: getAvatarColor(p.name) }">
                   {{ getInitials(p.name) }}
                 </div>
 
                 <div class="ci-main">
-                  <div class="ci-name-row">
-                    <span class="ci-name">{{ p.name }}</span>
-                    <span class="ci-mode-badge ci-mode-badge--pool">
-                      <v-icon icon="mdi-wallet-outline" size="11" />
-                      {{ p.cashBoxCount }} касс{{ p.cashBoxCount === 1 ? 'а' : (p.cashBoxCount < 5 ? 'ы' : '') }}
-                    </span>
-                  </div>
-                  <div class="ci-meta">
-                    <span v-if="p.phone">{{ formatPhone(p.phone) }} · </span>
-                    {{ formatCurrency(p.totals.currentCapital) }}
-                  </div>
-                  <!-- Cashbox mini-chips by color -->
-                  <div class="ci-cb-chips mt-2">
-                    <span
-                      v-for="s in p.stakes"
-                      :key="s.id"
-                      class="ci-cb-mini"
-                      :style="{ color: s.cashBox.color, background: s.cashBox.color + '14', borderColor: s.cashBox.color + '40' }"
-                    >
-                      <v-icon :icon="stakeModeIcon(s)" size="12" />
-                      <span class="ci-cb-mini-name">{{ s.cashBox.name }}</span>
-                      <span class="ci-cb-mini-mode">{{ stakeModeShort(s) }}</span>
-                    </span>
-                    <span v-if="p.stakes.length === 0" class="ci-cb-none">Нет касс</span>
-                  </div>
-                </div>
-
-                <div class="ci-stats d-none d-md-flex">
-                  <div class="ci-stat">
-                    <div class="ci-stat-value" style="color: #047857;">{{ formatCurrency(p.totals.realizedProfit) }}</div>
-                    <div class="ci-stat-label">Начислено</div>
-                  </div>
-                  <div class="ci-stat">
-                    <div class="ci-stat-value" style="color: #f59e0b;">{{ formatCurrency(p.totals.balanceOwed) }}</div>
-                    <div class="ci-stat-label">К выплате</div>
-                  </div>
+                  <span class="ci-name">{{ p.name }}</span>
                 </div>
 
                 <div class="ci-card-menu" @click.stop>
+                  <button class="ci-row-act" title="Открыть карточку инвестора" @click="router.push(`/co-investors/person/${p.id}`)">
+                    <v-icon icon="mdi-open-in-new" size="19" />
+                  </button>
                   <v-menu :close-on-content-click="true" offset="4" location="bottom end">
                     <template #activator="{ props: menuProps }">
                       <button class="ci-row-act" title="Действия" v-bind="menuProps">
@@ -689,19 +678,112 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
                 </div>
               </div>
 
-              <!-- Mobile totals (hidden on md+) -->
-              <div class="ci-stats-mobile d-md-none">
-                <div class="ci-stat-m">
-                  <div class="ci-stat-m-label">Капитал</div>
-                  <div class="ci-stat-m-value">{{ formatCurrency(p.totals.currentCapital) }}</div>
+              <!-- Раскрытая часть: контакт + сводка + доли + кассы + переход -->
+              <div v-if="expandedPersons.has(p.id)" class="ci-card-expand" @click.stop>
+                <!-- Контакт + участие -->
+                <div v-if="p.phone || p.cashBoxCount" class="ci-exp-meta">
+                  <a v-if="p.phone" :href="`tel:+7${p.phone}`" class="ci-exp-meta-item" @click.stop>
+                    <v-icon icon="mdi-phone-outline" size="14" />
+                    {{ formatPhone(p.phone) }}
+                  </a>
+                  <span class="ci-exp-meta-item">
+                    <v-icon icon="mdi-wallet-outline" size="14" />
+                    {{ p.cashBoxCount }} касс{{ p.cashBoxCount === 1 ? 'а' : (p.cashBoxCount < 5 ? 'ы' : '') }}
+                  </span>
                 </div>
-                <div class="ci-stat-m">
-                  <div class="ci-stat-m-label">Начислено</div>
-                  <div class="ci-stat-m-value" style="color: #047857;">{{ formatCurrency(p.totals.realizedProfit) }}</div>
+
+                <!-- Сводка: капитал / начислено / выплачено / к выплате -->
+                <div class="ci-exp-stats">
+                  <div class="ci-stat-m">
+                    <div class="ci-stat-m-label">Капитал</div>
+                    <div class="ci-stat-m-value">{{ formatCurrency(p.totals.currentCapital) }}</div>
+                  </div>
+                  <div class="ci-stat-m">
+                    <div class="ci-stat-m-label">Начислено</div>
+                    <div class="ci-stat-m-value" style="color: #047857;">{{ formatCurrency(p.totals.realizedProfit) }}</div>
+                  </div>
+                  <div class="ci-stat-m">
+                    <div class="ci-stat-m-label">Выплачено</div>
+                    <div class="ci-stat-m-value" style="color: #7c3aed;">{{ formatCurrency(p.totals.totalPayout) }}</div>
+                  </div>
+                  <div class="ci-stat-m">
+                    <div class="ci-stat-m-label">К выплате</div>
+                    <div class="ci-stat-m-value" style="color: #f59e0b;">{{ formatCurrency(p.totals.balanceOwed) }}</div>
+                  </div>
                 </div>
-                <div class="ci-stat-m">
-                  <div class="ci-stat-m-label">К выплате</div>
-                  <div class="ci-stat-m-value" style="color: #f59e0b;">{{ formatCurrency(p.totals.balanceOwed) }}</div>
+
+                <!-- KPI: доля инвестора / моя доля -->
+                <div class="ci-kpi-row">
+                  <div class="ci-kpi">
+                    <div class="ci-kpi-label">Доля инвестора</div>
+                    <div class="ci-kpi-val" style="color: #6366f1;">{{ formatCurrency(p.distribution?.coInvestorShare ?? 0) }}</div>
+                  </div>
+                  <div class="ci-kpi">
+                    <div class="ci-kpi-label">Моя доля</div>
+                    <div class="ci-kpi-val" style="color: #047857;">{{ formatCurrency(p.distribution?.myShare ?? 0) }}</div>
+                  </div>
+                </div>
+
+                <!-- Кассы: сверху вниз, под каждой — распределение прибыли -->
+                <div class="ci-section-title">Кассы</div>
+                <div class="ci-stakes-list">
+                  <div v-for="s in p.stakes" :key="s.id" class="ci-stake-card">
+                    <div class="ci-stake-card-head ci-stake-card-head--static">
+                      <div class="ci-stake-chip-icon" :style="{ background: s.cashBox.color, color: '#fff' }">
+                        <v-icon :icon="s.cashBox.icon || 'mdi-wallet-outline'" size="16" />
+                      </div>
+                      <div class="ci-stake-chip-body">
+                        <div class="ci-stake-chip-name">{{ s.cashBox.name }}</div>
+                        <div class="ci-stake-chip-mode">{{ stakeModeShort(s) }} · капитал {{ formatCurrency(s.currentCapital) }}</div>
+                      </div>
+                      <div class="ci-stake-chip-owed" v-if="s.balanceOwed > 0">
+                        <span class="ci-stake-chip-owed-val">{{ formatCurrencyShort(s.balanceOwed) }}</span>
+                        <span class="ci-stake-chip-owed-label">к выплате</span>
+                      </div>
+                    </div>
+                    <div v-if="stakeTotalProfit(s) > 0" class="ci-stake-dist">
+                      <div class="ci-stake-dist-head">
+                        <span class="ci-stake-dist-title">Распределение прибыли</span>
+                        <span class="ci-stake-dist-right">
+                          <v-tooltip location="left" open-on-click max-width="300">
+                            <template #activator="{ props }">
+                              <button type="button" v-bind="props" class="ci-dist-help" @click.stop aria-label="Что это за число">
+                                <v-icon icon="mdi-help-circle" size="15" />
+                              </button>
+                            </template>
+                            <div style="font-size: 12.5px; line-height: 1.55;">
+                              Это <b>вся прибыль (наценка)</b> по всем сделкам инвестора в этой кассе — и по активным, и по завершённым, за всё время.<br /><br />
+                              <span style="color: #a5b4fc;">■</span> синим — сколько получает <b>инвестор</b>;<br />
+                              <span style="color: #6ee7b7;">■</span> зелёным — сколько остаётся <b>вам</b>.<br /><br />
+                              Это накопительный итог, а не «деньги в работе».
+                            </div>
+                          </v-tooltip>
+                          <span class="ci-stake-dist-total">{{ formatCurrency(stakeTotalProfit(s)) }}</span>
+                        </span>
+                      </div>
+                      <div class="ci-dist-bar">
+                        <div class="ci-dist-fill" :style="{ width: stakeInvestorPct(s) + '%' }" />
+                      </div>
+                      <div class="ci-dist-legend">
+                        <div class="ci-dist-leg">
+                          <span class="ci-dist-leg-pct" style="color: #6366f1;">Инвестору · {{ stakeInvestorPct(s) }}%</span>
+                          <span class="ci-dist-leg-amt" style="color: #6366f1;">{{ formatCurrency(s.coInvestorShare ?? 0) }}</span>
+                        </div>
+                        <div class="ci-dist-leg ci-dist-leg--right">
+                          <span class="ci-dist-leg-pct" style="color: #047857;">Моя доля · {{ 100 - stakeInvestorPct(s) }}%</span>
+                          <span class="ci-dist-leg-amt" style="color: #047857;">{{ formatCurrency(s.myShare ?? 0) }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-if="!p.stakes.length" class="ci-stake-none">Инвестор не участвует ни в одной кассе</div>
+                </div>
+
+                <div class="ci-expanded-actions">
+                  <router-link :to="`/co-investors/person/${p.id}`" class="ci-expanded-btn">
+                    Открыть карточку инвестора
+                    <v-icon icon="mdi-arrow-right" size="16" />
+                  </router-link>
                 </div>
               </div>
             </div>
@@ -754,14 +836,17 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
               </tr>
             </thead>
             <tbody>
+              <template v-for="p in filteredPersons" :key="p.id">
               <tr
-                v-for="p in filteredPersons"
-                :key="p.id"
                 class="ci-trow"
-                @click="router.push(`/co-investors/person/${p.id}`)"
+                :class="{ 'ci-trow--expanded': expandedPersons.has(p.id) }"
+                @click="togglePersonExpand(p.id)"
               >
                 <td>
                   <div class="ci-td-investor">
+                    <button class="ci-td-chevron" :class="{ 'ci-td-chevron--open': expandedPersons.has(p.id) }" @click.stop="togglePersonExpand(p.id)">
+                      <v-icon icon="mdi-chevron-down" size="20" />
+                    </button>
                     <div class="ci-row-avatar" :style="{ background: ciAvatarColor(p.name) }">
                       {{ ciInitials(p.name) }}
                     </div>
@@ -791,30 +876,136 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
                 <td class="ci-td-num" style="color: #047857;">{{ formatCurrency(p.totals.realizedProfit) }}</td>
                 <td class="ci-td-num" style="color: #f59e0b;">{{ formatCurrency(p.totals.balanceOwed) }}</td>
                 <td class="ci-td-actions" @click.stop>
-                  <v-menu :close-on-content-click="true" offset="4" location="bottom end">
-                    <template #activator="{ props: menuProps }">
-                      <button class="ci-row-act" title="Действия" v-bind="menuProps">
-                        <v-icon icon="mdi-dots-vertical" size="18" />
-                      </button>
-                    </template>
-                    <div class="ci-row-menu">
-                      <button class="ci-menu-item" @click="router.push(`/co-investors/person/${p.id}`)">
-                        <v-icon icon="mdi-open-in-new" size="18" />
-                        <span>Открыть</span>
-                      </button>
-                      <button class="ci-menu-item" @click="openEditPerson(p)">
-                        <v-icon icon="mdi-pencil-outline" size="18" />
-                        <span>Редактировать</span>
-                      </button>
-                      <div class="ci-menu-divider" />
-                      <button class="ci-menu-item ci-menu-item--danger" @click="openDeletePerson(p)">
-                        <v-icon icon="mdi-trash-can-outline" size="18" />
-                        <span>Удалить инвестора</span>
-                      </button>
-                    </div>
-                  </v-menu>
+                  <div class="ci-td-actions-row">
+                    <button class="ci-row-act" title="Открыть карточку инвестора" @click="router.push(`/co-investors/person/${p.id}`)">
+                      <v-icon icon="mdi-open-in-new" size="18" />
+                    </button>
+                    <v-menu :close-on-content-click="true" offset="4" location="bottom end">
+                      <template #activator="{ props: menuProps }">
+                        <button class="ci-row-act" title="Действия" v-bind="menuProps">
+                          <v-icon icon="mdi-dots-vertical" size="18" />
+                        </button>
+                      </template>
+                      <div class="ci-row-menu">
+                        <button class="ci-menu-item" @click="router.push(`/co-investors/person/${p.id}`)">
+                          <v-icon icon="mdi-open-in-new" size="18" />
+                          <span>Открыть</span>
+                        </button>
+                        <button class="ci-menu-item" @click="openEditPerson(p)">
+                          <v-icon icon="mdi-pencil-outline" size="18" />
+                          <span>Редактировать</span>
+                        </button>
+                        <div class="ci-menu-divider" />
+                        <button class="ci-menu-item ci-menu-item--danger" @click="openDeletePerson(p)">
+                          <v-icon icon="mdi-trash-can-outline" size="18" />
+                          <span>Удалить инвестора</span>
+                        </button>
+                      </div>
+                    </v-menu>
+                  </div>
                 </td>
               </tr>
+              <!-- Раскрытая строка: краткая сводка по кассам + метрики -->
+              <tr v-if="expandedPersons.has(p.id)" class="ci-trow-expand">
+                <td colspan="6">
+                  <div class="ci-expanded" @click.stop>
+                    <!-- Метрики -->
+                    <div class="ci-extra-stats">
+                      <div class="ci-stat-m">
+                        <div class="ci-stat-m-label">Начислено</div>
+                        <div class="ci-stat-m-value" style="color: #047857;">{{ formatCurrency(p.totals.realizedProfit) }}</div>
+                      </div>
+                      <div class="ci-stat-m">
+                        <div class="ci-stat-m-label">Выплачено</div>
+                        <div class="ci-stat-m-value" style="color: #7c3aed;">{{ formatCurrency(p.totals.totalPayout) }}</div>
+                      </div>
+                      <div class="ci-stat-m">
+                        <div class="ci-stat-m-label">К выплате</div>
+                        <div class="ci-stat-m-value" style="color: #f59e0b;">{{ formatCurrency(p.totals.balanceOwed) }}</div>
+                      </div>
+                    </div>
+
+                    <!-- KPI: капитал / доля инвестора / моя доля -->
+                    <div class="ci-kpi-row">
+                      <div class="ci-kpi">
+                        <div class="ci-kpi-label">Капитал</div>
+                        <div class="ci-kpi-val">{{ formatCurrency(p.totals.currentCapital) }}</div>
+                      </div>
+                      <div class="ci-kpi">
+                        <div class="ci-kpi-label">Доля инвестора</div>
+                        <div class="ci-kpi-val" style="color: #6366f1;">{{ formatCurrency(p.distribution?.coInvestorShare ?? 0) }}</div>
+                      </div>
+                      <div class="ci-kpi">
+                        <div class="ci-kpi-label">Моя доля</div>
+                        <div class="ci-kpi-val" style="color: #047857;">{{ formatCurrency(p.distribution?.myShare ?? 0) }}</div>
+                      </div>
+                    </div>
+
+                    <!-- Кассы: перечисление сверху вниз, под каждой — распределение прибыли -->
+                    <div class="ci-section-title">Кассы</div>
+                    <div class="ci-stakes-list">
+                      <div v-for="s in p.stakes" :key="s.id" class="ci-stake-card">
+                        <div class="ci-stake-card-head ci-stake-card-head--static">
+                          <div class="ci-stake-chip-icon" :style="{ background: s.cashBox.color, color: '#fff' }">
+                            <v-icon :icon="s.cashBox.icon || 'mdi-wallet-outline'" size="16" />
+                          </div>
+                          <div class="ci-stake-chip-body">
+                            <div class="ci-stake-chip-name">{{ s.cashBox.name }}</div>
+                            <div class="ci-stake-chip-mode">{{ stakeModeShort(s) }} · капитал {{ formatCurrency(s.currentCapital) }}</div>
+                          </div>
+                          <div class="ci-stake-chip-owed" v-if="s.balanceOwed > 0">
+                            <span class="ci-stake-chip-owed-val">{{ formatCurrencyShort(s.balanceOwed) }}</span>
+                            <span class="ci-stake-chip-owed-label">к выплате</span>
+                          </div>
+                        </div>
+                        <div v-if="stakeTotalProfit(s) > 0" class="ci-stake-dist">
+                          <div class="ci-stake-dist-head">
+                            <span class="ci-stake-dist-title">Распределение прибыли</span>
+                            <span class="ci-stake-dist-right">
+                              <v-tooltip location="left" open-on-click max-width="300">
+                                <template #activator="{ props }">
+                                  <button type="button" v-bind="props" class="ci-dist-help" @click.stop aria-label="Что это за число">
+                                    <v-icon icon="mdi-help-circle" size="15" />
+                                  </button>
+                                </template>
+                                <div style="font-size: 12.5px; line-height: 1.55;">
+                                  Это <b>вся прибыль (наценка)</b> по всем сделкам инвестора в этой кассе — и по активным, и по завершённым, за всё время.<br /><br />
+                                  <span style="color: #a5b4fc;">■</span> синим — сколько получает <b>инвестор</b>;<br />
+                                  <span style="color: #6ee7b7;">■</span> зелёным — сколько остаётся <b>вам</b>.<br /><br />
+                                  Это накопительный итог, а не «деньги в работе».
+                                </div>
+                              </v-tooltip>
+                              <span class="ci-stake-dist-total">{{ formatCurrency(stakeTotalProfit(s)) }}</span>
+                            </span>
+                          </div>
+                          <div class="ci-dist-bar">
+                            <div class="ci-dist-fill" :style="{ width: stakeInvestorPct(s) + '%' }" />
+                          </div>
+                          <div class="ci-dist-legend">
+                            <div class="ci-dist-leg">
+                              <span class="ci-dist-leg-pct" style="color: #6366f1;">Инвестору · {{ stakeInvestorPct(s) }}%</span>
+                              <span class="ci-dist-leg-amt" style="color: #6366f1;">{{ formatCurrency(s.coInvestorShare ?? 0) }}</span>
+                            </div>
+                            <div class="ci-dist-leg ci-dist-leg--right">
+                              <span class="ci-dist-leg-pct" style="color: #047857;">Моя доля · {{ 100 - stakeInvestorPct(s) }}%</span>
+                              <span class="ci-dist-leg-amt" style="color: #047857;">{{ formatCurrency(s.myShare ?? 0) }}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-if="!p.stakes.length" class="ci-stake-none">Инвестор не участвует ни в одной кассе</div>
+                    </div>
+
+                    <div class="ci-expanded-actions">
+                      <router-link :to="`/co-investors/person/${p.id}`" class="ci-expanded-btn" @click.stop>
+                        Открыть карточку инвестора
+                        <v-icon icon="mdi-arrow-right" size="16" />
+                      </router-link>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+              </template>
             </tbody>
           </table>
         </div>
@@ -1534,16 +1725,16 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
   box-shadow: 0 2px 12px rgba(99, 102, 241, 0.08);
 }
 
-/* ── Card header ── */
+/* ── Card header (mobile) — свёрнуто: только аватар + имя + действия ── */
 .ci-header {
-  display: flex; align-items: center; gap: 14px;
-  padding: 16px 18px; cursor: pointer;
+  display: flex; align-items: center; gap: 11px;
+  padding: 12px 12px; cursor: pointer;
   transition: background 0.15s;
 }
 .ci-header:hover { background: rgba(var(--v-theme-on-surface), 0.02); }
 
 .ci-avatar {
-  width: 44px; height: 44px; min-width: 44px;
+  width: 42px; height: 42px; min-width: 42px;
   border-radius: 12px; display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 15px;
   letter-spacing: 0.5px;
@@ -1554,8 +1745,10 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
 .ci-name {
+  display: block; min-width: 0;
   font-size: 15px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ci-percent-badge {
   font-size: 11px; font-weight: 700;
@@ -1619,6 +1812,212 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
   padding: 18px;
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
 }
+
+/* Шеврон-индикатор раскрытия слева от инициалов */
+.ci-td-chevron {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; flex-shrink: 0;
+  border-radius: 7px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  transition: transform 0.18s, background 0.15s, color 0.15s;
+}
+.ci-td-chevron:hover { background: rgba(var(--v-theme-on-surface), 0.06); color: rgba(var(--v-theme-on-surface), 0.7); }
+.ci-td-chevron--open { transform: rotate(180deg); color: rgb(var(--v-theme-primary)); }
+
+/* Раскрытая строка таблицы */
+.ci-trow--expanded { background: rgba(var(--v-theme-on-surface), 0.05); }
+.ci-trow--expanded:hover { background: rgba(var(--v-theme-on-surface), 0.06) !important; }
+.ci-trow-expand > td { padding: 0 !important; background: rgba(var(--v-theme-on-surface), 0.05); }
+.dark .ci-trow--expanded { background: rgba(255, 255, 255, 0.05); }
+.dark .ci-trow-expand > td { background: rgba(255, 255, 255, 0.05); }
+.ci-trow-expand .ci-expanded { border-top: 0; }
+
+/* Раскрытая часть мобильной карточки */
+.ci-card-expand {
+  padding: 14px 12px 12px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+/* Контакт + участие в раскрытии */
+.ci-exp-meta {
+  display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 14px;
+}
+.ci-exp-meta-item {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6);
+  text-decoration: none;
+}
+a.ci-exp-meta-item { color: rgb(var(--v-theme-primary)); }
+/* Сводка 2×2 */
+.ci-exp-stats {
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  gap: 8px; margin-bottom: 14px;
+}
+.ci-exp-stats .ci-stat-m {
+  padding: 10px 12px; border-radius: 10px;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+/* В карточке (мобиле) — доли всегда в 2 колонки, компактнее */
+.ci-card-expand .ci-kpi-row { grid-template-columns: repeat(2, 1fr); margin-top: 0; }
+.ci-card-expand .ci-section-title { margin: 16px 0 8px; }
+.ci-card-expand .ci-stakes-list { margin-top: 0; }
+
+/* Список касс-стейков в раскрытии */
+.ci-stakes { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+.ci-stake-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  text-decoration: none; transition: background 0.15s, border-color 0.15s;
+}
+.ci-stake-row:hover { background: rgba(var(--v-theme-on-surface), 0.05); border-color: rgba(var(--v-theme-on-surface), 0.16); }
+.ci-stake-icon {
+  width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.ci-stake-body { flex: 1; min-width: 0; }
+.ci-stake-name {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ci-stake-mode { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 1px; }
+.ci-stake-owed { text-align: right; flex-shrink: 0; }
+.ci-stake-owed-val { font-size: 14px; font-weight: 700; color: #f59e0b; font-variant-numeric: tabular-nums; }
+.ci-stake-owed-label { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), 0.45); }
+.ci-stake-arrow { color: rgba(var(--v-theme-on-surface), 0.3); flex-shrink: 0; }
+.ci-stake-none {
+  padding: 12px; text-align: center; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  border-radius: 10px; background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+/* Ссылка на карточку инвестора внизу раскрытия */
+.ci-expanded-link {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 13px; font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  text-decoration: none;
+}
+.ci-expanded-link:hover { text-decoration: underline; }
+
+/* KPI-карточки: капитал / доля инвестора / моя доля */
+.ci-kpi-row {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 8px; margin-top: 12px;
+}
+.ci-kpi {
+  padding: 10px 14px; border-radius: 10px;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+.ci-kpi-label { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.ci-kpi-val {
+  font-size: 16px; font-weight: 800; margin-top: 3px;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 600px) { .ci-kpi-row { grid-template-columns: repeat(2, 1fr); } }
+
+/* Все карточки-метрики в раскрытии — на белом (surface), а не серые:
+   иначе теряются на затемнённом фоне раскрытого блока. */
+.ci-expanded .ci-stat-m,
+.ci-card-expand .ci-stat-m {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+
+/* Кассы: вертикальный список карточек, под каждой — полоса распределения */
+.ci-stakes-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.ci-stake-card {
+  border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  background: rgb(var(--v-theme-surface));
+  overflow: hidden;
+}
+.ci-stake-card-head {
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 12px; text-decoration: none;
+  transition: background 0.15s;
+}
+.ci-stake-card-head:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+/* Статичная (некликабельная) шапка кассы — без hover/курсора */
+.ci-stake-card-head--static { cursor: default; }
+.ci-stake-card-head--static:hover { background: transparent; }
+.ci-stake-dist { padding: 2px 12px 11px; }
+.ci-stake-dist-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+}
+.ci-stake-dist-title { font-size: 12px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6); }
+.ci-stake-dist-right { display: inline-flex; align-items: center; gap: 7px; }
+.ci-stake-dist-total { font-size: 14px; font-weight: 800; color: rgba(var(--v-theme-on-surface), 0.9); font-variant-numeric: tabular-nums; }
+.ci-dist-help {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+  cursor: pointer; transition: background 0.15s;
+}
+.ci-dist-help:hover { background: rgba(var(--v-theme-primary), 0.22); }
+/* Заголовок секции в раскрытии */
+.ci-section-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin: 16px 0 4px;
+}
+/* Кнопка «Открыть карточку инвестора» справа */
+.ci-expanded-actions { display: flex; justify-content: flex-start; margin-top: 16px; }
+.ci-expanded-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 16px; border-radius: 10px;
+  font-size: 13px; font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.1);
+  border: 1px solid rgba(var(--v-theme-primary), 0.28);
+  text-decoration: none; transition: background 0.15s, border-color 0.15s;
+}
+.ci-expanded-btn:hover { background: rgba(var(--v-theme-primary), 0.18); border-color: rgba(var(--v-theme-primary), 0.5); }
+.ci-stake-chip-icon {
+  width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.ci-stake-chip-body { flex: 1; min-width: 0; }
+.ci-stake-chip-name {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ci-stake-chip-mode {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.5);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ci-stake-chip-owed { text-align: right; flex-shrink: 0; line-height: 1.15; }
+.ci-stake-chip-owed-val { display: block; font-size: 13px; font-weight: 700; color: #f59e0b; font-variant-numeric: tabular-nums; }
+.ci-stake-chip-owed-label { display: block; font-size: 9.5px; color: rgba(var(--v-theme-on-surface), 0.45); }
+
+/* Полоса «Распределение прибыли» */
+.ci-dist { margin-top: 16px; }
+.ci-dist-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.ci-dist-title { font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.75); }
+.ci-dist-total { font-size: 15px; font-weight: 800; color: rgba(var(--v-theme-on-surface), 0.9); font-variant-numeric: tabular-nums; }
+.ci-dist-bar {
+  height: 9px; border-radius: 5px; overflow: hidden;
+  background: #047857;
+}
+.ci-dist-fill { height: 100%; background: #6366f1; border-radius: 5px 0 0 5px; }
+.ci-dist-legend {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 10px; margin-top: 8px;
+}
+.ci-dist-leg { display: flex; flex-direction: column; min-width: 0; }
+.ci-dist-leg--right { text-align: right; }
+.ci-dist-leg-pct { font-size: 11px; font-weight: 600; }
+.ci-dist-leg-amt { font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 1px; }
 
 /* Mobile stats */
 .ci-stats-mobile {
@@ -2825,6 +3224,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
 .ci-td-actions { text-align: right; white-space: nowrap; }
 .ci-td-actions .ci-row-act { display: inline-flex; vertical-align: middle; }
 .ci-td-actions .ci-row-act + .ci-row-act { margin-left: 2px; }
+.ci-td-actions-row { display: inline-flex; align-items: center; gap: 2px; }
 
 /* Cashbox mini-chips (per-person list rows) */
 .ci-cb-chips {
@@ -2853,7 +3253,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
 }
 
 /* ── Task 1: per-row ⋮ menu ── */
-.ci-card-menu { display: flex; align-items: center; flex-shrink: 0; }
+.ci-card-menu { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .ci-row-menu {
   background: #fff;
   border-radius: 12px;

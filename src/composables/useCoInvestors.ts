@@ -41,7 +41,7 @@ export function useCoInvestors() {
   // by the backend. Body fields are all optional.
   async function updatePerson(
     personId: string,
-    data: { name?: string; phone?: string; payoutSchedule?: string; nextPayoutDate?: string | null },
+    data: { name?: string; phone?: string; payoutSchedule?: string; nextPayoutDate?: string | null; showPartnerShareToInvestor?: boolean },
   ) {
     return api.patch<{ id: string }>(`/co-investors/persons/${personId}`, data)
   }

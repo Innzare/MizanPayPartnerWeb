@@ -13,6 +13,7 @@ import { useRoute } from 'vue-router'
 definePage({
   meta: { layout: 'auth' },
 })
+import { useTheme } from 'vuetify'
 import { api } from '@/api/client'
 import { useIsDark } from '@/composables/useIsDark'
 import { formatCurrency, formatDate, formatPhone } from '@/utils/formatters'
@@ -37,6 +38,11 @@ interface PublicStake {
   activeDeployment: number
   activeDealsCount: number
   effectivePct: number
+  // Распределение прибыли по кассе — приходит ТОЛЬКО если партнёр включил
+  // «показывать мою долю инвестору». Иначе полей нет и блок скрыт.
+  totalProfit?: number
+  coInvestorShare?: number
+  myShare?: number
   shareBreakdown?: ShareBreakdown | null
   activeDealsBreakdown: Array<{
     id: string
@@ -44,9 +50,15 @@ interface PublicStake {
     productName: string
     purchasePrice: number
     dealDate: string
+    status?: 'ACTIVE' | 'COMPLETED'
     stake: number
     expectedProfit?: number
     dealProfit?: number
+    // Доля партнёра — приходит ТОЛЬКО если партнёр включил «показывать мою долю
+    // инвестору». Иначе поле отсутствует и строка/полоса партнёра скрываются.
+    partnerProfit?: number
+    paidPayments?: number
+    numberOfPayments?: number
     modeLabel?: string
     costFee?: { ratePct: number; partnerFee: number; investorShare: number }
   }>
@@ -75,6 +87,47 @@ interface PublicSummary {
 
 const route = useRoute()
 const { isDark } = useIsDark()
+const vTheme = useTheme()
+
+// Верхний таб кабинета: обзор (сводка + журнал) или детальные сделки.
+const mainTab = ref<'overview' | 'deals'>('overview')
+
+// Раскрытые сделки в табе «Сделки».
+const expandedDeals = ref<Set<string>>(new Set())
+function toggleDealExpand(id: string) {
+  const n = new Set(expandedDeals.value)
+  n.has(id) ? n.delete(id) : n.add(id)
+  expandedDeals.value = n
+}
+
+// Переключатель темы (кабинет живёт на auth-layout, без общего тумблера).
+function toggleTheme() {
+  const next = isDark.value ? 'light' : 'dark'
+  vTheme.change(next)
+  localStorage.setItem('theme', next)
+  document.documentElement.classList.toggle('dark', next === 'dark')
+}
+
+// Разбор долей сделки для раскрытого блока. partnerProfit приходит с бэкенда
+// только при включённом флаге приватности — иначе доля партнёра скрыта.
+function dealShares(d: PublicStake['activeDealsBreakdown'][number]) {
+  const gross = d.dealProfit ?? 0
+  const invShare = d.expectedProfit ?? 0
+  const hasPartner = d.partnerProfit != null
+  const partnerProfit = d.partnerProfit ?? 0
+  const paid = d.paidPayments ?? 0
+  const total = d.numberOfPayments ?? 0
+  const left = Math.max(0, total - paid)
+  const invPct = gross > 0 ? Math.min(100, (invShare / gross) * 100) : 0
+  const partPct = hasPartner && gross > 0 ? Math.min(100 - invPct, (partnerProfit / gross) * 100) : 0
+  const paidPct = total > 0 ? (paid / total) * 100 : 0
+  return { gross, invShare, hasPartner, partnerProfit, paid, total, left, invPct, partPct, paidPct }
+}
+
+// Завершена ли сделка (все платежи оплачены).
+function dealDone(d: PublicStake['activeDealsBreakdown'][number]): boolean {
+  return d.status === 'COMPLETED'
+}
 
 // Mobile flag для fullscreen breakdown-диалога.
 const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
@@ -95,6 +148,38 @@ const selectedStakeId = ref<string | null>(null)
 const stake = computed<PublicStake | null>(() => {
   const list = summary.value?.stakes ?? []
   return list.find((s) => s.id === selectedStakeId.value) ?? list[0] ?? null
+})
+
+// Распределение прибыли по выбранной кассе — есть только если партнёр включил
+// «показывать мою долю инвестору» (бэкенд вырезает поля при выключенном флаге).
+const distribution = computed(() => {
+  const s = stake.value
+  if (!s || s.totalProfit == null || !(s.totalProfit > 0) || s.coInvestorShare == null) return null
+  const investorPct = Math.round((s.coInvestorShare / s.totalProfit) * 100)
+  return { totalProfit: s.totalProfit, coInvestorShare: s.coInvestorShare, myShare: s.myShare ?? 0, investorPct }
+})
+
+// Фильтр таба «Сделки»: все / активные / завершённые.
+const dealFilter = ref<'all' | 'active' | 'completed'>('all')
+const allDeals = computed(() => stake.value?.activeDealsBreakdown ?? [])
+const dealCounts = computed(() => {
+  const active = allDeals.value.filter((d) => d.status !== 'COMPLETED').length
+  return { all: allDeals.value.length, active, completed: allDeals.value.length - active }
+})
+const filteredDeals = computed(() => {
+  if (dealFilter.value === 'all') return allDeals.value
+  return allDeals.value.filter((d) => dealFilter.value === 'completed' ? d.status === 'COMPLETED' : d.status !== 'COMPLETED')
+})
+// Сводные доли по ОТФИЛЬТРОВАННЫМ сделкам выбранной кассы (для KPI в табе «Сделки»).
+// Доля партнёра суммируется только по сделкам, где партнёр её раскрыл.
+const dealsTotals = computed(() => {
+  let inv = 0, part = 0, gross = 0, hasPartner = false
+  for (const d of filteredDeals.value) {
+    inv += d.expectedProfit ?? 0
+    gross += d.dealProfit ?? 0
+    if (d.partnerProfit != null) { part += d.partnerProfit; hasPartner = true }
+  }
+  return { inv, part, gross, hasPartner }
 })
 
 const payoutScheduleLabel = computed(() => {
@@ -226,6 +311,13 @@ function pluralCashboxes(n: number) {
   return 'касс'
 }
 
+onMounted(() => {
+  const saved = localStorage.getItem('theme')
+  if (saved === 'dark' || saved === 'light') {
+    vTheme.change(saved)
+    document.documentElement.classList.toggle('dark', saved === 'dark')
+  }
+})
 onMounted(load)
 </script>
 
@@ -258,6 +350,9 @@ onMounted(load)
               <span v-if="summary.person.createdAt">с {{ formatDate(summary.person.createdAt) }}</span>
             </div>
           </div>
+          <button class="inv-theme-btn" :title="isDark ? 'Светлая тема' : 'Тёмная тема'" @click="toggleTheme">
+            <v-icon :icon="isDark ? 'mdi-white-balance-sunny' : 'mdi-weather-night'" size="20" />
+          </button>
         </div>
 
         <!-- Aggregated totals -->
@@ -310,6 +405,18 @@ onMounted(load)
         </div>
       </v-card>
 
+      <!-- Верхние табы кабинета -->
+      <div class="inv-maintabs mb-4">
+        <button class="inv-maintab" :class="{ 'inv-maintab--active': mainTab === 'overview' }" @click="mainTab = 'overview'">
+          <v-icon icon="mdi-view-dashboard-outline" size="17" />
+          Обзор
+        </button>
+        <button class="inv-maintab" :class="{ 'inv-maintab--active': mainTab === 'deals' }" @click="mainTab = 'deals'">
+          <v-icon icon="mdi-briefcase-outline" size="17" />
+          Сделки
+        </button>
+      </div>
+
       <!-- Cashbox selector -->
       <div v-if="summary.stakes.length > 1" class="inv-cb-tabs mb-4">
         <button
@@ -326,6 +433,7 @@ onMounted(load)
         </button>
       </div>
 
+      <template v-if="mainTab === 'overview'">
       <!-- Selected cashbox: per-stake summary + params -->
       <v-card v-if="stake" rounded="lg" elevation="0" border class="inv-hero pa-5 mb-4">
         <div class="inv-cb-head mb-1">
@@ -414,6 +522,33 @@ onMounted(load)
             Конкретные суммы по активным сделкам — в разделе «В работе».
           </div>
         </div>
+
+        <!-- Распределение прибыли по кассе (только если партнёр раскрыл свою долю) -->
+        <template v-if="distribution">
+          <div class="inv-share-kpi mt-5">
+            <div class="inv-share-kpi-card">
+              <div class="inv-share-kpi-label"><span class="inv-share-kpi-dot" style="background: #6366f1;" />Ваша доля</div>
+              <div class="inv-share-kpi-val" style="color: #6366f1;">{{ formatCurrency(distribution.coInvestorShare) }}</div>
+            </div>
+            <div class="inv-share-kpi-card">
+              <div class="inv-share-kpi-label"><span class="inv-share-kpi-dot" style="background: #047857;" />Доля партнёра</div>
+              <div class="inv-share-kpi-val" style="color: #047857;">{{ formatCurrency(distribution.myShare) }}</div>
+            </div>
+          </div>
+          <div class="inv-hero-dist mt-3">
+            <div class="inv-hero-dist-head">
+              <span class="inv-hero-dist-title">Распределение прибыли</span>
+              <span class="inv-hero-dist-total">{{ formatCurrency(distribution.totalProfit) }}</span>
+            </div>
+            <div class="inv-hero-dist-bar">
+              <div class="inv-hero-dist-fill" :style="{ width: distribution.investorPct + '%' }" />
+            </div>
+            <div class="inv-hero-dist-legend">
+              <span style="color: #6366f1;">Инвестору: {{ distribution.investorPct }}% · {{ formatCurrency(distribution.coInvestorShare) }}</span>
+              <span style="color: #047857;">Партнёру: {{ 100 - distribution.investorPct }}% · {{ formatCurrency(distribution.myShare) }}</span>
+            </div>
+          </div>
+        </template>
       </v-card>
 
       <!-- Journal (per selected cashbox) -->
@@ -448,6 +583,163 @@ onMounted(load)
           </div>
         </div>
       </v-card>
+      </template>
+
+      <!-- Deals tab: детальный разбор долей по активным сделкам -->
+      <template v-else>
+        <v-card rounded="lg" elevation="0" border class="pa-4">
+          <div class="inv-section-title mb-3">
+            Сделки
+            <span v-if="stake" class="inv-section-sub"> · {{ stake.cashBox.name }}</span>
+          </div>
+
+          <!-- Фильтр: все / активные / завершённые -->
+          <div v-if="allDeals.length" class="inv-deal-filter">
+            <button
+              v-for="f in [{ key: 'all', label: 'Все', count: dealCounts.all }, { key: 'active', label: 'Активные', count: dealCounts.active }, { key: 'completed', label: 'Завершённые', count: dealCounts.completed }] as const"
+              :key="f.key"
+              class="inv-deal-filter-chip"
+              :class="{ 'inv-deal-filter-chip--active': dealFilter === f.key }"
+              @click="dealFilter = f.key"
+            >
+              {{ f.label }}<span class="inv-deal-filter-count">{{ f.count }}</span>
+            </button>
+          </div>
+
+          <!-- KPI: суммарные доли по отфильтрованным сделкам (горизонтальный скролл) -->
+          <div v-if="filteredDeals.length" class="inv-deals-kpi">
+            <div class="inv-deals-kpi-card inv-deals-kpi-card--inv">
+              <div class="inv-deals-kpi-label"><span class="inv-deal-dot inv-deal-dot--inv" />Ваша доля</div>
+              <div class="inv-deals-kpi-val inv-deals-kpi-val--inv">{{ formatCurrency(dealsTotals.inv) }}</div>
+            </div>
+            <div v-if="dealsTotals.hasPartner" class="inv-deals-kpi-card inv-deals-kpi-card--part">
+              <div class="inv-deals-kpi-label"><span class="inv-deal-dot inv-deal-dot--part" />Доля партнёра</div>
+              <div class="inv-deals-kpi-val inv-deals-kpi-val--part">{{ formatCurrency(dealsTotals.part) }}</div>
+            </div>
+            <div v-if="dealsTotals.hasPartner" class="inv-deals-kpi-card">
+              <div class="inv-deals-kpi-label"><span class="inv-deal-dot inv-deal-dot--gross" />Вся прибыль</div>
+              <div class="inv-deals-kpi-val">{{ formatCurrency(dealsTotals.gross) }}</div>
+            </div>
+          </div>
+
+          <div v-if="!filteredDeals.length" class="inv-empty">
+            <v-icon icon="mdi-briefcase-off-outline" size="32" color="grey" />
+            <div>{{ allDeals.length ? 'Нет сделок в этом фильтре' : 'Сделок пока нет' }}</div>
+          </div>
+
+          <div v-else class="inv-deals">
+            <div v-for="d in filteredDeals" :key="d.id" class="inv-deal">
+              <!-- Header (clickable) -->
+              <div class="inv-deal-row" @click="toggleDealExpand(d.id)">
+                <v-icon
+                  :icon="expandedDeals.has(d.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'"
+                  size="18"
+                  class="inv-deal-arrow"
+                />
+                <div class="inv-deal-main">
+                  <div class="inv-deal-name">
+                    <span class="inv-deal-num">#{{ d.dealNumber }}</span>
+                    {{ d.productName }}
+                    <span class="inv-deal-badge" :class="dealDone(d) ? 'inv-deal-badge--done' : 'inv-deal-badge--active'">{{ dealDone(d) ? 'Завершена' : 'Активна' }}</span>
+                  </div>
+                  <div class="inv-deal-meta">Закупка {{ formatCurrency(d.purchasePrice) }} · {{ formatDate(d.dealDate) }}</div>
+                </div>
+                <div class="inv-deal-earn">
+                  <template v-if="d.costFee">
+                    <div class="inv-deal-earn-val">{{ formatCurrency(d.purchasePrice + (d.costFee.investorShare ?? 0)) }}</div>
+                    <div class="inv-deal-earn-label">вы получите</div>
+                  </template>
+                  <template v-else>
+                    <div class="inv-deal-earn-val">+{{ formatCurrency(d.expectedProfit ?? 0) }}</div>
+                    <div class="inv-deal-earn-label">ваша доля</div>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Expanded body -->
+              <div v-if="expandedDeals.has(d.id)" class="inv-deal-body">
+                <template v-for="s in [dealShares(d)]" :key="'sh'">
+                  <!-- Секция: прогресс -->
+                  <template v-if="s.total > 0">
+                    <div class="inv-deal-sec-label">Прогресс</div>
+                    <div class="inv-deal-progress">
+                      <div class="inv-deal-progress-head">
+                        <span>Оплачено {{ s.paid }} из {{ s.total }}</span>
+                        <span :class="s.left > 0 ? '' : 'inv-deal-success'">{{ s.left > 0 ? `осталось ${s.left}` : 'завершается' }}</span>
+                      </div>
+                      <div class="inv-deal-track"><div class="inv-deal-track-fill" :style="{ width: s.paidPct + '%' }" /></div>
+                    </div>
+                    <div class="inv-deal-divider" />
+                  </template>
+
+                  <!-- Секция: экономика сделки -->
+                  <div class="inv-deal-sec-label">Экономика сделки</div>
+                  <div class="inv-deal-line">
+                    <span class="inv-deal-label">{{ d.costFee ? 'Закупка (возврат капитала)' : 'Закупочная цена' }}</span>
+                    <span class="inv-deal-val">{{ formatCurrency(d.purchasePrice) }}</span>
+                  </div>
+                  <!-- «Вся прибыль» скрываем для доли-по-вкладу/фикс, если партнёр
+                       не раскрыл долю (иначе она вычислима: прибыль − ваша доля). -->
+                  <div v-if="d.costFee || s.hasPartner" class="inv-deal-line">
+                    <span class="inv-deal-label inv-deal-strong">{{ d.costFee ? 'Наценка рассрочки' : 'Вся прибыль сделки' }}</span>
+                    <span class="inv-deal-val inv-deal-strong">{{ formatCurrency(s.gross) }}</span>
+                  </div>
+                  <div class="inv-deal-divider" />
+
+                  <!-- Секция: деление прибыли (или просто ваша доля) -->
+                  <template v-if="d.costFee || s.hasPartner">
+                    <div class="inv-deal-sec-label">Деление прибыли</div>
+                    <div class="inv-deal-split inv-deal-split--lg">
+                      <div class="inv-deal-split-inv" :style="{ width: s.invPct + '%' }" />
+                      <div v-if="s.hasPartner" class="inv-deal-split-part" :style="{ width: s.partPct + '%' }" />
+                    </div>
+                    <div class="inv-deal-line">
+                      <span class="inv-deal-label">
+                        <span class="inv-deal-dot inv-deal-dot--inv" />
+                        Ваша доля
+                        <span class="inv-deal-mode">{{ d.modeLabel || (d.costFee ? 'Комиссия от закупки' : '') }}</span>
+                      </span>
+                      <span class="inv-deal-val inv-deal-success">{{ formatCurrency(s.invShare) }}</span>
+                    </div>
+                    <div v-if="s.hasPartner" class="inv-deal-line">
+                      <span class="inv-deal-label">
+                        <span class="inv-deal-dot inv-deal-dot--part" />
+                        Доля партнёра
+                        <span v-if="d.costFee" class="inv-deal-mode">комиссия {{ d.costFee.ratePct }}% от закупки</span>
+                      </span>
+                      <span class="inv-deal-val inv-deal-part">{{ formatCurrency(s.partnerProfit) }}</span>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="inv-deal-sec-label">Ваша доля</div>
+                    <div class="inv-deal-line">
+                      <span class="inv-deal-label">
+                        <span class="inv-deal-dot inv-deal-dot--inv" />
+                        {{ d.modeLabel || 'Ваш доход с этой сделки' }}
+                      </span>
+                      <span class="inv-deal-val inv-deal-success inv-deal-strong">{{ formatCurrency(s.invShare) }}</span>
+                    </div>
+                  </template>
+
+                  <!-- Секция: итог инвестору (cost-fee) -->
+                  <template v-if="d.costFee">
+                    <div class="inv-deal-divider" />
+                    <div class="inv-deal-line">
+                      <span class="inv-deal-label inv-deal-strong">Вам на руки</span>
+                      <span class="inv-deal-val inv-deal-strong inv-deal-success">
+                        {{ formatCurrency(d.purchasePrice + d.costFee.investorShare) }}
+                      </span>
+                    </div>
+                    <div class="inv-deal-sub">
+                      возврат {{ formatCurrency(d.purchasePrice) }} + доход {{ formatCurrency(d.costFee.investorShare) }}
+                    </div>
+                  </template>
+                </template>
+              </div>
+            </div>
+          </div>
+        </v-card>
+      </template>
 
       <div class="inv-footer">
         Это персональный отчёт инвестора. Только для просмотра.
@@ -495,7 +787,7 @@ onMounted(load)
           </div>
           <div class="inv-list">
             <div
-              v-for="d in stake.activeDealsBreakdown"
+              v-for="d in stake.activeDealsBreakdown.filter((x) => x.status !== 'COMPLETED')"
               :key="d.id"
               class="inv-list-row"
             >
@@ -663,6 +955,191 @@ onMounted(load)
   transition: all 0.15s;
 }
 .inv-cb-tab:hover { border-color: rgba(var(--v-theme-on-surface), 0.3); }
+
+/* Theme toggle button (hero corner) */
+.inv-theme-btn {
+  margin-left: auto; align-self: flex-start; flex-shrink: 0;
+  width: 38px; height: 38px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.15s;
+}
+.inv-theme-btn:hover { border-color: rgba(var(--v-theme-on-surface), 0.3); color: rgba(var(--v-theme-on-surface), 0.95); }
+
+/* Main tabs (Обзор / Сделки) */
+.inv-maintabs {
+  display: flex; gap: 6px;
+  padding: 4px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.inv-maintab {
+  flex: 1;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 9px 12px; border-radius: 9px; cursor: pointer;
+  font-size: 13.5px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  transition: all 0.15s;
+}
+.inv-maintab--active {
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.95);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* Deals tab: expandable per-deal share breakdown */
+.inv-deals { display: flex; flex-direction: column; }
+.inv-deal { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06); }
+.inv-deal:last-child { border-bottom: 0; }
+.inv-deal-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 4px; cursor: pointer;
+}
+.inv-deal-arrow { color: rgba(var(--v-theme-on-surface), 0.4); flex-shrink: 0; }
+.inv-deal-main { flex: 1; min-width: 0; }
+.inv-deal-name {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.inv-deal-num { font-size: 12px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.4); margin-right: 4px; }
+.inv-deal-meta { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 2px; }
+/* Бейджик статуса */
+.inv-deal-badge {
+  display: inline-block; margin-left: 6px;
+  padding: 1px 7px; border-radius: 6px;
+  font-size: 10px; font-weight: 700; vertical-align: middle;
+}
+.inv-deal-badge--active {
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.inv-deal-badge--done { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+/* KPI над списком сделок */
+/* Фильтр таба «Сделки»: все / активные / завершённые */
+/* Распределение прибыли по кассе в кабинете */
+.inv-share-kpi { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.inv-share-kpi-card {
+  padding: 12px 16px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgb(var(--v-theme-surface));
+}
+.inv-share-kpi-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.inv-share-kpi-dot { width: 9px; height: 9px; border-radius: 50%; }
+.inv-share-kpi-val { font-size: 20px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.inv-hero-dist {
+  padding: 14px 16px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.inv-hero-dist-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+.inv-hero-dist-title { font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.75); }
+.inv-hero-dist-total { font-size: 16px; font-weight: 800; color: rgba(var(--v-theme-on-surface), 0.9); font-variant-numeric: tabular-nums; }
+.inv-hero-dist-bar { height: 10px; border-radius: 5px; overflow: hidden; background: #047857; }
+.inv-hero-dist-fill { height: 100%; background: #6366f1; border-radius: 5px 0 0 5px; }
+.inv-hero-dist-legend { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12.5px; font-weight: 600; }
+.inv-deal-filter { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.inv-deal-filter-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 999px;
+  font-size: 13px; font-weight: 600;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.15s;
+}
+.inv-deal-filter-chip:hover { border-color: rgba(var(--v-theme-on-surface), 0.3); }
+.inv-deal-filter-chip--active {
+  background: rgb(var(--v-theme-primary)); border-color: rgb(var(--v-theme-primary)); color: #fff;
+}
+.inv-deal-filter-count { font-size: 11px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.45); }
+.inv-deal-filter-chip--active .inv-deal-filter-count { color: rgba(255, 255, 255, 0.85); }
+.inv-deals-kpi {
+  display: flex; gap: 8px; margin-bottom: 14px;
+  overflow-x: auto; padding-bottom: 2px;
+  scrollbar-width: none;
+}
+.inv-deals-kpi::-webkit-scrollbar { display: none; }
+.inv-deals-kpi-card {
+  flex: 1 0 140px; min-width: 140px; padding: 10px 12px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.inv-deals-kpi-card--inv { background: rgba(16, 185, 129, 0.1); }
+.inv-deals-kpi-card--part { background: rgba(245, 158, 11, 0.1); }
+.inv-deals-kpi-label {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.6);
+  margin-bottom: 4px;
+}
+.inv-deals-kpi-val {
+  font-size: 17px; font-weight: 800;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  font-variant-numeric: tabular-nums;
+}
+.inv-deals-kpi-val--inv { color: #10b981; }
+.inv-deals-kpi-val--part { color: #d97706; }
+.inv-deal-earn { text-align: right; flex-shrink: 0; }
+.inv-deal-earn-val { font-size: 14px; font-weight: 800; color: #10b981; }
+.inv-deal-earn-label { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), 0.45); }
+.inv-deal-body { padding: 4px 4px 14px 32px; }
+.inv-deal-progress { margin-bottom: 9px; }
+.inv-deal-progress-head {
+  display: flex; justify-content: space-between;
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-bottom: 5px;
+}
+.inv-deal-track {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.inv-deal-track-fill { height: 100%; border-radius: 3px; background: #f59e0b; }
+.inv-deal-line {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 4px 0; font-size: 13px;
+}
+.inv-deal-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.inv-deal-val {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.inv-deal-strong { font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.95); }
+.inv-deal-success { color: #10b981; }
+.inv-deal-part { color: #d97706; font-weight: 600; }
+.inv-deal-mode { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4); }
+.inv-deal-sub {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.45);
+  text-align: right; margin-top: 2px;
+}
+.inv-deal-divider {
+  height: 0; border-top: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  margin: 12px 0;
+}
+/* Заголовок смысловой секции в раскрытом блоке */
+.inv-deal-sec-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 7px;
+}
+.inv-deal-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.inv-deal-dot--inv { background: #10b981; }
+.inv-deal-dot--part { background: #f59e0b; }
+.inv-deal-dot--gross { background: rgba(var(--v-theme-on-surface), 0.4); }
+.inv-deal-split {
+  display: flex; height: 7px; border-radius: 4px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  margin: 8px 0 2px;
+}
+.inv-deal-split--lg { height: 9px; border-radius: 5px; margin: 0 0 10px; }
+.inv-deal-split-inv { background: #10b981; }
+.inv-deal-split-part { background: #f59e0b; }
 
 /* Selected cashbox header */
 .inv-cb-head { display: flex; align-items: center; gap: 12px; }

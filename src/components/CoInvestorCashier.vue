@@ -57,6 +57,59 @@ function toggleActiveDeal(id: string) {
   expandedActiveDeals.value = n
 }
 
+// Разбор долей сделки для раскрытого блока: доля инвестора / доля партнёра,
+// прогресс к завершению и ширины полосы деления. partnerProfit приходит с
+// бэкенда (корректен при нескольких инвесторах); фолбэк — клиентская оценка.
+// Распределение прибыли по ЭТОЙ кассе (стейку) для полосы в шапке кассира.
+const distribution = computed(() => {
+  const st = detail.value?.stats
+  if (!st || !(st.totalProfit > 0)) return null
+  const investorPct = Math.round((st.coInvestorShare / st.totalProfit) * 100)
+  return { totalProfit: st.totalProfit, coInvestorShare: st.coInvestorShare, myShare: st.myShare, investorPct }
+})
+
+type ActiveDeal = CoInvestorSummary['activeDealsBreakdown'][number]
+// Завершена ли сделка.
+function dealDone(d: ActiveDeal): boolean {
+  return d.status === 'COMPLETED'
+}
+// Фильтр таба «Сделки»: все / активные / завершённые.
+const dealFilter = ref<'all' | 'active' | 'completed'>('all')
+const allDeals = computed(() => summary.value?.activeDealsBreakdown ?? [])
+const dealCounts = computed(() => {
+  const active = allDeals.value.filter((d) => d.status !== 'COMPLETED').length
+  return { all: allDeals.value.length, active, completed: allDeals.value.length - active }
+})
+const filteredDeals = computed(() => {
+  if (dealFilter.value === 'all') return allDeals.value
+  return allDeals.value.filter((d) => dealFilter.value === 'completed' ? d.status === 'COMPLETED' : d.status !== 'COMPLETED')
+})
+// Сводные доли по ОТФИЛЬТРОВАННЫМ сделкам — для KPI над списком.
+const dealsTotals = computed(() => {
+  let inv = 0, part = 0, gross = 0
+  for (const d of filteredDeals.value) {
+    const g = d.dealProfit ?? 0
+    const i = d.expectedProfit ?? 0
+    inv += i; gross += g
+    part += d.partnerProfit != null ? d.partnerProfit : (d.costFee ? d.costFee.partnerFee : Math.max(0, g - i))
+  }
+  return { inv, part, gross }
+})
+function dealShares(d: ActiveDeal) {
+  const gross = d.dealProfit ?? 0
+  const invShare = d.expectedProfit ?? 0
+  const partnerProfit = d.partnerProfit != null
+    ? d.partnerProfit
+    : (d.costFee ? d.costFee.partnerFee : Math.max(0, gross - invShare))
+  const paid = d.paidPayments ?? 0
+  const total = d.numberOfPayments ?? 0
+  const left = Math.max(0, total - paid)
+  const invPct = gross > 0 ? Math.min(100, (invShare / gross) * 100) : 0
+  const partPct = gross > 0 ? Math.min(100 - invPct, (partnerProfit / gross) * 100) : 0
+  const paidPct = total > 0 ? (paid / total) * 100 : 0
+  return { gross, invShare, partnerProfit, paid, total, left, invPct, partPct, paidPct }
+}
+
 // ── Share link dialog: shows the public read-only URL the partner can
 // send to the investor. Regenerating rotates the token (old URL 404s).
 const showShareDialog = ref(false)
@@ -744,6 +797,51 @@ function pluralDeals(n: number) {
           </div>
         </div>
 
+        <!-- KPI: доля инвестора / моя доля -->
+        <div v-if="distribution" class="ci-share-kpi mt-5">
+          <div class="ci-share-kpi-card">
+            <div class="ci-share-kpi-label"><span class="ci-share-kpi-dot" style="background: #6366f1;" />Доля инвестора</div>
+            <div class="ci-share-kpi-val" style="color: #6366f1;">{{ formatCurrency(distribution.coInvestorShare) }}</div>
+          </div>
+          <div class="ci-share-kpi-card">
+            <div class="ci-share-kpi-label"><span class="ci-share-kpi-dot" style="background: #047857;" />Моя доля</div>
+            <div class="ci-share-kpi-val" style="color: #047857;">{{ formatCurrency(distribution.myShare) }}</div>
+          </div>
+        </div>
+
+        <!-- Распределение прибыли по этой кассе -->
+        <div v-if="distribution" class="ci-hero-dist mt-3">
+          <div class="ci-hero-dist-head">
+            <span class="ci-hero-dist-title">Распределение прибыли</span>
+            <span class="ci-hero-dist-right">
+              <v-tooltip location="left" open-on-click max-width="300" content-class="ci-dist-tooltip">
+                <template #activator="{ props }">
+                  <button type="button" v-bind="props" class="ci-hero-dist-help" aria-label="Что это за число">
+                    <v-icon icon="mdi-help-circle" size="18" />
+                  </button>
+                </template>
+                <div class="ci-dist-tip">
+                  Это <b>вся прибыль (наценка)</b> по всем сделкам инвестора в этой кассе — и по активным, и по завершённым, за всё время.
+                  <br /><br />
+                  <span style="color: #a5b4fc;">■</span> синим — сколько из неё получает <b>инвестор</b>;
+                  <br />
+                  <span style="color: #6ee7b7;">■</span> зелёным — сколько остаётся <b>вам</b>.
+                  <br /><br />
+                  Это накопительный итог, а не «деньги в работе».
+                </div>
+              </v-tooltip>
+              <span class="ci-hero-dist-total">{{ formatCurrency(distribution.totalProfit) }}</span>
+            </span>
+          </div>
+          <div class="ci-hero-dist-bar">
+            <div class="ci-hero-dist-fill" :style="{ width: distribution.investorPct + '%' }" />
+          </div>
+          <div class="ci-hero-dist-legend">
+            <span style="color: #6366f1;">Инвестору: {{ distribution.investorPct }}% · {{ formatCurrency(distribution.coInvestorShare) }}</span>
+            <span style="color: #047857;">Моя доля: {{ 100 - distribution.investorPct }}% · {{ formatCurrency(distribution.myShare) }}</span>
+          </div>
+        </div>
+
         <!-- Where the effective % comes from (by-capital investors) -->
         <div v-if="summary.shareBreakdown && summary.shareBreakdown.mode === 'weight'" class="active-formula mt-5">
           <div class="active-formula-title">
@@ -875,17 +973,44 @@ function pluralDeals(n: number) {
       <!-- Deals tab: активные сделки инвестора + разбор его доли (раскрытие) -->
       <v-card v-else-if="tab === 'deals'" rounded="lg" elevation="0" border class="pa-4">
         <div class="d-flex align-center mb-3">
-          <span class="section-title">Активные сделки ({{ summary.activeDealsBreakdown.length }})</span>
+          <span class="section-title">Сделки инвестора</span>
           <v-spacer />
           <span class="text-caption text-medium-emphasis">Доля инвестора</span>
         </div>
-        <div v-if="!summary.activeDealsBreakdown.length" class="empty">
+        <!-- Фильтр: все / активные / завершённые -->
+        <div v-if="allDeals.length" class="deal-filter mb-3">
+          <button
+            v-for="f in [{ key: 'all', label: 'Все', count: dealCounts.all }, { key: 'active', label: 'Активные', count: dealCounts.active }, { key: 'completed', label: 'Завершённые', count: dealCounts.completed }] as const"
+            :key="f.key"
+            class="deal-filter-chip"
+            :class="{ 'deal-filter-chip--active': dealFilter === f.key }"
+            @click="dealFilter = f.key"
+          >
+            {{ f.label }}<span class="deal-filter-count">{{ f.count }}</span>
+          </button>
+        </div>
+        <!-- KPI: суммарные доли по отфильтрованным сделкам -->
+        <div v-if="filteredDeals.length" class="deals-kpi mb-3">
+          <div class="deals-kpi-card deals-kpi-card--inv">
+            <div class="deals-kpi-label"><span class="deals-kpi-dot deals-kpi-dot--inv" />Доля инвестора</div>
+            <div class="deals-kpi-val deals-kpi-val--inv">{{ formatCurrency(dealsTotals.inv) }}</div>
+          </div>
+          <div class="deals-kpi-card deals-kpi-card--part">
+            <div class="deals-kpi-label"><span class="deals-kpi-dot deals-kpi-dot--part" />Доля партнёра</div>
+            <div class="deals-kpi-val deals-kpi-val--part">{{ formatCurrency(dealsTotals.part) }}</div>
+          </div>
+          <div class="deals-kpi-card">
+            <div class="deals-kpi-label">Вся прибыль</div>
+            <div class="deals-kpi-val">{{ formatCurrency(dealsTotals.gross) }}</div>
+          </div>
+        </div>
+        <div v-if="!filteredDeals.length" class="empty">
           <v-icon icon="mdi-briefcase-off-outline" size="40" color="grey" />
-          <div class="empty-title">Нет активных сделок</div>
+          <div class="empty-title">{{ allDeals.length ? 'Нет сделок в этом фильтре' : 'Сделок пока нет' }}</div>
           <div class="empty-sub">Здесь появятся сделки, где участвует инвестор</div>
         </div>
         <div v-else class="active-list">
-          <div v-for="d in summary.activeDealsBreakdown" :key="d.id" class="active-item">
+          <div v-for="d in filteredDeals" :key="d.id" class="active-item">
             <!-- Header (clickable) -->
             <div class="active-row" @click="toggleActiveDeal(d.id)">
               <v-icon
@@ -897,8 +1022,9 @@ function pluralDeals(n: number) {
                 <div class="active-row-name">
                   <span class="active-row-num">#{{ d.dealNumber }}</span>
                   {{ d.productName }}
+                  <span class="deal-badge" :class="dealDone(d) ? 'deal-badge--done' : 'deal-badge--active'">{{ dealDone(d) ? 'Завершена' : 'Активна' }}</span>
                 </div>
-                <div class="active-row-meta">{{ d.modeLabel }} · {{ formatDate(d.dealDate) }}</div>
+                <div class="active-row-meta">Закупка {{ formatCurrency(d.purchasePrice) }} · {{ formatDate(d.dealDate) }}</div>
               </div>
               <div class="active-row-stake">
                 <template v-if="d.costFee">
@@ -907,50 +1033,75 @@ function pluralDeals(n: number) {
                 </template>
                 <template v-else>
                   <div class="active-row-earn">+{{ formatCurrency(d.expectedProfit ?? 0) }}</div>
-                  <div class="active-row-earn-label">ваша доля</div>
+                  <div class="active-row-earn-label">доля инвестора</div>
                 </template>
               </div>
             </div>
 
             <!-- Expanded body -->
             <div v-if="expandedActiveDeals.has(d.id)" class="active-body">
-              <template v-if="d.costFee">
+              <template v-for="s in [dealShares(d)]" :key="'sh'">
+                <!-- Секция: прогресс -->
+                <template v-if="s.total > 0">
+                  <div class="active-sec-label">Прогресс</div>
+                  <div class="active-progress">
+                    <div class="active-progress-head">
+                      <span>Оплачено {{ s.paid }} из {{ s.total }}</span>
+                      <span :class="s.left > 0 ? '' : 'active-line-success'">{{ s.left > 0 ? `осталось ${s.left}` : 'завершается' }}</span>
+                    </div>
+                    <div class="active-track"><div class="active-track-fill" :style="{ width: s.paidPct + '%' }" /></div>
+                  </div>
+                  <div class="active-divider" />
+                </template>
+
+                <!-- Секция: экономика сделки -->
+                <div class="active-sec-label">Экономика сделки</div>
                 <div class="active-line">
-                  <span class="active-line-label">Закупка (возврат капитала)</span>
+                  <span class="active-line-label">{{ d.costFee ? 'Закупка (возврат капитала)' : 'Закупочная цена' }}</span>
                   <span class="active-line-val">{{ formatCurrency(d.purchasePrice) }}</span>
                 </div>
                 <div class="active-line">
-                  <span class="active-line-label">Наценка рассрочки</span>
-                  <span class="active-line-val">{{ formatCurrency(d.dealProfit ?? 0) }}</span>
-                </div>
-                <div class="active-line">
-                  <span class="active-line-label">− Доля партнёра ({{ d.costFee.ratePct }}% от закупки)</span>
-                  <span class="active-line-val">{{ formatCurrency(d.costFee.partnerFee) }}</span>
+                  <span class="active-line-label active-line-strong">{{ d.costFee ? 'Наценка рассрочки' : 'Вся прибыль сделки' }}</span>
+                  <span class="active-line-val active-line-strong">{{ formatCurrency(s.gross) }}</span>
                 </div>
                 <div class="active-divider" />
-                <div class="active-line">
-                  <span class="active-line-label active-line-strong">Вам на руки</span>
-                  <span class="active-line-val active-line-strong active-line-success">
-                    {{ formatCurrency(d.purchasePrice + d.costFee.investorShare) }}
-                  </span>
-                </div>
-                <div class="active-line-sub">
-                  возврат {{ formatCurrency(d.purchasePrice) }} + доход {{ formatCurrency(d.costFee.investorShare) }}
-                </div>
-              </template>
-              <template v-else>
-                <div class="active-line">
-                  <span class="active-line-label active-line-strong">Вся прибыль сделки</span>
-                  <span class="active-line-val active-line-strong">{{ formatCurrency(d.dealProfit ?? 0) }}</span>
+
+                <!-- Секция: деление прибыли -->
+                <div class="active-sec-label">Деление прибыли</div>
+                <div class="active-split active-split--lg">
+                  <div class="active-split-inv" :style="{ width: s.invPct + '%' }" />
+                  <div class="active-split-part" :style="{ width: s.partPct + '%' }" />
                 </div>
                 <div class="active-line">
                   <span class="active-line-label">
-                    <span class="active-dot" />
-                    Ваша доля
-                    <span class="active-line-mode">{{ d.modeLabel }}</span>
+                    <span class="active-dot active-dot--inv" />
+                    Доля инвестора
+                    <span class="active-line-mode">{{ d.modeLabel || (d.costFee ? 'Комиссия от закупки' : '') }}</span>
                   </span>
-                  <span class="active-line-val active-line-success">{{ formatCurrency(d.expectedProfit ?? 0) }}</span>
+                  <span class="active-line-val active-line-success">{{ formatCurrency(s.invShare) }}</span>
                 </div>
+                <div class="active-line">
+                  <span class="active-line-label">
+                    <span class="active-dot active-dot--part" />
+                    Доля партнёра
+                    <span v-if="d.costFee" class="active-line-mode">комиссия {{ d.costFee.ratePct }}% от закупки</span>
+                  </span>
+                  <span class="active-line-val active-line-part">{{ formatCurrency(s.partnerProfit) }}</span>
+                </div>
+
+                <!-- Секция: итог инвестору (cost-fee) -->
+                <template v-if="d.costFee">
+                  <div class="active-divider" />
+                  <div class="active-line">
+                    <span class="active-line-label active-line-strong">Инвестору на руки</span>
+                    <span class="active-line-val active-line-strong active-line-success">
+                      {{ formatCurrency(d.purchasePrice + d.costFee.investorShare) }}
+                    </span>
+                  </div>
+                  <div class="active-line-sub">
+                    возврат {{ formatCurrency(d.purchasePrice) }} + доход {{ formatCurrency(d.costFee.investorShare) }}
+                  </div>
+                </template>
               </template>
 
               <router-link :to="`/deals/${d.id}`" class="active-open-link">Открыть сделку →</router-link>
@@ -1089,7 +1240,7 @@ function pluralDeals(n: number) {
           </div>
           <div class="active-list">
             <div
-              v-for="d in summary.activeDealsBreakdown"
+              v-for="d in summary.activeDealsBreakdown.filter((x) => x.status !== 'COMPLETED')"
               :key="d.id"
               class="active-item"
             >
@@ -1104,9 +1255,10 @@ function pluralDeals(n: number) {
                   <div class="active-row-name">
                     <span class="active-row-num">#{{ d.dealNumber }}</span>
                     {{ d.productName }}
+                    <span class="deal-badge" :class="dealDone(d) ? 'deal-badge--done' : 'deal-badge--active'">{{ dealDone(d) ? 'Завершена' : 'Активна' }}</span>
                   </div>
                   <div class="active-row-meta">
-                    {{ d.modeLabel }} · {{ formatDate(d.dealDate) }}
+                    Закупка {{ formatCurrency(d.purchasePrice) }} · {{ formatDate(d.dealDate) }}
                   </div>
                 </div>
                 <div class="active-row-stake">
@@ -1116,50 +1268,75 @@ function pluralDeals(n: number) {
                   </template>
                   <template v-else>
                     <div class="active-row-earn">+{{ formatCurrency(d.expectedProfit ?? 0) }}</div>
-                    <div class="active-row-earn-label">ваша доля</div>
+                    <div class="active-row-earn-label">доля инвестора</div>
                   </template>
                 </div>
               </div>
 
               <!-- Expanded body -->
               <div v-if="expandedActiveDeals.has(d.id)" class="active-body">
-                <template v-if="d.costFee">
+                <template v-for="s in [dealShares(d)]" :key="'sh'">
+                  <!-- Секция: прогресс -->
+                  <template v-if="s.total > 0">
+                    <div class="active-sec-label">Прогресс</div>
+                    <div class="active-progress">
+                      <div class="active-progress-head">
+                        <span>Оплачено {{ s.paid }} из {{ s.total }}</span>
+                        <span :class="s.left > 0 ? '' : 'active-line-success'">{{ s.left > 0 ? `осталось ${s.left}` : 'завершается' }}</span>
+                      </div>
+                      <div class="active-track"><div class="active-track-fill" :style="{ width: s.paidPct + '%' }" /></div>
+                    </div>
+                    <div class="active-divider" />
+                  </template>
+
+                  <!-- Секция: экономика сделки -->
+                  <div class="active-sec-label">Экономика сделки</div>
                   <div class="active-line">
-                    <span class="active-line-label">Закупка (возврат капитала)</span>
+                    <span class="active-line-label">{{ d.costFee ? 'Закупка (возврат капитала)' : 'Закупочная цена' }}</span>
                     <span class="active-line-val">{{ formatCurrency(d.purchasePrice) }}</span>
                   </div>
                   <div class="active-line">
-                    <span class="active-line-label">Наценка рассрочки</span>
-                    <span class="active-line-val">{{ formatCurrency(d.dealProfit ?? 0) }}</span>
-                  </div>
-                  <div class="active-line">
-                    <span class="active-line-label">− Доля партнёра ({{ d.costFee.ratePct }}% от закупки)</span>
-                    <span class="active-line-val">{{ formatCurrency(d.costFee.partnerFee) }}</span>
+                    <span class="active-line-label active-line-strong">{{ d.costFee ? 'Наценка рассрочки' : 'Вся прибыль сделки' }}</span>
+                    <span class="active-line-val active-line-strong">{{ formatCurrency(s.gross) }}</span>
                   </div>
                   <div class="active-divider" />
-                  <div class="active-line">
-                    <span class="active-line-label active-line-strong">Вам на руки</span>
-                    <span class="active-line-val active-line-strong active-line-success">
-                      {{ formatCurrency(d.purchasePrice + d.costFee.investorShare) }}
-                    </span>
-                  </div>
-                  <div class="active-line-sub">
-                    возврат {{ formatCurrency(d.purchasePrice) }} + доход {{ formatCurrency(d.costFee.investorShare) }}
-                  </div>
-                </template>
-                <template v-else>
-                  <div class="active-line">
-                    <span class="active-line-label active-line-strong">Вся прибыль сделки</span>
-                    <span class="active-line-val active-line-strong">{{ formatCurrency(d.dealProfit ?? 0) }}</span>
+
+                  <!-- Секция: деление прибыли -->
+                  <div class="active-sec-label">Деление прибыли</div>
+                  <div class="active-split active-split--lg">
+                    <div class="active-split-inv" :style="{ width: s.invPct + '%' }" />
+                    <div class="active-split-part" :style="{ width: s.partPct + '%' }" />
                   </div>
                   <div class="active-line">
                     <span class="active-line-label">
-                      <span class="active-dot" />
-                      Ваша доля
-                      <span class="active-line-mode">{{ d.modeLabel }}</span>
+                      <span class="active-dot active-dot--inv" />
+                      Доля инвестора
+                      <span class="active-line-mode">{{ d.modeLabel || (d.costFee ? 'Комиссия от закупки' : '') }}</span>
                     </span>
-                    <span class="active-line-val active-line-success">{{ formatCurrency(d.expectedProfit ?? 0) }}</span>
+                    <span class="active-line-val active-line-success">{{ formatCurrency(s.invShare) }}</span>
                   </div>
+                  <div class="active-line">
+                    <span class="active-line-label">
+                      <span class="active-dot active-dot--part" />
+                      Доля партнёра
+                      <span v-if="d.costFee" class="active-line-mode">комиссия {{ d.costFee.ratePct }}% от закупки</span>
+                    </span>
+                    <span class="active-line-val active-line-part">{{ formatCurrency(s.partnerProfit) }}</span>
+                  </div>
+
+                  <!-- Секция: итог инвестору (cost-fee) -->
+                  <template v-if="d.costFee">
+                    <div class="active-divider" />
+                    <div class="active-line">
+                      <span class="active-line-label active-line-strong">Инвестору на руки</span>
+                      <span class="active-line-val active-line-strong active-line-success">
+                        {{ formatCurrency(d.purchasePrice + d.costFee.investorShare) }}
+                      </span>
+                    </div>
+                    <div class="active-line-sub">
+                      возврат {{ formatCurrency(d.purchasePrice) }} + доход {{ formatCurrency(d.costFee.investorShare) }}
+                    </div>
+                  </template>
                 </template>
 
                 <router-link :to="`/deals/${d.id}`" class="active-open-link">
@@ -1490,6 +1667,53 @@ function pluralDeals(n: number) {
 .hero-params {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px;
 }
+/* KPI: доля инвестора / моя доля */
+.ci-share-kpi { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.ci-share-kpi-card {
+  padding: 12px 16px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgb(var(--v-theme-surface));
+}
+.ci-share-kpi-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.ci-share-kpi-dot { width: 9px; height: 9px; border-radius: 50%; }
+.ci-share-kpi-val { font-size: 20px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+/* Полоса распределения прибыли по кассе */
+.ci-hero-dist {
+  padding: 14px 16px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.ci-hero-dist-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px;
+}
+.ci-hero-dist-title { font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.75); }
+.ci-hero-dist-right { display: inline-flex; align-items: center; gap: 8px; }
+.ci-hero-dist-total { font-size: 16px; font-weight: 800; color: rgba(var(--v-theme-on-surface), 0.9); font-variant-numeric: tabular-nums; }
+.ci-hero-dist-help {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+  cursor: pointer; transition: background 0.15s;
+}
+.ci-hero-dist-help:hover { background: rgba(var(--v-theme-primary), 0.22); }
+.ci-dist-tip { font-size: 12.5px; line-height: 1.55; }
+:deep(.ci-dist-tooltip) {
+  background: rgba(20, 22, 28, 0.97) !important;
+  color: #fff !important;
+  padding: 12px 14px !important;
+  border-radius: 10px !important;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28) !important;
+}
+.ci-hero-dist-bar { height: 10px; border-radius: 5px; overflow: hidden; background: #047857; }
+.ci-hero-dist-fill { height: 100%; background: #6366f1; border-radius: 5px 0 0 5px; }
+.ci-hero-dist-legend {
+  display: flex; justify-content: space-between;
+  margin-top: 8px; font-size: 12.5px; font-weight: 600;
+}
 @media (max-width: 599px) {
   /* Карточки компактнее — иконка поменьше, value поменьше. */
   .hero-params { gap: 8px; }
@@ -1639,6 +1863,65 @@ function pluralDeals(n: number) {
   font-size: 13px; line-height: 1.5;
   color: rgba(var(--v-theme-on-surface), 0.78);
 }
+/* KPI cards над списком сделок */
+/* Фильтр таба «Сделки»: все / активные / завершённые */
+.deal-filter { display: flex; flex-wrap: wrap; gap: 8px; }
+.deal-filter-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 999px;
+  font-size: 13px; font-weight: 600;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.15s;
+}
+.deal-filter-chip:hover { border-color: rgba(var(--v-theme-on-surface), 0.3); }
+.deal-filter-chip--active {
+  background: rgb(var(--v-theme-primary)); border-color: rgb(var(--v-theme-primary)); color: #fff;
+}
+.deal-filter-count {
+  font-size: 11px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.deal-filter-chip--active .deal-filter-count { color: rgba(255, 255, 255, 0.85); }
+.deals-kpi {
+  display: flex; gap: 8px;
+  overflow-x: auto; padding-bottom: 2px;
+  scrollbar-width: none;
+}
+.deals-kpi::-webkit-scrollbar { display: none; }
+.deals-kpi-card {
+  flex: 1 0 140px; min-width: 140px; padding: 10px 12px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.deals-kpi-card--inv { background: rgba(16, 185, 129, 0.1); }
+.deals-kpi-card--part { background: rgba(245, 158, 11, 0.1); }
+.deals-kpi-label {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.6);
+  margin-bottom: 4px;
+}
+.deals-kpi-dot { width: 8px; height: 8px; border-radius: 50%; }
+.deals-kpi-dot--inv { background: #10b981; }
+.deals-kpi-dot--part { background: #f59e0b; }
+.deals-kpi-val {
+  font-size: 17px; font-weight: 800;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  font-variant-numeric: tabular-nums;
+}
+.deals-kpi-val--inv { color: #10b981; }
+.deals-kpi-val--part { color: #d97706; }
+/* Бейджик статуса сделки */
+.deal-badge {
+  display: inline-block; margin-left: 6px;
+  padding: 1px 7px; border-radius: 6px;
+  font-size: 10px; font-weight: 700; vertical-align: middle;
+}
+.deal-badge--active {
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.deal-badge--done { background: rgba(16, 185, 129, 0.15); color: #10b981; }
 .share-line {
   display: flex; align-items: flex-start; gap: 8px;
 }
@@ -1709,14 +1992,48 @@ function pluralDeals(n: number) {
 }
 .active-divider {
   height: 0;
-  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.14);
-  margin: 6px 0;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  margin: 12px 0;
 }
+/* Заголовок смысловой секции в раскрытом блоке */
+.active-sec-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 7px;
+}
+/* Крупная полоса деления как акцент секции */
+.active-split--lg { height: 9px; border-radius: 5px; margin: 0 0 10px; }
 .active-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: #10b981;
   flex-shrink: 0;
 }
+.active-dot--inv { background: #10b981; }
+.active-dot--part { background: #f59e0b; }
+.active-line-part { color: #d97706; font-weight: 600; }
+/* Прогресс к завершению сделки */
+.active-progress { margin-bottom: 8px; }
+.active-progress-head {
+  display: flex; justify-content: space-between;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-bottom: 5px;
+}
+.active-track {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.active-track-fill { height: 100%; border-radius: 3px; background: #f59e0b; }
+/* Полоса деления прибыли: инвестор / партнёр */
+.active-split {
+  display: flex;
+  height: 7px; border-radius: 4px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  margin: 8px 0 2px;
+}
+.active-split-inv { background: #10b981; }
+.active-split-part { background: #f59e0b; }
 .active-open-link {
   display: block;
   text-align: center;

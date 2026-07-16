@@ -75,6 +75,8 @@ const pName = ref('')
 const pPhone = ref('')
 const pSchedule = ref<PayoutSchedule>('MONTHLY')
 const pNextPayout = ref('') // YYYY-MM-DD or ''
+// Приватность: показывать ли долю партнёра инвестору в публичном кабинете.
+const pShowPartnerShare = ref(false)
 
 // ── Cashbox blocks (existing + newly added) ──
 const blocks = ref<StakeBlock[]>([])
@@ -108,6 +110,7 @@ watch(
       pNextPayout.value = detail.person.nextPayoutDate
         ? new Date(detail.person.nextPayoutDate).toISOString().slice(0, 10)
         : ''
+      pShowPartnerShare.value = !!detail.person.showPartnerShareToInvestor
 
       blocks.value = detail.stakes.map((s) => ({
         stakeId: s.id,
@@ -227,6 +230,7 @@ async function save() {
         phone: pPhone.value.trim() || undefined,
         payoutSchedule: pSchedule.value,
         nextPayoutDate: pNextPayout.value ? new Date(pNextPayout.value).toISOString() : null,
+        showPartnerShareToInvestor: pShowPartnerShare.value,
       }),
     ]
 
@@ -328,6 +332,22 @@ async function save() {
         <div class="ced-field mt-4">
           <label class="ced-label">Следующая выплата</label>
           <input v-model="pNextPayout" type="date" class="ced-input" />
+        </div>
+
+        <!-- Приватность: показывать ли долю партнёра инвестору в кабинете по ссылке -->
+        <div class="ced-share-toggle mt-4" @click="pShowPartnerShare = !pShowPartnerShare">
+          <div class="ced-share-toggle-text">
+            <div class="ced-share-toggle-title">Показывать мою долю инвестору</div>
+            <div class="ced-share-toggle-sub">В кабинете по ссылке инвестор увидит, сколько с каждой сделки получаете вы</div>
+          </div>
+          <v-switch
+            v-model="pShowPartnerShare"
+            color="primary"
+            hide-details
+            density="compact"
+            inset
+            @click.stop
+          />
         </div>
 
         <!-- ── Кассы ── -->
@@ -523,6 +543,17 @@ async function save() {
   color: rgba(var(--v-theme-on-surface), 0.7);
 }
 .ced-field-hint { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 6px; }
+.ced-share-toggle {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px;
+  cursor: pointer;
+}
+.ced-share-toggle:hover { background: rgba(var(--v-theme-on-surface), 0.02); }
+.ced-share-toggle-text { flex: 1; min-width: 0; }
+.ced-share-toggle-title { font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.9); }
+.ced-share-toggle-sub { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 2px; }
 .ced-input-wrap { position: relative; display: flex; align-items: center; }
 .ced-input {
   width: 100%; padding: 10px 12px; border-radius: 10px;
