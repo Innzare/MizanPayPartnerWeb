@@ -7,10 +7,12 @@ import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter, useRoute } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useDealLock } from '@/composables/useDealLock'
 import { useToast } from '@/composables/useToast'
 import { api } from '@/api/client'
 
 const router = useRouter()
+const { isDealLocked } = useDealLock()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const route = useRoute()
@@ -265,6 +267,7 @@ async function deleteProduct() {
                 v-for="deal in relatedDeals"
                 :key="deal.id"
                 class="deal-item"
+                :class="{ 'deal-locked-dim': isDealLocked(deal) }"
                 @click="router.push(`/deals/${deal.id}`)"
               >
                 <div class="d-flex align-center ga-3">
@@ -272,7 +275,7 @@ async function deleteProduct() {
                     {{ (deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '?').charAt(0) }}
                   </div>
                   <div class="flex-grow-1 min-width-0">
-                    <div class="deal-client">{{ deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—' }}</div>
+                    <div class="deal-client">{{ deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—' }}<span v-if="isDealLocked(deal)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
                     <div class="deal-info">
                       {{ deal.paidPayments }}/{{ deal.numberOfPayments }} платежей
                     </div>

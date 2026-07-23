@@ -135,8 +135,14 @@ function goToSubscription() {
   gap: 12px;
   padding: 12px 16px;
   border-radius: 12px;
-  margin-bottom: 16px;
+  // Выравниваем по горизонтали наравне с контентом страниц (.at-page: 24px 32px)
+  // и добавляем корректный отступ сверху. Снизу отступ даёт top-padding страницы.
+  margin: 16px 32px 0;
   border: 1px solid transparent;
+
+  @media (max-width: 767px) {
+    margin: 12px 16px 0;
+  }
 
   &--critical {
     background: rgba(244, 67, 54, 0.08);

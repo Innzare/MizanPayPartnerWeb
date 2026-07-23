@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useAuthStore } from '@/stores/auth'
+import { useDealLock } from '@/composables/useDealLock'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 
 // Dedicated "Рассылки" section: WhatsApp connection (QR), manual payment
@@ -16,6 +17,7 @@ const toast = useToast()
 const { isDark } = useIsDark()
 const authStore = useAuthStore()
 const router = useRouter()
+const { isDealLocked } = useDealLock()
 
 function goToDeal(dealId: string) { router.push(`/deals/${dealId}`) }
 function goToClient(clientProfileId: string | null) { if (clientProfileId) router.push(`/clients/${clientProfileId}`) }
@@ -747,9 +749,10 @@ function goConnect() { activeTab.value = 'connection' }
                 >
                   <label class="bc-check bc-check--small" @click.stop><input type="checkbox" :checked="!excludedPayments.has(p.paymentId)" :disabled="!g.canSend" @change="togglePayment(g, p.paymentId)" /></label>
                   <span class="bc-pay-dot" :class="p.status === 'OVERDUE' ? 'bc-pay-dot--overdue' : 'bc-pay-dot--upcoming'" />
-                  <button class="bc-pay-deal" type="button" title="Открыть сделку" @click.stop="goToDeal(p.dealId)">
+                  <button class="bc-pay-deal" type="button" title="Открыть сделку" :class="{ 'deal-locked-dim': isDealLocked({ dealNumber: p.dealNumber }) }" @click.stop="goToDeal(p.dealId)">
                     <span v-if="p.dealNumber" class="bc-pay-dealnum">#{{ p.dealNumber }}</span>{{ p.productName }}
-                    <v-icon icon="mdi-open-in-new" size="11" class="bc-pay-deal-ico" />
+                    <v-icon v-if="isDealLocked({ dealNumber: p.dealNumber })" icon="mdi-lock-outline" size="11" color="#b45309" />
+                    <v-icon v-else icon="mdi-open-in-new" size="11" class="bc-pay-deal-ico" />
                   </button>
                   <span class="bc-pay-due" :class="{ 'bc-pay-due--overdue': p.status === 'OVERDUE' }">дата платежа {{ formatDate(p.dueDate) }}</span>
                   <span v-if="p.lastReminderSentAt" class="bc-pay-sent" :title="`Напоминание по этому платежу отправлено ${formatDate(p.lastReminderSentAt)}`">

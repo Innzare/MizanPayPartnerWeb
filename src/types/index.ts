@@ -66,9 +66,13 @@ export interface User {
   subscriptionPlan: SubscriptionPlan
   subscriptionExpiry?: string
   initialCapital?: number | null
-  planLimits?: { maxActiveDeals: number; responseCost: number; maxCashBoxes: number }
+  planLimits?: { maxActiveDeals: number; responseCost: number; maxCashBoxes: number; maxAccessibleDeals?: number }
   planFeatures?: PlanFeatures
   daysUntilExpiry?: number | null
+  // Порог доступа к сделкам по тарифу: сделка залочена, если её dealNumber
+  // меньше threshold. null = ограничения нет. Используется, чтобы помечать
+  // недоступные сделки во всех местах, где они показываются.
+  dealAccessThreshold?: number | null
   staffId?: string
   staffRole?: StaffRole
   accessOverrides?: string[]
@@ -156,6 +160,9 @@ export type PaymentType = 'EQUAL' | 'DECREASING' | 'CUSTOM'
 export interface Deal {
   id: string
   dealNumber: number
+  // Тарифная блокировка: сделка недоступна на текущем тарифе (на FREE открыты
+  // только последние N сделок). Видна в списке, но открыть/менять нельзя.
+  locked?: boolean
   requestId?: string
   clientId: string
   investorId: string

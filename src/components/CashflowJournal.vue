@@ -122,7 +122,7 @@
           v-for="e in group.entries"
           :key="e.id"
           class="cfj-row"
-          :class="{ 'cfj-row--clickable': e.dealId }"
+          :class="{ 'cfj-row--clickable': e.dealId, 'deal-locked-dim': isDealLocked({ dealNumber: e.dealNumber }) }"
           @click="onRowClick(e)"
         >
           <div class="cfj-row-icon" :style="{ background: typeStyle(e.type).bg, color: typeStyle(e.type).fg }">
@@ -135,6 +135,7 @@
               <template v-if="e.dealNumber !== null">
                 <span class="cfj-row-dot">·</span>
                 <span class="cfj-row-deal">#{{ e.dealNumber }}</span>
+                <v-icon v-if="isDealLocked({ dealNumber: e.dealNumber })" icon="mdi-lock-outline" size="12" color="#b45309" class="ml-1" />
               </template>
               <template v-if="e.coInvestorName">
                 <span class="cfj-row-dot">·</span>
@@ -184,9 +185,11 @@ import { useRouter } from 'vue-router'
 import { useCashflow, type CashFlowEntry, type CashFlowEntryType } from '@/composables/useCashflow'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
+import { useDealLock } from '@/composables/useDealLock'
 import { formatCurrency, formatCurrencyShort } from '@/utils/formatters'
 
 const router = useRouter()
+const { isDealLocked } = useDealLock()
 const toast = useToast()
 const cashboxesStore = useCashBoxesStore()
 const { entries, total, loading, fetchJournal } = useCashflow()

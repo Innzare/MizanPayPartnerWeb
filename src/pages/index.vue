@@ -8,12 +8,14 @@ import { userName, clientProfileName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useDealLock } from '@/composables/useDealLock'
 import { useToast } from '@/composables/useToast'
 import HeroSummary from '@/components/HeroSummary.vue'
 import { useCapital } from '@/composables/useCapital'
 import { useIsMobile } from '@/composables/useIsMobile'
 
 const router = useRouter()
+const { isDealLocked } = useDealLock()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const { isMobile } = useIsMobile()
@@ -297,13 +299,14 @@ function getAvatarColor(name?: string) {
               v-for="item in upcomingPayments"
               :key="item.payment.id"
               class="payment-row payment-row--clickable"
+              :class="{ 'deal-locked-dim': isDealLocked(item.deal) }"
               @click="item.deal && router.push(`/deals/${item.deal.id}`)"
             >
               <div class="payment-avatar" :style="{ background: getAvatarColor(dealClientName(item.deal)) }">
                 {{ getInitial(dealClientName(item.deal)) }}
               </div>
               <div class="payment-info">
-                <div class="payment-product">{{ item.deal?.productName || 'Товар' }}</div>
+                <div class="payment-product">{{ item.deal?.productName || 'Товар' }}<span v-if="isDealLocked(item.deal)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
                 <div class="payment-meta">{{ dealClientName(item.deal) }} · {{ formatDateShort(item.payment.dueDate) }}</div>
               </div>
               <div class="payment-right">
@@ -343,6 +346,7 @@ function getAvatarColor(name?: string) {
               v-for="deal in topActiveDeals"
               :key="deal.id"
               class="deal-row deal-row--clickable"
+              :class="{ 'deal-locked-dim': isDealLocked(deal) }"
               @click="router.push(`/deals/${deal.id}`)"
             >
               <v-avatar size="44" rounded="lg" class="deal-photo">
@@ -350,7 +354,7 @@ function getAvatarColor(name?: string) {
                 <v-icon v-else icon="mdi-package-variant-closed" size="22" color="grey" />
               </v-avatar>
               <div class="deal-info">
-                <div class="deal-product">{{ deal.productName }}</div>
+                <div class="deal-product">{{ deal.productName }}<span v-if="isDealLocked(deal)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
                 <div class="deal-meta">{{ dealClientName(deal) }}</div>
               </div>
               <div class="deal-progress-col">

@@ -103,7 +103,12 @@ async function request<T>(
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Ошибка сервера' }));
     const message = Array.isArray(error.message) ? error.message[0] : error.message;
-    throw new Error(message || `HTTP ${response.status}`);
+    const err = new Error(message || `HTTP ${response.status}`);
+    // Пробрасываем структурированные поля (code/status) — фронт распознаёт
+    // тарифные блокировки (DEAL_LOCKED, CASHBOX_LIMIT и т.п.).
+    (err as any).code = error.code;
+    (err as any).status = response.status;
+    throw err;
   }
 
   return response.json();
@@ -130,7 +135,12 @@ async function uploadRequest<T>(path: string, formData: FormData, _retried = fal
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Ошибка сервера' }));
     const message = Array.isArray(error.message) ? error.message[0] : error.message;
-    throw new Error(message || `HTTP ${response.status}`);
+    const err = new Error(message || `HTTP ${response.status}`);
+    // Пробрасываем структурированные поля (code/status) — фронт распознаёт
+    // тарифные блокировки (DEAL_LOCKED, CASHBOX_LIMIT и т.п.).
+    (err as any).code = error.code;
+    (err as any).status = response.status;
+    throw err;
   }
 
   return response.json();

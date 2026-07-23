@@ -8,6 +8,7 @@ import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
+import { useDealLock } from '@/composables/useDealLock'
 import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
@@ -410,12 +411,19 @@ function sortIcon(field: SortField) {
 const selectedDeal = ref<Deal | null>(null)
 const showDealDialog = ref(false)
 
+const { isDealLocked } = useDealLock()
+// Платёж по залоченной сделке — показываем как недоступный.
+function isPaymentLocked(payment: Payment): boolean {
+  return isDealLocked(getDealForPayment(payment))
+}
+
 function openDealFromPayment(payment: Payment) {
   const deal = getDealForPayment(payment)
-  if (deal) {
-    selectedDeal.value = deal
-    showDealDialog.value = true
-  }
+  if (!deal) return
+  // Залоченная сделка: не открываем превью, ведём на страницу (там экран блокировки).
+  if (isDealLocked(deal)) { router.push(`/deals/${deal.id}`); return }
+  selectedDeal.value = deal
+  showDealDialog.value = true
 }
 
 function goToDeal(deal: Deal) {
@@ -1066,10 +1074,11 @@ const rescheduleReasonOptions = [
                     v-for="p in selectedDatePayments"
                     :key="p.id"
                     class="cal-payment-item"
+                    :class="{ 'deal-locked-dim': isPaymentLocked(p) }"
                     @click="openDealFromPayment(p)"
                   >
                     <div class="d-flex align-center justify-space-between mb-2">
-                      <span class="font-weight-medium" style="font-size: 13px;">{{ p._dealName }}</span>
+                      <span class="font-weight-medium" style="font-size: 13px;">{{ p._dealName }}<v-icon v-if="isPaymentLocked(p)" icon="mdi-lock-outline" size="12" color="#b45309" class="ml-1" /></span>
                       <div
                         class="payment-status-chip"
                         :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
@@ -1317,10 +1326,11 @@ const rescheduleReasonOptions = [
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(p, idx) in displayedPayments" :key="p.id" class="clickable-row" @click="openDealFromPayment(p)">
+            <tr v-for="(p, idx) in displayedPayments" :key="p.id" class="clickable-row" :class="{ 'deal-locked-dim': isPaymentLocked(p) }" @click="openDealFromPayment(p)">
               <td class="td-index">{{ idx + 1 }}</td>
               <td>
                 <span class="font-weight-medium">{{ getDealName(p) }}</span>
+                <span v-if="isPaymentLocked(p)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span>
               </td>
               <td>
                 <div class="client-name">
@@ -1393,7 +1403,7 @@ const rescheduleReasonOptions = [
             v-for="(p, idx) in displayedPayments"
             :key="p.id"
             class="pay-card"
-            :class="{ 'pay-card--overdue': p.status === 'OVERDUE' }"
+            :class="{ 'pay-card--overdue': p.status === 'OVERDUE', 'deal-locked-dim': isPaymentLocked(p) }"
             @click="openDealFromPayment(p)"
           >
             <div class="pay-card-head">
@@ -1405,7 +1415,10 @@ const rescheduleReasonOptions = [
                 {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
               </div>
             </div>
-            <div class="pay-card-deal">{{ getDealName(p) }}</div>
+            <div class="pay-card-deal">
+              {{ getDealName(p) }}
+              <span v-if="isPaymentLocked(p)" class="deal-locked-chip"><v-icon icon="mdi-lock-outline" />Недоступно</span>
+            </div>
             <div class="pay-card-client">
               <span>{{ getClientName(p) }}</span>
               <span v-if="!getDealForPayment(p)?.client && !getDealForPayment(p)?.clientProfile?.userId" class="external-badge">Внешний</span>

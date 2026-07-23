@@ -432,3 +432,13 @@
     max-width: 100%;
   }
 }
+/* ── Тарифная блокировка сделки: единый вид «недоступно» на всех поверхностях
+   (список, платежи, клиенты, дашборд, поиск, сайдбар и т.д.) ── */
+.deal-locked-dim { opacity: 0.5; }
+.deal-locked-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 6px; border-radius: 6px; white-space: nowrap;
+  font-size: 10px; font-weight: 700; line-height: 1.5;
+  background: rgba(245, 158, 11, 0.16); color: #b45309;
+}
+.deal-locked-chip .v-icon { font-size: 12px !important; }

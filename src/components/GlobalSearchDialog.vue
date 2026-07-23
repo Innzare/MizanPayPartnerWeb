@@ -59,7 +59,7 @@
               :key="d.id"
               :ref="(el) => setItemRef(el, dealOffset + i)"
               class="gs-item"
-              :class="{ 'gs-item--active': activeIdx === dealOffset + i }"
+              :class="{ 'gs-item--active': activeIdx === dealOffset + i, 'deal-locked-dim': isDealLocked(d) }"
               @mouseenter="activeIdx = dealOffset + i"
               @click="goToDeal(d.id)"
             >
@@ -70,6 +70,7 @@
                 <div class="gs-item-title">
                   <span class="gs-item-num">#{{ d.dealNumber }}</span>
                   <span class="gs-item-product">{{ d.productName }}</span>
+                  <span v-if="isDealLocked(d)" class="deal-locked-chip"><v-icon icon="mdi-lock-outline" />Недоступно</span>
                 </div>
                 <div class="gs-item-sub">
                   <span v-if="d.clientName">{{ d.clientName }}</span>
@@ -140,6 +141,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useIsMobile } from '@/composables/useIsMobile'
+import { useDealLock } from '@/composables/useDealLock'
 import { formatCurrency, formatPhone } from '@/utils/formatters'
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -149,6 +151,7 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const { isMobile } = useIsMobile()
+const { isDealLocked } = useDealLock()
 
 interface DealResult {
   id: string

@@ -299,12 +299,12 @@
             v-for="r in results"
             :key="r.id"
             class="search-result"
-            :class="{ active: expandedId === r.id, overdue: r.nextPayment?.status === 'OVERDUE' }"
+            :class="{ active: expandedId === r.id, overdue: r.nextPayment?.status === 'OVERDUE', 'deal-locked-dim': isDealLocked(r) }"
           >
             <div class="search-result-main" @click="toggleExpanded(r.id)">
               <div class="search-result-num">#{{ r.dealNumber }}</div>
               <div class="search-result-info">
-                <div class="search-result-name">{{ r.clientName || 'Без имени' }}</div>
+                <div class="search-result-name">{{ r.clientName || 'Без имени' }}<span v-if="isDealLocked(r)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
                 <div class="search-result-meta">
                   <span class="search-result-product">{{ r.productName }}</span>
                   <template v-if="r.clientPhone">
@@ -421,6 +421,7 @@ import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useDealsStore } from '@/stores/deals'
 import { useToast } from '@/composables/useToast'
+import { useDealLock } from '@/composables/useDealLock'
 import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
@@ -441,6 +442,7 @@ const router = useRouter()
 const dealsStore = useDealsStore()
 const { show: showToast } = useToast()
 const { isMobile } = useIsMobile()
+const { isDealLocked } = useDealLock()
 
 function openDeal(id: string) {
   emit('update:modelValue', false)

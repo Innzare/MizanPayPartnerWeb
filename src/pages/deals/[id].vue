@@ -49,6 +49,9 @@ const toast = useToast()
 const dealId = computed(() => route.params.id as string)
 
 const pageLoading = ref(true)
+// Тарифная блокировка: сделка недоступна на текущем тарифе (прямой заход по ссылке).
+const lockedError = ref(false)
+function goToSubscription() { router.push('/settings?tab=subscription') }
 
 const cashboxesStore = useCashBoxesStore()
 
@@ -66,13 +69,22 @@ onMounted(async () => {
     ])
     if (dealId.value) recentDeals.recordVisit(dealId.value)
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки сделки')
+    if (e?.code === 'DEAL_LOCKED') {
+      lockedError.value = true
+    } else {
+      toast.error(e.message || 'Ошибка загрузки сделки')
+    }
   } finally {
     pageLoading.value = false
   }
 })
 
 const deal = computed(() => dealsStore.getDeal(dealId.value))
+// Тарифная блокировка сделки: страница закрыта, если сделка помечена locked
+// (флаг из списка, лежит в кэше) ИЛИ прямой заход вернул 403 DEAL_LOCKED.
+// Единый гейт на самой странице — покрывает ВСЕ точки входа (платежи, поиск,
+// клиенты, дашборд, прямой URL), а не только клик из списка сделок.
+const isLocked = computed(() => lockedError.value || !!deal.value?.locked)
 
 // Resolve the cashbox the deal belongs to — used by the hero badge and
 // the move-cashbox dialog. Falls back to null if the cashbox is archived
@@ -1342,6 +1354,19 @@ const timeline = computed(() => {
     <!-- Page loader -->
     <div v-if="pageLoading" class="d-flex justify-center align-center" style="min-height: 300px;">
       <v-progress-circular indeterminate color="primary" size="40" />
+    </div>
+
+    <!-- Тарифная блокировка сделки -->
+    <div v-else-if="isLocked" class="deal-locked-screen">
+      <div class="deal-locked-icon"><v-icon icon="mdi-lock-outline" size="34" /></div>
+      <div class="deal-locked-title">Сделка недоступна на вашем тарифе</div>
+      <div class="deal-locked-sub">
+        На бесплатном тарифе доступны только последние 3 сделки. Обновите тариф, чтобы открывать и редактировать все свои сделки.
+      </div>
+      <div class="deal-locked-actions">
+        <button class="dl-btn dl-btn--ghost" @click="router.push('/deals')">К списку сделок</button>
+        <button class="dl-btn dl-btn--primary" @click="goToSubscription">Повысить тариф</button>
+      </div>
     </div>
 
     <div v-else-if="deal">
@@ -3166,6 +3191,36 @@ const timeline = computed(() => {
 </template>
 
 <style scoped>
+/* Экран тарифной блокировки сделки */
+.deal-locked-screen {
+  max-width: 460px; margin: 40px auto; text-align: center;
+  padding: 32px 24px; border-radius: 16px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgba(var(--v-theme-surface), 1);
+}
+.deal-locked-icon {
+  width: 72px; height: 72px; border-radius: 18px; margin: 0 auto 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(245, 158, 11, 0.14); color: #b45309;
+}
+.deal-locked-title { font-size: 19px; font-weight: 800; color: rgba(var(--v-theme-on-surface), 0.9); }
+.deal-locked-sub {
+  font-size: 13.5px; line-height: 1.5; margin-top: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.deal-locked-actions { display: flex; gap: 10px; margin-top: 22px; }
+.dl-btn {
+  flex: 1; padding: 11px 16px; border-radius: 11px;
+  font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+}
+.dl-btn--ghost {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.dl-btn--ghost:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
+.dl-btn--primary { background: rgb(var(--v-theme-primary)); color: #fff; }
+.dl-btn--primary:hover { opacity: 0.9; }
+
 .back-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 14px; border-radius: 8px; border: none;

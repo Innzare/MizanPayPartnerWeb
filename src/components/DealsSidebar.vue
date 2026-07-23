@@ -5,6 +5,7 @@ import { useDealsStore } from '@/stores/deals'
 import { useAuthStore } from '@/stores/auth'
 import { useRecentDeals } from '@/composables/useRecentDeals'
 import { useIsMobile } from '@/composables/useIsMobile'
+import { useDealLock } from '@/composables/useDealLock'
 import { formatCurrency, formatPhone } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import type { Deal } from '@/types'
@@ -26,6 +27,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const dealsStore = useDealsStore()
 const { isMobile } = useIsMobile()
+const { isDealLocked } = useDealLock()
 const recentDeals = useRecentDeals(authStore.user?.id ?? null)
 
 const tab = ref<'all' | 'recent'>('all')
@@ -280,6 +282,7 @@ function statusChipLabel(status: string): string {
           v-for="d in displayed"
           :key="d.id"
           class="ds-item"
+          :class="{ 'deal-locked-dim': isDealLocked(d) }"
           @click="goToDeal(d)"
         >
           <div class="ds-item-avatar" :style="{ background: avatarColor(d) }">
@@ -288,6 +291,7 @@ function statusChipLabel(status: string): string {
           <div class="ds-item-body">
             <div class="ds-item-headline">
               <span class="ds-item-title">{{ d.productName || 'Без названия' }}</span>
+              <span v-if="isDealLocked(d)" class="deal-locked-chip"><v-icon icon="mdi-lock-outline" />Недоступно</span>
               <span class="ds-item-num">#{{ d.dealNumber }}</span>
             </div>
             <div class="ds-item-client">{{ clientName(d) }}</div>

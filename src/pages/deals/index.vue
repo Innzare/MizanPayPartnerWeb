@@ -361,12 +361,24 @@ function dealClientPhone(deal: Deal): string | null {
   return raw ? formatPhone(raw) : null
 }
 
+// Тарифная блокировка: на FREE открыты только последние N сделок (флаг
+// `locked` приходит с бэкенда — он же учитывает истёкшую подписку). Клик по
+// залоченной — апселл вместо открытия.
+const showLockDialog = ref(false)
+const lockedDealsCount = computed(() => dealsStore.investorDeals.filter(d => d.locked).length)
+function goToSubscription() {
+  showLockDialog.value = false
+  router.push('/settings?tab=subscription')
+}
+
 function openDeal(deal: Deal) {
+  if (deal.locked) { showLockDialog.value = true; return }
   selectedDeal.value = deal
   showDialog.value = true
 }
 
 function goToDeal(deal: Deal) {
+  if (deal.locked) { showLockDialog.value = true; return }
   router.push(`/deals/${deal.id}`)
 }
 
@@ -744,10 +756,23 @@ const selectedDealPaidTotal = computed(() =>
           </button>
         </div>
 
+        <!-- Тарифная блокировка: на FREE доступны только последние сделки -->
+        <div v-if="lockedDealsCount > 0 && !isTrashTab" class="deal-lock-banner">
+          <div class="deal-lock-banner-icon"><v-icon icon="mdi-lock-alert-outline" size="20" /></div>
+          <div class="deal-lock-banner-text">
+            <div class="deal-lock-banner-title">Доступны только последние 3 сделки</div>
+            <div class="deal-lock-banner-sub">
+              Ещё {{ lockedDealsCount }} {{ lockedDealsCount === 1 ? 'сделка недоступна' : lockedDealsCount < 5 ? 'сделки недоступны' : 'сделок недоступно' }}
+              на бесплатном тарифе. Обновите тариф, чтобы открыть все.
+            </div>
+          </div>
+          <button class="deal-lock-banner-btn" @click="goToSubscription">Повысить тариф</button>
+        </div>
+
         <!-- GRID VIEW -->
         <v-row v-if="viewMode === 'grid' && displayedDeals.length">
           <v-col v-for="deal in displayedDeals" :key="deal.id" cols="12" sm="6" lg="4" xl="3">
-            <div class="deal-card" @click="openDeal(deal)">
+            <div class="deal-card" :class="{ 'deal-card--locked': deal.locked }" @click="openDeal(deal)">
               <div class="deal-card-photo">
                 <v-img v-if="deal.productPhotos?.[0]" :src="deal.productPhotos[0]" height="140" cover />
                 <div v-else class="deal-card-placeholder" style="height: 140px;">
@@ -758,6 +783,10 @@ const selectedDealPaidTotal = computed(() =>
                   :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
                 >
                   {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
+                </div>
+                <div v-if="deal.locked" class="deal-lock-badge">
+                  <v-icon icon="mdi-lock-outline" size="13" />
+                  Недоступно на тарифе
                 </div>
               </div>
 
@@ -820,7 +849,7 @@ const selectedDealPaidTotal = computed(() =>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="deal in displayedDeals" :key="deal.id" class="cursor-pointer" @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)">
+            <tr v-for="deal in displayedDeals" :key="deal.id" class="cursor-pointer" :class="{ 'deal-row--locked': deal.locked }" @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)">
               <td v-if="selectMode" @click.stop>
                 <v-checkbox-btn
                   :model-value="selectedIds.has(deal.id)"
@@ -837,6 +866,10 @@ const selectedDealPaidTotal = computed(() =>
                   </v-avatar>
                   <span class="table-deal-num">#{{ deal.dealNumber }}</span>
                   <span class="font-weight-medium table-product-name">{{ deal.productName }}</span>
+                  <span v-if="deal.locked" class="deal-lock-tag">
+                    <v-icon icon="mdi-lock-outline" size="12" />
+                    Недоступно на тарифе
+                  </span>
                   <span v-if="deal.folder" class="deal-folder-badge" :style="{ background: deal.folder.color + '18', color: deal.folder.color }">
                     <span class="folder-chip-dot" :style="{ background: deal.folder.color }" />
                     {{ deal.folder.name }}
@@ -1094,6 +1127,21 @@ const selectedDealPaidTotal = computed(() =>
         </div>
       </v-card>
     </v-dialog>
+
+    <!-- Диалог тарифной блокировки сделки -->
+    <v-dialog v-model="showLockDialog" max-width="420" :fullscreen="false">
+      <v-card rounded="lg" class="pa-6 text-center">
+        <div class="deal-lock-dialog-icon"><v-icon icon="mdi-lock-outline" size="30" /></div>
+        <div class="text-h6 font-weight-bold mt-3">Сделка недоступна</div>
+        <div class="text-body-2 text-medium-emphasis mt-2">
+          На бесплатном тарифе доступны только последние 3 сделки. Обновите тариф, чтобы открывать и редактировать все свои сделки.
+        </div>
+        <div class="d-flex ga-2 mt-5">
+          <button class="dlg-btn dlg-btn--ghost" @click="showLockDialog = false">Закрыть</button>
+          <button class="dlg-btn dlg-btn--primary" @click="goToSubscription">Повысить тариф</button>
+        </div>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -1240,6 +1288,64 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 .deal-card-photo { position: relative; }
+
+/* ── Тарифная блокировка сделок ── */
+.deal-card--locked { opacity: 0.72; }
+.deal-card--locked:hover { transform: none; box-shadow: none; }
+.deal-lock-badge {
+  position: absolute; top: 8px; left: 8px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 7px;
+  font-size: 11px; font-weight: 700;
+  background: rgba(245, 158, 11, 0.92); color: #fff;
+}
+.deal-row--locked { opacity: 0.6; }
+.deal-lock-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: 6px; white-space: nowrap;
+  font-size: 11px; font-weight: 700;
+  background: rgba(245, 158, 11, 0.14); color: #b45309;
+}
+.deal-lock-banner {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; margin-bottom: 14px; border-radius: 12px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.32);
+}
+.deal-lock-banner-icon {
+  width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(245, 158, 11, 0.18); color: #b45309;
+}
+.deal-lock-banner-text { flex: 1; min-width: 0; }
+.deal-lock-banner-title { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.9); }
+.deal-lock-banner-sub { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6); margin-top: 2px; }
+.deal-lock-banner-btn {
+  flex-shrink: 0; padding: 8px 16px; border-radius: 9px;
+  font-size: 13px; font-weight: 600; color: #fff;
+  background: #f59e0b; cursor: pointer; transition: background 0.15s;
+}
+.deal-lock-banner-btn:hover { background: #d97706; }
+.deal-lock-dialog-icon {
+  width: 60px; height: 60px; border-radius: 16px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(245, 158, 11, 0.14); color: #b45309;
+}
+.dlg-btn {
+  flex: 1; padding: 10px 16px; border-radius: 10px;
+  font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+}
+.dlg-btn--ghost {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.dlg-btn--ghost:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
+.dlg-btn--primary { background: rgb(var(--v-theme-primary)); color: #fff; }
+.dlg-btn--primary:hover { opacity: 0.9; }
+@media (max-width: 599px) {
+  .deal-lock-banner { flex-wrap: wrap; }
+  .deal-lock-banner-btn { width: 100%; }
+}
 .external-badge {
   display: inline-flex; padding: 2px 6px; border-radius: 5px;
   background: rgba(99, 102, 241, 0.1); color: #6366f1;

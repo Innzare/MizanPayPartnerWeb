@@ -86,6 +86,9 @@ export const useDealsStore = defineStore('deals', () => {
       }
       return deal
     } catch (e: any) {
+      // Тарифная блокировка — пробрасываем, чтобы страница сделки показала
+      // экран «недоступно» (а не молча отрендерилась из кэша списка).
+      if (e?.code === 'DEAL_LOCKED') throw e
       console.error('Failed to fetch deal:', e)
       return null
     }

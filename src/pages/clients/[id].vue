@@ -8,10 +8,12 @@ import { formatCurrency, formatDate, formatPhone, timeAgo, PHONE_MASK } from '@/
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import { useDealLock } from '@/composables/useDealLock'
 import { useToast } from '@/composables/useToast'
 
 const route = useRoute()
 const router = useRouter()
+const { isDealLocked } = useDealLock()
 const clientsStore = useClientProfilesStore()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
@@ -556,6 +558,7 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
                 v-for="deal in clientDeals"
                 :key="deal.id"
                 class="deal-row"
+                :class="{ 'deal-locked-dim': isDealLocked(deal) }"
                 @click="router.push(`/deals/${deal.id}`)"
               >
                 <v-avatar size="44" rounded="lg" color="grey-lighten-3" class="mr-3 flex-shrink-0">
@@ -563,7 +566,7 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
                   <v-icon v-else icon="mdi-package-variant" size="20" />
                 </v-avatar>
                 <div class="deal-main">
-                  <div class="deal-name">{{ deal.productName }}</div>
+                  <div class="deal-name">{{ deal.productName }}<span v-if="isDealLocked(deal)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
                   <div class="deal-meta">{{ formatCurrency(deal.totalPrice) }} · {{ deal.paidPayments }}/{{ deal.numberOfPayments }} платежей</div>
                 </div>
                 <div class="d-none d-sm-flex align-center ga-3 flex-shrink-0">

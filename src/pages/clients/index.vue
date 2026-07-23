@@ -9,6 +9,7 @@ import { type Deal, type ClientProfile, userName, clientProfileName } from '@/ty
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { useDealLock } from '@/composables/useDealLock'
 
 const router = useRouter()
 const { isDark, statusStyle } = useIsDark()
@@ -160,7 +161,11 @@ function getDealProgress(deal: Deal) {
   return deal.numberOfPayments > 0 ? (deal.paidPayments / deal.numberOfPayments) * 100 : 0
 }
 
+const { isDealLocked } = useDealLock()
+
 function openDeal(deal: Deal) {
+  // Залоченная сделка: ведём на страницу (там экран блокировки), без превью.
+  if (isDealLocked(deal)) { router.push(`/deals/${deal.id}`); return }
   selectedDeal.value = deal
   showDialog.value = true
 }
@@ -374,6 +379,7 @@ const selectedDealPaidTotal = computed(() =>
                     v-for="deal in getClientDeals(client.user.id)"
                     :key="deal.id"
                     class="deal-item"
+                    :class="{ 'deal-locked-dim': isDealLocked(deal) }"
                     @click.stop="openDeal(deal)"
                   >
                     <v-avatar size="40" rounded="lg" class="deal-photo" :color="deal.productPhotos?.[0] ? undefined : 'grey-lighten-3'">
@@ -381,7 +387,7 @@ const selectedDealPaidTotal = computed(() =>
                       <v-icon v-else icon="mdi-package-variant-closed" size="20" color="grey" />
                     </v-avatar>
                     <div class="deal-info">
-                      <div class="deal-product">{{ deal.productName }}</div>
+                      <div class="deal-product">{{ deal.productName }}<span v-if="isDealLocked(deal)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
                       <div class="deal-price">{{ formatCurrency(deal.totalPrice) }}</div>
                     </div>
                     <div class="deal-progress-col">
