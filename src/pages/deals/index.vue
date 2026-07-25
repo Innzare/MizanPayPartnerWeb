@@ -254,7 +254,27 @@ async function permanentDeleteSelected() {
 }
 const selectedDeal = ref<Deal | null>(null)
 const showDialog = ref(false)
-const sortBy = ref<'newest' | 'amount_desc' | 'amount_asc' | 'progress'>('newest')
+// Единое состояние сортировки: колонка + направление. Заголовки таблицы и
+// select «Сортировка» пишут в него; сетка тоже его использует.
+type SortDir = 'asc' | 'desc'
+const sortCol = ref<string>('createdAt')
+const sortDir = ref<SortDir>('desc')
+// Совместимость со старым select «Сортировка» (маппинг на sortCol/sortDir).
+const sortBy = computed<string>({
+  get() {
+    if (sortCol.value === 'createdAt' && sortDir.value === 'desc') return 'newest'
+    if (sortCol.value === 'total' && sortDir.value === 'desc') return 'amount_desc'
+    if (sortCol.value === 'total' && sortDir.value === 'asc') return 'amount_asc'
+    if (sortCol.value === 'progress' && sortDir.value === 'desc') return 'progress'
+    return ''
+  },
+  set(v) {
+    if (v === 'newest') { sortCol.value = 'createdAt'; sortDir.value = 'desc' }
+    else if (v === 'amount_desc') { sortCol.value = 'total'; sortDir.value = 'desc' }
+    else if (v === 'amount_asc') { sortCol.value = 'total'; sortDir.value = 'asc' }
+    else if (v === 'progress') { sortCol.value = 'progress'; sortDir.value = 'desc' }
+  },
+})
 
 const tabFilters = [
   { label: 'Активные', key: 'active' },
@@ -277,6 +297,102 @@ const sortOptions = [
   { title: 'Сумма ↑', value: 'amount_asc' },
   { title: 'По прогрессу', value: 'progress' },
 ]
+
+// ── Управляемые колонки таблицы ──
+interface DealColumn { key: string; label: string; align: 'start' | 'end' | 'center'; sortable: boolean }
+const ALL_COLUMNS: DealColumn[] = [
+  { key: 'dealNumber', label: '№', align: 'start', sortable: true },
+  { key: 'product', label: 'Товар', align: 'start', sortable: true },
+  { key: 'client', label: 'Клиент', align: 'start', sortable: true },
+  { key: 'total', label: 'Итого', align: 'end', sortable: true },
+  { key: 'markup', label: 'Наценка', align: 'end', sortable: true },
+  { key: 'remaining', label: 'Остаток долга', align: 'end', sortable: true },
+  { key: 'monthly', label: 'Ежемесячно', align: 'end', sortable: true },
+  { key: 'downPayment', label: 'Первонач. взнос', align: 'end', sortable: true },
+  { key: 'term', label: 'Срок рассрочки', align: 'center', sortable: true },
+  { key: 'progress', label: 'Прогресс', align: 'center', sortable: true },
+  { key: 'status', label: 'Статус', align: 'start', sortable: true },
+  { key: 'createdAt', label: 'Дата создания', align: 'end', sortable: true },
+  { key: 'dealDate', label: 'Дата заключения', align: 'end', sortable: true },
+  { key: 'lastPayment', label: 'Последний платёж', align: 'end', sortable: true },
+]
+const DEFAULT_VISIBLE = ['dealNumber', 'product', 'client', 'total', 'markup', 'remaining', 'progress', 'status', 'createdAt']
+const COLS_STORAGE_KEY = 'deals:table-columns'
+function loadVisibleCols(): Record<string, boolean> {
+  const base: Record<string, boolean> = {}
+  ALL_COLUMNS.forEach((c) => { base[c.key] = DEFAULT_VISIBLE.includes(c.key) })
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLS_STORAGE_KEY) || 'null')
+    if (saved && typeof saved === 'object') {
+      ALL_COLUMNS.forEach((c) => { if (typeof saved[c.key] === 'boolean') base[c.key] = saved[c.key] })
+    }
+  } catch { /* ignore */ }
+  return base
+}
+const visibleCols = ref<Record<string, boolean>>(loadVisibleCols())
+watch(visibleCols, (v) => { try { localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(v)) } catch { /* ignore */ } }, { deep: true })
+const shownColumns = computed(() => ALL_COLUMNS.filter((c) => visibleCols.value[c.key]))
+function isColVisible(key: string) { return !!visibleCols.value[key] }
+function toggleColumn(key: string) { visibleCols.value[key] = !visibleCols.value[key] }
+
+function toggleSort(key: string) {
+  if (sortCol.value === key) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortCol.value = key
+    // текст — по возрастанию, числа/даты — по убыванию по умолчанию
+    sortDir.value = (key === 'product' || key === 'client' || key === 'status') ? 'asc' : 'desc'
+  }
+}
+
+// ── Вычисляемые значения строки ──
+const INTERVAL_UNIT: Record<string, string> = { WEEKLY: 'нед', BIWEEKLY: '×2 нед', MONTHLY: 'мес' }
+function dealMonthly(deal: Deal): number {
+  const ps = paymentsStore.getPaymentsForDeal(deal.id)
+  if (ps.length) return ps[0].amount
+  const financed = deal.totalPrice - (deal.downPayment ?? 0)
+  return deal.numberOfPayments > 0 ? Math.round(financed / deal.numberOfPayments) : 0
+}
+function dealLastPaymentTs(deal: Deal): number | null {
+  const ps = paymentsStore.getPaymentsForDeal(deal.id)
+  if (ps.length) {
+    let max = 0
+    for (const p of ps) { const t = new Date(p.dueDate).getTime(); if (t > max) max = t }
+    return max || null
+  }
+  // фолбэк: firstPaymentDate + (n-1) интервалов
+  if (!deal.firstPaymentDate || !deal.numberOfPayments) return null
+  const d = new Date(deal.firstPaymentDate)
+  const n = deal.numberOfPayments - 1
+  if (deal.paymentInterval === 'WEEKLY') d.setDate(d.getDate() + n * 7)
+  else if (deal.paymentInterval === 'BIWEEKLY') d.setDate(d.getDate() + n * 14)
+  else d.setMonth(d.getMonth() + n)
+  return d.getTime()
+}
+function dealLastPaymentLabel(deal: Deal): string {
+  const t = dealLastPaymentTs(deal)
+  return t ? formatDateShort(new Date(t).toISOString()) : '—'
+}
+function dealTermLabel(deal: Deal): string {
+  return `${deal.numberOfPayments} ${INTERVAL_UNIT[deal.paymentInterval] ?? 'мес'}`
+}
+
+const SORT_ACCESSOR: Record<string, (d: Deal) => number | string> = {
+  dealNumber: (d) => d.dealNumber,
+  product: (d) => (d.productName ?? '').toLowerCase(),
+  client: (d) => dealClientName(d).toLowerCase(),
+  total: (d) => d.totalPrice,
+  markup: (d) => d.markup,
+  remaining: (d) => d.remainingAmount,
+  monthly: (d) => dealMonthly(d),
+  downPayment: (d) => d.downPayment ?? 0,
+  term: (d) => d.numberOfPayments,
+  progress: (d) => getDealProgress(d),
+  status: (d) => d.status,
+  createdAt: (d) => new Date(d.createdAt).getTime(),
+  dealDate: (d) => new Date(d.dealDate ?? d.createdAt).getTime(),
+  lastPayment: (d) => dealLastPaymentTs(d) ?? 0,
+}
 
 const isTrashTab = computed(() => tab.value === 3)
 
@@ -316,21 +432,24 @@ const displayedDeals = computed(() => {
 
   if (search.value) {
     const s = search.value.toLowerCase()
+    const sNum = s.replace(/[^\d]/g, '') // цифры из запроса — для фильтра по № договора
     result = result.filter(d =>
       d.productName.toLowerCase().includes(s) ||
-      dealClientName(d).toLowerCase().includes(s)
+      dealClientName(d).toLowerCase().includes(s) ||
+      (sNum.length > 0 && String(d.dealNumber).includes(sNum))
     )
   }
 
-  switch (sortBy.value) {
-    case 'newest': result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); break
-    case 'amount_desc': result.sort((a, b) => b.totalPrice - a.totalPrice); break
-    case 'amount_asc': result.sort((a, b) => a.totalPrice - b.totalPrice); break
-    case 'progress': result.sort((a, b) => {
-      const pa = a.numberOfPayments > 0 ? a.paidPayments / a.numberOfPayments : 0
-      const pb = b.numberOfPayments > 0 ? b.paidPayments / b.numberOfPayments : 0
-      return pb - pa
-    }); break
+  // Сортировка по выбранной колонке (заголовок таблицы / select).
+  const acc = SORT_ACCESSOR[sortCol.value]
+  if (acc) {
+    const dir = sortDir.value === 'asc' ? 1 : -1
+    result.sort((a, b) => {
+      const va = acc(a)
+      const vb = acc(b)
+      if (typeof va === 'string' && typeof vb === 'string') return va.localeCompare(vb, 'ru') * dir
+      return (va < vb ? -1 : va > vb ? 1 : 0) * dir
+    })
   }
 
   return result
@@ -442,6 +561,24 @@ const selectedDealPaidTotal = computed(() =>
 
     <!-- Top toolbar row: trash on the left, filter chips on the right. -->
     <div class="d-flex justify-space-between align-center ga-2 mb-3 flex-wrap">
+      <div class="d-flex align-center ga-2">
+      <!-- Управление колонками таблицы — слева от «Корзины» -->
+      <v-menu v-if="!isMobile && viewMode === 'table'" :close-on-content-click="false" location="bottom start">
+        <template #activator="{ props: menuProps }">
+          <button class="fb-btn" v-bind="menuProps" title="Колонки таблицы">
+            <v-icon icon="mdi-table-cog" size="16" />
+            <span>Колонки</span>
+          </button>
+        </template>
+        <div class="col-menu">
+          <div class="col-menu-title">Колонки таблицы</div>
+          <label v-for="c in ALL_COLUMNS" :key="c.key" class="col-menu-item">
+            <input type="checkbox" :checked="visibleCols[c.key]" @change="toggleColumn(c.key)" />
+            <span>{{ c.label }}</span>
+          </label>
+        </div>
+      </v-menu>
+
       <!-- Trash toggle — always visible so the partner can enter/leave the
            bin from anywhere. Acts as a chip-button styled like the filters
            on the right; active when the bin is currently open. -->
@@ -453,6 +590,7 @@ const selectedDealPaidTotal = computed(() =>
           {{ dealsStore.trash.length }}
         </span>
       </button>
+      </div>
 
       <!-- Filter chips (hidden in trash view — those filters don't apply
            to soft-deleted deals). -->
@@ -651,7 +789,9 @@ const selectedDealPaidTotal = computed(() =>
               />
             </div>
 
+            <!-- В табличном виде сортируют заголовки колонок; select — для сетки -->
             <v-select
+              v-if="viewMode === 'grid'"
               v-model="sortBy"
               :items="sortOptions"
               item-title="title"
@@ -837,19 +977,28 @@ const selectedDealPaidTotal = computed(() =>
                   @update:model-value="selectAll"
                 />
               </th>
-              <th>Товар</th>
-              <th>Клиент</th>
-              <th class="text-end">Итого</th>
-              <th class="text-end">Наценка</th>
-              <th class="text-end">Остаток</th>
-              <th class="text-center">Прогресс</th>
-              <th>Статус</th>
-              <th>Дата</th>
+              <th class="th-index"></th>
+              <th
+                v-for="c in shownColumns"
+                :key="c.key"
+                :class="[`text-${c.align === 'end' ? 'end' : c.align === 'center' ? 'center' : 'start'}`, { 'th-sortable': c.sortable, 'th-sorted': sortCol === c.key }]"
+                @click="c.sortable && toggleSort(c.key)"
+              >
+                <span class="th-inner">
+                  {{ c.label }}
+                  <v-icon
+                    v-if="c.sortable"
+                    :icon="sortCol === c.key ? (sortDir === 'asc' ? 'mdi-arrow-up' : 'mdi-arrow-down') : 'mdi-unfold-more-horizontal'"
+                    size="14"
+                    class="th-sort-ico"
+                  />
+                </span>
+              </th>
               <th v-if="isTrashTab" class="text-end">Действия</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="deal in displayedDeals" :key="deal.id" class="cursor-pointer" :class="{ 'deal-row--locked': deal.locked }" @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)">
+            <tr v-for="(deal, idx) in displayedDeals" :key="deal.id" class="cursor-pointer" :class="{ 'deal-row--locked': deal.locked }" @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)">
               <td v-if="selectMode" @click.stop>
                 <v-checkbox-btn
                   :model-value="selectedIds.has(deal.id)"
@@ -858,13 +1007,13 @@ const selectedDealPaidTotal = computed(() =>
                   @update:model-value="toggleSelect(deal.id)"
                 />
               </td>
-              <td>
-                <div class="d-flex align-center ga-3 py-3">
-                  <v-avatar size="44" rounded="lg" :color="deal.productPhotos?.[0] ? undefined : 'grey-lighten-3'">
-                    <v-img v-if="deal.productPhotos?.[0]" :src="deal.productPhotos[0]" cover />
-                    <v-icon v-else icon="mdi-package-variant-closed" size="22" color="grey" />
-                  </v-avatar>
-                  <span class="table-deal-num">#{{ deal.dealNumber }}</span>
+              <!-- № п/п (перечисление, не номер договора) -->
+              <td class="td-index text-medium-emphasis">{{ idx + 1 }}</td>
+
+              <td v-if="isColVisible('dealNumber')" class="text-start text-no-wrap"><span class="table-deal-num">#{{ deal.dealNumber }}</span></td>
+
+              <td v-if="isColVisible('product')">
+                <div class="d-flex align-center ga-2 py-3">
                   <span class="font-weight-medium table-product-name">{{ deal.productName }}</span>
                   <span v-if="deal.locked" class="deal-lock-tag">
                     <v-icon icon="mdi-lock-outline" size="12" />
@@ -876,24 +1025,24 @@ const selectedDealPaidTotal = computed(() =>
                   </span>
                 </div>
               </td>
-              <td>
+
+              <td v-if="isColVisible('client')" style="min-width: 300px;">
                 <div>
-                  <div class="d-flex align-center ga-2">
-                    <span>{{ dealClientName(deal) }}</span>
-                    <span v-if="!deal.client && deal.clientProfile && !deal.clientProfile.userId" class="external-badge">Внешний</span>
-                    <v-chip size="x-small" variant="tonal" color="warning">
-                      <v-icon icon="mdi-star" size="10" start /> {{ deal.client?.rating ?? 0 }}
-                    </v-chip>
-                  </div>
-                  <div v-if="dealClientPhone(deal)" class="client-phone-row">
+                  <div class="text-no-wrap">{{ dealClientName(deal) }}</div>
+                  <div v-if="dealClientPhone(deal)" class="client-phone-row text-no-wrap">
                     {{ dealClientPhone(deal) }}
                   </div>
                 </div>
               </td>
-              <td class="text-end font-weight-bold text-no-wrap">{{ formatCurrency(deal.totalPrice) }}</td>
-              <td class="text-end text-no-wrap" style="color: #047857;">+{{ formatCurrency(deal.markup) }}</td>
-              <td class="text-end text-no-wrap text-medium-emphasis">{{ formatCurrency(deal.remainingAmount) }}</td>
-              <td class="text-center" style="min-width: 140px;">
+
+              <td v-if="isColVisible('total')" class="text-end font-weight-bold text-no-wrap">{{ formatCurrency(deal.totalPrice) }}</td>
+              <td v-if="isColVisible('markup')" class="text-end text-no-wrap" style="color: #047857;">+{{ formatCurrency(deal.markup) }}</td>
+              <td v-if="isColVisible('remaining')" class="text-end text-no-wrap text-medium-emphasis">{{ formatCurrency(deal.remainingAmount) }}</td>
+              <td v-if="isColVisible('monthly')" class="text-end text-no-wrap">{{ formatCurrency(dealMonthly(deal)) }}</td>
+              <td v-if="isColVisible('downPayment')" class="text-end text-no-wrap">{{ deal.downPayment ? formatCurrency(deal.downPayment) : '—' }}</td>
+              <td v-if="isColVisible('term')" class="text-center text-no-wrap">{{ dealTermLabel(deal) }}</td>
+
+              <td v-if="isColVisible('progress')" class="text-center" style="min-width: 140px;">
                 <div class="d-flex align-center ga-2">
                   <v-progress-linear
                     :model-value="getDealProgress(deal)"
@@ -905,7 +1054,8 @@ const selectedDealPaidTotal = computed(() =>
                   <span class="text-caption text-medium-emphasis">{{ deal.paidPayments }}/{{ deal.numberOfPayments }}</span>
                 </div>
               </td>
-              <td>
+
+              <td v-if="isColVisible('status')">
                 <div
                   class="deal-status-chip"
                   :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
@@ -913,7 +1063,11 @@ const selectedDealPaidTotal = computed(() =>
                   {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
                 </div>
               </td>
-              <td class="text-medium-emphasis text-no-wrap">{{ timeAgo(deal.createdAt) }}</td>
+
+              <td v-if="isColVisible('createdAt')" class="text-end text-medium-emphasis text-no-wrap">{{ timeAgo(deal.createdAt) }}</td>
+              <td v-if="isColVisible('dealDate')" class="text-end text-medium-emphasis text-no-wrap">{{ deal.dealDate ? formatDateShort(deal.dealDate) : '—' }}</td>
+              <td v-if="isColVisible('lastPayment')" class="text-end text-medium-emphasis text-no-wrap">{{ dealLastPaymentLabel(deal) }}</td>
+
               <td v-if="isTrashTab" class="text-end text-no-wrap" @click.stop>
                 <div class="row-actions">
                   <button class="row-action-btn row-action-btn--restore" title="Восстановить" @click="restoreOne(deal.id)">
@@ -1288,6 +1442,42 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 .deal-card-photo { position: relative; }
+
+/* ── Управляемые/сортируемые колонки таблицы ── */
+.th-index, .td-index {
+  width: 24px; min-width: 24px; padding-left: 2px; padding-right: 2px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.deals-table thead th { white-space: nowrap; }
+.th-inner { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.th-sortable { cursor: pointer; user-select: none; }
+.th-sortable .th-sort-ico { opacity: 0.35; transition: opacity 0.15s; }
+.th-sortable:hover .th-sort-ico { opacity: 0.7; }
+.th-sorted { color: rgb(var(--v-theme-primary)); }
+.th-sorted .th-sort-ico { opacity: 1; color: rgb(var(--v-theme-primary)); }
+.deals-table th.text-end .th-inner { flex-direction: row-reverse; }
+
+/* Меню выбора колонок */
+.col-menu {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px; padding: 8px; min-width: 220px;
+  max-height: 380px; overflow-y: auto;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+}
+.col-menu-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  padding: 6px 10px 8px;
+}
+.col-menu-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.col-menu-item:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+.col-menu-item input { width: 16px; height: 16px; accent-color: rgb(var(--v-theme-primary)); cursor: pointer; }
 
 /* ── Тарифная блокировка сделок ── */
 .deal-card--locked { opacity: 0.72; }

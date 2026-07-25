@@ -38,6 +38,14 @@ export const useAuthStore = defineStore('auth', () => {
     return `${user.value.firstName} ${user.value.lastName}`
   })
 
+  // RBAC: эффективные права сотрудника (владелец — может всё).
+  const permissions = computed<string[]>(() => user.value?.permissions ?? [])
+  /** Есть ли у пользователя право `key`. Владелец всегда true. */
+  function can(key: string): boolean {
+    if (isOwner.value) return true
+    return permissions.value.includes(key)
+  }
+
   function canAccess(path: string): boolean {
     if (!isStaff.value) return true // owner sees everything
     const role = staffRole.value
@@ -174,5 +182,5 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  return { user, accessToken, refreshToken, isLoading, error, isAuthenticated, isStaff, staffRole, isOwner, userName, canAccess, defaultRoute, login, logout, checkAuth, updateProfile, changePassword }
+  return { user, accessToken, refreshToken, isLoading, error, isAuthenticated, isStaff, staffRole, isOwner, userName, permissions, can, canAccess, defaultRoute, login, logout, checkAuth, updateProfile, changePassword }
 })

@@ -77,6 +77,9 @@ export interface User {
   staffRole?: StaffRole
   accessOverrides?: string[]
   canCreateDeals?: boolean
+  // RBAC: эффективные права сотрудника (из роли или legacy-шима). У владельца
+  // отсутствуют (он может всё).
+  permissions?: string[]
   createdAt: string
   updatedAt: string
 }
@@ -99,6 +102,24 @@ export interface StaffMember {
   canCreateDeals?: boolean
   // Cashbox ids hidden from this staff (deny-list). Empty = sees all cashboxes.
   cashBoxOverrides?: string[]
+  // RBAC: назначенная кастомная роль (grant-list прав). null = на legacy-правах.
+  roleId?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+// ── RBAC: роли-шаблоны и реестр прав ──
+export interface PermissionDef { key: string; label: string }
+export interface PermissionSection { key: string; label: string; permissions: PermissionDef[] }
+export interface RolePreset { key: string; name: string; permissions: string[] }
+export interface PermissionRegistry { sections: PermissionSection[]; presets: RolePreset[] }
+export interface StaffRoleTemplate {
+  id: string
+  name: string
+  permissions: string[]
+  isSystem: boolean
+  presetKey: string | null
+  staffCount: number
   createdAt: string
   updatedAt: string
 }

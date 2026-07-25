@@ -7,8 +7,9 @@ import { useIsMobile } from '@/composables/useIsMobile'
 import { useChats } from '@/composables/useChats'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import ChatPanel from '@/components/ChatPanel.vue'
-import type { StaffMember, StaffRole, DealsAccessMode, Deal, DealStatus } from '@/types'
-import { STAFF_ROLE_LABELS, ROLE_ROUTE_ACCESS, STAFF_TOGGLEABLE_ROUTES } from '@/types'
+import RolesManager from '@/components/RolesManager.vue'
+import type { StaffMember, StaffRole, DealsAccessMode, Deal, DealStatus, StaffRoleTemplate } from '@/types'
+import { STAFF_ROLE_LABELS } from '@/types'
 import { formatCurrency } from '@/utils/formatters'
 
 const { isDark } = useIsDark()
@@ -18,6 +19,9 @@ const cashBoxesStore = useCashBoxesStore()
 
 const staff = ref<StaffMember[]>([])
 const pageLoading = ref(true)
+
+// Вкладки страницы: список сотрудников | управление ролями.
+const activeMainTab = ref<'staff' | 'roles'>('staff')
 
 // Add dialog
 const addDialog = ref(false)
@@ -29,32 +33,27 @@ const editDialog = ref(false)
 const editLoading = ref(false)
 const editTarget = ref<StaffMember | null>(null)
 const editForm = ref({
+  roleId: null as string | null,
   role: 'MANAGER' as StaffRole,
   isActive: true,
   dealsAccessMode: 'ALL' as DealsAccessMode,
-  accessOverrides: [] as string[],
-  canCreateDeals: true,
   cashBoxOverrides: [] as string[],
 })
 
+// Роли для пикера в модалке редактирования.
+const roles = ref<StaffRoleTemplate[]>([])
+async function loadRoles() {
+  try { roles.value = await api.get<StaffRoleTemplate[]>('/auth/investor/roles') } catch { /* noop */ }
+}
+
+// Закрыть модалку и открыть вкладку «Роли».
+function goToRolesTab() {
+  editDialog.value = false
+  activeMainTab.value = 'roles'
+}
+
 // Routes available to toggle for the current edit target — intersection of
 // the role's base set with the toggleable list.
-const editToggleableRoutes = computed(() => {
-  const role = editForm.value.role
-  const baseRoutes = new Set(ROLE_ROUTE_ACCESS[role] || [])
-  return STAFF_TOGGLEABLE_ROUTES.filter((r) => baseRoutes.has(r.path))
-})
-
-function isRouteEnabled(path: string): boolean {
-  return !editForm.value.accessOverrides.includes(path)
-}
-
-function toggleRoute(path: string) {
-  const idx = editForm.value.accessOverrides.indexOf(path)
-  if (idx >= 0) editForm.value.accessOverrides.splice(idx, 1)
-  else editForm.value.accessOverrides.push(path)
-}
-
 // ── Cashbox access (deny-list) ──
 const allCashBoxes = computed(() => cashBoxesStore.items)
 
@@ -277,25 +276,28 @@ async function addStaffMember() {
 function openEdit(member: StaffMember) {
   editTarget.value = member
   editForm.value = {
+    roleId: member.roleId ?? null,
     role: member.role,
     isActive: member.isActive,
     dealsAccessMode: member.dealsAccessMode || 'ALL',
-    accessOverrides: [...(member.accessOverrides || [])],
-    canCreateDeals: member.canCreateDeals !== false,
     cashBoxOverrides: [...(member.cashBoxOverrides || [])],
   }
   editDialog.value = true
-  // Load cashboxes for the access section if not already fetched.
-  if (!cashBoxesStore.items.length) {
-    cashBoxesStore.fetchAll().catch(() => {})
-  }
+  if (!cashBoxesStore.items.length) cashBoxesStore.fetchAll().catch(() => {})
+  if (!roles.value.length) loadRoles()
 }
 
 async function saveEdit() {
   if (!editTarget.value) return
   editLoading.value = true
   try {
-    await api.patch(`/auth/investor/staff/${editTarget.value.id}`, editForm.value)
+    // Отправляем только новую модель: роль + индивидуальный скоуп.
+    await api.patch(`/auth/investor/staff/${editTarget.value.id}`, {
+      roleId: editForm.value.roleId,
+      dealsAccessMode: editForm.value.dealsAccessMode,
+      cashBoxOverrides: editForm.value.cashBoxOverrides,
+      isActive: editForm.value.isActive,
+    })
     toast.success('Сохранено')
     editDialog.value = false
     await loadStaff()
@@ -357,8 +359,20 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-else>
+      <!-- Табы: Сотрудники | Роли -->
+      <div class="page-tabs">
+        <button class="page-tab" :class="{ 'page-tab--active': activeMainTab === 'staff' }" @click="activeMainTab = 'staff'">
+          <v-icon icon="mdi-account-group" size="18" /> Сотрудники
+        </button>
+        <button class="page-tab" :class="{ 'page-tab--active': activeMainTab === 'roles' }" @click="activeMainTab = 'roles'">
+          <v-icon icon="mdi-shield-key-outline" size="18" /> Роли
+        </button>
+      </div>
+
+      <RolesManager v-if="activeMainTab === 'roles'" />
+
       <!-- Stats -->
-      <div class="stats-row mb-6">
+      <div v-if="activeMainTab === 'staff'" class="stats-row mb-6">
         <div class="stat-card">
           <div class="stat-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
             <v-icon icon="mdi-account-group" size="20" />
@@ -398,7 +412,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- Split: staff list (left) + chat panel (right) -->
-      <div class="sf-shell">
+      <div v-if="activeMainTab === 'staff'" class="sf-shell">
         <!-- LEFT: staff list -->
         <aside class="sf-sidebar">
           <header class="sf-sidebar-header">
@@ -651,27 +665,25 @@ onBeforeUnmount(() => {
 
           <div class="mb-5">
             <div class="sf-section-label mb-3">Роль</div>
-            <div class="sf-role-grid">
-              <button
-                v-for="(label, key) in STAFF_ROLE_LABELS"
-                :key="key"
-                class="sf-role-card"
-                :class="{ 'sf-role-card--active': editForm.role === key }"
-                :style="editForm.role === key ? { borderColor: ROLE_COLORS[key], background: ROLE_COLORS[key] + '06' } : {}"
-                @click="editForm.role = key as StaffRole"
-              >
-                <div class="sf-role-card-icon" :style="{ background: ROLE_COLORS[key] + '14', color: ROLE_COLORS[key] }">
-                  <v-icon :icon="ROLE_ICONS[key]" size="20" />
-                </div>
-                <div class="sf-role-card-label">{{ label }}</div>
-                <div class="sf-role-card-desc">
-                  {{ key === 'MANAGER' ? 'Полный доступ кроме настроек' : 'Сделки, клиенты, платежи' }}
-                </div>
-                <div v-if="editForm.role === key" class="sf-role-card-check">
-                  <v-icon icon="mdi-check-circle" size="18" :color="ROLE_COLORS[key]" />
-                </div>
-              </button>
+            <div v-if="!editForm.roleId" class="sf-legacy-note mb-3">
+              <v-icon icon="mdi-information-outline" size="15" />
+              Сейчас на старой роли «{{ STAFF_ROLE_LABELS[editForm.role] }}». Выберите роль, чтобы перевести на новую систему прав.
             </div>
+            <v-select
+              v-model="editForm.roleId"
+              :items="roles"
+              item-title="name"
+              item-value="id"
+              variant="outlined"
+              density="comfortable"
+              placeholder="Выберите роль"
+              hide-details
+              no-data-text="Ролей пока нет — создайте на вкладке «Роли»"
+            />
+            <button type="button" class="sf-goto-roles" @click="goToRolesTab">
+              <v-icon icon="mdi-shield-key-outline" size="15" />
+              Управлять ролями
+            </button>
           </div>
 
           <div class="mb-5">
@@ -708,40 +720,6 @@ onBeforeUnmount(() => {
                 </div>
               </button>
             </div>
-          </div>
-
-          <div class="sf-active-toggle mb-5" :class="{ 'sf-active-toggle--off': !editForm.canCreateDeals }" @click="editForm.canCreateDeals = !editForm.canCreateDeals">
-            <div class="sf-active-toggle-dot" :style="{ background: editForm.canCreateDeals ? '#10b981' : '#9ca3af' }" />
-            <div class="sf-active-toggle-text">
-              <div class="sf-active-toggle-title">Создание сделок</div>
-              <div class="sf-active-toggle-desc">{{ editForm.canCreateDeals ? 'Может создавать новые сделки и импорт' : 'Кнопка "Создать" в шапке скрыта' }}</div>
-            </div>
-            <div class="sf-switch-track" :class="{ 'sf-switch-track--on': editForm.canCreateDeals }">
-              <div class="sf-switch-thumb" />
-            </div>
-          </div>
-
-          <div v-if="editToggleableRoutes.length" class="mb-5">
-            <div class="sf-section-label mb-3">Доступ к разделам</div>
-            <div class="sf-routes-grid">
-              <button
-                v-for="r in editToggleableRoutes"
-                :key="r.path"
-                type="button"
-                class="sf-route-card"
-                :class="{ 'sf-route-card--off': !isRouteEnabled(r.path) }"
-                @click="toggleRoute(r.path)"
-              >
-                <v-icon :icon="r.icon" size="18" />
-                <span class="sf-route-label">{{ r.label }}</span>
-                <v-icon
-                  :icon="isRouteEnabled(r.path) ? 'mdi-check-circle' : 'mdi-close-circle-outline'"
-                  size="16"
-                  class="sf-route-mark"
-                />
-              </button>
-            </div>
-            <div class="sf-routes-hint">Снимите галку, чтобы скрыть раздел у работника</div>
           </div>
 
           <div class="mb-5">
@@ -893,6 +871,45 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* ── Табы страницы (как в настройках). Отдельные имена, т.к. .sf-tab заняты
+   табами панели чата ниже в файле. ── */
+.page-tabs {
+  display: flex; gap: 4px; margin-bottom: 24px;
+  padding: 4px; border-radius: 12px;
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.page-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 18px; border-radius: 8px; border: none;
+  background: transparent;
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  cursor: pointer; transition: all 0.15s;
+}
+.page-tab:hover:not(.page-tab--active) {
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.page-tab--active {
+  background: #047857; color: #fff; font-weight: 600;
+  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
+}
+.dark .page-tabs { background: #1a1a2e; border-color: #2e2e42; }
+.dark .page-tab--active { background: #047857; color: #fff; box-shadow: 0 2px 6px rgba(4, 120, 87, 0.3); }
+
+/* ── Пикер роли в модалке ── */
+.sf-goto-roles {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 10px;
+  font-size: 13px; font-weight: 600; color: #047857; cursor: pointer; background: none;
+}
+.sf-goto-roles:hover { opacity: 0.8; }
+.sf-legacy-note {
+  display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.4;
+  padding: 9px 11px; border-radius: 10px; background: rgba(245, 158, 11, 0.1); color: #b45309;
+}
+
 /* ── Stats (shared pattern) ── */
 .stats-row {
   display: grid;

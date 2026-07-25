@@ -142,7 +142,7 @@ const toggleTheme = () => {
 };
 
 // Navigation
-const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?: boolean; staffOnly?: boolean; requiredFeature?: keyof PlanFeatures }[] = [
+const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?: boolean; staffOnly?: boolean; permission?: string; requiredFeature?: keyof PlanFeatures }[] = [
   { path: "/", title: "Главная", icon: "mdi-view-dashboard" },
   { path: "/analytics", title: "Аналитика", icon: "mdi-chart-line", requiredFeature: "analytics" },
   { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
@@ -165,6 +165,7 @@ const mainNavRoutes = computed(() =>
     .filter((r) => {
       if (r.ownerOnly && !authStore.isOwner) return false;
       if (r.staffOnly && authStore.isOwner) return false;
+      if (r.permission && !authStore.can(r.permission)) return false;
       return authStore.canAccess(r.path);
     })
     .map((r) => ({

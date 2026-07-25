@@ -28,6 +28,7 @@ declare module 'vue' {
     GlobalToast: typeof import('./components/GlobalToast.vue')['default']
     HeroSummary: typeof import('./components/HeroSummary.vue')['default']
     QuickActionsDialog: typeof import('./components/QuickActionsDialog.vue')['default']
+    RolesManager: typeof import('./components/RolesManager.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SubscriptionStatusBanner: typeof import('./components/SubscriptionStatusBanner.vue')['default']
