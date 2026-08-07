@@ -65,6 +65,17 @@ export interface DraftStats {
   withErrors: number
   duplicates: number
   byAction: { create: number; update: number; skip: number }
+  unitScale?: {
+    suspected: boolean
+    rowsTotal: number
+    rowsSuspicious: number
+    samples: { rowIdx: number; productName: string | null; totalPrice: number; probableTotalPrice: number }[]
+    /** Все подозрительные строки (номер + цена) — по ним проверяется подтверждение. */
+    suspiciousRows: { rowIdx: number; totalPrice: number }[]
+    acknowledged?: boolean
+    /** Снимок подозрительных строк на момент подтверждения — зеркало серверного гейта. */
+    acknowledgedRows?: { rowIdx: number; totalPrice: number }[]
+  }
 }
 
 export interface ImportDraft {
@@ -116,6 +127,17 @@ export function useImportDraft() {
     }
   }
 
+  /** Подтвердить, что подозрительно низкие суммы в файле верны (или снять подтверждение). */
+  async function confirmUnits(id: string, confirmed: boolean) {
+    saving.value = true
+    try {
+      draft.value = await api.post<ImportDraft>(`/import/drafts/${id}/confirm-units`, { confirmed })
+      return draft.value
+    } finally {
+      saving.value = false
+    }
+  }
+
   async function commit(id: string) {
     committing.value = true
     try {
@@ -151,5 +173,5 @@ export function useImportDraft() {
     }
   }
 
-  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, cancel, addRow, deleteRow }
+  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, cancel, addRow, deleteRow, confirmUnits }
 }

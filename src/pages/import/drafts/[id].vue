@@ -67,6 +67,46 @@
         </div>
       </div>
 
+      <!-- Единицы измерения: в файле подозрительно дешёвые сделки.
+           Показываем ДО ошибок — если суммы не в тех единицах, разбирать
+           отдельные строки бессмысленно. -->
+      <div v-if="scaleReport?.suspected && !unitsConfirmed" class="scale-banner mb-4">
+        <div class="scale-banner-icon">
+          <v-icon icon="mdi-scale-balance" size="20" />
+        </div>
+        <div class="scale-banner-body">
+          <div class="scale-banner-title">Похоже, суммы в файле указаны в тысячах</div>
+          <div class="scale-banner-sub">
+            В {{ scaleReport!.rowsSuspicious }} из {{ scaleReport!.rowsTotal }}
+            {{ pluralize(scaleReport!.rowsTotal, 'строки', 'строк', 'строк') }}
+            цена меньше 5 000 ₽ — для рассрочки это необычно.
+            Если суммы указаны в тысячах, исправьте файл и загрузите его заново
+            (или поправьте строки прямо в таблице). Если суммы верны — подтвердите.
+          </div>
+          <div class="scale-samples">
+            <div v-for="sm in scaleReport!.samples.slice(0, 3)" :key="sm.rowIdx" class="scale-sample">
+              <span class="scale-sample-name">{{ sm.productName || 'Без названия' }}</span>
+              <span class="scale-sample-from">{{ sm.totalPrice.toLocaleString('ru-RU', { minimumFractionDigits: 1 }) }} ₽</span>
+              <v-icon icon="mdi-arrow-right" size="13" />
+              <span class="scale-sample-to">возможно, {{ formatCurrency(sm.probableTotalPrice) }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="scale-banner-actions">
+          <button class="scale-btn-primary" :disabled="saving" @click="onConfirmUnits">
+            Суммы верны
+          </button>
+        </div>
+      </div>
+
+      <!-- Подтверждение видно и обратимо: иначе один промах мышью
+           навсегда снимал бы защиту без следа в интерфейсе. -->
+      <div v-if="unitsConfirmed && scaleReport?.suspected" class="scale-applied scale-applied--warn mb-4">
+        <v-icon icon="mdi-information-outline" size="18" />
+        <div class="scale-applied-body">Суммы подтверждены — файл будет импортирован как есть</div>
+        <button class="scale-undo" :disabled="saving" @click="onUndoConfirmUnits">Вернуть выбор</button>
+      </div>
+
       <!-- Errors hint banner — shown until all errors are fixed or skipped -->
       <div v-if="errorCount > 0" class="errors-banner mb-4">
         <div class="errors-banner-icon">
@@ -339,6 +379,7 @@ import type {
 } from 'ag-grid-community'
 import { useImportDraft, type DraftRow, type RowAction } from '@/composables/useImportDraft'
 import { useToast } from '@/composables/useToast'
+import { formatCurrency } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
@@ -351,7 +392,7 @@ import 'ag-grid-community/styles/ag-theme-quartz.css'
 
 const route = useRoute()
 const router = useRouter()
-const { draft, loading, saving, committing, fetchDraft, savePatches, commit, cancel, addRow, deleteRow } = useImportDraft()
+const { draft, loading, saving, committing, fetchDraft, savePatches, commit, cancel, addRow, deleteRow, confirmUnits } = useImportDraft()
 const { show: showToast } = useToast()
 const { isDark } = useIsDark()
 const { folders, fetchFolders } = useFolders()
@@ -443,14 +484,78 @@ const cashBoxLabel = computed(() => {
   }
 })
 
+// ── Единицы измерения файла ──
+const scaleReport = computed(() => draft.value?.stats?.unitScale)
+
+/**
+ * Подтверждение действительно ровно на те подозрительные строки (номер +
+ * цена), которые партнёр видел. Появилась новая или изменилась цена —
+ * спрашиваем заново. Считать по количеству нельзя: «исправил одну дешёвую,
+ * сделал дешёвой другую» сохраняло счёт и проносило неувиденную строку.
+ *
+ * Условие должно совпадать с серверным: раньше фронт смотрел только на сам
+ * флаг, и после добавления строки кнопка «Импортировать» оставалась активной,
+ * баннер был скрыт, а сервер отказывал. Выход был неочевиден.
+ */
+const unitsConfirmed = computed(() => {
+  const r = scaleReport.value
+  if (!r?.acknowledged) return false
+  // Отчёт старого формата без списка строк — считаем неподтверждённым,
+  // сервер всё равно спросит заново.
+  if (r.suspected && !r.suspiciousRows) return false
+  const ack = r.acknowledgedRows ?? []
+  return (r.suspiciousRows ?? []).every((s) => ack.some((a) => a.rowIdx === s.rowIdx && a.totalPrice === s.totalPrice))
+})
+
+async function onConfirmUnits() {
+  // Копим правки строк отдельно от этого запроса — сначала их надо отправить,
+  // иначе сервер пересчитает отчёт по старым значениям.
+  await flushPatches()
+  // flushPatches при ошибке молча возвращает правки в очередь — подтверждать
+  // нельзя: партнёр видел бы одни цены, а сервер зафиксировал бы другие.
+  // Ошибку он уже показал тостом.
+  if (pendingPatches.value.length) return
+  // Отчёт перечитываем ПОСЛЕ отправки: flushPatches заменяет черновик ответом сервера.
+  const sm = scaleReport.value?.samples?.[0]
+  // Последствие необратимо по смыслу — сделки создадутся на суммы
+  // вроде 266 ₽. Спрашиваем прямо, с конкретным примером.
+  const ok = window.confirm(
+    'Подтвердить, что суммы в файле верны?\n\n' +
+      (sm ? `Сделка «${sm.productName || 'Без названия'}» будет создана на ${sm.totalPrice} ₽.\n\n` : '') +
+      'Если суммы указаны в тысячах, сделки будут в 1000 раз дешевле — в этом случае исправьте файл и загрузите его заново.',
+  )
+  if (!ok) return
+  try {
+    await confirmUnits(draftId.value, true)
+  } catch (e: any) {
+    showToast(e.message || 'Не удалось сохранить решение', 'error')
+  }
+}
+
+/** Снять подтверждение — иначе один промах мышью отключал бы защиту навсегда. */
+async function onUndoConfirmUnits() {
+  try {
+    await confirmUnits(draftId.value, false)
+  } catch (e: any) {
+    showToast(e.message || 'Не удалось вернуть выбор', 'error')
+  }
+}
+
 const canCommit = computed(() => {
   if (!draft.value) return false
   if (readyCount.value === 0) return false
+  // Требуем явного решения по единицам: иначе баннер пролистают и зальют
+  // файл в тысячах — ровно то, что уже случилось однажды. Серверный гейт
+  // в commit() дублирует это условие.
+  if (scaleReport.value?.suspected && !unitsConfirmed.value) return false
   return !rows.value.some((r) => r.action !== 'skip' && r.errors.length > 0)
 })
 
 const commitBlockReason = computed(() => {
   if (readyCount.value === 0) return 'Нет строк готовых к импорту'
+  if (scaleReport.value?.suspected && !unitsConfirmed.value) {
+    return 'Подтвердите, что суммы в файле верны, или исправьте строки дешевле 5 000 ₽'
+  }
   const blocking = rows.value.filter((r) => r.action !== 'skip' && r.errors.length > 0).length
   return `${blocking} ${pluralize(blocking, 'строка', 'строки', 'строк')} с ошибками — исправьте или пометьте «Пропустить»`
 })
@@ -891,6 +996,9 @@ function onCellChanged(e: CellValueChangedEvent) {
 
 async function onCommit() {
   await flushPatches()
+  // Правки не ушли (flushPatches вернул их в очередь и показал ошибку) —
+  // коммитить нельзя: сервер импортировал бы черновик без последних правок.
+  if (pendingPatches.value.length) return
   if (!canCommit.value) {
     showToast(commitBlockReason.value, 'warning')
     return
@@ -969,6 +1077,96 @@ watch(() => route.params.id, (id) => {
 }
 
 /* Errors hint banner */
+/* ── Единицы измерения файла ──
+   Янтарный, а не красный: это предупреждение с выбором, а не ошибка. */
+.scale-banner {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 16px 18px; border-radius: 12px;
+  background: rgba(245, 158, 11, 0.07);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+}
+.scale-banner-icon {
+  width: 38px; height: 38px; min-width: 38px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(245, 158, 11, 0.14);
+  color: #d97706;
+}
+.scale-banner-body { flex: 1; min-width: 0; }
+.scale-banner-title {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.scale-banner-sub {
+  font-size: 13px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  margin-top: 3px;
+}
+
+/* Примеры «как в файле → что, видимо, имелось в виду»: без них человеку
+   не видно, о каких именно его данных идёт речь. */
+.scale-samples {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: rgba(var(--v-theme-surface), 0.7);
+}
+.scale-sample {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.scale-sample :deep(.v-icon) { color: rgba(var(--v-theme-on-surface), 0.3); }
+.scale-sample-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.scale-sample-from { opacity: 0.6; white-space: nowrap; }
+.scale-sample-to { font-weight: 700; color: #047857; white-space: nowrap; }
+
+.scale-banner-actions {
+  display: flex; flex-direction: column; gap: 7px;
+  flex-shrink: 0;
+}
+.scale-btn-primary {
+  padding: 9px 16px; border: none; border-radius: 9px;
+  background: #d97706; color: #fff;
+  font-size: 13px; font-weight: 650; white-space: nowrap;
+  cursor: pointer;
+}
+.scale-btn-primary:hover:not(:disabled) { background: #b45309; }
+.scale-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.scale-applied {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 11px 16px; border-radius: 11px;
+  background: rgba(4, 120, 87, 0.07);
+  font-size: 13.5px;
+  color: rgba(var(--v-theme-on-surface), 0.72);
+}
+.scale-applied :deep(.v-icon) { color: #047857; }
+.scale-applied-body { flex: 1; min-width: 0; }
+
+.scale-applied--warn { background: rgba(245, 158, 11, 0.08); }
+.scale-applied--warn :deep(.v-icon) { color: #d97706 !important; }
+
+.scale-undo {
+  margin-left: auto;
+  border: none; background: none; padding: 0;
+  font-size: 13px; font-weight: 650; color: #047857;
+  cursor: pointer;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.scale-undo:disabled { opacity: 0.5; cursor: not-allowed; }
+
+@media (max-width: 720px) {
+  .scale-banner { flex-wrap: wrap; }
+  .scale-banner-actions { flex-direction: row; width: 100%; }
+  .scale-btn-primary { flex: 1; }
+}
+
 .errors-banner {
   display: flex; align-items: center; gap: 14px;
   padding: 14px 18px; border-radius: 12px;
