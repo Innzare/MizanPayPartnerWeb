@@ -106,3 +106,19 @@ export function monthPrepositional(year: number, month: number, refYear?: number
   const name = MONTH_PREPOSITIONAL[month] ?? ''
   return refYear != null && year !== refYear ? `${name} ${year}` : name
 }
+
+/** Названия месяцев в винительном падеже: «за <месяц>». */
+export const MONTH_ACCUSATIVE = [
+  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
+]
+
+/**
+ * «за июль» / «за июль 2025» — падеж для предлога «за», в отличие от
+ * `monthPrepositional`, который годится только после «в». Год добавляется
+ * по тому же правилу: только когда отличается от `refYear`.
+ */
+export function monthAccusative(year: number, month: number, refYear?: number): string {
+  const name = MONTH_ACCUSATIVE[month] ?? ''
+  return refYear != null && year !== refYear ? `${name} ${year}` : name
+}

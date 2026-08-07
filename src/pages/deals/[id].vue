@@ -21,7 +21,7 @@ import { useSubscription } from '@/composables/useSubscription'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import { redistribute, validateManual, type RedistributeMode } from '@/utils/redistribute'
-import { offMonthKind, dueYearMonth, monthPrepositional } from '@/utils/paymentAttribution'
+import { offMonthKind, dueYearMonth, monthPrepositional, monthAccusative } from '@/utils/paymentAttribution'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
 import { Line } from 'vue-chartjs'
@@ -1062,7 +1062,8 @@ const markPaidOffMonth = computed(() => {
   if (paidY === due.year && paidM === due.month) return null
   return {
     kind: paidY * 12 + paidM < due.year * 12 + due.month ? 'early' : 'late',
-    paidLabel: monthPrepositional(paidY, paidM, due.year),
+    // paidLabel идёт после «за» — винительный, dueLabel после «в» — предложный.
+    paidLabel: monthAccusative(paidY, paidM, due.year),
     dueLabel: monthPrepositional(due.year, due.month, paidY),
   }
 })
