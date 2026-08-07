@@ -186,6 +186,7 @@ import { useCashflow, type CashFlowEntry, type CashFlowEntryType } from '@/compo
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
 import { useDealLock } from '@/composables/useDealLock'
+import { useSections } from '@/composables/useSections'
 import { formatCurrency, formatCurrencyShort } from '@/utils/formatters'
 
 const router = useRouter()
@@ -245,15 +246,6 @@ function typeStyle(t: CashFlowEntryType) {
   return TYPE_META[t]
 }
 
-// Фильтр «Дивиденды» без раздела со-инвесторов всегда пустой — убираем его,
-// чтобы не оставлять кнопку, которая ничего не находит.
-const sections = useSections()
-const typeGroups = computed(() =>
-  sections.visible('coInvestors')
-    ? TYPE_GROUPS
-    : TYPE_GROUPS.filter((t) => t.key !== 'DIVIDEND_OUT'),
-)
-
 // User-facing list of type filter chips (only the ones that appear in partner's journal)
 const TYPE_GROUPS: { key: CashFlowEntryType; label: string; color: string }[] = [
   { key: 'PAYMENT_IN',        label: 'Поступления',    color: '#047857' },
@@ -264,6 +256,15 @@ const TYPE_GROUPS: { key: CashFlowEntryType; label: string; color: string }[] = 
   { key: 'MANUAL_INCOME',     label: 'Ручные доходы',  color: '#059669' },
   { key: 'MANUAL_EXPENSE',    label: 'Ручные расходы', color: '#d97706' },
 ]
+
+// Фильтр «Дивиденды» без раздела со-инвесторов всегда пустой — убираем его,
+// чтобы не оставлять кнопку, которая ничего не находит.
+const sections = useSections()
+const typeGroups = computed(() =>
+  sections.visible('coInvestors')
+    ? TYPE_GROUPS
+    : TYPE_GROUPS.filter((t) => t.key !== 'DIVIDEND_OUT'),
+)
 
 // ─── Filters state ─────────────────────────────────────────────────────
 const activeTypes = ref<CashFlowEntryType[]>([])
