@@ -3,6 +3,7 @@ import { useClientProfilesStore } from '@/stores/clientProfiles'
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { useAuthStore } from '@/stores/auth'
+import { useSections } from '@/composables/useSections'
 import { type ClientProfile, type ClientProfileStats, clientProfileName, type Deal } from '@/types'
 import { formatCurrency, formatDate, formatPhone, timeAgo, PHONE_MASK } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
@@ -18,6 +19,7 @@ const clientsStore = useClientProfilesStore()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const authStore = useAuthStore()
+const sections = useSections()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 
@@ -297,7 +299,10 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
           </v-card>
 
           <!-- Publish to registry -->
-          <div v-if="canEdit && profile" class="publish-card">
+          <!-- Именно isHidden, а не visible: тарифного ограничения здесь никогда не
+             было, и добавить его значит запереть клиента в общем реестре — снять
+             публикацию стало бы невозможно после окончания подписки. -->
+        <div v-if="canEdit && profile && !sections.isHidden('registry')" class="publish-card">
             <div class="publish-card-row">
               <v-icon :icon="profile.isPublic ? 'mdi-earth' : 'mdi-earth-off'" size="20" :color="profile.isPublic ? '#047857' : '#9ca3af'" />
               <div class="publish-card-text">

@@ -1,8 +1,37 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { User, StaffRole } from '@/types'
-import { ROLE_ROUTE_ACCESS } from '@/types'
 import { api } from '@/api/client'
+
+// Раздел → требуемое право сотрудника. Навигация и роут-гвард гейтятся по
+// ПРАВАМ (из назначенной роли или legacy-шима), а не по устаревшему
+// ROLE_ROUTE_ACCESS по enum-роли — иначе меню не отражает кастомные роли.
+const NAV_PERMISSION: Record<string, string> = {
+  '/analytics': 'analytics.view',
+  '/deals': 'deals.view',
+  '/create-deal': 'deals.create',
+  '/import': 'deals.import',
+  '/clients': 'clients.view',
+  '/payments': 'payments.view',
+  '/debtors': 'debtors.view',
+  '/suppliers/requests': 'suppliers.requests',
+  '/suppliers/route-sheets': 'suppliers.routesheet',
+  '/suppliers': 'suppliers.view',
+  '/broadcasts': 'broadcasts.view',
+  '/co-investors': 'coinvestors.view',
+  '/cashboxes': 'cashboxes.view',
+  '/registry': 'registry.view',
+  '/activity': 'activity.view',
+  '/staff': 'staff.manage',
+  '/roles': 'staff.manage',
+}
+// Доступны любому аутентифицированному сотруднику (не гейтятся правом).
+// /messages — переписка с владельцем, доступна всегда.
+// /help — обучающая справка: она нужна сотруднику не меньше, чем владельцу,
+// и без этой строки неизвестный роут закрывается редиректом (см. canAccess ниже).
+const STAFF_ALWAYS = ['/calculator', '/notifications', '/messages', '/help']
+// Только владелец аккаунта.
+const OWNER_ONLY = ['/', '/settings']
 
 interface AuthResponse {
   user: User
@@ -48,37 +77,28 @@ export const useAuthStore = defineStore('auth', () => {
 
   function canAccess(path: string): boolean {
     if (!isStaff.value) return true // owner sees everything
-    const role = staffRole.value
-    if (!role) return false
-    const allowed = ROLE_ROUTE_ACCESS[role] || []
-    const overrides = user.value?.accessOverrides || []
-    // Match against the longest applicable base route, then deny if it's been
-    // disabled per-staff. e.g. /co-investors/123 matches /co-investors.
-    const matched = allowed.find((r) => path === r || path.startsWith(r + '/'))
-    if (!matched) return false
-    if (overrides.some((r) => matched === r)) return false
-    return true
+    // Только владелец.
+    if (OWNER_ONLY.some((r) => path === r || path.startsWith(r + '/'))) return false
+    // Всегда доступно сотруднику.
+    if (STAFF_ALWAYS.some((r) => path === r || path.startsWith(r + '/'))) return true
+    // Гейт по праву: берём самый длинный подходящий базовый путь
+    // (/deals/123 → /deals, /create-deal → /create-deal).
+    const base = Object.keys(NAV_PERMISSION)
+      .filter((r) => path === r || path.startsWith(r + '/'))
+      .sort((a, b) => b.length - a.length)[0]
+    if (base) return can(NAV_PERMISSION[base])
+    return false // неизвестный сотруднику роут — закрыт
   }
 
-  /** Where to send the user after login or when a route is denied. Owner → `/`,
-   *  staff → /deals if accessible, otherwise the first allowed non-subscription-
-   *  gated route. Avoiding subscription-gated paths here prevents redirect
-   *  loops if the partner is on the free plan and their staff would otherwise
-   *  land on e.g. /co-investors and bounce to /settings (which staff can't see). */
+  /** Куда отправить после логина / при отказе в доступе. Владелец → `/`,
+   *  сотрудник → первый доступный по правам не-подписочный раздел (чтобы не
+   *  ловить редирект-петлю на подписочных разделах на FREE-плане). */
   const defaultRoute = computed(() => {
     if (!isStaff.value) return '/'
-    const role = staffRole.value
-    if (!role) return '/login'
-    const overrides = user.value?.accessOverrides || []
-    const SUBSCRIPTION_GATED = new Set([
-      '/analytics', '/import', '/activity', '/registry', '/co-investors',
-    ])
-    const allowed = (ROLE_ROUTE_ACCESS[role] || []).filter((r) => !overrides.includes(r))
-    const ungated = allowed.filter((r) => !SUBSCRIPTION_GATED.has(r))
-    if (ungated.includes('/deals')) return '/deals'
-    if (ungated.includes('/payments')) return '/payments'
-    if (ungated.includes('/clients')) return '/clients'
-    return ungated[0] || allowed[0] || '/calculator'
+    for (const p of ['/deals', '/payments', '/clients']) {
+      if (can(NAV_PERMISSION[p])) return p
+    }
+    return '/messages' // переписка с владельцем — всегда доступна сотруднику
   })
 
   async function login(email: string, password: string) {
@@ -161,7 +181,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function updateProfile(updates: Partial<Pick<User, 'firstName' | 'lastName' | 'patronymic' | 'phone' | 'city'>> & { avatar?: string }) {
+  async function updateProfile(updates: Partial<Pick<User, 'firstName' | 'lastName' | 'patronymic' | 'phone' | 'city' | 'companyName'>> & { avatar?: string; birthDate?: string }) {
     if (!user.value) return
     isLoading.value = true
     try {

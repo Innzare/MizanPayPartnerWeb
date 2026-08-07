@@ -17,7 +17,7 @@
           <v-card rounded="lg" elevation="4" class="cfj-menu">
             <div class="cfj-menu-head">Тип операции</div>
             <button
-              v-for="t in TYPE_GROUPS"
+              v-for="t in typeGroups"
               :key="t.key"
               class="cfj-menu-item"
               :class="{ 'cfj-menu-item--active': activeTypes.includes(t.key) }"
@@ -244,6 +244,15 @@ const TYPE_META: Record<CashFlowEntryType, { label: string; icon: string; bg: st
 function typeStyle(t: CashFlowEntryType) {
   return TYPE_META[t]
 }
+
+// Фильтр «Дивиденды» без раздела со-инвесторов всегда пустой — убираем его,
+// чтобы не оставлять кнопку, которая ничего не находит.
+const sections = useSections()
+const typeGroups = computed(() =>
+  sections.visible('coInvestors')
+    ? TYPE_GROUPS
+    : TYPE_GROUPS.filter((t) => t.key !== 'DIVIDEND_OUT'),
+)
 
 // User-facing list of type filter chips (only the ones that appear in partner's journal)
 const TYPE_GROUPS: { key: CashFlowEntryType; label: string; color: string }[] = [

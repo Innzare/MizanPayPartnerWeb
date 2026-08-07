@@ -2,6 +2,7 @@
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useDealsStore } from '@/stores/deals'
+import { useAuthStore } from '@/stores/auth'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { formatCurrency, formatCurrencyShort, formatPhone, PHONE_MASK, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
@@ -37,6 +38,7 @@ import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Lege
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
 const router = useRouter()
+const authStore = useAuthStore()
 const { isDark } = useIsDark()
 
 // Mobile flag для fullscreen-диалогов на телефонах.
@@ -497,8 +499,8 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
     </div>
 
     <template v-else>
-      <!-- Summary Cards -->
-      <div class="stats-row mb-6">
+      <!-- Summary Cards (KPI) — скрываются у ролей без права coinvestors.kpi -->
+      <div v-if="authStore.can('coinvestors.kpi')" class="stats-row mb-6">
         <div class="stat-card">
           <div class="stat-icon" style="background: rgba(99, 102, 241, 0.1); color: #6366f1;">
             <v-icon icon="mdi-safe" size="20" />

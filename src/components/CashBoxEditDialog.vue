@@ -1,11 +1,13 @@
 <script lang="ts" setup>
 import { ref, computed, watch } from 'vue'
+import { useSections } from '@/composables/useSections'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import type { CashBoxSummary } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 
+const sections = useSections()
 const props = defineProps<{
   modelValue: boolean
   /** Editing? Pass the existing cashbox. Omit to create a new one. */
@@ -180,8 +182,11 @@ async function handleSave() {
           </div>
         </div>
 
-        <!-- Phase 4: partner capital participation in the profit split -->
-        <div class="cb-field">
+        <!-- Участие капитала в делёже прибыли. Без со-инвесторов делить не с
+             кем: переключатель занимал половину диалога и пугал предупреждением
+             про инвесторов, которых у партнёра нет. Поле продолжает уходить на
+             сервер со значением по умолчанию — данные не меняются. -->
+        <div v-if="sections.visible('coInvestors')" class="cb-field">
           <label class="cb-label">Ваше участие капиталом</label>
           <div class="cb-part-toggle">
             <button

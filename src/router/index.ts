@@ -13,6 +13,29 @@ const ROUTE_FEATURES: Record<string, keyof PlanFeatures> = {
   '/co-investors': 'coInvestors',
   '/cashboxes': 'finance',
   '/staff': 'staff',
+  '/debtors': 'debtors',
+  '/suppliers': 'suppliers',
+  // Раздел рассылок не был защищён ни здесь, ни внутри страницы: прямая
+  // ссылка открывала полностью рабочие рассылки в обход тарифа.
+  '/broadcasts': 'whatsapp',
+};
+
+/**
+ * Разделы, которые владелец может скрыть для себя в настройках.
+ * Отдельная карта от ROUTE_FEATURES: сюда входит «Справка», у которой нет
+ * тарифного ограничения, и не входят «Кассы» — их скрывать нельзя, касса
+ * обязательна при создании сделки.
+ */
+const ROUTE_SECTIONS: Record<string, string> = {
+  '/analytics': 'analytics',
+  '/co-investors': 'coInvestors',
+  '/debtors': 'debtors',
+  '/suppliers': 'suppliers',
+  '/broadcasts': 'whatsapp',
+  '/staff': 'staff',
+  '/registry': 'registry',
+  '/import': 'import',
+  '/help': 'help',
 };
 
 const router = createRouter({
@@ -60,6 +83,18 @@ router.beforeEach(async (to, from, next) => {
   // Hidden routes — redirect to default landing
   if (hiddenRoutes.some(r => to.path === r || to.path.startsWith(r + '/'))) {
     return next(authStore.defaultRoute);
+  }
+
+  // Раздел скрыт владельцем — ведём на стартовую страницу, как и с
+  // hiddenRoutes выше. Петли нет: ни один стартовый раздел скрыть нельзя.
+  if (authStore.isAuthenticated) {
+    const hidden: string[] = (authStore.user as any)?.hiddenSections ?? [];
+    const sectionKey = Object.keys(ROUTE_SECTIONS)
+      .filter((r) => to.path === r || to.path.startsWith(r + '/'))
+      .sort((a, b) => b.length - a.length)[0];
+    if (sectionKey && hidden.includes(ROUTE_SECTIONS[sectionKey])) {
+      return next(authStore.defaultRoute);
+    }
   }
 
   // Role-based access check for staff

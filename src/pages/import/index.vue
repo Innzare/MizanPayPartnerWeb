@@ -1,15 +1,6 @@
 <template>
   <div class="at-page" :class="{ dark: isDark }">
-    <!-- Page header -->
-    <div class="page-head mb-6">
-      <div class="page-head-icon">
-        <v-icon icon="mdi-cloud-upload-outline" size="22" />
-      </div>
-      <div class="page-head-text">
-        <h1 class="page-head-title">Импорт продаж</h1>
-        <div class="page-head-subtitle">Загрузите Excel или CSV — AI разберёт колонки, найдёт дубликаты и подготовит черновик к проверке</div>
-      </div>
-    </div>
+    <!-- Заголовок раздела — в верхнем баре. -->
 
     <!-- Hero block -->
     <v-card rounded="lg" elevation="0" border class="hero-card mb-6">

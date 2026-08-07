@@ -38,7 +38,9 @@ declare module 'vue-router/auto-routes' {
     '/deals': RouteRecordInfo<'/deals', '/deals', Record<never, never>, Record<never, never>, '/deals/' | '/deals/[id]'>,
     '/deals/': RouteRecordInfo<'/deals/', '/deals', Record<never, never>, Record<never, never>>,
     '/deals/[id]': RouteRecordInfo<'/deals/[id]', '/deals/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/debtors': RouteRecordInfo<'/debtors', '/debtors', Record<never, never>, Record<never, never>>,
     '/forgot-password': RouteRecordInfo<'/forgot-password', '/forgot-password', Record<never, never>, Record<never, never>>,
+    '/help': RouteRecordInfo<'/help', '/help', Record<never, never>, Record<never, never>>,
     '/import/': RouteRecordInfo<'/import/', '/import', Record<never, never>, Record<never, never>>,
     '/import/drafts/[id]': RouteRecordInfo<'/import/drafts/[id]', '/import/drafts/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/investor/[token]': RouteRecordInfo<'/investor/[token]', '/investor/:token', { token: ParamValue<true> }, { token: ParamValue<false> }>,
@@ -54,6 +56,10 @@ declare module 'vue-router/auto-routes' {
     '/reset-password': RouteRecordInfo<'/reset-password', '/reset-password', Record<never, never>, Record<never, never>>,
     '/settings': RouteRecordInfo<'/settings', '/settings', Record<never, never>, Record<never, never>>,
     '/staff': RouteRecordInfo<'/staff', '/staff', Record<never, never>, Record<never, never>>,
+    '/suppliers': RouteRecordInfo<'/suppliers', '/suppliers', Record<never, never>, Record<never, never>, '/suppliers/' | '/suppliers/[id]' | '/suppliers/route-sheets/[id]'>,
+    '/suppliers/': RouteRecordInfo<'/suppliers/', '/suppliers', Record<never, never>, Record<never, never>>,
+    '/suppliers/[id]': RouteRecordInfo<'/suppliers/[id]', '/suppliers/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/suppliers/route-sheets/[id]': RouteRecordInfo<'/suppliers/route-sheets/[id]', '/suppliers/route-sheets/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/zakat': RouteRecordInfo<'/zakat', '/zakat', Record<never, never>, Record<never, never>>,
   }
 
@@ -148,8 +154,16 @@ declare module 'vue-router/auto-routes' {
       routes: '/deals/[id]'
       views: never
     }
+    'src/pages/debtors.vue': {
+      routes: '/debtors'
+      views: never
+    }
     'src/pages/forgot-password.vue': {
       routes: '/forgot-password'
+      views: never
+    }
+    'src/pages/help.vue': {
+      routes: '/help'
       views: never
     }
     'src/pages/import/index.vue': {
@@ -210,6 +224,22 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/staff.vue': {
       routes: '/staff'
+      views: never
+    }
+    'src/pages/suppliers.vue': {
+      routes: '/suppliers' | '/suppliers/' | '/suppliers/[id]' | '/suppliers/route-sheets/[id]' | '/suppliers/route-sheets'
+      views: 'default'
+    }
+    'src/pages/suppliers/index.vue': {
+      routes: '/suppliers/'
+      views: never
+    }
+    'src/pages/suppliers/[id].vue': {
+      routes: '/suppliers/[id]'
+      views: never
+    }
+    'src/pages/suppliers/route-sheets/[id].vue': {
+      routes: '/suppliers/route-sheets/[id]'
       views: never
     }
     'src/pages/zakat.vue': {

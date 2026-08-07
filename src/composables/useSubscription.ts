@@ -15,6 +15,8 @@ const DEFAULT_FREE_FEATURES: PlanFeatures = {
   finance: false,
   staff: false,
   whatsapp: false,
+  debtors: false,
+  suppliers: false,
 }
 
 export function useSubscription() {

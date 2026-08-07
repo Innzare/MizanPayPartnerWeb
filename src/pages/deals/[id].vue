@@ -18,7 +18,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
+import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
+import { redistribute, validateManual, type RedistributeMode } from '@/utils/redistribute'
+import { offMonthKind, dueYearMonth, monthPrepositional } from '@/utils/paymentAttribution'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
 import { Line } from 'vue-chartjs'
@@ -43,6 +46,7 @@ const paymentsStore = usePaymentsStore()
 const clientsStore = useClientsStore()
 
 const authStore = useAuthStore()
+const sections = useSections()
 const { canAccess: canAccessFeature } = useSubscription()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
@@ -366,6 +370,13 @@ const assignedStaffName = computed(() => {
   return s ? `${s.lastName ?? ''} ${s.firstName ?? ''}`.trim() || '—' : null
 })
 
+// Остаток долга поставщику по этой сделке (0, если погашен/оплачен при покупке).
+const supplierDebtRemaining = computed(() => {
+  const d = deal.value?.supplierDebt
+  if (!d || d.status !== 'OPEN') return 0
+  return Math.max(0, d.amount - d.paidAmount)
+})
+
 async function loadCoInvestors() {
   try {
     // Phase 4: endpoint returns an object; participants = THIS deal's linked CIs.
@@ -377,7 +388,11 @@ async function loadCoInvestors() {
 }
 
 // Load co-investors on mount
-onMounted(() => { loadCoInvestors(); loadCustomTemplate(); loadStaff() })
+onMounted(() => {
+  if (sections.visible('coInvestors')) loadCoInvestors()
+  loadCustomTemplate()
+  if (sections.visible('staff')) loadStaff()
+})
 
 async function restoreDeal() {
   deleting.value = true
@@ -865,6 +880,9 @@ function openMarkPaidImmediate(p: typeof payments.value[0]) {
   // physically received the money.
   markPaidPaidAt.value = todayDateInput.value
   createTailPayment.value = false
+  // Дефолт перерасчёта — Равномерно (историческое поведение).
+  redistributeMode.value = 'EQUAL'
+  manualSchedule.value = {}
   markPaidDialog.value = true
 }
 
@@ -928,6 +946,126 @@ const tailPaymentInfo = computed(() => {
   return { applicable: true, deficit, suggestedDate: toDateInput(anchor) }
 })
 const createTailPayment = ref(false)
+
+// ── Перерасчёт графика: режим + живое превью (зеркало redistribute.util) ────
+const REDIST_MODES: { key: RedistributeMode; label: string; hint: string }[] = [
+  { key: 'EQUAL', label: 'Равномерно', hint: 'Остаток делится поровну между оставшимися платежами' },
+  { key: 'NEXT', label: 'В ближайший', hint: 'Вся разница ложится на ближайший платёж (переплата гасит его каскадом)' },
+  { key: 'LAST', label: 'В последний', hint: 'Разница уходит в последний платёж' },
+  { key: 'MANUAL', label: 'Вручную', hint: 'Задайте суммы сами — их сумма должна равняться остатку' },
+]
+const redistributeMode = ref<RedistributeMode>('EQUAL')
+// Ручные суммы (режим MANUAL): paymentId → рубли.
+const manualSchedule = ref<Record<string, number>>({})
+
+// Открытые строки (PENDING/OVERDUE) кроме целевой, ASC — участники распределения.
+const redistOpenRows = computed(() => {
+  const target = markPaidTarget.value
+  if (!target) return []
+  return payments.value
+    .filter(p => p.id !== target.id && (p.status === 'PENDING' || p.status === 'OVERDUE'))
+    .sort((a, b) => a.number - b.number)
+    .map(p => ({ id: p.id, number: p.number, amount: Math.round(p.amount) }))
+})
+
+// Остаток по договору к распределению после оплаты введённой суммы (== backend computeOutstanding).
+const redistTarget = computed(() => {
+  const target = markPaidTarget.value
+  const entered = markPaidAmount.value
+  if (!target || !deal.value || !entered) return 0
+  const balance = deal.value.totalPrice - (deal.value.downPayment || 0)
+  const sumAlreadyPaid = payments.value
+    .filter(p => p.id !== target.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
+    .reduce((s, p) => s + p.amount, 0)
+  return Math.max(Math.round(balance - sumAlreadyPaid - Math.round(entered)), 0)
+})
+
+// Блок перерасчёта показываем, когда есть что распределять и сумма ≠ плановой.
+const showRedistribute = computed(() => {
+  const target = markPaidTarget.value
+  const entered = markPaidAmount.value
+  if (!target || !entered) return false
+  return redistOpenRows.value.length > 0 && Math.round(entered) !== Math.round(target.amount)
+})
+
+// Живое превью текущего режима.
+const redistPreview = computed<{ rows: Array<{ id: string; amount: number }>; closedIds: string[]; error: string }>(() => {
+  const rows = redistOpenRows.value
+  if (!rows.length) return { rows: [], closedIds: [], error: '' }
+  const mode = redistributeMode.value
+  try {
+    if (mode === 'MANUAL') {
+      const manual = rows.map(r => ({ paymentId: r.id, amount: Math.round(manualSchedule.value[r.id] ?? 0) }))
+      const v = validateManual(rows, redistTarget.value, manual)
+      if (!v.ok) return { rows: [], closedIds: [], error: v.reason }
+      const res = redistribute({ rows, target: redistTarget.value, mode, manual })
+      return { rows: res.rows, closedIds: res.closedIds, error: '' }
+    }
+    const res = redistribute({ rows, target: redistTarget.value, mode })
+    return { rows: res.rows, closedIds: res.closedIds, error: '' }
+  } catch (e: any) {
+    return { rows: [], closedIds: [], error: e?.message || 'Ошибка расчёта' }
+  }
+})
+
+function previewAmount(id: string): number | null {
+  const r = redistPreview.value.rows.find(x => x.id === id)
+  return r ? r.amount : null
+}
+function isPreviewClosed(id: string): boolean {
+  return redistPreview.value.closedIds.includes(id)
+}
+
+// Σ ручного ввода — для контроля «сходится/не сходится» в UI.
+const manualSum = computed(() =>
+  redistOpenRows.value.reduce((s, r) => s + Math.round(manualSchedule.value[r.id] ?? 0), 0),
+)
+
+// При входе в MANUAL заполняем поля из EQUAL-превью — понятная отправная точка.
+watch(redistributeMode, (m) => {
+  if (m === 'MANUAL') {
+    try {
+      const eq = redistribute({ rows: redistOpenRows.value, target: redistTarget.value, mode: 'EQUAL' })
+      const map: Record<string, number> = {}
+      for (const r of eq.rows) map[r.id] = r.amount
+      manualSchedule.value = map
+    } catch {
+      manualSchedule.value = {}
+    }
+  }
+})
+
+// ── «Оплачен не в свой месяц»: доход учтён по факту оплаты ───────────────────
+function paymentOffMonth(p: { status: string; paidAt?: string | null; dueDate: string }): 'early' | 'late' | null {
+  return offMonthKind(p)
+}
+function paymentOffMonthLabel(p: { paidAt?: string | null; dueDate: string }): string {
+  if (!p.paidAt) return ''
+  const paid = new Date(p.paidAt)
+  const due = dueYearMonth(p.dueDate)
+  if (!due) return ''
+  const paidStr = monthPrepositional(paid.getFullYear(), paid.getMonth(), due.year)
+  const dueStr = monthPrepositional(due.year, due.month, paid.getFullYear())
+  return `Оплачен в ${paidStr}, а плановый срок — в ${dueStr}. Доход учтён в месяце фактической оплаты.`
+}
+
+// Подсказка в диалоге оплаты: выбранная дата оплаты в другом месяце, чем срок.
+const markPaidOffMonth = computed(() => {
+  const target = markPaidTarget.value
+  if (!target || !markPaidPaidAt.value) return null
+  const due = dueYearMonth(target.dueDate)
+  if (!due) return null
+  const [y, m] = markPaidPaidAt.value.split('-').map(Number)
+  if (!y || !m) return null
+  const paidY = y
+  const paidM = m - 1
+  if (paidY === due.year && paidM === due.month) return null
+  return {
+    kind: paidY * 12 + paidM < due.year * 12 + due.month ? 'early' : 'late',
+    paidLabel: monthPrepositional(paidY, paidM, due.year),
+    dueLabel: monthPrepositional(due.year, due.month, paidY),
+  }
+})
 
 function dismissOutOfOrder() {
   outOfOrderDialog.value = false
@@ -1043,6 +1181,15 @@ async function confirmMarkPaid() {
     // marked, payments.value mutates and the computed turns stale.
     const tail = createTailPayment.value ? { ...tailPaymentInfo.value } : null
     const dealId = markPaidTarget.value.dealId
+    // Передаём режим перерасчёта только если он реально применяется (сумма ≠
+    // плановой И есть что распределять). Иначе — как раньше (бэк не запустит
+    // applier, EQUAL по умолчанию). MANUAL шлём полный список сумм.
+    const applyRedist = showRedistribute.value && redistOpenRows.value.length > 0
+    const redistributeMode_ = applyRedist ? redistributeMode.value : undefined
+    const remainingSchedule =
+      applyRedist && redistributeMode.value === 'MANUAL'
+        ? redistOpenRows.value.map(r => ({ paymentId: r.id, amount: Math.round(manualSchedule.value[r.id] ?? 0) }))
+        : undefined
     await paymentsStore.markAsPaid(markPaidTarget.value.id, dealId, {
       amount: paidAmount,
       proofScreenshot,
@@ -1051,6 +1198,8 @@ async function confirmMarkPaid() {
       paidAt: markPaidPaidAt.value
         ? new Date(`${markPaidPaidAt.value}T12:00:00`).toISOString()
         : undefined,
+      redistributeMode: redistributeMode_,
+      remainingSchedule,
     })
     if (tail && tail.applicable && tail.deficit > 0) {
       // Append a follow-up row for the leftover so the partner can keep
@@ -1120,7 +1269,9 @@ async function saveDealReminder() {
   } catch {}
 }
 
-onMounted(() => { loadDealReminder() })
+// Раньше запрос уходил при открытии ЛЮБОЙ сделки, даже когда WhatsApp
+// не подключён и раздел недоступен — лишний трафик и ошибка в консоли.
+onMounted(() => { if (sections.visible('whatsapp')) loadDealReminder() })
 
 async function sendApiReminder() {
   if (!deal.value) return
@@ -1289,7 +1440,7 @@ async function onChangeClient(profile: import('@/types').ClientProfile | null) {
   if (!profile || !deal.value) return
   changingClient.value = true
   try {
-    const updated = await api.patch<Deal>(`/deals/${deal.value.id}/client`, { clientProfileId: profile.id })
+    const updated = await dealsStore.updateClient(deal.value.id, profile.id)
     deal.value = updated
     showChangeClient.value = false
     toast.success('Клиент изменён')
@@ -1781,10 +1932,31 @@ const timeline = computed(() => {
                       на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
                     </div>
                   </td>
-                  <td class="text-end font-weight-bold text-no-wrap">{{ formatCurrency(p.amount) }}</td>
+                  <td class="text-end font-weight-bold text-no-wrap">
+                    {{ formatCurrency(p.amount) }}
+                    <!-- План vs факт: показываем плановую сумму, если она была
+                         зафиксирована при оплате и отличается от фактической. -->
+                    <div
+                      v-if="p.scheduledAmount != null && Math.round(p.scheduledAmount) !== Math.round(p.amount)"
+                      class="plan-vs-fact"
+                      :style="{ color: p.amount > p.scheduledAmount ? '#10b981' : '#f59e0b' }"
+                    >
+                      план: {{ formatCurrency(p.scheduledAmount) }}
+                    </div>
+                  </td>
                   <td class="text-end text-medium-emphasis text-no-wrap">{{ formatCurrency(p.remainingAfter) }}</td>
                   <td class="text-medium-emphasis">
                     <div>{{ p.paidAt ? formatDate(p.paidAt) : '—' }}</div>
+                    <!-- Оплачен не в свой месяц → доход учтён по факту оплаты. -->
+                    <div
+                      v-if="paymentOffMonth(p)"
+                      class="offmonth-chip"
+                      :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
+                      :title="paymentOffMonthLabel(p)"
+                    >
+                      <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
+                      {{ paymentOffMonth(p) === 'early' ? 'учтён по факту (досрочно)' : 'учтён по факту (позже срока)' }}
+                    </div>
                     <div v-if="p.proofScreenshot" class="mt-1">
                       <img
                         :src="p.proofScreenshot"
@@ -1883,6 +2055,13 @@ const timeline = computed(() => {
                   <div class="sched-card-amount">
                     <div class="sched-card-amount-label">Сумма</div>
                     <div class="sched-card-amount-value">{{ formatCurrency(p.amount) }}</div>
+                    <div
+                      v-if="p.scheduledAmount != null && Math.round(p.scheduledAmount) !== Math.round(p.amount)"
+                      class="plan-vs-fact"
+                      :style="{ color: p.amount > p.scheduledAmount ? '#10b981' : '#f59e0b' }"
+                    >
+                      план: {{ formatCurrency(p.scheduledAmount) }}
+                    </div>
                   </div>
                   <div class="sched-card-amount">
                     <div class="sched-card-amount-label">Остаток после</div>
@@ -1896,6 +2075,15 @@ const timeline = computed(() => {
                   <div v-if="p.paidAt" class="sched-card-paid-date">
                     <v-icon icon="mdi-check-circle-outline" size="14" />
                     Оплачено {{ formatDate(p.paidAt) }}
+                  </div>
+                  <div
+                    v-if="paymentOffMonth(p)"
+                    class="offmonth-chip"
+                    :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
+                    :title="paymentOffMonthLabel(p)"
+                  >
+                    <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
+                    {{ paymentOffMonth(p) === 'early' ? 'доход учтён по факту (досрочно)' : 'доход учтён по факту (позже срока)' }}
                   </div>
                   <img
                     v-if="p.proofScreenshot"
@@ -2357,7 +2545,7 @@ const timeline = computed(() => {
                relationship is implicit (every CI of the cashbox shares this
                deal's profit). To add/remove participants, the partner changes
                the deal's cashbox or moves the CI to another cashbox. -->
-          <v-card v-if="!deal.deletedAt" rounded="lg" elevation="0" border class="ci-section mb-6">
+          <v-card v-if="!deal.deletedAt && sections.visible('coInvestors')" rounded="lg" elevation="0" border class="ci-section mb-6">
             <div class="ci-header">
               <div class="ci-header-left">
                 <div class="ci-header-icon">
@@ -2442,7 +2630,7 @@ const timeline = computed(() => {
           </v-card>
 
           <!-- Assigned staff (partner-only) -->
-          <v-card v-if="authStore.isOwner" rounded="lg" elevation="0" border class="pa-5 mb-6">
+          <v-card v-if="authStore.isOwner && sections.visible('staff')" rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="d-flex align-center justify-space-between flex-wrap ga-3">
               <div class="d-flex align-center ga-3" style="min-width: 0;">
                 <div class="ci-header-icon" style="background: rgba(99, 102, 241, 0.10); color: #6366f1;">
@@ -2501,6 +2689,43 @@ const timeline = computed(() => {
             </div>
           </v-card>
 
+          <!-- Supplier (Партнёры, partner-only) -->
+          <v-card v-if="authStore.isOwner && deal.supplier" rounded="lg" elevation="0" border class="pa-5 mb-6">
+            <div class="d-flex align-center justify-space-between flex-wrap ga-3">
+              <div class="d-flex align-center ga-3" style="min-width: 0;">
+                <div class="ci-header-icon" style="background: rgba(4, 120, 87, 0.10); color: #047857;">
+                  <v-icon icon="mdi-handshake-outline" size="20" />
+                </div>
+                <div style="min-width: 0;">
+                  <div class="ci-header-title">Партнёр-поставщик</div>
+                  <div class="ci-header-sub">
+                    {{ deal.supplier.name }}<template v-if="deal.supplier.city"> · {{ deal.supplier.city }}</template>
+                  </div>
+                </div>
+              </div>
+              <div class="d-flex align-center ga-2">
+                <span
+                  v-if="supplierDebtRemaining > 0"
+                  class="sup-debt-badge sup-debt-badge--open"
+                >
+                  <v-icon icon="mdi-cash-minus" size="14" /> Долг {{ formatCurrency(supplierDebtRemaining) }}
+                </span>
+                <span
+                  v-else-if="deal.supplierDebt && deal.supplierDebt.status === 'SETTLED'"
+                  class="sup-debt-badge sup-debt-badge--paid"
+                >
+                  <v-icon icon="mdi-check-circle-outline" size="14" /> Долг погашен
+                </span>
+                <span v-else class="sup-debt-badge sup-debt-badge--paid">
+                  <v-icon icon="mdi-check-circle-outline" size="14" /> Оплачен при покупке
+                </span>
+                <router-link :to="`/suppliers/${deal.supplier.id}`" class="ci-add-btn" style="text-decoration: none;">
+                  <v-icon icon="mdi-arrow-right" size="16" /> Открыть
+                </router-link>
+              </div>
+            </div>
+          </v-card>
+
           <!-- Documents: PDF downloads -->
           <v-card rounded="lg" elevation="0" border class="pdf-docs-card mb-6">
             <div class="pdf-docs-header">
@@ -2531,7 +2756,7 @@ const timeline = computed(() => {
                   <v-icon :icon="canAccessFeature('pdfContract') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
                 </button>
                 <button
-                  v-if="canAccessFeature('pdfContract')"
+                  v-if="canAccessFeature('pdfContract') && sections.visible('whatsapp')"
                   class="pdf-wa-btn"
                   :disabled="sendingWhatsApp"
                   title="Отправить договор клиенту в WhatsApp"
@@ -2553,6 +2778,7 @@ const timeline = computed(() => {
                   <v-icon v-else icon="mdi-download" size="16" class="pdf-doc-item-action" />
                 </button>
                 <button
+                  v-if="sections.visible('whatsapp')"
                   class="pdf-wa-btn"
                   :disabled="sendingWhatsApp || customTemplateLoading"
                   title="Отправить договор клиенту в WhatsApp"
@@ -2573,7 +2799,7 @@ const timeline = computed(() => {
                   <v-icon :icon="canAccessFeature('pdfExport') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
                 </button>
                 <button
-                  v-if="canAccessFeature('pdfExport')"
+                  v-if="canAccessFeature('pdfExport') && sections.visible('whatsapp')"
                   class="pdf-wa-btn"
                   :disabled="sendingWhatsApp"
                   title="Отправить сводку клиенту в WhatsApp"
@@ -2912,6 +3138,80 @@ const timeline = computed(() => {
             </div>
           </div>
 
+          <!-- Перерасчёт графика: партнёр выбирает КАК распределить остаток по
+               оставшимся платежам, с живым превью. Показываем только когда есть
+               что распределять (сумма ≠ плановой и есть другие открытые строки). -->
+          <div v-if="showRedistribute" class="redist-block mb-5">
+            <div class="redist-head">
+              <v-icon icon="mdi-tune-variant" size="16" />
+              <span>Перерасчёт оставшихся платежей</span>
+            </div>
+
+            <!-- Пресеты режимов -->
+            <div class="redist-modes">
+              <button
+                v-for="m in REDIST_MODES" :key="m.key"
+                type="button"
+                class="redist-mode"
+                :class="{ 'redist-mode--active': redistributeMode === m.key }"
+                @click="redistributeMode = m.key"
+              >{{ m.label }}</button>
+            </div>
+            <div class="redist-hint">{{ REDIST_MODES.find(m => m.key === redistributeMode)?.hint }}</div>
+
+            <!-- Ошибка ручного распределения -->
+            <div v-if="redistributeMode === 'MANUAL' && redistPreview.error" class="redist-error">
+              {{ redistPreview.error }}
+            </div>
+
+            <!-- Превью строк -->
+            <div class="redist-list">
+              <div v-for="row in redistOpenRows" :key="row.id" class="redist-row">
+                <div class="redist-row-no">№{{ row.number }}</div>
+
+                <!-- MANUAL: редактируемое поле -->
+                <template v-if="redistributeMode === 'MANUAL'">
+                  <div class="redist-row-old">{{ formatCurrency(row.amount) }}</div>
+                  <v-icon icon="mdi-arrow-right" size="13" class="redist-arrow" />
+                  <div class="redist-manual-input">
+                    <input
+                      :value="manualSchedule[row.id] ?? 0"
+                      @input="(e: any) => manualSchedule[row.id] = Math.max(0, Math.round(Number(String(e.target.value).replace(/\D/g, '')) || 0))"
+                      type="text"
+                      inputmode="numeric"
+                      class="redist-input"
+                    />
+                    <span class="redist-input-suffix">₽</span>
+                  </div>
+                </template>
+
+                <!-- Пресеты: только просмотр -->
+                <template v-else>
+                  <div class="redist-row-old">{{ formatCurrency(row.amount) }}</div>
+                  <v-icon icon="mdi-arrow-right" size="13" class="redist-arrow" />
+                  <div
+                    class="redist-row-new"
+                    :class="{ 'redist-row-new--closed': isPreviewClosed(row.id) }"
+                  >
+                    <template v-if="isPreviewClosed(row.id)">закрыт</template>
+                    <template v-else>{{ formatCurrency(previewAmount(row.id) ?? 0) }}</template>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <!-- Итог: Σ / остаток -->
+            <div class="redist-total" :class="{ 'redist-total--bad': redistributeMode === 'MANUAL' && manualSum !== redistTarget }">
+              <span>{{ redistributeMode === 'MANUAL' ? 'Распределено' : 'Остаток по договору' }}</span>
+              <span>
+                {{ formatCurrency(redistributeMode === 'MANUAL' ? manualSum : redistTarget) }}
+                <template v-if="redistributeMode === 'MANUAL' && manualSum !== redistTarget">
+                  / {{ formatCurrency(redistTarget) }}
+                </template>
+              </span>
+            </div>
+          </div>
+
           <!-- Actual paid-at date. Defaults to today; partner can roll
                back to dueDate to skip the late-payment hit on rating, or
                set whatever real date they received the money. -->
@@ -2949,6 +3249,14 @@ const timeline = computed(() => {
               style="color: #f59e0b;"
             >
               Оплата с задержкой — повлияет на рейтинг клиента
+            </div>
+            <!-- Дата оплаты в другом месяце, чем срок → доход учтётся по факту. -->
+            <div v-if="markPaidOffMonth" class="offmonth-hint mt-2">
+              <v-icon icon="mdi-information-outline" size="15" />
+              <span>
+                Доход по этому платежу будет учтён в аналитике за <strong>{{ markPaidOffMonth.paidLabel }}</strong> —
+                в месяце фактической оплаты (плановый срок — в {{ markPaidOffMonth.dueLabel }}).
+              </span>
             </div>
           </div>
 
@@ -3000,6 +3308,7 @@ const timeline = computed(() => {
                 <v-icon icon="mdi-download" size="16" class="receipt-btn-arrow" />
               </button>
               <button
+                v-if="sections.visible('whatsapp')"
                 class="receipt-wa-btn"
                 :disabled="sendingWhatsApp || !markPaidTarget"
                 title="Отправить квитанцию клиенту в WhatsApp"
@@ -3034,7 +3343,11 @@ const timeline = computed(() => {
 
           <div class="d-flex ga-3">
             <button class="btn-secondary flex-grow-1" @click="markPaidDialog = false">Отмена</button>
-            <button class="btn-primary flex-grow-1" :disabled="markPaidUploading" @click="confirmMarkPaid">
+            <button
+              class="btn-primary flex-grow-1"
+              :disabled="markPaidUploading || (showRedistribute && redistributeMode === 'MANUAL' && !!redistPreview.error)"
+              @click="confirmMarkPaid"
+            >
               <v-progress-circular v-if="markPaidUploading" indeterminate size="16" width="2" color="white" class="mr-1" />
               <v-icon v-else icon="mdi-check" size="16" />
               {{ markPaidUploading ? 'Загрузка...' : 'Подтвердить оплату' }}
@@ -4642,6 +4955,14 @@ const timeline = computed(() => {
 .ci-add-btn:hover { background: rgba(245, 158, 11, 0.18); }
 .ci-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.sup-debt-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; white-space: nowrap;
+}
+.sup-debt-badge--open { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+.sup-debt-badge--paid { background: rgba(4, 120, 87, 0.12); color: #047857; }
+
 /* Menu dropdown */
 .ci-menu { overflow: hidden; }
 .ci-menu-header {
@@ -4910,6 +5231,114 @@ const timeline = computed(() => {
   color: rgba(var(--v-theme-on-surface), 0.75);
   line-height: 1.4;
 }
+
+/* ───── Перерасчёт графика в диалоге оплаты ───── */
+.redist-block {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px;
+  padding: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.redist-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  margin-bottom: 10px;
+}
+.redist-modes {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
+}
+.redist-mode {
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent;
+  font-size: 12.5px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  cursor: pointer; transition: all 0.12s;
+}
+.redist-mode:hover { border-color: rgba(var(--v-theme-on-surface), 0.24); }
+.redist-mode--active {
+  border-color: #047857; color: #047857; font-weight: 600;
+  background: rgba(4, 120, 87, 0.07);
+}
+.redist-hint {
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.5);
+  margin: 8px 2px 4px; line-height: 1.4;
+}
+.redist-error {
+  font-size: 12px; color: #ef4444; font-weight: 500;
+  margin: 6px 2px 2px; line-height: 1.4;
+}
+.redist-list {
+  margin-top: 10px; display: flex; flex-direction: column; gap: 2px;
+  max-height: 220px; overflow-y: auto;
+}
+.redist-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 2px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+}
+.redist-row:last-child { border-bottom: none; }
+.redist-row-no {
+  font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  min-width: 30px;
+}
+.redist-row-old {
+  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.45);
+  text-decoration: line-through; flex: 1; text-align: right;
+}
+.redist-arrow { color: rgba(var(--v-theme-on-surface), 0.3); }
+.redist-row-new {
+  font-size: 13px; font-weight: 600; color: #047857;
+  flex: 1; text-align: right;
+}
+.redist-row-new--closed {
+  color: #94a3b8; font-weight: 500; font-style: italic;
+}
+.redist-manual-input {
+  flex: 1; display: flex; align-items: center; justify-content: flex-end;
+  gap: 3px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.16);
+  border-radius: 7px; padding: 4px 8px;
+  background: rgb(var(--v-theme-surface));
+}
+.redist-input {
+  width: 100%; border: none; outline: none; background: transparent;
+  font-size: 13px; font-weight: 600; text-align: right;
+  color: rgb(var(--v-theme-on-surface));
+}
+.redist-input-suffix { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.redist-total {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.redist-total--bad { color: #ef4444; }
+
+.plan-vs-fact {
+  font-size: 11px; font-weight: 500;
+  margin-top: 2px; line-height: 1.2;
+}
+
+/* «Оплачен не в свой месяц» — приглушённый чип, доход учтён по факту оплаты. */
+.offmonth-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10.5px; font-weight: 600;
+  margin-top: 3px; padding: 1px 6px; border-radius: 6px;
+  line-height: 1.3;
+}
+.offmonth-chip--early { color: #059669; background: rgba(16, 185, 129, 0.1); }
+.offmonth-chip--late { color: #d97706; background: rgba(245, 158, 11, 0.1); }
+.offmonth-hint {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 12px; line-height: 1.4;
+  color: #2563eb; background: rgba(37, 99, 235, 0.07);
+  border-radius: 8px; padding: 8px 10px;
+}
+.offmonth-hint .v-icon { margin-top: 1px; flex-shrink: 0; }
 
 /* ───── Mobile: schedule cards вместо широкой таблицы ───── */
 .schedule-cards {

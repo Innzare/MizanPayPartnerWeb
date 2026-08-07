@@ -4,11 +4,7 @@
     <v-card rounded="lg" elevation="0" class="hero-card mb-5">
       <div class="hero-grid">
         <div class="hero-text">
-          <div class="hero-eyebrow">
-            <v-icon icon="mdi-mosque" size="14" />
-            Закят
-          </div>
-          <h1 class="hero-title">Расчёт и учёт закята</h1>
+          <!-- Заголовок раздела — в верхнем баре; тут только пояснение и цифры. -->
           <p class="hero-desc">
             Закят — обязательная ежегодная милостыня, один из пяти столпов ислама. Платится в размере 2.5%
             с накоплений, превышающих нисаб, по истечении лунного года (хаула).

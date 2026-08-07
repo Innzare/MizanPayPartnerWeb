@@ -61,6 +61,13 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
     try {
       items.value = await api.get<CashBoxSummary[]>('/cashboxes')
     } catch (e: any) {
+      // Сотрудник без права cashboxes.view — не ошибка: касс для него нет.
+      // Возвращаем пустой список, чтобы страницы с фильтром по кассам
+      // (сделки, платежи, аналитика) не падали тостом «Недостаточно прав».
+      if (e?.code === 'PERMISSION_DENIED' || e?.status === 403) {
+        items.value = []
+        return
+      }
       error.value = e.message || 'Ошибка загрузки касс'
       throw e
     } finally {
@@ -108,10 +115,13 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
   // Пополнение (+) / снятие (−) собственного капитала кассы. amount SIGNED.
   // Бэк: снятие сначала из дохода, затем из вложенного капитала; 400 если
   // снятие > доступного. Возвращает обновлённую сводку капитала.
-  async function adjustPartnerCapital(cashBoxId: string, amount: number, note?: string): Promise<CapitalSummary> {
+  async function adjustPartnerCapital(cashBoxId: string, amount: number, note?: string, idemKey?: string): Promise<CapitalSummary> {
     return api.post<CapitalSummary>(`/cashboxes/${cashBoxId}/capital/adjust`, {
       amount,
       note: note?.trim() || undefined,
+      // Защита от двойной отправки/ретрая: повтор с тем же ключом сервер
+      // проигнорирует вместо второй операции.
+      idemKey,
     })
   }
 

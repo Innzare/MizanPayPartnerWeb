@@ -7,6 +7,7 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useSubscription } from '@/composables/useSubscription'
+import { useSections, HIDEABLE_SECTIONS } from '@/composables/useSections'
 import { api } from '@/api/client'
 import QRCode from 'qrcode'
 
@@ -19,7 +20,7 @@ const settingsPlanLabels: Record<string, string> = { PRO: 'Стандарт', BU
 
 // Tabs
 const route = useRoute()
-const validTabs = ['profile', 'security', 'whatsapp', 'export', 'contract', 'subscription'] as const
+const validTabs = ['profile', 'security', 'sections', 'whatsapp', 'export', 'contract', 'subscription'] as const
 type TabId = typeof validTabs[number]
 const initTab = validTabs.includes(route.query.tab as TabId) ? route.query.tab as TabId : 'profile'
 const activeTab = ref<TabId>(initTab)
@@ -191,8 +192,11 @@ function insertVar(
 }
 
 onMounted(() => {
-  checkWhatsAppStatus()
+  // Статус WhatsApp спрашиваем, только если раздел вообще доступен: иначе
+  // запрос уходил при каждом открытии настроек и падал в консоль ошибкой.
+  if (sectionsState.visible('whatsapp')) checkWhatsAppStatus()
   fetchWeeklyExport()
+  if (authStore.isOwner) loadSectionBlockers()
 })
 
 // Export Excel
@@ -271,10 +275,116 @@ const tabs = [
   { id: 'profile' as const, label: 'Профиль', icon: 'mdi-account-outline' },
   { id: 'security' as const, label: 'Безопасность', icon: 'mdi-shield-lock-outline' },
   // WhatsApp moved to the dedicated /broadcasts section (connection + auto-reminders).
+  { id: 'sections' as const, label: 'Разделы', icon: 'mdi-eye-off-outline' },
   { id: 'export' as const, label: 'Экспорт', icon: 'mdi-download-outline' },
   { id: 'contract' as const, label: 'Договор', icon: 'mdi-file-cog-outline' },
   { id: 'subscription' as const, label: 'Подписка', icon: 'mdi-crown-outline' },
 ]
+
+// ── Скрытие ненужных разделов ──
+// Настройка АККАУНТА: скрытый раздел исчезает и у владельца, и у сотрудников.
+// Скрытие чисто визуальное — расчёты, начисления и данные не меняются.
+const sectionsState = useSections()
+const sectionBlockers = ref<Record<string, any> | null>(null)
+const sectionsSaving = ref(false)
+/** Локальная копия: переключатели должны отзываться мгновенно, до сохранения. */
+const localHidden = ref<string[]>([])
+
+watch(
+  () => authStore.user,
+  (u) => { localHidden.value = [...(((u as any)?.hiddenSections as string[]) ?? [])] },
+  { immediate: true },
+)
+
+async function loadSectionBlockers() {
+  try {
+    sectionBlockers.value = await api.get('/auth/investor/hidden-sections/blockers')
+  } catch {
+    sectionBlockers.value = null
+  }
+}
+
+/**
+ * Почему раздел нельзя скрыть и о чём предупредить — приходит с сервера
+ * готовым текстом. Своей копии формулировок здесь намеренно нет: две версии
+ * одного объяснения неизбежно разъехались бы.
+ */
+function sectionBlockedReason(key: string): string | null {
+  return sectionBlockers.value?.blocked?.[key] ?? null
+}
+function sectionWarning(key: string): string | null {
+  return sectionBlockers.value?.warnings?.[key] ?? null
+}
+
+/**
+ * Группируем разделы по смыслу. Плоский список из девяти пунктов читается
+ * как перечень, а не как выбор: человек ищет «где тут про людей» и не находит.
+ */
+const sectionGroups = computed(() => {
+  const by = (keys: string[]) => HIDEABLE_SECTIONS.filter((s) => keys.includes(s.key))
+  return [
+    { title: 'Деньги и аналитика', items: by(['analytics', 'coInvestors']) },
+    { title: 'Работа с людьми', items: by(['debtors', 'suppliers', 'whatsapp', 'staff', 'registry']) },
+    { title: 'Дополнительно', items: by(['import', 'help']) },
+  ].filter((g) => g.items.length)
+})
+
+/**
+ * Раздел недоступен по тарифу. Скрыть его всё равно можно — настройка
+ * переживёт повышение тарифа, и после оплаты раздел не вылезет неожиданно.
+ */
+function sectionPlanLocked(key: string): boolean {
+  return key !== 'help' && !canAccessFeature(key as any)
+}
+
+/** Вернуть все разделы разом — без этого пришлось бы щёлкать каждый. */
+async function showAllSections() {
+  sectionsSaving.value = true
+  const before = [...localHidden.value]
+  localHidden.value = []
+  try {
+    const updated = await api.patch<any>('/auth/investor/hidden-sections', { hiddenSections: [] })
+    authStore.user = { ...(authStore.user as any), hiddenSections: updated.hiddenSections }
+    localStorage.setItem('user', JSON.stringify(authStore.user))
+    toast.success('Все разделы снова видны')
+    await loadSectionBlockers()
+  } catch (e: any) {
+    localHidden.value = before
+    toast.error(e.message || 'Не удалось сохранить')
+  } finally {
+    sectionsSaving.value = false
+  }
+}
+
+async function toggleSection(key: string, hide: boolean) {
+  // Строка целиком работает меткой переключателя — при быстром двойном клике
+  // окно подтверждения могло всплыть дважды и уйти два запроса подряд.
+  if (sectionsSaving.value) return
+  if (hide) {
+    const warn = sectionWarning(key)
+    if (warn && !window.confirm(`${warn}\n\nСкрыть раздел?`)) return
+  }
+  const next = hide
+    ? [...new Set([...localHidden.value, key])]
+    : localHidden.value.filter((k) => k !== key)
+
+  sectionsSaving.value = true
+  const before = [...localHidden.value]
+  localHidden.value = next
+  try {
+    const updated = await api.patch<any>('/auth/investor/hidden-sections', { hiddenSections: next })
+    // Обновляем и стор, и localStorage — иначе после перезагрузки вернётся старое.
+    authStore.user = { ...(authStore.user as any), hiddenSections: updated.hiddenSections }
+    localStorage.setItem('user', JSON.stringify(authStore.user))
+    toast.success(hide ? 'Раздел скрыт' : 'Раздел возвращён')
+    await loadSectionBlockers()
+  } catch (e: any) {
+    localHidden.value = before
+    toast.error(e.message || 'Не удалось сохранить')
+  } finally {
+    sectionsSaving.value = false
+  }
+}
 
 // Profile editing
 const isEditing = ref(false)
@@ -285,6 +395,7 @@ const editForm = ref({
   phone: '',
   city: '',
   birthDate: '',
+  companyName: '',
 })
 const profileSaving = ref(false)
 const profileSaved = ref(false)
@@ -298,6 +409,7 @@ function startEditing() {
     phone: authStore.user.phone,
     city: authStore.user.city,
     birthDate: (authStore.user as any).birthDate?.slice(0, 10) || '',
+    companyName: authStore.user.companyName || '',
   }
   removeAvatarFile()
   isEditing.value = true
@@ -322,6 +434,7 @@ async function saveProfile() {
       phone: editForm.value.phone,
       city: editForm.value.city,
       birthDate: editForm.value.birthDate || undefined,
+      companyName: editForm.value.companyName.trim() || null,
       ...(avatarUrl ? { avatar: avatarUrl } : {}),
     } as any)
     removeAvatarFile()
@@ -585,18 +698,7 @@ const plans = [
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
-    <!-- Page header -->
-    <div class="page-header">
-      <div class="page-header-left">
-        <div class="page-icon-wrap">
-          <v-icon icon="mdi-cog-outline" size="22" />
-        </div>
-        <div>
-          <div class="page-title">Настройки</div>
-          <div class="page-subtitle">Управление профилем и безопасностью</div>
-        </div>
-      </div>
-    </div>
+    <!-- Заголовок раздела — в верхнем баре. -->
 
     <!-- Tabs -->
     <div class="settings-tabs">
@@ -653,6 +755,10 @@ const plans = [
 
             <!-- View mode -->
             <div v-if="!isEditing" class="profile-rows">
+              <div v-if="authStore.user?.companyName" class="profile-row">
+                <span class="profile-row-label">Компания</span>
+                <span class="profile-row-value">{{ authStore.user.companyName }}</span>
+              </div>
               <div class="profile-row">
                 <span class="profile-row-label">Имя</span>
                 <span class="profile-row-value">{{ authStore.user?.firstName }}</span>
@@ -708,6 +814,10 @@ const plans = [
               <div class="form-field">
                 <label class="field-label">Отчество</label>
                 <input v-model="editForm.patronymic" type="text" class="field-input" placeholder="Отчество (необязательно)" />
+              </div>
+              <div class="form-field">
+                <label class="field-label">Название компании</label>
+                <input v-model="editForm.companyName" type="text" class="field-input" placeholder="Название компании (необязательно)" />
               </div>
               <div class="form-field">
                 <label class="field-label">Телефон <span class="required">*</span></label>
@@ -1304,6 +1414,108 @@ const plans = [
     </div>
 
     <!-- Export Tab -->
+    <!-- ── Разделы ── -->
+    <div v-if="activeTab === 'sections'" class="tab-content">
+      <!-- Шапка: сразу видно, сколько скрыто и как это вернуть -->
+      <div class="sx-head">
+        <div class="sx-head-main">
+          <div class="sx-head-title">Разделы приложения</div>
+          <div class="sx-head-sub">
+            Выключите то, чем не пользуетесь — меню станет короче,
+            а лишние кнопки и фильтры пропадут со всех экранов
+          </div>
+        </div>
+        <!-- Состояние строкой, а не карточкой: это справка о текущем виде,
+             а не показатель, ради которого стоит отводить блок. -->
+        <div class="sx-state">
+          <template v-if="localHidden.length">
+            <span class="sx-state-text">
+              Скрыто <b>{{ localHidden.length }}</b> из {{ HIDEABLE_SECTIONS.length }}
+            </span>
+            <span class="sx-state-dot">·</span>
+            <button class="sx-state-link" :disabled="sectionsSaving" @click="showAllSections">
+              Показать все
+            </button>
+          </template>
+          <span v-else class="sx-state-text sx-state-text--all">
+            <v-icon icon="mdi-check" size="14" />
+            Все разделы включены
+          </span>
+        </div>
+      </div>
+
+      <div class="sx-note">
+        <v-icon icon="mdi-shield-check-outline" size="19" />
+        <div>
+          <b>Ничего не удаляется.</b>
+          Скрытие меняет только внешний вид: данные, расчёты и настройки остаются
+          на месте, доход считается по-прежнему. Вернуть раздел можно в любой момент.
+          Настройка действует на весь аккаунт — скрытые разделы не увидят и сотрудники.
+        </div>
+      </div>
+
+      <!-- Группы: разделы соседствуют по смыслу, а не по алфавиту -->
+      <div v-for="group in sectionGroups" :key="group.title" class="sx-group">
+        <div class="sx-group-title">
+          {{ group.title }}
+          <span class="sx-group-count">{{ group.items.length }}</span>
+        </div>
+
+        <div class="sx-list">
+          <label
+            v-for="sec in group.items"
+            :key="sec.key"
+            class="sx-row"
+            :class="{
+              'sx-row--off': localHidden.includes(sec.key),
+              'sx-row--locked': !localHidden.includes(sec.key) && !!sectionBlockedReason(sec.key),
+            }"
+          >
+            <div class="sx-icon">
+              <v-icon :icon="sec.icon" size="20" />
+            </div>
+
+            <div class="sx-body">
+              <div class="sx-label-row">
+                <span class="sx-label">{{ sec.label }}</span>
+                <span v-if="localHidden.includes(sec.key)" class="sx-badge">скрыт</span>
+                <span v-else-if="sectionPlanLocked(sec.key)" class="sx-plan">
+                  <v-icon icon="mdi-crown" size="11" />
+                  нет на вашем тарифе
+                </span>
+              </div>
+              <div class="sx-effect">{{ sec.effect }}</div>
+
+              <div
+                v-if="!localHidden.includes(sec.key) && sectionBlockedReason(sec.key)"
+                class="sx-blocked"
+              >
+                <v-icon icon="mdi-lock-outline" size="14" />
+                <span>{{ sectionBlockedReason(sec.key) }}</span>
+              </div>
+              <div
+                v-else-if="!localHidden.includes(sec.key) && sectionWarning(sec.key)"
+                class="sx-warn"
+              >
+                <v-icon icon="mdi-alert-outline" size="14" />
+                <span>{{ sectionWarning(sec.key) }}</span>
+              </div>
+            </div>
+
+            <v-switch
+              :model-value="!localHidden.includes(sec.key)"
+              :disabled="sectionsSaving || (!localHidden.includes(sec.key) && !!sectionBlockedReason(sec.key))"
+              color="primary"
+              hide-details
+              density="compact"
+              class="sx-switch"
+              @update:model-value="toggleSection(sec.key, !$event)"
+            />
+          </label>
+        </div>
+      </div>
+    </div>
+
     <div v-if="activeTab === 'export'" class="tab-content">
       <template v-if="!canAccessFeature('excelExport')">
         <!-- Locked state -->
@@ -3208,5 +3420,177 @@ const plans = [
 
 @media (max-width: 480px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Вкладка «Разделы» ── */
+.sx-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.sx-head-main { flex: 1; min-width: 240px; }
+.sx-head-title {
+  font-size: 20px; font-weight: 750; letter-spacing: -0.015em;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.sx-head-sub {
+  font-size: 13.5px; line-height: 1.55;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-top: 5px;
+  max-width: 540px;
+}
+/* Строка состояния — минимальная: текст и ссылка, без рамок и плашек */
+.sx-state {
+  display: flex; align-items: center; gap: 7px;
+  flex-shrink: 0;
+  font-size: 13px;
+  padding-top: 4px;
+}
+.sx-state-text { color: rgba(var(--v-theme-on-surface), 0.5); white-space: nowrap; }
+.sx-state-text b { color: rgba(var(--v-theme-on-surface), 0.85); font-weight: 700; }
+.sx-state-text--all {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+}
+.sx-state-text--all :deep(.v-icon) { color: #047857; }
+.sx-state-dot { color: rgba(var(--v-theme-on-surface), 0.25); }
+.sx-state-link {
+  border: none; background: none; padding: 0;
+  font-size: 13px; font-weight: 650;
+  color: #047857;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(4, 120, 87, 0.3);
+}
+.sx-state-link:hover:not(:disabled) { text-decoration-color: #047857; }
+.sx-state-link:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.sx-note {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 15px 18px;
+  margin-bottom: 28px;
+  border-radius: 13px;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  border-left: 3px solid #047857;
+  font-size: 13.5px; line-height: 1.6;
+  color: rgba(var(--v-theme-on-surface), 0.68);
+}
+.sx-note :deep(.v-icon) { color: #047857; flex-shrink: 0; margin-top: 1px; }
+.sx-note b { color: rgba(var(--v-theme-on-surface), 0.88); }
+
+.sx-group + .sx-group { margin-top: 24px; }
+.sx-group-title {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 9px;
+  padding-left: 4px;
+}
+.sx-group-count {
+  font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 20px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.42);
+  letter-spacing: 0;
+}
+
+.sx-list {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+/* Вся строка — метка переключателя: попасть по ней проще, чем по тумблеру */
+.sx-row {
+  display: flex; align-items: center; gap: 16px;
+  /* Справа больше, чем слева: тумблер не должен упираться в край карточки. */
+  padding: 16px 22px 16px 18px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sx-row + .sx-row { box-shadow: inset 0 1px 0 rgba(var(--v-theme-on-surface), 0.07); }
+.sx-row:hover { background: rgba(var(--v-theme-on-surface), 0.022); }
+.sx-row--locked { cursor: not-allowed; }
+.sx-row--locked:hover { background: none; }
+
+.sx-icon {
+  width: 40px; height: 40px; border-radius: 11px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 120, 87, 0.09);
+  color: #047857;
+  flex-shrink: 0;
+  transition: background 0.18s, color 0.18s;
+}
+/* Выключенный раздел гасим целиком — состояние видно боковым зрением */
+.sx-row--off .sx-icon {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.28);
+}
+.sx-row--off .sx-label { color: rgba(var(--v-theme-on-surface), 0.48); }
+.sx-row--off .sx-effect { color: rgba(var(--v-theme-on-surface), 0.33); }
+
+.sx-body { flex: 1; min-width: 0; }
+.sx-label-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sx-label {
+  font-size: 14.5px; font-weight: 650;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+}
+.sx-badge {
+  font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 2px 7px; border-radius: 5px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.42);
+}
+/* Раздел, которого и так нет по тарифу — иначе непонятно, зачем его скрывать */
+.sx-plan {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.03em;
+  padding: 2px 7px; border-radius: 5px;
+  background: rgba(232, 185, 49, 0.15);
+  color: #92700f;
+  white-space: nowrap;
+}
+.dark .sx-plan { color: #e8b931; }
+.sx-plan :deep(.v-icon) { color: #e8b931 !important; }
+
+.sx-effect {
+  font-size: 12.5px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 3px;
+}
+
+/* Причина «так нельзя» и просто предупреждение — разные по весу */
+.sx-blocked, .sx-warn {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 12.5px; line-height: 1.45;
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+}
+.sx-blocked {
+  color: #b45309; font-weight: 600;
+  background: rgba(245, 158, 11, 0.09);
+}
+.sx-warn {
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.dark .sx-blocked { color: #fbbf24; }
+.sx-blocked :deep(.v-icon), .sx-warn :deep(.v-icon) { flex-shrink: 0; margin-top: 1px; }
+
+.sx-switch { flex-shrink: 0; }
+
+@media (max-width: 600px) {
+  /* На узком экране строка состояния уходит под заголовок, а не жмётся вбок. */
+  .sx-state { width: 100%; padding-top: 2px; }
+  .sx-row { padding: 14px 14px 14px 12px; gap: 12px; }
+  .sx-icon { width: 36px; height: 36px; }
 }
 </style>

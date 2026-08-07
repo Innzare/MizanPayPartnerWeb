@@ -4,6 +4,7 @@ import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName, clientProfileName } from '@/types'
+import { attributionMonthStr, offMonthKind, monthPrepositional, dueYearMonth } from '@/utils/paymentAttribution'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -13,6 +14,7 @@ import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 
 const router = useRouter()
@@ -43,6 +45,7 @@ const filterCashBoxObj = computed(() =>
 
 // Staff assignee filter (partner-only)
 const authStore = useAuthStore()
+const sections = useSections()
 interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
 const staffList = ref<StaffOption[]>([])
 const filterStaff = ref<string | null>(null)
@@ -99,17 +102,36 @@ const availableYears = computed(() => {
   return Array.from(years).sort((a, b) => b - a)
 })
 
-// Count payments per month for the selected year
+// Count payments per month for the selected year. На вкладке «Оплаченные»
+// считаем по месяцу ФАКТИЧЕСКОЙ оплаты (paidAt) — согласованно с фильтром и
+// аналитикой; на остальных вкладках — по плановому сроку (график).
 const monthPaymentCounts = computed(() => {
   const counts: Record<string, number> = {}
+  const paidBasis = tab.value === 3
   paymentsStore.allPaymentsFlat.forEach(p => {
-    const ym = p.dueDate.slice(0, 7)
-    if (ym.startsWith(String(filterYear.value))) {
+    if (paidBasis && p.status !== 'PAID') return
+    const ym = paidBasis ? attributionMonthStr(p) : p.dueDate.slice(0, 7)
+    if (ym && ym.startsWith(String(filterYear.value))) {
       counts[ym] = (counts[ym] || 0) + 1
     }
   })
   return counts
 })
+
+// «Оплачен не в свой месяц» для строки списка (только вкладка «Оплаченные»).
+function paidOffMonth(p: Payment): 'early' | 'late' | null {
+  return offMonthKind(p)
+}
+// Подпись бейджа: «оплачен в июле · срок был в сентябре».
+function offMonthLabel(p: Payment): string {
+  if (!p.paidAt) return ''
+  const paid = new Date(p.paidAt)
+  const due = dueYearMonth(p.dueDate)
+  if (!due) return ''
+  const paidStr = monthPrepositional(paid.getFullYear(), paid.getMonth(), due.year)
+  const dueStr = monthPrepositional(due.year, due.month, paid.getFullYear())
+  return `оплачен в ${paidStr} · срок был в ${dueStr}`
+}
 
 const filterMonthLabel = computed(() => {
   if (!filterMonth.value) return 'Все'
@@ -470,9 +492,14 @@ const displayedPayments = computed(() => {
   else if (tab.value === 3) payments = [...paymentsStore.paidPayments]
   else payments = [...paymentsStore.allPaymentsFlat]
 
-  // Month filter
+  // Month filter. На вкладке «Оплаченные» фильтруем по месяцу фактической
+  // оплаты (attributionMonthStr → paidAt), иначе — по плановому сроку.
   if (filterMonth.value) {
-    payments = payments.filter(p => p.dueDate.slice(0, 7) === filterMonth.value)
+    const paidBasis = tab.value === 3
+    payments = payments.filter(p => {
+      const ym = paidBasis ? attributionMonthStr(p) : p.dueDate.slice(0, 7)
+      return ym === filterMonth.value
+    })
   }
 
   // Folder filter
@@ -670,8 +697,8 @@ const rescheduleReasonOptions = [
     </div>
 
     <template v-else>
-    <!-- Summary stats -->
-    <div class="stats-row mb-6">
+    <!-- Summary stats (KPI) — скрываются у ролей без права payments.kpi -->
+    <div v-if="authStore.can('payments.kpi')" class="stats-row mb-6">
       <div class="stat-card">
         <div class="stat-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
           <v-icon icon="mdi-cash-multiple" size="20" />
@@ -773,7 +800,7 @@ const rescheduleReasonOptions = [
       </v-menu>
 
       <!-- Staff assignee filter -->
-      <v-menu v-if="authStore.isOwner && staffList.length > 0" :close-on-content-click="true">
+      <v-menu v-if="authStore.isOwner && sections.visible('staff') && staffList.length > 0" :close-on-content-click="true">
         <template #activator="{ props: sp }">
           <button v-bind="sp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterStaff }">
             <v-icon icon="mdi-account-tie-outline" size="15" />
@@ -1350,6 +1377,17 @@ const rescheduleReasonOptions = [
                     <v-icon icon="mdi-calendar-arrow-right" size="12" />
                     <span>с {{ formatDateShort(p.rescheduledFrom) }}</span>
                   </div>
+                  <!-- «Оплачен не в свой месяц»: платёж за другой месяц, но
+                       оплачен раньше/позже → доход учтён по факту оплаты. -->
+                  <div
+                    v-if="paidOffMonth(p)"
+                    class="offmonth-chip"
+                    :class="paidOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
+                    :title="offMonthLabel(p)"
+                  >
+                    <v-icon :icon="paidOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
+                    <span>{{ paidOffMonth(p) === 'early' ? 'оплачен досрочно' : 'оплачен позже срока' }}</span>
+                  </div>
                 </div>
               </td>
               <td>
@@ -1435,6 +1473,15 @@ const rescheduleReasonOptions = [
                 <div v-if="p.rescheduledFrom" class="rescheduled-hint">
                   <v-icon icon="mdi-calendar-arrow-right" size="11" />
                   <span>с {{ formatDateShort(p.rescheduledFrom) }}</span>
+                </div>
+                <div
+                  v-if="paidOffMonth(p)"
+                  class="offmonth-chip"
+                  :class="paidOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
+                  :title="offMonthLabel(p)"
+                >
+                  <v-icon :icon="paidOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
+                  <span>{{ paidOffMonth(p) === 'early' ? 'оплачен досрочно' : 'оплачен позже срока' }}</span>
                 </div>
                 <div
                   v-if="p.status !== 'PAID'"
@@ -1863,6 +1910,15 @@ const rescheduleReasonOptions = [
   display: flex; align-items: center; gap: 3px;
   font-size: 11px; color: #f59e0b; margin-top: 1px;
 }
+
+/* «Оплачен не в свой месяц» — приглушённый чип (их бывает много). */
+.offmonth-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10.5px; font-weight: 600; margin-top: 2px;
+  padding: 1px 6px; border-radius: 6px; white-space: nowrap;
+}
+.offmonth-chip--early { color: #059669; background: rgba(16, 185, 129, 0.1); }
+.offmonth-chip--late { color: #d97706; background: rgba(245, 158, 11, 0.1); }
 
 /* Action buttons */
 .action-btn {

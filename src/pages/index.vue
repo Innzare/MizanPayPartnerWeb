@@ -3,7 +3,9 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { useRequestsStore } from '@/stores/requests'
 import { useNotificationsStore } from '@/stores/notifications'
-import { formatCurrency, formatCurrencyShort, formatDateShort } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDateShort, formatPhone } from '@/utils/formatters'
+import { localDateStr } from '@/utils/paymentAttribution'
+import { paymentProfit } from '@/utils/dealProfit'
 import { userName, clientProfileName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
@@ -11,8 +13,14 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useDealLock } from '@/composables/useDealLock'
 import { useToast } from '@/composables/useToast'
 import HeroSummary from '@/components/HeroSummary.vue'
+import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
 import { useCapital } from '@/composables/useCapital'
 import { useIsMobile } from '@/composables/useIsMobile'
+import { useClientsStore } from '@/stores/clients'
+import { useAuthStore } from '@/stores/auth'
+import { useSubscription } from '@/composables/useSubscription'
+import { useSections } from '@/composables/useSections'
+import { api } from '@/api/client'
 
 const router = useRouter()
 const { isDealLocked } = useDealLock()
@@ -27,12 +35,18 @@ const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const requestsStore = useRequestsStore()
 const notificationsStore = useNotificationsStore()
+const clientsStore = useClientsStore()
+const authStore = useAuthStore()
+const subscription = useSubscription()
+const sections = useSections()
 
 // Payment health
 const paymentHealth = computed(() => {
   const paid = paymentsStore.paidPayments
   if (!paid.length) return 100
-  const onTime = paid.filter(p => p.paidAt && new Date(p.paidAt) <= new Date(p.dueDate)).length
+  // Сравниваем КАЛЕНДАРНЫЕ даты; paidAt берём ЛОКАЛЬНО (согласованно с атрибуцией
+  // месяца). Тот же фикс, что в analytics.vue paymentHealth.
+  const onTime = paid.filter(p => p.paidAt && localDateStr(p.paidAt) <= p.dueDate.slice(0, 10)).length
   return Math.round((onTime / paid.length) * 100)
 })
 
@@ -47,7 +61,73 @@ const upcomingPayments = computed(() => {
   })
 })
 
-const topActiveDeals = computed(() => dealsStore.activeDeals.slice(0, 4))
+// Строки таблицы активных сделок: всё, что показываем, считаем один раз здесь,
+// а не по несколько раз на каждую ячейку при перерисовке.
+const topActiveDeals = computed(() =>
+  dealsStore.activeDeals.slice(0, 4).map((deal: any) => ({
+    deal,
+    received: dealReceived(deal),
+    next: nextPaymentOf(deal.id),
+    progress: deal.numberOfPayments > 0
+      ? Math.round((deal.paidPayments / deal.numberOfPayments) * 100)
+      : 0,
+  })),
+)
+
+// ── «Заработано»: чистый доход по уже полученным деньгам ──
+// Тот же показатель, что в отчётах на странице аналитики. Доля со-инвесторов
+// приходит с сервера (в журнале она разложена по платежам), поэтому без этих
+// карт цифра была бы валовой и завышенной.
+const ciProfitByPayment = ref<Record<string, number>>({})
+const ciProfitByDownPayment = ref<Record<string, number>>({})
+const ciLoaded = ref(false)
+
+/**
+ * Заработок по одной сделке — ровно та же арифметика и тот же порядок
+ * округления, что в отчётах на бэкенде (reports.service.ts, totalsFor):
+ * округляем валовой доход по сделке, и только потом вычитаем долю
+ * со-инвесторов. Иначе карточка и модалка расходились бы на несколько рублей.
+ */
+function dealEarnedNet(d: any): number {
+  const received =
+    (d.downPayment || 0) +
+    paymentsStore.allPaymentsFlat
+      .filter((p: any) => p.dealId === d.id && p.status === 'PAID')
+      .reduce((s: number, p: any) => s + p.amount, 0)
+  const ci =
+    (ciProfitByDownPayment.value[d.id] ?? 0) +
+    paymentsStore.allPaymentsFlat
+      .filter((p: any) => p.dealId === d.id && p.status === 'PAID')
+      .reduce((s: number, p: any) => s + (ciProfitByPayment.value[p.id] ?? 0), 0)
+  return Math.round(paymentProfit(received, d)) - ci
+}
+
+// Отменённые сделки не считаются — как и в отчётах.
+const earnedDeals = computed(() =>
+  (dealsStore.investorDeals as any[]).filter((d) => d.status !== 'CANCELLED'),
+)
+
+const earnedNet = computed(() => {
+  if (!ciLoaded.value) return null
+  return earnedDeals.value.reduce((s, d) => s + dealEarnedNet(d), 0)
+})
+
+// ── Счётчики для ключевых показателей ──
+const clientsCount = computed(() => clientsStore.clientsInfo.length)
+const activeClientsCount = computed(() =>
+  clientsStore.clientsInfo.filter((c) => c.activeDealCount > 0).length,
+)
+
+// Карточки инвесторов и сотрудников показываем, только если они вообще есть —
+// пустой ноль на главной ничего не сообщает, а место занимает.
+const investorsCount = ref<number | null>(null)
+const staffCount = ref<number | null>(null)
+const canSeeCoInvestors = computed(
+  () => sections.visible('coInvestors') && authStore.canAccess('/co-investors'),
+)
+const canSeeStaff = computed(() => authStore.isOwner && sections.visible('staff'))
+
+
 
 const pageLoading = ref(true)
 
@@ -59,6 +139,26 @@ onMounted(async () => {
       requestsStore.fetchRequests(),
       notificationsStore.fetchNotifications(),
       fetchCapital(),
+      // Доля со-инвесторов: при ошибке молча остаёмся на валовой цифре, чтобы
+      // главная не падала из-за одного вспомогательного запроса.
+      Promise.all([
+        api.get<Record<string, number>>('/finance/coinvestor-profit-by-payment')
+          .then((m) => { ciProfitByPayment.value = m || {} })
+          .catch(() => { ciProfitByPayment.value = {} }),
+        api.get<Record<string, number>>('/finance/coinvestor-profit-by-downpayment')
+          .then((m) => { ciProfitByDownPayment.value = m || {} })
+          .catch(() => { ciProfitByDownPayment.value = {} }),
+      ]).then(() => { ciLoaded.value = true }),
+      canSeeCoInvestors.value
+        ? api.get<any[]>('/co-investors/persons')
+            .then((r) => { investorsCount.value = r?.length ?? 0 })
+            .catch(() => {})
+        : Promise.resolve(),
+      canSeeStaff.value
+        ? api.get<any[]>('/auth/investor/staff')
+            .then((r) => { staffCount.value = r?.length ?? 0 })
+            .catch(() => {})
+        : Promise.resolve(),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки данных')
@@ -73,69 +173,219 @@ const overdueAmount = computed(() =>
 )
 
 // ── Metric breakdown dialog ──
-type MetricKey = 'invested' | 'revenue' | 'profit' | 'remaining' | 'monthly' | 'roi' | 'overdue'
-const breakdownOpen = ref(false)
-const breakdownTitle = ref('')
-const breakdownDeals = ref<{ deal: any; value: number; label?: string }[]>([])
-const breakdownTotal = ref(0)
-const breakdownSuffix = ref('')
+type MetricKey = 'invested' | 'revenue' | 'profit' | 'remaining' | 'received' | 'earned' | 'roi' | 'overdue'
+// ── Расшифровка показателя: общий компонент с аналитикой и отчётами ──
+const metricOpen = ref(false)
+const metricTitle = ref('')
+const metricHint = ref('')
+const metricColor = ref('#10b981')
+const metricTotal = ref(0)
+const metricItems = ref<any[]>([])
 
 function openBreakdown(metric: MetricKey) {
-  let deals: { deal: any; value: number; label?: string }[] = []
+  let deals: { deal: any; value: number; extra?: string; parts?: any[] }[] = []
   let title = ''
-  let suffix = ''
+  let hint = ''
+  let color = ''
+
+  const money = (n: number) => formatCurrency(Math.round(n || 0))
+  /** Сколько уже пришло по сделке: первоначальный взнос + оплаченные платежи. */
+  const receivedOf = (d: any) =>
+    (d.downPayment || 0) +
+    paymentsStore.allPaymentsFlat
+      .filter((p: any) => p.dealId === d.id && p.status === 'PAID')
+      .reduce((s: number, p: any) => s + p.amount, 0)
 
   switch (metric) {
     case 'invested':
-      title = 'Инвестировано'
-      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.purchasePrice }))
+      title = 'Инвестировано в товар'
+      hint = 'Сколько денег потрачено на закупку товара по всем сделкам.'
+      color = '#3b82f6'
+      deals = dealsStore.investorDeals.map((d: any) => ({
+        deal: d, value: d.purchasePrice,
+        parts: [
+          { label: 'продано за', value: money(d.totalPrice) },
+          { label: 'наценка', value: money(d.markup) },
+          { label: 'вернулось', value: money(receivedOf(d)) },
+        ],
+      }))
       break
+
     case 'revenue':
       title = 'Общий оборот'
-      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.totalPrice }))
+      hint = 'Сколько всего должны заплатить клиенты по всем сделкам — закупка вместе с наценкой.'
+      color = '#0ea5e9'
+      deals = dealsStore.investorDeals.map((d: any) => ({
+        deal: d, value: d.totalPrice,
+        parts: [
+          { label: 'закупка', value: money(d.purchasePrice) },
+          { label: 'наценка', value: money(d.markup) },
+          { label: 'оплачено', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+        ],
+      }))
       break
+
     case 'profit':
-      title = 'Прибыль'
-      deals = dealsStore.investorDeals.map(d => ({ deal: d, value: d.markup, label: `${d.markupPercent}%` }))
+      title = 'Наценка по сделкам'
+      hint = 'Наценка по каждой сделке: цена продажи минус закупка. Это доход до вычета доли со-инвесторов.'
+      color = '#059669'
+      deals = dealsStore.investorDeals.map((d: any) => ({
+        deal: d, value: d.markup,
+        parts: [
+          { label: 'закупка', value: money(d.purchasePrice) },
+          { label: 'цена продажи', value: money(d.totalPrice) },
+          { label: 'оплачено', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+        ],
+      }))
       break
+
     case 'remaining':
       title = 'Ожидается к получению'
-      deals = dealsStore.activeDeals.map(d => ({ deal: d, value: d.remainingAmount }))
+      hint = 'Сколько клиенты ещё должны заплатить по активным сделкам.'
+      color = '#f59e0b'
+      deals = dealsStore.activeDeals.map((d: any) => ({
+        deal: d, value: d.remainingAmount,
+        parts: [
+          { label: 'всего по сделке', value: money(d.totalPrice) },
+          { label: 'уже получено', value: money(receivedOf(d)) },
+          { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+        ],
+      }))
       break
-    case 'monthly':
-      title = 'Доход / мес'
-      deals = dealsStore.activeDeals
-        .filter(d => d.numberOfPayments > 0)
-        .map(d => ({ deal: d, value: Math.round(d.totalPrice / d.numberOfPayments), label: `${d.numberOfPayments} мес` }))
+
+    case 'received':
+      title = 'Получено'
+      hint = 'Деньги, которые клиенты уже отдали: первоначальные взносы и оплаченные платежи.'
+      color = '#10b981'
+      deals = dealsStore.investorDeals.map((d: any) => ({
+        deal: d, value: receivedOf(d),
+        parts: [
+          { label: 'всего по сделке', value: money(d.totalPrice) },
+          { label: 'осталось', value: money(d.remainingAmount) },
+          { label: 'взнос', value: money(d.downPayment || 0) },
+          { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+        ],
+      }))
       break
+
+    case 'earned': {
+      title = 'Заработано'
+      hint =
+        'Ваш доход по деньгам, которые клиенты уже отдали. В каждом платеже есть ' +
+        'доля наценки — она и складывается тут. Доля со-инвесторов уже вычтена.'
+      color = '#047857'
+      deals = earnedDeals.value.map((d: any) => {
+        const got = receivedOf(d)
+        const ci =
+          (ciProfitByDownPayment.value[d.id] ?? 0) +
+          paymentsStore.allPaymentsFlat
+            .filter((p: any) => p.dealId === d.id && p.status === 'PAID')
+            .reduce((s: number, p: any) => s + (ciProfitByPayment.value[p.id] ?? 0), 0)
+        return {
+          deal: d, value: dealEarnedNet(d),
+          parts: [
+            { label: 'получено', value: money(got) },
+            { label: 'наценка по сделке', value: money(d.markup) },
+            ...(ci > 0 ? [{ label: 'со-инвесторам', value: money(ci) }] : []),
+            { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+          ],
+        }
+      })
+      break
+    }
+
     case 'roi':
-      title = 'ROI'
-      suffix = '%'
+      title = 'Доходность сделок'
+      hint = 'Сколько наценки приносит каждый вложенный рубль — наценка относительно закупки.'
+      color = '#059669'
       deals = dealsStore.investorDeals
-        .filter(d => d.purchasePrice > 0)
-        .map(d => ({ deal: d, value: Math.round((d.markup / d.purchasePrice) * 1000) / 10, label: `${formatCurrency(d.markup)} / ${formatCurrency(d.purchasePrice)}` }))
+        .filter((d: any) => d.purchasePrice > 0)
+        .map((d: any) => ({
+          deal: d,
+          value: Math.round((d.markup / d.purchasePrice) * 1000) / 10,
+          parts: [
+            { label: 'закупка', value: money(d.purchasePrice) },
+            { label: 'наценка', value: money(d.markup) },
+          ],
+        }))
       break
-    case 'overdue':
+
+    case 'overdue': {
       title = 'Просроченные платежи'
-      const byDeal = new Map<string, { deal: any; value: number }>()
+      hint = 'Платежи, срок которых уже прошёл, а деньги не поступили.'
+      color = '#ef4444'
+      const byDeal = new Map<string, { deal: any; value: number; count: number; oldest: string }>()
       for (const p of paymentsStore.overduePayments) {
         const deal = dealsStore.getDeal(p.dealId)
-        const existing = byDeal.get(p.dealId)
-        if (existing) {
-          existing.value += p.amount
+        const cur = byDeal.get(p.dealId)
+        if (cur) {
+          cur.value += p.amount
+          cur.count += 1
+          if (p.dueDate < cur.oldest) cur.oldest = p.dueDate
         } else {
-          byDeal.set(p.dealId, { deal, value: p.amount })
+          byDeal.set(p.dealId, { deal, value: p.amount, count: 1, oldest: p.dueDate })
         }
       }
-      deals = [...byDeal.values()]
+      deals = [...byDeal.values()].map((x) => ({
+        deal: x.deal, value: x.value,
+        parts: [
+          { label: 'платежей', value: `${x.count}` },
+          { label: 'с', value: formatDate(x.oldest) },
+          ...(x.deal ? [{ label: 'остаток долга', value: money(x.deal.remainingAmount) }] : []),
+        ],
+      }))
       break
+    }
   }
 
-  breakdownDeals.value = deals.sort((a, b) => b.value - a.value)
-  breakdownTotal.value = deals.reduce((s, d) => s + d.value, 0)
-  breakdownTitle.value = title
-  breakdownSuffix.value = suffix
-  breakdownOpen.value = true
+  // ROI — проценты, остальное — рубли.
+  const isPercent = metric === 'roi'
+  metricItems.value = deals
+    .filter((d) => d.value !== 0)
+    .map((d) => ({
+      id: d.deal?.id ?? '',
+      title: d.deal?.productName || 'Сделка',
+      subtitle: dealClientName(d.deal),
+      value: isPercent ? d.value : Math.round(d.value),
+      suffix: isPercent ? '%' : undefined,
+      parts: d.parts,
+    }))
+  // Для процентов общий итог складывать бессмысленно — показываем средний.
+  metricTotal.value = isPercent
+    ? 0
+    : metricItems.value.reduce((sum, i) => sum + i.value, 0)
+  metricTitle.value = title
+  metricHint.value = hint
+  metricColor.value = color
+  metricOpen.value = true
+}
+
+/** Телефон клиента — по нему обычно и звонят из этих таблиц. */
+function dealClientPhone(deal?: any): string {
+  if (!deal) return ''
+  const raw = deal.client?.phone || deal.clientProfile?.phone || deal.externalClientPhone
+  return raw ? formatPhone(raw) : ''
+}
+
+/** Сколько по сделке уже получено: первоначальный взнос + оплаченные платежи. */
+function dealReceived(deal: any): number {
+  return (
+    (deal.downPayment || 0) +
+    paymentsStore.allPaymentsFlat
+      .filter((p: any) => p.dealId === deal.id && p.status === 'PAID')
+      .reduce((s: number, p: any) => s + p.amount, 0)
+  )
+}
+
+/**
+ * Ближайший неоплаченный платёж по сделке. Не getNextPayment из стора: тот
+ * берёт первый PENDING и проскакивает просрочку, а именно она тут важнее всего.
+ */
+function nextPaymentOf(dealId: string) {
+  return paymentsStore
+    .getPaymentsForDeal(dealId)
+    .filter((p: any) => p.status === 'PENDING' || p.status === 'OVERDUE')
+    .sort((a: any, b: any) => a.dueDate.localeCompare(b.dueDate))[0]
 }
 
 const AVATAR_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
@@ -172,61 +422,29 @@ function getAvatarColor(name?: string) {
       <v-icon icon="mdi-chevron-right" size="20" style="color: rgba(var(--v-theme-on-surface), 0.3);" />
     </div>
 
-    <!-- Hero + Quick Actions -->
-    <div class="hero-row mb-6">
-      <div class="qa-sidebar">
-        <button class="qa-mini" @click="router.push('/create-deal')">
-          <v-icon icon="mdi-handshake" size="18" style="color: #047857;" />
-          <span>Сделка</span>
-        </button>
-        <button class="qa-mini" @click="router.push('/calculator')">
-          <v-icon icon="mdi-calculator" size="18" style="color: #f59e0b;" />
-          <span>Расчёт</span>
-        </button>
-        <button class="qa-mini" @click="router.push('/notifications')" style="position: relative;">
-          <v-icon icon="mdi-bell-outline" size="18" style="color: #ef4444;" />
-          <span>Уведомл.</span>
-          <div v-if="notificationsStore.unreadCount" class="qa-badge">{{ notificationsStore.unreadCount }}</div>
-        </button>
-        <button class="qa-mini" @click="router.push('/broadcasts')" title="Рассылки и напоминания">
-          <v-icon icon="mdi-whatsapp" size="18" style="color: #25d366;" />
-          <span>Рассылки</span>
-        </button>
-      </div>
-
-      <HeroSummary
-        show-analytics-link
-        show-locked-overlay
-        class="hero-card"
-        @metric="openBreakdown($event as MetricKey)"
-      />
-
-    </div>
+    <!-- Общая сводка на всю ширину -->
+    <HeroSummary
+      show-analytics-link
+      show-locked-overlay
+      :earned-net="earnedNet"
+      class="hero-card mb-6"
+      @metric="openBreakdown($event as MetricKey)"
+    />
 
     <!-- KPI Cards (horizontal) -->
     <div class="dash-section-title">Ключевые показатели</div>
     <div class="kpi-row mb-6">
-      <div class="kpi-card kpi-clickable" @click="openBreakdown('invested')">
-        <div class="kpi-icon-wrap" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
-          <v-icon icon="mdi-cash-multiple" size="20" />
+      <div class="kpi-card kpi-clickable" @click="router.push('/deals')">
+        <div class="kpi-icon-wrap" style="background: rgba(100, 116, 139, 0.12); color: #64748b;">
+          <v-icon icon="mdi-briefcase-outline" size="20" />
         </div>
         <div class="kpi-info">
-          <div class="kpi-value">{{ formatCurrencyShort(dealsStore.totalInvested) }}</div>
-          <div class="kpi-label">Инвестировано</div>
+          <div class="kpi-value">{{ dealsStore.investorDeals.length }}</div>
+          <div class="kpi-label">Всего сделок</div>
         </div>
       </div>
 
-      <div class="kpi-card kpi-clickable" @click="openBreakdown('monthly')">
-        <div class="kpi-icon-wrap" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
-          <v-icon icon="mdi-calendar-month" size="20" />
-        </div>
-        <div class="kpi-info">
-          <div class="kpi-value">{{ formatCurrencyShort(dealsStore.monthlyIncome) }}</div>
-          <div class="kpi-label">Доход / мес</div>
-        </div>
-      </div>
-
-      <div class="kpi-card">
+      <div class="kpi-card kpi-clickable" @click="router.push('/deals')">
         <div class="kpi-icon-wrap" style="background: rgba(14, 165, 233, 0.1); color: #0ea5e9;">
           <v-icon icon="mdi-briefcase-check" size="20" />
         </div>
@@ -236,7 +454,7 @@ function getAvatarColor(name?: string) {
         </div>
       </div>
 
-      <div class="kpi-card">
+      <div class="kpi-card kpi-clickable" @click="router.push('/deals')">
         <div class="kpi-icon-wrap" style="background: rgba(22, 163, 74, 0.1); color: #16a34a;">
           <v-icon icon="mdi-check-circle" size="20" />
         </div>
@@ -246,13 +464,52 @@ function getAvatarColor(name?: string) {
         </div>
       </div>
 
-      <div class="kpi-card">
-        <div class="kpi-icon-wrap" :style="{ background: paymentHealth >= 90 ? 'rgba(4, 120, 87, 0.1)' : 'rgba(245, 158, 11, 0.1)', color: paymentHealth >= 90 ? '#047857' : '#f59e0b' }">
-          <v-icon icon="mdi-heart-pulse" size="20" />
+      <div class="kpi-card kpi-clickable" @click="router.push('/clients')">
+        <div class="kpi-icon-wrap" style="background: rgba(139, 92, 246, 0.1); color: #8b5cf6;">
+          <v-icon icon="mdi-account-group" size="20" />
         </div>
         <div class="kpi-info">
-          <div class="kpi-value">{{ paymentHealth }}%</div>
-          <div class="kpi-label">Своевременность</div>
+          <div class="kpi-value">{{ clientsCount }}</div>
+          <div class="kpi-label">Клиентов</div>
+        </div>
+      </div>
+
+      <div class="kpi-card kpi-clickable" @click="router.push('/clients')">
+        <div class="kpi-icon-wrap" style="background: rgba(236, 72, 153, 0.1); color: #ec4899;">
+          <v-icon icon="mdi-account-clock-outline" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value">{{ activeClientsCount }}</div>
+          <div class="kpi-label">С активными сделками</div>
+        </div>
+      </div>
+
+      <!-- Инвесторы и сотрудники — только когда они есть -->
+      <div
+        v-if="investorsCount"
+        class="kpi-card kpi-clickable"
+        @click="router.push('/co-investors')"
+      >
+        <div class="kpi-icon-wrap" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
+          <v-icon icon="mdi-handshake-outline" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value">{{ investorsCount }}</div>
+          <div class="kpi-label">Со-инвесторов</div>
+        </div>
+      </div>
+
+      <div
+        v-if="staffCount"
+        class="kpi-card kpi-clickable"
+        @click="router.push('/staff')"
+      >
+        <div class="kpi-icon-wrap" style="background: rgba(6, 182, 212, 0.1); color: #06b6d4;">
+          <v-icon icon="mdi-account-key" size="20" />
+        </div>
+        <div class="kpi-info">
+          <div class="kpi-value">{{ staffCount }}</div>
+          <div class="kpi-label">Сотрудников</div>
         </div>
       </div>
 
@@ -265,25 +522,15 @@ function getAvatarColor(name?: string) {
           <div class="kpi-label">Просрочено</div>
         </div>
       </div>
-
-      <div v-if="isCapitalSet && capital" class="kpi-card kpi-clickable" @click="router.push('/cashboxes')">
-        <div class="kpi-icon-wrap" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
-          <v-icon icon="mdi-wallet-outline" size="20" />
-        </div>
-        <div class="kpi-info">
-          <div class="kpi-value" style="color: #7c3aed;">{{ formatCurrencyShort(capital.availableCapital) }}</div>
-          <div class="kpi-label">Доступный капитал</div>
-        </div>
-      </div>
     </div>
 
-    <!-- Upcoming Payments + Active Deals side by side -->
+    <!-- Ближайшие платежи и активные сделки — таблицами, друг под другом -->
     <div class="dash-section-title">Активность</div>
     <v-row>
-      <!-- Upcoming Payments -->
-      <v-col cols="12" lg="6">
-        <v-card rounded="lg" elevation="0" border>
-          <div class="d-flex align-center justify-space-between pa-5 pb-0">
+      <!-- Ближайшие платежи -->
+      <v-col cols="12">
+        <v-card rounded="lg" elevation="0" border class="h-100">
+          <div class="d-flex align-center justify-space-between pa-5 pb-3">
             <div>
               <div class="chart-title">Ближайшие платежи</div>
               <div class="chart-subtitle">{{ upcomingPayments.length }} ожидаемых</div>
@@ -294,31 +541,62 @@ function getAvatarColor(name?: string) {
             </button>
           </div>
 
-          <div v-if="upcomingPayments.length" class="pa-4">
-            <div
-              v-for="item in upcomingPayments"
-              :key="item.payment.id"
-              class="payment-row payment-row--clickable"
-              :class="{ 'deal-locked-dim': isDealLocked(item.deal) }"
-              @click="item.deal && router.push(`/deals/${item.deal.id}`)"
-            >
-              <div class="payment-avatar" :style="{ background: getAvatarColor(dealClientName(item.deal)) }">
-                {{ getInitial(dealClientName(item.deal)) }}
-              </div>
-              <div class="payment-info">
-                <div class="payment-product">{{ item.deal?.productName || 'Товар' }}<span v-if="isDealLocked(item.deal)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
-                <div class="payment-meta">{{ dealClientName(item.deal) }} · {{ formatDateShort(item.payment.dueDate) }}</div>
-              </div>
-              <div class="payment-right">
-                <div class="payment-amount">{{ formatCurrency(item.payment.amount) }}</div>
-                <div
-                  class="payment-badge"
-                  :class="item.daysRemaining >= 0 ? 'payment-badge--ok' : 'payment-badge--overdue'"
+          <div v-if="upcomingPayments.length" class="dt-scroll">
+            <table class="dt">
+              <thead>
+                <tr>
+                  <th class="dt-th">Сделка</th>
+                  <th class="dt-th">Клиент</th>
+                  <th class="dt-th dt-th--num">Платёж</th>
+                  <th class="dt-th dt-th--num">Сумма</th>
+                  <th class="dt-th dt-th--num">Долг после оплаты</th>
+                  <th class="dt-th dt-th--num">Срок</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="item in upcomingPayments"
+                  :key="item.payment.id"
+                  class="dt-row"
+                  :class="{ 'deal-locked-dim': isDealLocked(item.deal) }"
+                  @click="item.deal && router.push(`/deals/${item.deal.id}`)"
                 >
-                  {{ item.daysRemaining >= 0 ? `через ${item.daysRemaining} дн` : `просрочен ${Math.abs(item.daysRemaining)} дн` }}
-                </div>
-              </div>
-            </div>
+                  <td class="dt-td">
+                    <span class="dt-name">{{ item.deal?.productName || 'Товар' }}</span>
+                    <span v-if="isDealLocked(item.deal)" class="deal-locked-chip ml-2">
+                      <v-icon icon="mdi-lock-outline" />Недоступно
+                    </span>
+                    <div v-if="item.deal" class="dt-sub">№ {{ item.deal.dealNumber }}</div>
+                  </td>
+                  <td class="dt-td">
+                    <div class="dt-client">{{ dealClientName(item.deal) }}</div>
+                    <div v-if="dealClientPhone(item.deal)" class="dt-sub">
+                      {{ dealClientPhone(item.deal) }}
+                    </div>
+                  </td>
+                  <td class="dt-td dt-td--num">
+                    {{ item.payment.number }}<span class="dt-muted"> из {{ item.deal?.numberOfPayments ?? '—' }}</span>
+                  </td>
+                  <td class="dt-td dt-td--num dt-strong">{{ formatCurrency(item.payment.amount) }}</td>
+                  <!-- Остаток по сделке ПОСЛЕ этого платежа: сразу видно,
+                       закрывает ли он сделку или это середина графика. -->
+                  <td class="dt-td dt-td--num dt-muted">
+                    {{ formatCurrency(item.payment.remainingAfter) }}
+                  </td>
+                  <td class="dt-td dt-td--num">
+                    <span
+                      class="dt-badge"
+                      :class="item.daysRemaining >= 0 ? 'dt-badge--ok' : 'dt-badge--overdue'"
+                    >
+                      {{ item.daysRemaining >= 0
+                        ? `через ${item.daysRemaining} дн`
+                        : `просрочен ${Math.abs(item.daysRemaining)} дн` }}
+                    </span>
+                    <div class="dt-sub">{{ formatDateShort(item.payment.dueDate) }}</div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
 
           <div v-else class="pa-8 text-center text-medium-emphasis text-body-2">
@@ -327,10 +605,10 @@ function getAvatarColor(name?: string) {
         </v-card>
       </v-col>
 
-      <!-- Active Deals -->
-      <v-col cols="12" lg="6">
-        <v-card rounded="lg" elevation="0" border>
-          <div class="d-flex align-center justify-space-between pa-5 pb-0">
+      <!-- Активные сделки -->
+      <v-col cols="12">
+        <v-card rounded="lg" elevation="0" border class="h-100">
+          <div class="d-flex align-center justify-space-between pa-5 pb-3">
             <div>
               <div class="chart-title">Активные сделки</div>
               <div class="chart-subtitle">{{ dealsStore.activeDeals.length }} сделок в работе</div>
@@ -341,40 +619,61 @@ function getAvatarColor(name?: string) {
             </button>
           </div>
 
-          <div v-if="topActiveDeals.length" class="pa-4">
-            <div
-              v-for="deal in topActiveDeals"
-              :key="deal.id"
-              class="deal-row deal-row--clickable"
-              :class="{ 'deal-locked-dim': isDealLocked(deal) }"
-              @click="router.push(`/deals/${deal.id}`)"
-            >
-              <v-avatar size="44" rounded="lg" class="deal-photo">
-                <v-img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" cover />
-                <v-icon v-else icon="mdi-package-variant-closed" size="22" color="grey" />
-              </v-avatar>
-              <div class="deal-info">
-                <div class="deal-product">{{ deal.productName }}<span v-if="isDealLocked(deal)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
-                <div class="deal-meta">{{ dealClientName(deal) }}</div>
-              </div>
-              <div class="deal-progress-col">
-                <div class="deal-progress-label">{{ deal.paidPayments }} / {{ deal.numberOfPayments }}</div>
-                <v-progress-linear
-                  :model-value="deal.numberOfPayments > 0 ? (deal.paidPayments / deal.numberOfPayments) * 100 : 0"
-                  color="primary"
-                  rounded
-                  height="4"
-                  style="width: 100px;"
-                />
-              </div>
-              <div class="deal-amount">{{ formatCurrency(deal.remainingAmount) }}</div>
-              <div
-                class="deal-status-badge"
-                :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
-              >
-                {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
-              </div>
-            </div>
+          <div v-if="topActiveDeals.length" class="dt-scroll">
+            <table class="dt">
+              <thead>
+                <tr>
+                  <th class="dt-th">Сделка</th>
+                  <th class="dt-th">Клиент</th>
+                  <th class="dt-th dt-th--num">Сумма сделки</th>
+                  <th class="dt-th dt-th--num">Получено</th>
+                  <th class="dt-th dt-th--num">Остаток</th>
+                  <th class="dt-th dt-th--num">Платежи</th>
+                  <th class="dt-th dt-th--num">Следующий платёж</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="row in topActiveDeals"
+                  :key="row.deal.id"
+                  class="dt-row"
+                  :class="{ 'deal-locked-dim': isDealLocked(row.deal) }"
+                  @click="router.push(`/deals/${row.deal.id}`)"
+                >
+                  <td class="dt-td">
+                    <span class="dt-name">{{ row.deal.productName }}</span>
+                    <span v-if="isDealLocked(row.deal)" class="deal-locked-chip ml-2">
+                      <v-icon icon="mdi-lock-outline" />Недоступно
+                    </span>
+                    <div class="dt-sub">№ {{ row.deal.dealNumber }}</div>
+                  </td>
+                  <td class="dt-td">
+                    <div class="dt-client">{{ dealClientName(row.deal) }}</div>
+                    <div v-if="dealClientPhone(row.deal)" class="dt-sub">{{ dealClientPhone(row.deal) }}</div>
+                  </td>
+                  <td class="dt-td dt-td--num">{{ formatCurrency(row.deal.totalPrice) }}</td>
+                  <!-- Получено + Остаток в сумме дают сумму сделки — цифры
+                       сходятся прямо в строке, ничего не надо пересчитывать. -->
+                  <td class="dt-td dt-td--num dt-pos">{{ formatCurrency(row.received) }}</td>
+                  <td class="dt-td dt-td--num dt-strong">{{ formatCurrency(row.deal.remainingAmount) }}</td>
+                  <td class="dt-td dt-td--num">
+                    <div>{{ row.deal.paidPayments }} <span class="dt-muted">из {{ row.deal.numberOfPayments }}</span></div>
+                    <div class="dt-track">
+                      <div class="dt-fill" :style="{ width: row.progress + '%' }" />
+                    </div>
+                  </td>
+                  <td class="dt-td dt-td--num">
+                    <template v-if="row.next">
+                      <div class="dt-strong">{{ formatCurrency(row.next.amount) }}</div>
+                      <div class="dt-sub" :class="{ 'dt-sub--overdue': row.next.status === 'OVERDUE' }">
+                        {{ formatDateShort(row.next.dueDate) }}
+                      </div>
+                    </template>
+                    <span v-else class="dt-muted">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
 
           <div v-else class="pa-8 text-center text-medium-emphasis text-body-2">
@@ -386,49 +685,15 @@ function getAvatarColor(name?: string) {
     </template>
 
     <!-- Metric Breakdown Dialog -->
-    <v-dialog v-model="breakdownOpen" max-width="560" scrollable :fullscreen="isMobile">
-      <v-card rounded="lg" class="breakdown-card">
-        <v-card-title class="d-flex align-center justify-space-between pa-5 pb-3">
-          <span class="text-h6">{{ breakdownTitle }}</span>
-          <v-btn icon variant="text" size="small" @click="breakdownOpen = false">
-            <v-icon icon="mdi-close" />
-          </v-btn>
-        </v-card-title>
-
-        <v-divider />
-
-        <v-card-text class="pa-0 breakdown-body">
-          <div v-if="!breakdownDeals.length" class="pa-8 text-center text-medium-emphasis">
-            Нет данных
-          </div>
-
-          <div v-for="(item, i) in breakdownDeals" :key="i" class="breakdown-row">
-            <div class="breakdown-avatar" :style="{ background: getAvatarColor(item.deal?.productName) }">
-              {{ getInitial(item.deal?.productName) }}
-            </div>
-            <div class="breakdown-info">
-              <div class="breakdown-product">{{ item.deal?.productName || 'Товар' }}</div>
-              <div class="breakdown-meta">{{ userName(item.deal?.client) || item.deal?.externalClientName || '—' }}</div>
-            </div>
-            <div class="breakdown-right">
-              <div class="breakdown-value">
-                {{ breakdownSuffix ? item.value + breakdownSuffix : formatCurrency(item.value) }}
-              </div>
-              <div v-if="item.label" class="breakdown-label">{{ item.label }}</div>
-            </div>
-          </div>
-        </v-card-text>
-
-        <v-divider />
-
-        <div class="breakdown-footer">
-          <span class="text-body-2 text-medium-emphasis">Итого ({{ breakdownDeals.length }} {{ breakdownDeals.length === 1 ? 'сделка' : breakdownDeals.length < 5 ? 'сделки' : 'сделок' }})</span>
-          <span class="text-h6 font-weight-bold">
-            {{ breakdownSuffix ? (Math.round(breakdownTotal * 10) / 10) + breakdownSuffix : formatCurrency(breakdownTotal) }}
-          </span>
-        </div>
-      </v-card>
-    </v-dialog>
+    <!-- Расшифровка показателя — общий компонент с аналитикой и отчётами -->
+    <MetricDetailDialog
+      v-model="metricOpen"
+      :title="metricTitle"
+      :hint="metricHint"
+      :total="metricTotal"
+      :color="metricColor"
+      :items="metricItems"
+    />
 
   </div>
 </template>
@@ -445,59 +710,58 @@ function getAvatarColor(name?: string) {
   padding-left: 2px;
 }
 
-/* Hero Row */
-.hero-row {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
+/* ── Таблицы блоков активности ──
+   Тот же табличный вид, что в разделах сделок и отчётов: заголовки колонок,
+   строки-ссылки, числа справа. Раньше это были списки-карточки, которые
+   выбивались из остального интерфейса. */
+.dt-scroll { overflow-x: auto; padding: 0 8px 8px; }
+.dt { width: 100%; border-collapse: collapse; white-space: nowrap; }
+.dt-th {
+  text-align: left; padding: 8px 12px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.09);
 }
-
-.hero-card {
-  flex: 1;
+.dt-th--num { text-align: right; }
+.dt-row { cursor: pointer; }
+.dt-row:hover .dt-td { background: rgba(var(--v-theme-on-surface), 0.03); }
+.dt-td {
+  padding: 11px 12px; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
 }
-
-/* Quick Actions Sidebar */
-.qa-sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.dt-row:last-child .dt-td { border-bottom: none; }
+.dt-td--num { text-align: right; }
+.dt-name {
+  font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.9);
+  max-width: 210px; display: inline-block; vertical-align: middle;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-
-.qa-mini {
-  width: 72px;
-  padding: 10px 4px;
-  border-radius: 14px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  background: rgba(var(--v-theme-surface), 1);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  cursor: pointer;
-  transition: all 0.15s;
-  position: relative;
+.dt-muted { color: rgba(var(--v-theme-on-surface), 0.5); }
+.dt-pos { color: #10b981; font-weight: 600; }
+.dt-client {
+  max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 0.75);
 }
-
-.qa-mini span {
-  font-size: 10px;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-  white-space: nowrap;
+.dt-sub--overdue { color: #ef4444; }
+.dt-strong { font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.9); }
+.dt-sub { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4); margin-top: 2px; }
+.dt-badge {
+  display: inline-block; font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 6px;
 }
-
-.qa-mini:hover {
-  border-color: rgba(var(--v-theme-primary), 0.3);
-  background: rgba(var(--v-theme-primary), 0.04);
+.dt-badge--ok { color: #10b981; background: rgba(16, 185, 129, 0.1); }
+.dt-badge--overdue { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+.dt-track {
+  width: 84px; height: 4px; margin-left: auto; margin-top: 5px;
+  border-radius: 3px; background: rgba(var(--v-theme-on-surface), 0.08);
+  overflow: hidden;
 }
+.dt-fill { height: 100%; background: rgb(var(--v-theme-primary)); border-radius: 3px; }
 
-.qa-mini:hover span {
-  color: rgb(var(--v-theme-primary));
-}
-
-@media (max-width: 960px) {
-  .hero-row { flex-direction: column; }
-  .qa-sidebar { flex-direction: row; justify-content: center; }
+@media (max-width: 600px) {
+  .dt-name { max-width: 130px; }
+  .dt-td, .dt-th { padding: 9px 8px; }
 }
 
 /* KPI Row (horizontal) */
@@ -540,8 +804,8 @@ function getAvatarColor(name?: string) {
 
 .kpi-label {
   font-size: 12px;
+  line-height: 1.25;
   color: rgba(var(--v-theme-on-surface), 0.5);
-  white-space: nowrap;
 }
 
 /* Chart title (used in activity section) */
@@ -576,72 +840,7 @@ function getAvatarColor(name?: string) {
   background: rgba(var(--v-theme-primary), 0.15);
 }
 
-/* Payment rows */
-.payment-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: 10px;
-  transition: background 0.15s;
-}
-
 .payment-row--clickable { cursor: pointer; }
-.payment-row:hover {
-  background: rgba(var(--v-theme-on-surface), 0.03);
-}
-
-.payment-avatar {
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.payment-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.payment-product {
-  font-size: 14px;
-  font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.payment-meta {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-
-.payment-right {
-  text-align: right;
-  flex-shrink: 0;
-}
-
-.payment-amount {
-  font-size: 14px;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-
-.payment-badge {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 6px;
-  margin-top: 2px;
-}
 
 .payment-badge--ok {
   background: rgba(4, 120, 87, 0.1);
@@ -653,93 +852,8 @@ function getAvatarColor(name?: string) {
   color: #ef4444;
 }
 
-/* Deal rows */
-.deal-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: 10px;
-  transition: background 0.15s;
-}
-
 .deal-row--clickable { cursor: pointer; }
-.deal-row:hover {
-  background: rgba(var(--v-theme-on-surface), 0.03);
-}
 
-.deal-photo {
-  flex-shrink: 0;
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-
-.deal-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.deal-product {
-  font-size: 14px;
-  font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.deal-meta {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-
-.deal-progress-col {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.deal-progress-label {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-
-.deal-amount {
-  font-size: 14px;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-.deal-status-badge {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 6px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-/* (quick actions styles moved to .qa-sidebar / .qa-mini above) */
-
-.qa-badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 16px;
-  height: 16px;
-  border-radius: 8px;
-  background: #ef4444;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 4px;
-}
 
 
 .kpi-clickable {
@@ -751,161 +865,4 @@ function getAvatarColor(name?: string) {
   background: rgba(var(--v-theme-primary), 0.04);
 }
 
-/* Breakdown dialog */
-.breakdown-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 20px;
-  transition: background 0.15s;
-}
-.breakdown-row:hover {
-  background: rgba(var(--v-theme-on-surface), 0.03);
-}
-.breakdown-avatar {
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-weight: 600;
-  font-size: 14px;
-}
-.breakdown-info {
-  flex: 1;
-  min-width: 0;
-}
-.breakdown-product {
-  font-size: 14px;
-  font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.breakdown-meta {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.breakdown-right {
-  text-align: right;
-  flex-shrink: 0;
-}
-.breakdown-value {
-  font-size: 14px;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.breakdown-label {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.4);
-}
-.breakdown-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-}
-.breakdown-body {
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-/* Dark mode */
-
-.dark .kpi-card {
-  background: #1e1e2e;
-  border-color: #2e2e42;
-}
-.dark .qa-mini {
-  background: #1e1e2e;
-  border-color: #2e2e42;
-}
-.dark .payment-summary-card {
-  background: #1e1e2e;
-  border-color: #2e2e42;
-}
-.dark .payment-badge--ok {
-  background: rgba(4, 120, 87, 0.15); color: #34d399;
-}
-.dark .payment-badge--overdue {
-  background: rgba(239, 68, 68, 0.15); color: #f87171;
-}
-
-@media (max-width: 960px) {
-  .hero-card { min-width: 0; }
-  .deal-progress-col, .deal-amount { display: none; }
-}
-
-/* Capital banner */
-.dash-capital-banner {
-  display: flex; align-items: center; gap: 14px;
-  padding: 14px 18px; border-radius: 12px;
-  background: linear-gradient(135deg, rgba(124, 58, 237, 0.06) 0%, rgba(124, 58, 237, 0.02) 100%);
-  border: 1px solid rgba(124, 58, 237, 0.12);
-  cursor: pointer; transition: all 0.15s;
-}
-.dash-capital-banner:hover {
-  background: linear-gradient(135deg, rgba(124, 58, 237, 0.1) 0%, rgba(124, 58, 237, 0.04) 100%);
-  border-color: rgba(124, 58, 237, 0.2);
-}
-.dash-capital-banner-icon {
-  width: 40px; height: 40px; min-width: 40px; border-radius: 10px;
-  background: rgba(124, 58, 237, 0.1); color: #7c3aed;
-  display: flex; align-items: center; justify-content: center;
-}
-.dash-capital-banner-content { flex: 1; }
-.dash-capital-banner-title {
-  font-size: 14px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.8);
-}
-.dash-capital-banner-text {
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
-  margin-top: 1px;
-}
-.dark .dash-capital-banner {
-  background: linear-gradient(135deg, rgba(124, 58, 237, 0.1) 0%, rgba(124, 58, 237, 0.04) 100%);
-  border-color: rgba(124, 58, 237, 0.2);
-}
-
-/* ───── Mobile ───── */
-@media (max-width: 599px) {
-  /* KPI карточки — по две в ряд (5 карточек → 2-2-1). */
-  .kpi-row {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
-  }
-  .kpi-card { padding: 12px; gap: 10px; }
-  .kpi-icon-wrap {
-    width: 36px; height: 36px; min-width: 36px;
-    border-radius: 9px;
-  }
-  .kpi-value { font-size: 16px; }
-  .kpi-label { font-size: 11px; white-space: normal; }
-
-  /* Banner про капитал — компактнее. */
-  .dash-capital-banner {
-    padding: 12px 14px;
-    gap: 10px;
-  }
-}
-
-/* ───── Mobile: breakdown dialog full-height ───── */
-@media (max-width: 768px) {
-  .breakdown-card {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    border-radius: 0;
-  }
-  .breakdown-body {
-    max-height: none !important;
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-  .breakdown-footer { flex-shrink: 0; }
-}
 </style>

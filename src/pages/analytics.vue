@@ -4,13 +4,16 @@ import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatCurrencyShort, formatPercent, formatDate } from '@/utils/formatters'
 import { useRouter } from 'vue-router'
 import { userName, clientProfileName } from '@/types'
+import { attributionYearMonth, offMonthKind, localDateStr } from '@/utils/paymentAttribution'
+import { paymentProfit } from '@/utils/dealProfit'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useSubscription } from '@/composables/useSubscription'
 import { useCapital } from '@/composables/useCapital'
-import HeroSummary from '@/components/HeroSummary.vue'
+import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
 import { useCashBoxesStore } from '@/stores/cashboxes'
+import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 import type { CapitalSummary } from '@/types'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
@@ -26,8 +29,22 @@ const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const router = useRouter()
 const { isMobile } = useIsMobile()
+const authStore = useAuthStore()
 const { canAccess: canAccessFeature } = useSubscription()
 const hasCharts = computed(() => canAccessFeature('analyticsCharts'))
+
+// ── Вкладки «Обзор | Отчёты» ────────────────────────────────────────────
+// «Отчёты» — отдельное право (раздел показывает капитал, прибыль и доли
+// инвесторов) и тариф Бизнес+. Компонент грузим лениво: он ходит за своими
+// данными на сервер и не нужен, пока вкладку не открыли.
+const ReportsTab = defineAsyncComponent(() => import('@/components/reports/ReportsTab.vue'))
+const activeTab = ref<'overview' | 'reports'>('overview')
+// Кнопка выгрузки стоит в строке вкладок, а логика — внутри вкладки «Отчёты».
+// Дотягиваемся до неё через ref: дублировать сбор PDF здесь было бы хуже.
+const reportsTabRef = ref<any>(null)
+const canSeeReports = computed(
+  () => authStore.can('analytics.reports') && canAccessFeature('reports'),
+)
 
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
@@ -46,6 +63,9 @@ const scopedCapital = ref<CapitalSummary | null>(null)
 // Same partner-net logic as cashboxes / deal page (from PROFIT_ACCRUED journal).
 // Only PAID payments have a share — pending/overdue keep gross projection.
 const ciProfitByPayment = ref<Record<string, number>>({})
+// Доля со-инвесторов, начисленная с первоначальных взносов { dealId → Σ }.
+// У взносов нет строки графика, поэтому в карте по платежам их нет.
+const ciProfitByDownPayment = ref<Record<string, number>>({})
 
 async function fetchScopedCapital() {
   if (!selectedCashBoxId.value) {
@@ -96,31 +116,44 @@ const scopedAllDeals = computed(() =>
     : dealsStore.deals
 )
 
-const scopedTotalInvested = computed(() =>
-  scopedInvestorDeals.value.reduce((s, d) => s + d.purchasePrice, 0)
-)
-const scopedTotalRevenue = computed(() =>
-  scopedInvestorDeals.value.reduce((s, d) => s + d.totalPrice, 0)
-)
-const scopedTotalProfit = computed(() =>
-  scopedInvestorDeals.value.reduce((s, d) => s + d.markup, 0)
-)
-const scopedTotalRemaining = computed(() =>
-  scopedActiveDeals.value.reduce((s, d) => s + d.remainingAmount, 0)
-)
-const scopedMonthlyIncome = computed(() =>
-  scopedActiveDeals.value.reduce((s, d) => d.numberOfPayments > 0 ? s + d.totalPrice / d.numberOfPayments : s, 0)
-)
-
 // Build a Set of deal IDs in scope for fast payment lookup
 const scopedDealIds = computed(() => {
   if (!selectedCashBoxId.value) return null // null = no filter
   return new Set(scopedInvestorDeals.value.map((d: any) => d.id))
 })
 
+// Первоначальный взнос — это реально полученные деньги с долей наценки, и
+// касса его учитывает. Строкой графика он не является, поэтому в аналитику
+// раньше не попадал: доход расходился с кассой. Добавляем его как
+// синтетический «платёж №0» в месяце сделки (id с префиксом dp: — по нему
+// берётся доля со-инвесторов из отдельной карты).
+const DOWN_PAYMENT_PREFIX = 'dp:'
+const downPaymentPseudoPayments = computed(() => {
+  const rows: any[] = []
+  for (const d of dealsStore.investorDeals as any[]) {
+    const amount = d.downPayment || 0
+    if (amount <= 0) continue
+    if (d.status === 'CANCELLED' || d.deletedAt) continue
+    const date = d.dealDate || d.createdAt
+    if (!date) continue
+    rows.push({
+      id: `${DOWN_PAYMENT_PREFIX}${d.id}`,
+      dealId: d.id,
+      amount,
+      status: 'PAID',
+      paidAt: date,
+      dueDate: date,
+      deal: d,
+      isDownPayment: true,
+    })
+  }
+  return rows
+})
+
 const scopedAllPaymentsFlat = computed(() => {
-  if (!scopedDealIds.value) return paymentsStore.allPaymentsFlat
-  return paymentsStore.allPaymentsFlat.filter((p) => scopedDealIds.value!.has(p.dealId))
+  const all = [...paymentsStore.allPaymentsFlat, ...downPaymentPseudoPayments.value] as any[]
+  if (!scopedDealIds.value) return all
+  return all.filter((p) => scopedDealIds.value!.has(p.dealId))
 })
 const scopedPaidPayments = computed(() =>
   scopedAllPaymentsFlat.value.filter((p) => p.status === 'PAID')
@@ -131,15 +164,6 @@ const scopedPendingPayments = computed(() =>
 const scopedOverduePayments = computed(() =>
   scopedAllPaymentsFlat.value.filter((p) => p.status === 'OVERDUE')
 )
-
-// Totals for HeroSummary scope prop (only when filtered, otherwise pass undefined)
-const heroTotals = computed(() => selectedCashBoxId.value ? {
-  totalRemaining: scopedTotalRemaining.value,
-  totalRevenue: scopedTotalRevenue.value,
-  totalInvested: scopedTotalInvested.value,
-  totalProfit: scopedTotalProfit.value,
-  monthlyIncome: scopedMonthlyIncome.value,
-} : null)
 
 const selectedCashBox = computed(() =>
   selectedCashBoxId.value ? cashboxesStore.items.find((b) => b.id === selectedCashBoxId.value) ?? null : null
@@ -156,6 +180,9 @@ onMounted(async () => {
       api.get<Record<string, number>>('/finance/coinvestor-profit-by-payment')
         .then((m) => { ciProfitByPayment.value = m || {} })
         .catch(() => { ciProfitByPayment.value = {} }),
+      api.get<Record<string, number>>('/finance/coinvestor-profit-by-downpayment')
+        .then((m) => { ciProfitByDownPayment.value = m || {} })
+        .catch(() => { ciProfitByDownPayment.value = {} }),
       // Configured co-investor ratio per deal — for projecting pending payments.
       api.get<Record<string, number>>('/finance/deal-coinvestor-ratios')
         .then((m) => { dealCIRatio.value = m || {} })
@@ -186,6 +213,13 @@ function getMonthKeyFromStr(dateStr: string): string {
   return getMonthKey(new Date(year, month, 1))
 }
 
+// Ключ месяца УЧЁТА денег по платежу (PAID → месяц оплаты, иначе плановый срок).
+// Единое правило — в utils/paymentAttribution. Возвращает null для CLOSED_EARLY.
+function attrMonthKey(p: { status: string; paidAt?: string | null; dueDate: string }): string | null {
+  const ym = attributionYearMonth(p)
+  return ym ? getMonthKey(new Date(ym.year, ym.month, 1)) : null
+}
+
 function getLast6Months() {
   const months: Record<string, number> = {}
   const now = new Date()
@@ -207,36 +241,23 @@ function getNext6Months() {
 }
 
 // ── Profit calculation ──
-// Each payment carries a profit portion = amount × (margin / totalPrice).
-// "Margin" here is the FULL margin a partner earns on the deal:
-//   - With wholesalePrice set: (totalPrice − wholesalePrice) — includes
-//     both retail margin (purchase − wholesale) and installment markup.
-//   - Without wholesalePrice (legacy): just the markup, equivalent to
-//     the old `markupPercent / (100 + markupPercent)` formula.
-// Mirrors the server-side `dealTotalMargin` helper in /finance so all
-// "profit" numbers across the app come from the same source of truth.
+// Формула вынесена в utils/dealProfit.ts — она же используется на главной и
+// зеркалит SQL_MARGIN/SQL_SHARE в отчётах на бэкенде.
 function getDealForPayment(payment: any) {
   return dealsStore.getDeal(payment.dealId) || payment.deal
 }
 
 function getPaymentProfit(payment: { amount: number; dealId: string; deal?: any }) {
-  const deal = getDealForPayment(payment)
-  if (!deal || !deal.totalPrice) return 0
-
-  const hasWholesale = deal.wholesalePrice != null && deal.wholesalePrice > 0
-  if (hasWholesale) {
-    // Full margin: revenue − real cost. Equivalent to retail + markup.
-    const totalMargin = Math.max(0, deal.totalPrice - deal.wholesalePrice)
-    return payment.amount * (totalMargin / deal.totalPrice)
-  }
-
-  // Legacy fallback — preserves analytics for deals without wholesalePrice.
-  if (!deal.markupPercent) return 0
-  return payment.amount * (deal.markupPercent / (100 + deal.markupPercent))
+  return paymentProfit(payment.amount, getDealForPayment(payment))
 }
 
 // Co-investor share accrued on a payment (only for PAID payments). 0 if none.
-function getPaymentCIProfit(p: { id: string }) {
+function getPaymentCIProfit(p: { id: string; dealId?: string }) {
+  // Синтетический «платёж №0» (первоначальный взнос) — доля инвесторов лежит
+  // в отдельной карте по сделке, т.к. в журнале у неё нет paymentId.
+  if (p.id.startsWith(DOWN_PAYMENT_PREFIX)) {
+    return p.dealId ? ciProfitByDownPayment.value[p.dealId] ?? 0 : 0
+  }
   return ciProfitByPayment.value[p.id] ?? 0
 }
 
@@ -257,7 +278,10 @@ const dealCIRatio = ref<Record<string, number>>({})
 const paymentHealth = computed(() => {
   const paid = scopedPaidPayments.value
   if (!paid.length) return 100
-  const onTime = paid.filter(p => p.paidAt && new Date(p.paidAt) <= new Date(p.dueDate)).length
+  // Сравниваем КАЛЕНДАРНЫЕ даты: paidAt берём ЛОКАЛЬНО (как и месяц атрибуции —
+  // иначе на ночных оплатах метрика и бейдж «не в свой месяц» противоречат),
+  // dueDate — строкой.
+  const onTime = paid.filter(p => p.paidAt && localDateStr(p.paidAt) <= p.dueDate.slice(0, 10)).length
   return Math.round((onTime / paid.length) * 100)
 })
 
@@ -284,8 +308,9 @@ const thisMonthProfit = computed(() => {
   const thisYear = now.getFullYear()
   return scopedPaidPayments.value
     .filter(p => {
-      const { year: y, month: m } = parseDateStr(p.dueDate)
-      return m === thisMonth && y === thisYear
+      // Месяц учёта = месяц фактической оплаты (paidAt), а не планового срока.
+      const ym = attributionYearMonth(p)
+      return ym != null && ym.month === thisMonth && ym.year === thisYear
     })
     .reduce((s, p) => s + getPaymentProfit(p), 0)
 })
@@ -296,6 +321,8 @@ const profitDetailDialog = ref(false)
 const profitDetailMonth = ref<string | null>(null) // null = all time / all year
 const profitDetailMode = ref<'earned' | 'expected' | 'all'>('earned')
 const profitDetailYear = ref<number | null>(null) // null = default 6 months
+// Фильтр таблицы сделок: все / оплаченные / неоплаченные
+const dealFilter = ref<'all' | 'paid' | 'pending'>('all')
 
 interface DealProfit {
   dealId: string
@@ -315,6 +342,8 @@ interface DealProfit {
   paymentsCount: number
   paidCount: number
   pendingCount: number
+  earlyOffMonth: number
+  lateOffMonth: number
   status: string
 }
 
@@ -333,42 +362,37 @@ const profitMonthOptions = computed(() => {
 })
 
 const profitByDeal = computed(() => {
-  const mode = profitDetailMode.value
   const year = profitDetailYear.value
   const monthKey = profitDetailMonth.value
 
-  // Select source payments based on mode
-  let sourcePayments: typeof scopedAllPaymentsFlat.value
-  if (mode === 'all') {
-    sourcePayments = scopedAllPaymentsFlat.value
-  } else if (mode === 'expected') {
-    sourcePayments = scopedAllPaymentsFlat.value.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
-  } else {
-    sourcePayments = scopedPaidPayments.value
-  }
+  // Источник — всегда и оплаченные, и неоплаченные платежи периода; чем именно
+  // наполнять таблицу, решает фильтр dealFilter. Досрочно закрытые
+  // (CLOSED_EARLY, amount=0) денег не несут — исключаем.
+  const sourcePayments = scopedAllPaymentsFlat.value.filter(p => p.status !== 'CLOSED_EARLY')
 
-  // Filter by month and/or year (always by dueDate string — no timezone issues)
+  // Фильтр по месяцу/году УЧЁТА (PAID → месяц оплаты, PENDING/OVERDUE → срок).
+  // Единое правило с календарём и графиками — через attributionYearMonth.
   const paidPayments = sourcePayments.filter(p => {
-    if (!p.dueDate) return false
-    const { year: y, month: m } = parseDateStr(p.dueDate)
+    const ym = attributionYearMonth(p)
+    if (!ym) return false
 
-    // Filter by year if set (and no specific month selected = "whole year")
+    // Год без конкретного месяца = «весь год».
     if (year && !monthKey) {
-      return y === year
+      return ym.year === year
     }
 
-    // Filter by specific month key
+    // Конкретный месяц.
     if (monthKey) {
-      return getMonthKeyFromStr(p.dueDate) === monthKey
+      return getMonthKey(new Date(ym.year, ym.month, 1)) === monthKey
     }
 
-    return true // "За всё время" without year
+    return true // «За всё время» без года
   })
 
   // Group by deal
-  const dealMap: Record<string, { received: number; paidReceived: number; pendingReceived: number; profit: number; paidProfit: number; coInvestorProfit: number; pendingProfit: number; count: number; paidCount: number; pendingCount: number }> = {}
+  const dealMap: Record<string, { received: number; paidReceived: number; pendingReceived: number; profit: number; paidProfit: number; coInvestorProfit: number; pendingProfit: number; count: number; paidCount: number; pendingCount: number; earlyOffMonth: number; lateOffMonth: number }> = {}
   for (const p of paidPayments) {
-    if (!dealMap[p.dealId]) dealMap[p.dealId] = { received: 0, paidReceived: 0, pendingReceived: 0, profit: 0, paidProfit: 0, coInvestorProfit: 0, pendingProfit: 0, count: 0, paidCount: 0, pendingCount: 0 }
+    if (!dealMap[p.dealId]) dealMap[p.dealId] = { received: 0, paidReceived: 0, pendingReceived: 0, profit: 0, paidProfit: 0, coInvestorProfit: 0, pendingProfit: 0, count: 0, paidCount: 0, pendingCount: 0, earlyOffMonth: 0, lateOffMonth: 0 }
     const pr = getPaymentProfit(p)
     dealMap[p.dealId].received += p.amount
     dealMap[p.dealId].profit += pr
@@ -378,6 +402,10 @@ const profitByDeal = computed(() => {
       dealMap[p.dealId].paidReceived += p.amount
       dealMap[p.dealId].paidProfit += pr
       dealMap[p.dealId].coInvestorProfit += getPaymentCIProfit(p)
+      // «Оплачен не в свой месяц» — для бейджа в детализации.
+      const off = offMonthKind(p)
+      if (off === 'early') dealMap[p.dealId].earlyOffMonth++
+      else if (off === 'late') dealMap[p.dealId].lateOffMonth++
     } else {
       dealMap[p.dealId].pendingCount++
       dealMap[p.dealId].pendingReceived += p.amount
@@ -412,6 +440,8 @@ const profitByDeal = computed(() => {
       paymentsCount: data.count,
       paidCount: data.paidCount,
       pendingCount: data.pendingCount,
+      earlyOffMonth: data.earlyOffMonth,
+      lateOffMonth: data.lateOffMonth,
       status: d.status || 'ACTIVE',
     })
   }
@@ -419,42 +449,100 @@ const profitByDeal = computed(() => {
   return result.sort((a, b) => b.profitEarned - a.profitEarned)
 })
 
-const profitDetailTotal = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.profitEarned, 0)
-)
+// Счётчики для вкладок фильтра (сколько сделок в каждой категории)
+const dealFilterCounts = computed(() => ({
+  all: profitByDeal.value.filter(d => d.paymentsCount > 0).length,
+  paid: profitByDeal.value.filter(d => d.paidCount > 0).length,
+  pending: profitByDeal.value.filter(d => d.pendingCount > 0).length,
+}))
 
-const profitDetailEarned = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.paidProfit, 0)
-)
-
-const profitDetailExpected = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.pendingProfit, 0)
-)
+// Строки таблицы с учётом фильтра. Считаем «целиковый платёж за месяц» и вашу
+// чистую прибыль под выбранную категорию.
+const displayDeals = computed(() => {
+  const f = dealFilter.value
+  return profitByDeal.value
+    .map(d => {
+      const amount = f === 'paid' ? d.paidReceived : f === 'pending' ? d.pendingReceived : d.totalReceived
+      const net = f === 'paid'
+        ? d.partnerProfit
+        : f === 'pending'
+          ? d.projectedPartnerProfit
+          : d.partnerProfit + d.projectedPartnerProfit
+      const coInv = f === 'paid'
+        ? d.coInvestorProfit
+        : f === 'pending'
+          ? d.projectedCoInvestorProfit
+          : d.coInvestorProfit + d.projectedCoInvestorProfit
+      // Вся наценка с этих платежей — до вычета доли со-инвесторов.
+      const gross = f === 'paid'
+        ? d.paidProfit
+        : f === 'pending'
+          ? d.pendingProfit
+          : d.paidProfit + d.pendingProfit
+      const count = f === 'paid' ? d.paidCount : f === 'pending' ? d.pendingCount : d.paymentsCount
+      const hasPaid = f !== 'pending' && d.paidCount > 0
+      const hasPending = f !== 'paid' && d.pendingCount > 0
+      // Какая доля платежа — прибыль (остальное возвращает вложения в товар).
+      const profitShare = amount > 0 ? Math.max(0, gross) / amount : 0
+      return { ...d, amount, net, coInv, gross, count, hasPaid, hasPending, profitShare }
+    })
+    .filter(d => d.amount > 0)
+    .sort((a, b) => b.net - a.net)
+})
 
 const profitDetailReceived = computed(() =>
   profitByDeal.value.reduce((s, d) => s + d.totalReceived, 0)
+)
+
+// Денежные (полные суммы): план месяца = пришло + осталось. totalReceived уже
+// суммирует и оплаченные, и неоплаченные платежи выборки — это и есть план.
+const profitDetailPlanned = computed(() => profitDetailReceived.value)
+const profitDetailPaid = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.paidReceived, 0)
+)
+const profitDetailPending = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.pendingReceived, 0)
 )
 
 const profitDetailPartner = computed(() =>
   profitByDeal.value.reduce((s, d) => s + d.partnerProfit, 0)
 )
 
-const profitDetailCoInvestor = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit, 0)
-)
-
 const profitDetailProjectedPartner = computed(() =>
   profitByDeal.value.reduce((s, d) => s + d.projectedPartnerProfit, 0)
 )
 
-const profitDetailProjectedCoInvestor = computed(() =>
+// Разбор прибыли для подсказок-формул: вся наценка и доля со-инвесторов
+// отдельно по оплаченным (факт) и неоплаченным (прогноз) платежам.
+const profitDetailGrossPaid = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.paidProfit, 0)
+)
+const profitDetailCoInvPaid = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit, 0)
+)
+const profitDetailGrossPending = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.pendingProfit, 0)
+)
+const profitDetailCoInvPending = computed(() =>
   profitByDeal.value.reduce((s, d) => s + d.projectedCoInvestorProfit, 0)
+)
+
+// Доля со-инвесторов со ВСЕХ платежей периода (оплаченные + прогноз по неоплаченным)
+// и весь доход (наценка) со всех платежей — для доли в процентах.
+const profitDetailCoInvestorAll = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit + d.projectedCoInvestorProfit, 0)
+)
+const profitDetailProfitAll = computed(() =>
+  profitByDeal.value.reduce((s, d) => s + d.paidProfit + d.pendingProfit, 0)
 )
 
 function openProfitDetail(monthKey?: string, mode: 'earned' | 'expected' | 'all' = 'earned', year?: number) {
   profitDetailMonth.value = monthKey || null
   profitDetailMode.value = mode
   profitDetailYear.value = year || null
+  // Стартовый фильтр таблицы под контекст: «Заработано» → оплаченные,
+  // «Прогноз» → неоплаченные, клик по месяцу → все.
+  dealFilter.value = mode === 'earned' ? 'paid' : mode === 'expected' ? 'pending' : 'all'
   profitDetailDialog.value = true
 }
 
@@ -467,7 +555,6 @@ const MONTH_NAMES = [
 const MONTH_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
 
 const calYear = ref(new Date().getFullYear())
-const calMode = ref<'earned' | 'expected'>('earned')
 
 function prevYear() { calYear.value-- }
 function nextYear() { calYear.value++ }
@@ -480,7 +567,11 @@ interface MonthData {
   partnerEarned: number
   expected: number
   received: number
+  pendingAmount: number   // полная сумма НЕоплаченных платежей месяца (осталось получить)
+  planned: number         // весь план месяца = received + pendingAmount
   payments: number
+  earlyOffMonth: number
+  lateOffMonth: number
   isCurrent: boolean
   isPast: boolean
 }
@@ -494,10 +585,11 @@ const yearMonths = computed((): MonthData[] => {
     const isPast = calYear.value < currentYear || (calYear.value === currentYear && i <= currentMonth)
     const isCurrent = calYear.value === currentYear && i === currentMonth
 
-    // All payments due this month (grouped by dueDate string — no timezone issues)
+    // Платежи, попадающие в этот месяц по УЧЁТУ: PAID → по месяцу оплаты,
+    // PENDING/OVERDUE → по плановому сроку. Единое правило с детализацией/графиками.
     const monthPayments = scopedAllPaymentsFlat.value.filter(p => {
-      const { year: y, month: m } = parseDateStr(p.dueDate)
-      return y === calYear.value && m === i
+      const ym = attributionYearMonth(p)
+      return ym != null && ym.year === calYear.value && ym.month === i
     })
 
     const paidInMonth = monthPayments.filter(p => p.status === 'PAID')
@@ -507,6 +599,16 @@ const yearMonths = computed((): MonthData[] => {
     const coInvestorEarned = paidInMonth.reduce((s, p) => s + getPaymentCIProfit(p), 0)
     const expected = pendingInMonth.reduce((s, p) => s + getPaymentProfit(p), 0)
     const received = paidInMonth.reduce((s, p) => s + p.amount, 0)
+    const pendingAmount = pendingInMonth.reduce((s, p) => s + p.amount, 0)
+
+    // Сколько оплаченных в этом месяце были за ДРУГОЙ плановый месяц (для подписи).
+    let earlyOffMonth = 0
+    let lateOffMonth = 0
+    for (const p of paidInMonth) {
+      const off = offMonthKind(p)
+      if (off === 'early') earlyOffMonth++
+      else if (off === 'late') lateOffMonth++
+    }
 
     return {
       month: i,
@@ -516,7 +618,11 @@ const yearMonths = computed((): MonthData[] => {
       partnerEarned: Math.round(earned - coInvestorEarned),
       expected: Math.round(expected),
       received: Math.round(received),
+      pendingAmount: Math.round(pendingAmount),
+      planned: Math.round(received + pendingAmount),
       payments: paidInMonth.length + pendingInMonth.length,
+      earlyOffMonth,
+      lateOffMonth,
       isCurrent,
       isPast,
     }
@@ -530,23 +636,9 @@ const yearTotal = computed(() => {
     partnerEarned: s.partnerEarned + m.partnerEarned,
     expected: s.expected + m.expected,
     received: s.received + m.received,
-  }), { earned: 0, coInvestorEarned: 0, partnerEarned: 0, expected: 0, received: 0 })
-})
-
-const yearMaxValue = computed(() => {
-  return Math.max(...yearMonths.value.map(m => calMode.value === 'earned' ? m.earned : m.expected), 1)
-})
-
-const yearMaxBoth = computed(() => {
-  return Math.max(...yearMonths.value.map(m => m.earned + m.expected), 1)
-})
-
-// Max single value for proportional bars (each bar independent, track = flex row)
-const yearMaxSingle = computed(() => {
-  return Math.max(
-    ...yearMonths.value.map(m => Math.max(m.earned, m.expected)),
-    1
-  )
+    pendingAmount: s.pendingAmount + m.pendingAmount,
+    planned: s.planned + m.planned,
+  }), { earned: 0, coInvestorEarned: 0, partnerEarned: 0, expected: 0, received: 0, pendingAmount: 0, planned: 0 })
 })
 
 function openMonthDetail(m: MonthData) {
@@ -561,8 +653,8 @@ const revenueChartData = computed(() => {
   const months = getLast6Months()
 
   scopedAllPaymentsFlat.value.filter(p => p.status === 'PAID').forEach(p => {
-    const key = getMonthKeyFromStr(p.dueDate)
-    if (key in months) months[key] += p.amount
+    const key = attrMonthKey(p) // месяц фактической оплаты
+    if (key && key in months) months[key] += p.amount
   })
 
   return {
@@ -585,8 +677,8 @@ const profitChartData = computed(() => {
   const months = getLast6Months()
 
   scopedAllPaymentsFlat.value.filter(p => p.status === 'PAID').forEach(p => {
-    const key = getMonthKeyFromStr(p.dueDate)
-    if (key in months) months[key] += getPaymentProfit(p)
+    const key = attrMonthKey(p) // месяц фактической оплаты
+    if (key && key in months) months[key] += getPaymentProfit(p)
   })
 
   return {
@@ -773,6 +865,14 @@ const doughnutOptions = {
 
 // ── Metric breakdown dialog ──
 const breakdownOpen = ref(false)
+
+// ── Общая модалка расшифровки показателя ──
+const metricOpen = ref(false)
+const metricTitle = ref('')
+const metricHint = ref('')
+const metricColor = ref('#10b981')
+const metricTotal = ref(0)
+const metricItems = ref<any[]>([])
 const breakdownTitle = ref('')
 const breakdownHint = ref('')
 const breakdownIcon = ref('')
@@ -782,91 +882,157 @@ const breakdownTotal = ref(0)
 const breakdownSuffix = ref('')
 
 function openBreakdown(metric: string) {
-  let deals: { deal: any; value: number; extra?: string; progress?: number }[] = []
+  let deals: { deal: any; value: number; extra?: string; parts?: any[] }[] = []
   let title = ''
   let hint = ''
-  let icon = ''
   let color = ''
-  let suffix = ''
+
+  const money = (n: number) => formatCurrency(Math.round(n || 0))
+  /** Сколько уже пришло по сделке: первоначальный взнос + оплаченные платежи. */
+  const receivedOf = (d: any) =>
+    (d.downPayment || 0) +
+    scopedAllPaymentsFlat.value
+      .filter((p: any) => p.dealId === d.id && p.status === 'PAID' && !p.isDownPayment)
+      .reduce((s: number, p: any) => s + p.amount, 0)
 
   switch (metric) {
     case 'invested':
-      title = 'Инвестировано'
-      hint = 'Сумма закупочных цен по всем сделкам'
-      icon = 'mdi-cash-multiple'
-      color = '#047857'
-      deals = scopedInvestorDeals.value.map(d => ({
+      title = 'Инвестировано в товар'
+      hint = 'Сколько денег потрачено на закупку товара по всем сделкам.'
+      color = '#3b82f6'
+      deals = scopedInvestorDeals.value.map((d: any) => ({
         deal: d, value: d.purchasePrice,
-        extra: `Наценка ${d.markupPercent}% · итого ${formatCurrency(d.totalPrice)}`,
-        progress: d.numberOfPayments > 0 ? Math.round((d.paidPayments / d.numberOfPayments) * 100) : 0,
+        extra: `${d.clientName ?? ''}`.trim() || undefined,
+        parts: [
+          { label: 'продано за', value: money(d.totalPrice) },
+          { label: 'наценка', value: money(d.markup) },
+          { label: 'вернулось', value: money(receivedOf(d)) },
+        ],
       }))
       break
+
     case 'revenue':
       title = 'Общий оборот'
-      hint = 'Закупочная цена + наценка по всем сделкам'
-      icon = 'mdi-chart-arc'
-      color = '#3b82f6'
-      deals = scopedInvestorDeals.value.map(d => ({
+      hint = 'Сколько всего должны заплатить клиенты по всем сделкам — закупка вместе с наценкой.'
+      color = '#0ea5e9'
+      deals = scopedInvestorDeals.value.map((d: any) => ({
         deal: d, value: d.totalPrice,
-        extra: `${formatCurrency(d.purchasePrice)} закупка + ${formatCurrency(d.markup)} наценка`,
+        parts: [
+          { label: 'закупка', value: money(d.purchasePrice) },
+          { label: 'наценка', value: money(d.markup) },
+          { label: 'оплачено', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+        ],
       }))
       break
+
     case 'profit':
-      title = 'Прибыль'
-      hint = 'Наценка по каждой сделке (totalPrice - purchasePrice)'
-      icon = 'mdi-trending-up'
-      color = '#10b981'
-      deals = scopedInvestorDeals.value.map(d => ({
+      title = 'Прибыль по сделкам'
+      hint = 'Наценка по каждой сделке: цена продажи минус закупка. Это доход до вычета доли со-инвесторов.'
+      color = '#059669'
+      deals = scopedInvestorDeals.value.map((d: any) => ({
         deal: d, value: d.markup,
-        extra: `${d.markupPercent}% от ${formatCurrency(d.purchasePrice)}`,
+        parts: [
+          { label: 'закупка', value: money(d.purchasePrice) },
+          { label: 'цена продажи', value: money(d.totalPrice) },
+          { label: 'оплачено', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+        ],
       }))
       break
+
     case 'remaining':
       title = 'Ожидается к получению'
-      hint = 'Остаток по активным сделкам (неоплаченные платежи)'
-      icon = 'mdi-clock-outline'
+      hint = 'Сколько клиенты ещё должны заплатить по активным сделкам.'
       color = '#f59e0b'
-      deals = scopedActiveDeals.value.map(d => ({
+      deals = scopedActiveDeals.value.map((d: any) => ({
         deal: d, value: d.remainingAmount,
-        extra: `${d.paidPayments} из ${d.numberOfPayments} платежей`,
-        progress: d.numberOfPayments > 0 ? Math.round((d.paidPayments / d.numberOfPayments) * 100) : 0,
+        parts: [
+          { label: 'всего по сделке', value: money(d.totalPrice) },
+          { label: 'уже получено', value: money(receivedOf(d)) },
+          { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+        ],
       }))
       break
-    case 'monthly':
-      title = 'Доход / мес'
-      hint = 'Средний ежемесячный платёж по активным сделкам'
-      icon = 'mdi-calendar-month'
+
+    case 'received':
+      title = 'Получено'
+      hint = 'Деньги, которые клиенты уже отдали: первоначальные взносы и оплаченные платежи.'
+      color = '#10b981'
+      deals = scopedInvestorDeals.value.map((d: any) => ({
+        deal: d, value: receivedOf(d),
+        parts: [
+          { label: 'всего по сделке', value: money(d.totalPrice) },
+          { label: 'осталось', value: money(d.remainingAmount) },
+          { label: 'взнос', value: money(d.downPayment || 0) },
+          { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+        ],
+      }))
+      break
+
+    case 'monthly': {
+      title = 'Поступления в месяц'
+      hint =
+        'Сколько денег приходит каждый месяц по активным сделкам. Часть этих денег ' +
+        'возвращает вложения в товар, часть — ваш доход.'
       color = '#047857'
       deals = scopedActiveDeals.value
-        .filter(d => d.numberOfPayments > 0)
-        .map(d => ({
-          deal: d, value: Math.round(d.totalPrice / d.numberOfPayments),
-          extra: `${formatCurrency(d.totalPrice)} ÷ ${d.numberOfPayments} мес`,
-        }))
+        .filter((d: any) => d.numberOfPayments > 0)
+        .map((d: any) => {
+          const perMonth = Math.round(
+            Math.max(0, d.totalPrice - (d.downPayment || 0)) / d.numberOfPayments,
+          )
+          // Доля прибыли в каждом рубле платежа — считаем от рублёвой маржи.
+          const share = d.totalPrice > 0 ? Math.min(d.markup / d.totalPrice, 1) : 0
+          const grossPerMonth = Math.round(perMonth * share)
+          const ciRatio = dealCIRatio.value[d.id] ?? 0
+          const netPerMonth = Math.round(grossPerMonth * (1 - ciRatio))
+          return {
+            deal: d, value: perMonth,
+            parts: [
+              { label: 'из них доход', value: money(grossPerMonth) },
+              ...(ciRatio > 0
+                ? [{ label: 'ваш чистый доход', value: money(netPerMonth) }]
+                : []),
+              { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
+            ],
+          }
+        })
       break
+    }
+
     case 'overdue':
       title = 'Просрочено'
-      hint = 'Сумма просроченных платежей'
-      icon = 'mdi-alert-circle'
+      hint = 'Платежи, срок которых уже прошёл, а деньги не поступили.'
       color = '#ef4444'
-      deals = scopedOverduePayments.value.map(p => ({
+      deals = scopedOverduePayments.value.map((p: any) => ({
         deal: { productName: p.deal?.productName || 'Сделка', id: p.dealId },
         value: p.amount,
         extra: `Срок: ${formatDate(p.dueDate)}`,
       }))
       break
+
     default:
       return
   }
 
-  breakdownDeals.value = deals.sort((a, b) => b.value - a.value)
-  breakdownTotal.value = deals.reduce((s, d) => s + d.value, 0)
-  breakdownTitle.value = title
-  breakdownHint.value = hint
-  breakdownIcon.value = icon
-  breakdownColor.value = color
-  breakdownSuffix.value = suffix
-  breakdownOpen.value = true
+  // Готовим данные для общей модалки «откуда взялась цифра» — она одна на
+  // отчёты и сводку, чтобы расшифровки везде выглядели одинаково.
+  metricItems.value = deals
+    .filter((d) => d.value !== 0)
+    .map((d) => ({
+      id: d.deal?.id ?? '',
+      title: d.deal?.productName || 'Сделка',
+      subtitle: d.extra,
+      value: Math.round(d.value),
+      parts: d.parts,
+    }))
+  metricTotal.value = metricItems.value.reduce((sum, i) => sum + i.value, 0)
+  metricHint.value = hint
+  metricColor.value = color
+  metricTitle.value = title
+  metricHint.value = hint
+  metricColor.value = color
+  metricTotal.value = metricItems.value.reduce((sum, i) => sum + i.value, 0)
+  metricOpen.value = true
 }
 
 const BD_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
@@ -884,6 +1050,54 @@ function bdColor(name?: string) {
     </div>
 
     <template v-else>
+      <!-- Вкладки раздела. «Отчёты» видны только с правом и тарифом. -->
+      <div v-if="canSeeReports" class="an-tabs-row">
+        <div class="an-tabs">
+          <button
+            class="an-tab"
+            :class="{ 'an-tab--active': activeTab === 'overview' }"
+            type="button"
+            @click="activeTab = 'overview'"
+          >
+            <v-icon icon="mdi-view-dashboard-outline" size="16" />
+            Обзор
+          </button>
+          <button
+            class="an-tab"
+            :class="{ 'an-tab--active': activeTab === 'reports' }"
+            type="button"
+            @click="activeTab = 'reports'"
+          >
+            <v-icon icon="mdi-file-chart-outline" size="16" />
+            Отчёты
+          </button>
+        </div>
+
+        <div
+          v-if="activeTab === 'reports' && reportsTabRef?.canExport && reportsTabRef?.ready"
+          class="an-export-group"
+        >
+          <button
+            class="an-tab-export an-tab-export--excel"
+            type="button"
+            :disabled="reportsTabRef?.exporting"
+            @click="reportsTabRef.exportExcel()"
+          >
+            <v-icon icon="mdi-microsoft-excel" size="16" />
+            Excel
+          </button>
+          <button
+            class="an-tab-export"
+            type="button"
+            :disabled="reportsTabRef?.exporting"
+            @click="reportsTabRef.exportPdf()"
+          >
+            <v-icon icon="mdi-file-pdf-box" size="16" />
+            Открыть PDF
+          </button>
+        </div>
+      </div>
+
       <!-- Cashbox scope chips. Tap a chip to filter all numbers/charts on
            this page by that cashbox. "Все кассы" returns to the aggregated
            view. -->
@@ -929,87 +1143,15 @@ function bdColor(name?: string) {
         </div>
       </div>
 
-      <!-- Hero summary (scope-aware: passes scoped totals + capital when a cashbox is selected) -->
-      <HeroSummary
-        class="mb-6"
-        :totals="heroTotals"
-        :available-capital="selectedCashBoxId ? (capital?.availableCapital ?? null) : undefined"
-        @metric="openBreakdown"
+      <!-- Вкладка «Отчёты»: свои данные с сервера, ленивый компонент. -->
+      <ReportsTab
+        v-if="canSeeReports && activeTab === 'reports'"
+        ref="reportsTabRef"
+        :cash-box-id="selectedCashBoxId"
+        :is-dark="isDark"
       />
 
-      <!-- KPI Cards -->
-      <div class="kpi-row mb-6">
-        <div class="kpi-card">
-          <div class="kpi-icon-wrap" style="background: rgba(16, 185, 129, 0.1); color: #10b981;">
-            <v-icon icon="mdi-trending-up" size="20" />
-          </div>
-          <div class="kpi-info">
-            <div class="kpi-value">{{ formatCurrencyShort(earnedProfit) }}</div>
-            <div class="kpi-label">Заработано</div>
-          </div>
-        </div>
-
-        <div class="kpi-card">
-          <div class="kpi-icon-wrap" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
-            <v-icon icon="mdi-clock-outline" size="20" />
-          </div>
-          <div class="kpi-info">
-            <div class="kpi-value">{{ formatCurrencyShort(expectedProfit) }}</div>
-            <div class="kpi-label">Ожидается дохода</div>
-          </div>
-        </div>
-
-        <div class="kpi-card">
-          <div class="kpi-icon-wrap" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
-            <v-icon icon="mdi-calendar-month" size="20" />
-          </div>
-          <div class="kpi-info">
-            <div class="kpi-value">{{ formatCurrencyShort(thisMonthProfit) }}</div>
-            <div class="kpi-label">Доход за месяц</div>
-          </div>
-        </div>
-
-        <div class="kpi-card">
-          <div class="kpi-icon-wrap" :style="{ background: paymentHealth >= 90 ? 'rgba(4, 120, 87, 0.1)' : 'rgba(245, 158, 11, 0.1)', color: paymentHealth >= 90 ? '#047857' : '#f59e0b' }">
-            <v-icon icon="mdi-heart-pulse" size="20" />
-          </div>
-          <div class="kpi-info">
-            <div class="kpi-value">{{ paymentHealth }}%</div>
-            <div class="kpi-label">Своевременность</div>
-          </div>
-        </div>
-
-        <div class="kpi-card" v-if="overdueAmount > 0">
-          <div class="kpi-icon-wrap" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
-            <v-icon icon="mdi-alert-circle" size="20" />
-          </div>
-          <div class="kpi-info">
-            <div class="kpi-value" style="color: #ef4444;">{{ formatCurrencyShort(overdueAmount) }}</div>
-            <div class="kpi-label">Просрочено</div>
-          </div>
-        </div>
-
-        <div class="kpi-card" v-if="isCapitalSet && capital" @click="router.push('/cashboxes')" style="cursor: pointer;">
-          <div class="kpi-icon-wrap" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
-            <v-icon icon="mdi-wallet-outline" size="20" />
-          </div>
-          <div class="kpi-info">
-            <div class="kpi-value" style="color: #7c3aed;">{{ formatCurrencyShort(capital.availableCapital) }}</div>
-            <div class="kpi-label">Доступный капитал</div>
-          </div>
-        </div>
-
-        <div class="kpi-card" v-if="isCapitalSet && capital">
-          <div class="kpi-icon-wrap" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
-            <v-icon icon="mdi-chart-donut" size="20" />
-          </div>
-          <div class="kpi-info">
-            <div class="kpi-value">{{ capitalUtilization }}%</div>
-            <div class="kpi-label">В работе</div>
-          </div>
-        </div>
-      </div>
-
+      <template v-if="activeTab === 'overview'">
       <div class="an-sections-wrap" :class="{ 'an-sections-wrap--reorder': !hasCharts }">
 
       <!-- Charts: BUSINESS+ only (blurred for lower plans) -->
@@ -1057,6 +1199,8 @@ function bdColor(name?: string) {
           <div class="an-formula-text">
             Из каждого платежа выделяется доля наценки: <code>платёж × наценка ÷ (100 + наценка)</code>.
             Например, при наценке 20% из платежа 12 000 ₽ ваш доход — <strong>2 000 ₽</strong>, а 10 000 ₽ — возврат вложений.
+            <br>
+            Доход учитывается в месяце <strong>фактической оплаты</strong> платежа: если клиент заплатил заранее или с задержкой, сумма попадает в тот месяц, когда деньги реально пришли.
           </div>
         </div>
       </div>
@@ -1083,71 +1227,124 @@ function bdColor(name?: string) {
 
           <div class="yc-header-stats">
             <div class="yc-stat">
-              <div class="yc-stat-value" style="color: #34d399;">{{ formatCurrencyShort(Math.max(0, yearTotal.partnerEarned)) }}</div>
-              <div class="yc-stat-label">Чистый доход</div>
+              <ExactValue class="yc-stat-value" style="color: #34d399;" :value="Math.max(0, yearTotal.partnerEarned)">{{ formatCurrencyShort(Math.max(0, yearTotal.partnerEarned)) }}</ExactValue>
+              <div class="yc-stat-label">Мой чистый доход</div>
               <div v-if="yearTotal.coInvestorEarned > 0" class="yc-stat-sub">
-                валовая {{ formatCurrencyShort(yearTotal.earned) }} · со-инвесторам {{ formatCurrencyShort(yearTotal.coInvestorEarned) }}
+                весь доход <ExactValue :value="yearTotal.earned" :hint="false">{{ formatCurrencyShort(yearTotal.earned) }}</ExactValue> · со-инвесторам <ExactValue :value="yearTotal.coInvestorEarned" :hint="false">{{ formatCurrencyShort(yearTotal.coInvestorEarned) }}</ExactValue>
               </div>
             </div>
             <div class="yc-stat-divider" />
             <div class="yc-stat">
-              <div class="yc-stat-value">{{ formatCurrencyShort(yearTotal.received) }}</div>
-              <div class="yc-stat-label">Выручка</div>
+              <ExactValue class="yc-stat-value" :value="yearTotal.planned">{{ formatCurrencyShort(yearTotal.planned) }}</ExactValue>
+              <div class="yc-stat-label">Ожидается за год</div>
             </div>
             <div class="yc-stat-divider" />
             <div class="yc-stat">
-              <div class="yc-stat-value">{{ formatCurrencyShort(yearTotal.expected) }}</div>
-              <div class="yc-stat-label">Ожидается</div>
+              <ExactValue class="yc-stat-value" style="color: #10b981;" :value="yearTotal.received">{{ formatCurrencyShort(yearTotal.received) }}</ExactValue>
+              <div class="yc-stat-label">Пришло</div>
+            </div>
+            <div class="yc-stat-divider" />
+            <div class="yc-stat">
+              <ExactValue class="yc-stat-value" style="color: #3b82f6;" :value="yearTotal.pendingAmount">{{ formatCurrencyShort(yearTotal.pendingAmount) }}</ExactValue>
+              <div class="yc-stat-label">Осталось</div>
             </div>
           </div>
         </div>
 
-        <!-- Month grid -->
-        <div class="yc-grid">
+        <!-- Column captions (desktop) -->
+        <div class="yc-caption">
+          <span class="yc-cap-month">Месяц</span>
+          <span class="yc-cap-bar">Сбор за месяц</span>
+          <span class="yc-cap-num">Ожидается за месяц</span>
+          <span class="yc-cap-num">Пришло</span>
+          <span class="yc-cap-num">Осталось</span>
+          <span class="yc-cap-num">Мой чистый доход</span>
+          <span class="yc-cap-chev" />
+        </div>
+
+        <!-- Month list — one row per month -->
+        <div class="yc-list">
           <div
             v-for="m in yearMonths"
             :key="m.month"
-            class="yc-month"
+            class="yc-row"
             :class="{
-              'yc-month--current': m.isCurrent,
-              'yc-month--empty': m.earned === 0 && m.expected === 0,
+              'yc-row--current': m.isCurrent,
+              'yc-row--empty': m.planned === 0,
             }"
             @click="openMonthDetail(m)"
           >
             <!-- Month name -->
-            <div class="yc-month-name" :class="{ 'yc-month-name--current': m.isCurrent }">
-              {{ MONTH_NAMES[m.month] }}
+            <div class="yc-row-month">
+              <span class="yc-row-mname" :class="{ 'yc-row-mname--current': m.isCurrent }">{{ MONTH_NAMES[m.month] }}</span>
               <span v-if="m.isCurrent" class="yc-month-now">сейчас</span>
+              <span v-if="m.payments > 0" class="yc-row-pays">{{ m.payments }}&nbsp;{{ m.payments === 1 ? 'платёж' : (m.payments < 5 ? 'платежа' : 'платежей') }}</span>
             </div>
 
-            <!-- Progress bar: earned / total -->
-            <div v-if="m.earned > 0 || m.expected > 0" class="yc-bars">
+            <!-- Bar + secondary info: доля собранного из плана месяца -->
+            <div class="yc-row-mid">
               <div class="yc-bar-track">
                 <div
-                  v-if="m.earned > 0"
+                  v-if="m.received > 0"
                   class="yc-bar yc-bar--earned"
-                  :style="{ width: (m.earned / (m.earned + m.expected) * 100) + '%' }"
+                  :style="{ width: (m.received / m.planned * 100) + '%' }"
                 />
                 <div
-                  v-if="m.expected > 0"
-                  class="yc-bar yc-bar--expected"
-                  :style="{ width: (m.expected / (m.earned + m.expected) * 100) + '%' }"
+                  v-if="m.pendingAmount > 0"
+                  class="yc-bar yc-bar--pending"
+                  :style="{ width: (m.pendingAmount / m.planned * 100) + '%' }"
                 />
               </div>
-            </div>
-            <div v-else class="yc-bars">
-              <div class="yc-bar-track" />
+              <div v-if="m.coInvestorEarned > 0 || m.earlyOffMonth > 0 || m.lateOffMonth > 0" class="yc-row-chips">
+                <span v-if="m.coInvestorEarned > 0" class="yc-chip">
+                  весь доход <ExactValue :value="m.earned" :hint="false">{{ formatCurrencyShort(m.earned) }}</ExactValue> · со-инвесторам <ExactValue :value="m.coInvestorEarned" :hint="false">{{ formatCurrencyShort(m.coInvestorEarned) }}</ExactValue>
+                </span>
+                <span
+                  v-if="m.earlyOffMonth > 0"
+                  class="yc-chip yc-chip--off"
+                  title="Эти платежи оплачены раньше срока — доход учтён в месяце фактической оплаты"
+                >
+                  <v-icon icon="mdi-calendar-arrow-left" size="10" />
+                  {{ m.earlyOffMonth }} досрочно
+                </span>
+                <span
+                  v-if="m.lateOffMonth > 0"
+                  class="yc-chip yc-chip--off-late"
+                  title="Эти платежи оплачены позже срока — доход учтён в месяце фактической оплаты"
+                >
+                  <v-icon icon="mdi-calendar-arrow-right" size="10" />
+                  {{ m.lateOffMonth }} с опозданием
+                </span>
+              </div>
+
+              <!-- Компактная строка сумм — только на телефоне -->
+              <div v-if="m.planned > 0" class="yc-row-mmoney">
+                <span><b>{{ formatCurrencyShort(m.planned) }}</b> ожидается</span>
+                <span class="yc-mm--green"><b>{{ formatCurrencyShort(m.received) }}</b> пришло</span>
+                <span v-if="m.pendingAmount > 0" class="yc-mm--pending"><b>{{ formatCurrencyShort(m.pendingAmount) }}</b> осталось</span>
+                <span v-if="m.partnerEarned > 0" class="yc-mm--net"><b>+{{ formatCurrencyShort(Math.max(0, m.partnerEarned)) }}</b> чисто</span>
+              </div>
             </div>
 
-            <!-- Values -->
-            <div class="yc-month-values">
-              <span v-if="m.earned > 0" class="yc-val yc-val--earned">+{{ formatCurrencyShort(Math.max(0, m.partnerEarned)) }}</span>
-              <span v-if="m.expected > 0" class="yc-val yc-val--expected">~{{ formatCurrencyShort(m.expected) }}</span>
-              <span v-if="m.earned === 0 && m.expected === 0" class="yc-val yc-val--empty">—</span>
+            <!-- Numbers: план месяца / пришло / осталось / чистый доход -->
+            <div class="yc-row-num">
+              <ExactValue v-if="m.planned > 0" class="yc-num-val" :value="m.planned">{{ formatCurrencyShort(m.planned) }}</ExactValue>
+              <span v-else class="yc-num-empty">—</span>
             </div>
-            <div v-if="m.coInvestorEarned > 0" class="yc-month-sub">
-              валовая {{ formatCurrencyShort(m.earned) }} · со-инв. {{ formatCurrencyShort(m.coInvestorEarned) }}
+            <div class="yc-row-num">
+              <ExactValue v-if="m.received > 0" class="yc-num-val yc-num-val--earned" :value="m.received">{{ formatCurrencyShort(m.received) }}</ExactValue>
+              <span v-else class="yc-num-empty">—</span>
             </div>
+            <div class="yc-row-num">
+              <ExactValue v-if="m.pendingAmount > 0" class="yc-num-val yc-num-val--pending" :value="m.pendingAmount">{{ formatCurrencyShort(m.pendingAmount) }}</ExactValue>
+              <span v-else class="yc-num-empty">—</span>
+            </div>
+            <div class="yc-row-num">
+              <ExactValue v-if="m.partnerEarned !== 0" class="yc-num-val yc-num-val--net" :value="Math.max(0, m.partnerEarned)">+{{ formatCurrencyShort(Math.max(0, m.partnerEarned)) }}</ExactValue>
+              <span v-else class="yc-num-empty">—</span>
+            </div>
+
+            <v-icon icon="mdi-chevron-right" size="18" class="yc-row-chev" />
           </div>
         </div>
 
@@ -1155,15 +1352,15 @@ function bdColor(name?: string) {
         <div class="yc-footer">
           <div class="yc-legend">
             <span class="yc-legend-dot" style="background: #10b981;" />
-            <span>Чистый доход партнёра</span>
+            <span>Пришло (уже собрано)</span>
           </div>
           <div class="yc-legend">
             <span class="yc-legend-dot" style="background: #3b82f6;" />
-            <span>Ожидается</span>
+            <span>Осталось (по неоплаченным)</span>
           </div>
           <div class="yc-legend-hint">
-            <v-icon icon="mdi-cursor-default-click-outline" size="13" />
-            Нажмите на месяц для детализации
+            <v-icon icon="mdi-gesture-tap" size="14" />
+            Наведите на сумму — покажем точное значение · нажмите на месяц для детализации
           </div>
         </div>
       </v-card>
@@ -1376,22 +1573,29 @@ function bdColor(name?: string) {
       </v-row>
       </div>
       </div>
+      </template>
     </template>
 
     <!-- Profit Detail Dialog -->
-    <v-dialog v-model="profitDetailDialog" max-width="680" scrollable :fullscreen="isMobile">
-      <v-card rounded="lg">
-        <div class="pa-5">
-          <div class="d-flex align-center justify-space-between mb-2">
-            <div>
-              <div class="text-h6 font-weight-bold">{{ profitDetailMode === 'expected' ? 'Ожидаемый доход' : 'Детализация дохода' }}</div>
-              <div class="text-caption text-medium-emphasis">{{ profitDetailMode === 'expected' ? 'Прогноз дохода по сделкам' : 'Доход по каждой сделке' }}</div>
+    <v-dialog v-model="profitDetailDialog" max-width="900" scrollable :fullscreen="isMobile">
+      <v-card rounded="lg" class="pd-dialog">
+        <!-- Header -->
+        <div class="pd-head">
+          <div class="pd-head-left">
+            <div class="pd-head-icon">
+              <v-icon :icon="profitDetailMode === 'expected' ? 'mdi-chart-line' : 'mdi-cash-multiple'" size="22" />
             </div>
-            <button class="dialog-close-sm" @click="profitDetailDialog = false">
-              <v-icon icon="mdi-close" size="18" />
-            </button>
+            <div>
+              <div class="pd-head-title">{{ profitDetailMode === 'expected' ? 'Прогноз дохода' : 'Доход по сделкам' }}</div>
+              <div class="pd-head-sub">{{ profitDetailMode === 'expected' ? 'Сколько ещё заработаете, когда платежи оплатят' : 'Из чего сложился доход за период — по каждой сделке' }}</div>
+            </div>
           </div>
+          <button class="dialog-close-sm" @click="profitDetailDialog = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+        </div>
 
+        <div class="pd-body">
           <!-- Period selector -->
           <div class="pd-period-row mb-4">
             <button
@@ -1405,88 +1609,152 @@ function bdColor(name?: string) {
             </button>
           </div>
 
-          <!-- Summary -->
-          <div class="pd-summary mb-3">
-            <div class="pd-summary-item">
-              <div class="pd-summary-label">Чистый доход партнёра</div>
-              <div class="pd-summary-value" style="color: #10b981;">{{ formatCurrency(Math.max(0, profitDetailPartner)) }}</div>
+          <!-- Summary cards -->
+          <div class="pd-stats mb-4">
+            <div v-if="profitDetailMode === 'all'" class="pd-stat">
+              <div class="pd-stat-label">Ожидается за месяц</div>
+              <div class="pd-stat-value">{{ formatCurrency(profitDetailPlanned) }}</div>
+              <div class="pd-stat-hint">весь план: пришло + осталось · {{ profitByDeal.length }} {{ profitByDeal.length === 1 ? 'сделка' : profitByDeal.length < 5 ? 'сделки' : 'сделок' }} · {{ profitByDeal.reduce((s, d) => s + d.paymentsCount, 0) }} платежей</div>
             </div>
-            <div v-if="profitDetailCoInvestor > 0" class="pd-summary-divider" />
-            <div v-if="profitDetailCoInvestor > 0" class="pd-summary-item">
-              <div class="pd-summary-label">Со-инвесторам</div>
-              <div class="pd-summary-value" style="color: #8b5cf6;">{{ formatCurrency(profitDetailCoInvestor) }}</div>
-            </div>
-            <div class="pd-summary-divider" />
-            <div class="pd-summary-item">
-              <div class="pd-summary-label">Общий доход</div>
-              <div class="pd-summary-value">{{ formatCurrency(profitDetailEarned) }}</div>
-            </div>
-            <div v-if="profitDetailExpected > 0" class="pd-summary-divider" />
-            <div v-if="profitDetailExpected > 0" class="pd-summary-item">
-              <div class="pd-summary-label">Ожидается</div>
-              <div class="pd-summary-value" style="color: #3b82f6;">{{ formatCurrency(profitDetailExpected) }}</div>
-              <div class="pd-summary-proj">
-                партнёр: {{ formatCurrency(Math.max(0, profitDetailProjectedPartner)) }}<template v-if="profitDetailProjectedCoInvestor > 0"> · инвесторам: {{ formatCurrency(profitDetailProjectedCoInvestor) }}</template>
+            <div v-if="profitDetailPaid > 0" class="pd-stat">
+              <div class="pd-stat-label">Пришло</div>
+              <div class="pd-stat-value" style="color: #10b981;">{{ formatCurrency(profitDetailPaid) }}</div>
+              <div class="pd-stat-profit">
+                из них ваша прибыль +{{ formatCurrency(Math.max(0, profitDetailPartner)) }}
+                <ProfitFormula
+                  :amount="profitDetailPaid"
+                  :gross="profitDetailGrossPaid"
+                  :co-investor="profitDetailCoInvPaid"
+                  :net="profitDetailPartner"
+                />
               </div>
             </div>
-          </div>
-          <div class="pd-summary pd-summary--sub mb-4">
-            <div class="pd-summary-item">
-              <div class="pd-summary-label">Сумма платежей</div>
-              <div class="pd-summary-value">{{ formatCurrency(profitDetailReceived) }}</div>
+            <div v-if="profitDetailPending > 0" class="pd-stat">
+              <div class="pd-stat-label">Осталось</div>
+              <div class="pd-stat-value" style="color: #3b82f6;">{{ formatCurrency(profitDetailPending) }}</div>
+              <div class="pd-stat-profit pd-stat-profit--proj">
+                ваша прибыль ~{{ formatCurrency(Math.max(0, profitDetailProjectedPartner)) }} после оплаты
+                <ProfitFormula
+                  :amount="profitDetailPending"
+                  :gross="profitDetailGrossPending"
+                  :co-investor="profitDetailCoInvPending"
+                  :net="profitDetailProjectedPartner"
+                  projected
+                />
+              </div>
             </div>
-            <div class="pd-summary-divider" />
-            <div class="pd-summary-item">
-              <div class="pd-summary-label">Сделок</div>
-              <div class="pd-summary-value">{{ profitByDeal.length }}</div>
-            </div>
-            <div class="pd-summary-divider" />
-            <div class="pd-summary-item">
-              <div class="pd-summary-label">Платежей</div>
-              <div class="pd-summary-value">{{ profitByDeal.reduce((s, d) => s + d.paymentsCount, 0) }}</div>
+            <div v-if="profitDetailCoInvestorAll > 0" class="pd-stat">
+              <div class="pd-stat-label">Со-инвесторам</div>
+              <div class="pd-stat-value" style="color: #8b5cf6;">{{ formatCurrency(profitDetailCoInvestorAll) }}</div>
+              <div class="pd-stat-hint">доля со-инвесторов со всех платежей<template v-if="profitDetailProfitAll > 0"> · ≈ {{ Math.round(profitDetailCoInvestorAll / profitDetailProfitAll * 100) }}% дохода</template></div>
             </div>
           </div>
 
-          <!-- Deal list -->
-          <div v-if="profitByDeal.length" class="pd-list">
+          <!-- Filter tabs -->
+          <div v-if="profitByDeal.length" class="pd-filter">
+            <button class="pd-filter-btn" :class="{ 'pd-filter-btn--active': dealFilter === 'all' }" @click="dealFilter = 'all'">
+              Все <span class="pd-filter-count">{{ dealFilterCounts.all }}</span>
+            </button>
+            <button class="pd-filter-btn" :class="{ 'pd-filter-btn--active': dealFilter === 'paid' }" @click="dealFilter = 'paid'">
+              Оплаченные <span class="pd-filter-count">{{ dealFilterCounts.paid }}</span>
+            </button>
+            <button class="pd-filter-btn" :class="{ 'pd-filter-btn--active': dealFilter === 'pending' }" @click="dealFilter = 'pending'">
+              Неоплаченные <span class="pd-filter-count">{{ dealFilterCounts.pending }}</span>
+            </button>
+          </div>
+
+          <!-- Deal table -->
+          <div v-if="displayDeals.length" class="pdt">
+            <!-- Header -->
+            <div class="pdt-head">
+              <span class="pdt-h-deal">Сделка</span>
+              <span class="pdt-h-num" title="Полная сумма платежей по этой сделке за месяц — которые были оплачены или должны быть по плану">Платёж за месяц</span>
+              <span class="pdt-h-num" title="Ваш чистый заработок с этих платежей — доля наценки за вычетом доли со-инвесторов">Ваша прибыль</span>
+              <span class="pdt-h-chev" />
+            </div>
+
+            <!-- Rows -->
             <div
-              v-for="d in profitByDeal"
+              v-for="d in displayDeals"
               :key="d.dealId"
-              class="pd-deal"
+              class="pdt-row"
               @click="profitDetailDialog = false; router.push(`/deals/${d.dealId}`)"
             >
-              <div class="pd-deal-main">
-                <div class="pd-deal-name">{{ d.productName }}</div>
-                <div class="pd-deal-meta">
-                  {{ d.clientName }} · {{ d.paymentsCount }} {{ d.paymentsCount === 1 ? 'платёж' : 'платежей' }} · наценка {{ Math.round(d.markupPercent) }}%
-                </div>
-                <div v-if="d.paidCount > 0" class="pd-deal-breakdown">
-                  <span class="pd-deal-tag">Сумма платежа {{ formatCurrency(d.paidReceived) }}</span>
-                  <span class="pd-deal-tag">Общий доход {{ formatCurrency(d.paidProfit) }}</span>
-                  <span v-if="d.coInvestorProfit > 0" class="pd-deal-tag pd-deal-tag--ci">Со-инв. {{ formatCurrency(d.coInvestorProfit) }}</span>
-                </div>
-                <div v-if="d.pendingCount > 0" class="pd-deal-pending">
-                  <span class="pd-deal-tag pd-deal-tag--pending">Ожидается · сумма платежа {{ formatCurrency(d.pendingReceived) }}</span>
-                  <span class="pd-deal-tag pd-deal-tag--pending">Общий доход {{ formatCurrency(d.pendingProfit) }}</span>
-                  <span class="pd-deal-proj">после оплаты: партнёр {{ formatCurrency(Math.max(0, d.projectedPartnerProfit)) }}<template v-if="d.projectedCoInvestorProfit > 0"> · инвесторам {{ formatCurrency(d.projectedCoInvestorProfit) }}</template></span>
+              <!-- Сделка -->
+              <div class="pdt-deal">
+                <div class="pdt-deal-name">{{ d.productName }}</div>
+                <div class="pdt-deal-meta">{{ d.clientName }}</div>
+                <div v-if="d.earlyOffMonth > 0 || d.lateOffMonth > 0" class="pdt-badges">
+                  <span
+                    v-if="d.earlyOffMonth > 0"
+                    class="pdt-badge pdt-badge--early"
+                    title="Эти платежи оплачены раньше срока — доход учтён в этом месяце по факту оплаты"
+                  >
+                    <v-icon icon="mdi-calendar-arrow-left" size="11" />
+                    {{ d.earlyOffMonth }} досрочно
+                  </span>
+                  <span
+                    v-if="d.lateOffMonth > 0"
+                    class="pdt-badge pdt-badge--late"
+                    title="Эти платежи оплачены позже срока — доход учтён в этом месяце по факту оплаты"
+                  >
+                    <v-icon icon="mdi-calendar-arrow-right" size="11" />
+                    {{ d.lateOffMonth }} с опозданием
+                  </span>
                 </div>
               </div>
-              <div class="pd-deal-numbers">
-                <div class="pd-deal-profit" :style="{ color: d.paidCount > 0 ? '#10b981' : '#3b82f6' }">{{ d.paidCount > 0 && d.pendingCount === 0 ? '+' : d.paidCount === 0 ? '~' : '' }}{{ formatCurrency(d.paidCount > 0 ? Math.max(0, d.partnerProfit) : Math.max(0, d.projectedPartnerProfit)) }}</div>
-                <div class="pd-deal-received">{{ d.paidCount > 0 ? 'чистый доход' : 'после оплаты' }}</div>
+
+              <!-- Платёж за месяц -->
+              <div class="pdt-num">
+                <span class="pdt-num-label">Платёж за месяц</span>
+                <div class="pdt-num-val" :class="d.hasPaid ? 'pdt-num-val--in' : 'pdt-num-val--left'">{{ formatCurrency(d.amount) }}</div>
+                <div class="pdt-num-sub">
+                  {{ d.count }} {{ d.count === 1 ? 'платёж' : (d.count < 5 ? 'платежа' : 'платежей') }}<template v-if="!d.hasPaid"> · не оплачен{{ d.count === 1 ? '' : 'ы' }}</template>
+                </div>
               </div>
-              <v-icon icon="mdi-chevron-right" size="16" class="pd-deal-chevron" />
+
+              <!-- Ваша прибыль -->
+              <div class="pdt-num">
+                <span class="pdt-num-label">Ваша прибыль</span>
+                <div class="pdt-num-val" :class="d.hasPaid ? 'pdt-num-val--profit' : 'pdt-num-val--proj'">
+                  {{ d.hasPaid ? '+' : '~' }}{{ formatCurrency(Math.max(0, d.net)) }}
+                  <ProfitFormula
+                    :amount="d.amount"
+                    :gross="d.gross"
+                    :co-investor="d.coInv"
+                    :net="d.net"
+                    :share="d.profitShare"
+                    :projected="!d.hasPaid"
+                  />
+                </div>
+                <div class="pdt-num-sub" title="Какая доля каждого платежа — прибыль. Остальное — возврат вложенных денег за товар">прибыль {{ Math.round(d.profitShare * 100) }}% от платежа</div>
+                <div v-if="d.coInv > 0" class="pdt-num-sub">со-инвесторам {{ formatCurrency(d.coInv) }}</div>
+                <div v-if="d.hasPaid && d.hasPending" class="pdt-num-sub pdt-num-sub--proj">часть — прогноз по неоплаченным</div>
+                <div v-else-if="!d.hasPaid" class="pdt-num-sub pdt-num-sub--proj">будет после оплаты</div>
+              </div>
+
+              <v-icon icon="mdi-chevron-right" size="16" class="pdt-chev" />
             </div>
           </div>
 
           <div v-else class="text-center pa-8 text-medium-emphasis text-body-2">
-            Нет платежей за выбранный период
+            {{ dealFilter === 'paid' ? 'Нет оплаченных платежей за период' : dealFilter === 'pending' ? 'Нет неоплаченных платежей за период' : 'Нет платежей за выбранный период' }}
           </div>
         </div>
       </v-card>
     </v-dialog>
 
-    <!-- Metric Breakdown Dialog -->
+    <!-- Расшифровка показателя сводки — общий компонент с отчётами -->
+    <MetricDetailDialog
+      v-model="metricOpen"
+      :title="metricTitle"
+      :hint="metricHint"
+      :total="metricTotal"
+      :color="metricColor"
+      :items="metricItems"
+    />
+
+    <!-- Metric Breakdown Dialog (legacy) -->
     <v-dialog v-model="breakdownOpen" max-width="580" scrollable :fullscreen="isMobile">
       <v-card rounded="xl" class="bd-dialog">
         <!-- Header -->
@@ -1864,90 +2132,154 @@ function bdColor(name?: string) {
   background: rgba(var(--v-theme-on-surface), 0.08);
 }
 
-/* Month grid */
-.yc-grid {
+/* Column captions — shared grid template with rows */
+.yc-caption,
+.yc-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  padding: 16px 20px;
-  gap: 8px;
+  grid-template-columns: 130px minmax(90px, 1fr) 116px 104px 104px 128px 22px;
+  align-items: center;
+  gap: 14px;
 }
-@media (max-width: 800px) { .yc-grid { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 500px) { .yc-grid { grid-template-columns: repeat(2, 1fr); } }
+.yc-caption {
+  padding: 12px 26px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.yc-caption span {
+  font-size: 11px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.yc-cap-num { text-align: right; }
 
-.yc-month {
-  padding: 14px 16px;
-  border-radius: 10px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+/* Month list — flat rows with clear dividers */
+.yc-list { padding: 4px 0 0; }
+.yc-row {
+  padding: 15px 26px;
   cursor: pointer;
-  transition: all 0.15s;
+  position: relative;
+  transition: background 0.15s;
 }
-.yc-month:hover {
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  border-color: rgba(var(--v-theme-on-surface), 0.15);
+/* Отчётливый разделитель между месяцами */
+.yc-row + .yc-row::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 26px; right: 26px;
+  height: 1px;
+  background: rgba(var(--v-theme-on-surface), 0.1);
 }
-.yc-month--current {
-  background: rgba(16, 185, 129, 0.05);
-  border-color: rgba(16, 185, 129, 0.35);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.08);
+.yc-row:hover { background: rgba(var(--v-theme-on-surface), 0.035); }
+/* при ховере скрываем разделитель у соседей — строка «выделяется» целиком */
+.yc-row:hover::after,
+.yc-row:hover + .yc-row::after { background: transparent; }
+.yc-row--current { background: rgba(16, 185, 129, 0.05); }
+.yc-row--current:hover { background: rgba(16, 185, 129, 0.08); }
+/* тонкий цветной маркер слева только у текущего месяца */
+.yc-row--current::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: #10b981;
 }
-.yc-month--empty { opacity: 0.45; }
-.yc-month--empty:hover { opacity: 0.65; }
+.yc-row--empty .yc-row-mname { color: rgba(var(--v-theme-on-surface), 0.4); }
 
-.yc-month-name {
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  margin-bottom: 10px;
-  display: flex; align-items: center; gap: 6px;
+/* Month cell */
+.yc-row-month {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 4px 8px;
 }
-.yc-month-name--current { color: #047857; }
+.yc-row-mname {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.yc-row-mname--current { color: #047857; }
 .yc-month-now {
   font-size: 10px; font-weight: 700;
   color: #10b981;
-  background: rgba(16, 185, 129, 0.1);
+  background: rgba(16, 185, 129, 0.12);
   padding: 1px 6px; border-radius: 4px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
+.yc-row-pays {
+  font-size: 11px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  flex-basis: 100%;
+}
 
-/* Dual horizontal bars — flex stack */
-.yc-bars { margin-bottom: 8px; }
+/* Mid: bar + chips */
+.yc-row-mid { min-width: 0; }
 .yc-bar-track {
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(var(--v-theme-on-surface), 0.05);
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
   display: flex;
   overflow: hidden;
   gap: 1px;
 }
 .yc-bar {
   height: 100%;
-  border-radius: 2px;
+  border-radius: 3px;
   transition: width 0.4s cubic-bezier(0.23, 1, 0.32, 1);
   min-width: 0;
   flex-shrink: 0;
 }
 .yc-bar--earned { background: #10b981; }
 .yc-bar--expected { background: #3b82f6; }
+.yc-bar--pending { background: #3b82f6; }
+.yc-row-chips {
+  display: flex; flex-wrap: wrap; gap: 4px 6px;
+  margin-top: 7px;
+}
+.yc-chip {
+  font-size: 11px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  padding: 2px 8px; border-radius: 6px;
+  white-space: nowrap;
+}
+.yc-chip--off {
+  display: inline-flex; align-items: center; gap: 3px;
+  color: #10b981; background: rgba(16, 185, 129, 0.1);
+}
+.yc-chip--off-late {
+  display: inline-flex; align-items: center; gap: 3px;
+  color: #f59e0b; background: rgba(245, 158, 11, 0.1);
+}
 
-.yc-month-values {
-  display: flex; align-items: center; gap: 8px;
-  min-height: 18px;
+/* Numeric columns */
+.yc-row-num { text-align: right; }
+.yc-num-val {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
-.yc-val {
-  font-size: 13px; font-weight: 700;
-}
-.yc-val--earned { color: #10b981; }
-.yc-val--expected { color: #3b82f6; }
-.yc-val--empty {
+.yc-num-val--earned { color: #10b981; }
+.yc-num-val--expected { color: #3b82f6; }
+.yc-num-val--pending { color: #3b82f6; }
+.yc-num-val--net { color: #059669; font-weight: 800; }
+.yc-num-empty {
+  font-size: 14px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.2);
-  font-weight: 500;
 }
-.yc-month-sub {
-  font-size: 10px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  margin-top: 4px;
-  line-height: 1.3;
+.yc-row-chev {
+  color: rgba(var(--v-theme-on-surface), 0.2);
+  justify-self: end;
 }
+
+/* Компактная строка сумм для телефона (на десктопе скрыта) */
+.yc-row-mmoney { display: none; }
+.yc-row-mmoney span {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.yc-row-mmoney b {
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.yc-mm--green b { color: #10b981; }
+.yc-mm--pending b { color: #3b82f6; }
+.yc-mm--net b { color: #059669; }
 
 /* Footer / legend */
 .yc-footer {
@@ -1968,6 +2300,59 @@ function bdColor(name?: string) {
   display: flex; align-items: center; gap: 4px;
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.35);
+}
+
+/* ── Вкладки раздела «Обзор | Отчёты» ── */
+/* Строка без собственного фона: слева «пилюля» вкладок, справа — отдельная
+   кнопка выгрузки. Общий фон визуально склеивал бы их в один элемент. */
+.an-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.an-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.an-tab-export {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 16px;
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  border-radius: 10px;
+  background: transparent;
+  color: #dc2626;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.an-tab-export:hover:not(:disabled) { background: rgba(220, 38, 38, 0.07); }
+.an-tab-export:disabled { opacity: 0.5; cursor: default; }
+.an-export-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.an-tab-export--excel {
+  border-color: rgba(16, 124, 65, 0.3);
+  color: #107c41;
+}
+.an-tab-export--excel:hover:not(:disabled) { background: rgba(16, 124, 65, 0.07); }
+.an-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 18px;
+  border: none; border-radius: 9px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s;
+}
+.an-tab:hover { color: rgba(var(--v-theme-on-surface), 0.8); }
+.an-tab--active {
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-primary));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 /* ── Formula explainer ── */
@@ -2106,6 +2491,78 @@ function bdColor(name?: string) {
   color: #10b981;
 }
 
+/* ─── Profit detail dialog — header / body / stat cards ─── */
+.pd-dialog { display: flex; flex-direction: column; }
+.pd-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  flex-shrink: 0;
+}
+.pd-head-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.pd-head-icon {
+  width: 44px; height: 44px; min-width: 44px;
+  border-radius: 12px;
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+  display: flex; align-items: center; justify-content: center;
+}
+.pd-head-title {
+  font-size: 18px; font-weight: 800;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  letter-spacing: -0.01em;
+}
+.pd-head-sub {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 2px;
+}
+.pd-body { padding: 20px 24px 24px; overflow-y: auto; }
+
+.pd-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.pd-stat {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.pd-stat-label {
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.pd-stat-value {
+  font-size: 20px; font-weight: 800;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  letter-spacing: -0.01em;
+  margin-top: 4px;
+}
+.pd-stat-hint {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+/* Подстрока «ваша прибыль» внутри карточек Пришло/Осталось */
+.pd-stat-profit {
+  display: inline-block;
+  margin-top: 7px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(16, 185, 129, 0.1);
+  color: #059669;
+  font-size: 11px; font-weight: 700;
+  line-height: 1.3;
+}
+.pd-stat-profit--proj {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
 .pd-summary {
   display: flex;
   align-items: center;
@@ -2142,88 +2599,125 @@ function bdColor(name?: string) {
   color: rgba(var(--v-theme-on-surface), 0.6);
 }
 
-.pd-list {
+/* ─── Filter tabs ─── */
+.pd-filter {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  margin-bottom: 12px;
 }
-.pd-deal {
-  display: flex;
-  align-items: center;
+.pd-filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: 9px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 13px; font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.pd-filter-btn:hover { border-color: rgba(var(--v-theme-on-surface), 0.2); }
+.pd-filter-btn--active {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #10b981;
+}
+.pd-filter-count {
+  font-size: 11px; font-weight: 700;
+  padding: 1px 7px; border-radius: 20px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.pd-filter-btn--active .pd-filter-count {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+/* ─── Deal table inside profit dialog (без обёртки/границы) ─── */
+.pdt-head,
+.pdt-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 168px 20px;
   gap: 14px;
-  padding: 14px 16px;
-  border-radius: 10px;
+  align-items: start;
+}
+.pdt-head {
+  padding: 0 12px 10px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.pdt-head span {
+  font-size: 11px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.pdt-h-num { text-align: right; cursor: help; }
+
+.pdt-row {
+  padding: 14px 12px;
   cursor: pointer;
   transition: background 0.15s;
+  border-radius: 8px;
 }
-.pd-deal:hover {
-  background: rgba(var(--v-theme-on-surface), 0.03);
+.pdt-row + .pdt-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06); }
+.pdt-row:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+
+/* Deal cell */
+.pdt-deal { min-width: 0; }
+.pdt-deal-name {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  line-height: 1.3;
 }
-.pd-deal-main {
-  flex: 1;
-  min-width: 0;
-}
-.pd-deal-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pd-deal-meta {
+.pdt-deal-meta {
   font-size: 12px;
   color: rgba(var(--v-theme-on-surface), 0.45);
   margin-top: 2px;
 }
-.pd-deal-breakdown {
+.pdt-badges {
   display: flex; flex-wrap: wrap; gap: 4px 6px;
   margin-top: 6px;
 }
-.pd-deal-tag {
+.pdt-badge {
+  display: inline-flex; align-items: center; gap: 3px;
   font-size: 11px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  padding: 2px 7px; border-radius: 6px;
+  padding: 1px 7px; border-radius: 6px;
   white-space: nowrap;
 }
-.pd-deal-tag--ci {
-  color: #8b5cf6;
-  background: rgba(139, 92, 246, 0.1);
+.pdt-badge--early { color: #10b981; background: rgba(16, 185, 129, 0.1); }
+.pdt-badge--late { color: #f59e0b; background: rgba(245, 158, 11, 0.1); }
+
+/* Numeric cells */
+.pdt-num { text-align: right; min-width: 0; }
+.pdt-num-label {
+  display: none; /* виден только на телефоне */
+  font-size: 11px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.45);
 }
-.pd-deal-tag--pending {
-  color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+.pdt-num-val {
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  white-space: nowrap;
 }
-.pd-deal-pending {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
-  margin-top: 6px;
-}
-.pd-deal-proj {
-  font-size: 11px; font-style: italic;
-  color: rgba(59, 130, 246, 0.75);
-}
-.pd-summary-proj {
-  font-size: 10px; font-style: italic;
-  color: rgba(59, 130, 246, 0.7);
-  margin-top: 2px;
-}
-.pd-deal-numbers {
-  text-align: right;
-  flex-shrink: 0;
-}
-.pd-deal-profit {
-  font-size: 15px;
-  font-weight: 700;
-}
-.pd-deal-received {
-  font-size: 12px;
+.pdt-num-val--in { color: #10b981; }
+.pdt-num-val--left { color: #3b82f6; }
+.pdt-num-val--profit { color: #059669; font-weight: 800; }
+.pdt-num-val--proj { color: #3b82f6; }
+.pdt-num-sub {
+  font-size: 11px;
   color: rgba(var(--v-theme-on-surface), 0.4);
-  margin-top: 1px;
+  margin-top: 2px;
+  line-height: 1.3;
 }
-.pd-deal-chevron {
+.pdt-num-sub--proj { color: rgba(59, 130, 246, 0.75); }
+.pdt-num-dash {
+  font-size: 14px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.2);
-  flex-shrink: 0;
+}
+.pdt-chev {
+  color: rgba(var(--v-theme-on-surface), 0.2);
+  align-self: center;
+  justify-self: end;
 }
 
 /* Breakdown dialog */
@@ -2414,9 +2908,24 @@ function bdColor(name?: string) {
   .yc-stat-value { font-size: 15px; }
   .yc-stat-label { font-size: 10px; }
   .yc-stat-divider { height: 22px; }
-  .yc-month { padding: 10px 12px; }
-  .yc-month-name { font-size: 12px; margin-bottom: 8px; }
-  .yc-val { font-size: 11px; }
+
+  /* Каптион прячем; на телефоне — месяц сверху, бар + подписанные суммы ниже */
+  .yc-caption { display: none; }
+  .yc-list { padding: 2px 0 0; }
+  .yc-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 14px 16px;
+  }
+  .yc-row + .yc-row::after { left: 16px; right: 16px; }
+  .yc-row-num, .yc-row-chev { display: none; } /* колонки-числа заменяет компактная строка */
+  .yc-row-mid { grid-column: 1; }
+  .yc-row-mmoney {
+    display: flex; flex-wrap: wrap;
+    column-gap: 14px; row-gap: 4px;
+    margin-top: 9px;
+  }
+
   .yc-footer {
     padding: 10px 14px 14px;
     flex-wrap: wrap;
@@ -2464,6 +2973,32 @@ function bdColor(name?: string) {
   .pd-summary { flex-wrap: wrap; gap: 12px; }
   .pd-period-row { gap: 4px; }
   .pd-period-btn { padding: 6px 10px; font-size: 12px; }
+
+  /* Модалка дохода — во весь экран, шапка/тело/скролл */
+  .pd-dialog { height: 100%; border-radius: 0; }
+  .pd-head { padding: 14px 16px; }
+  .pd-head-icon { width: 38px; height: 38px; min-width: 38px; }
+  .pd-head-title { font-size: 16px; }
+  .pd-head-sub { font-size: 12px; }
+  .pd-body { padding: 16px; flex: 1 1 auto; min-height: 0; }
+  .pd-stats { grid-template-columns: repeat(2, 1fr); }
+  .pd-stat-value { font-size: 18px; }
+
+  /* Таблица сделок → карточки: шапку прячем, суммы с подписями в ряд */
+  .pdt-head { display: none; }
+  .pdt-row {
+    display: flex; flex-wrap: wrap;
+    gap: 10px 16px;
+    padding: 14px;
+  }
+  .pdt-deal { flex: 1 1 100%; }
+  .pdt-num {
+    flex: 1 1 auto;
+    text-align: left;
+    min-width: 84px;
+  }
+  .pdt-num-label { display: block; margin-bottom: 2px; }
+  .pdt-chev { display: none; }
 
   .an-charts-overlay-content { padding: 24px 18px; }
   .an-charts-overlay-features { grid-template-columns: 1fr; }

@@ -13,11 +13,37 @@ import { useFolders } from '@/composables/useFolders'
 import { useDealDraft } from '@/composables/useDealDraft'
 import { useCoInvestors } from '@/composables/useCoInvestors'
 import { useCashBoxesStore } from '@/stores/cashboxes'
+import { useSuppliersStore } from '@/stores/suppliers'
+import { useSubscription } from '@/composables/useSubscription'
+import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
+import SupplierFormDialog from '@/components/SupplierFormDialog.vue'
+import SupplierSelect from '@/components/SupplierSelect.vue'
 
 const authStore = useAuthStore()
+const suppliersStore = useSuppliersStore()
+const subscription = useSubscription()
+const sections = useSections()
+const suppliersEnabled = computed(() => sections.visible('suppliers'))
+// Партнёр-поставщик, у которого выкуплен товар, и оплачен ли он.
+const selectedSupplierId = ref<string | null>(null)
+const paidToSupplier = ref(true)
+const supplierFormOpen = ref(false)
+// Если пришли из заявки поставщика — линкуем её при создании сделки.
+const fromSupplierRequestId = ref<string | null>(null)
+const supplierItems = computed(() =>
+  suppliersStore.rows.map((s) => ({ title: s.city ? `${s.name} · ${s.city}` : s.name, value: s.id })),
+)
+// Сумма долга = оптовая (если задана) иначе закупочная — как deployAmountFor на бэке.
+const supplierDebtAmount = computed(() =>
+  useWholesalePrice.value && (wholesalePrice.value || 0) > 0 ? (wholesalePrice.value || 0) : (purchasePrice.value || 0),
+)
+async function onSupplierCreated() {
+  await suppliersStore.fetchList({ sort: 'name' })
+  toast.success('Партнёр добавлен — выберите его в списке')
+}
 
 const { isDark } = useIsDark()
 const { isMobile } = useIsMobile()
@@ -62,6 +88,18 @@ const router = useRouter()
 const route = useRoute()
 
 const editId = computed(() => (route.query.edit as string) || null)
+
+/**
+ * Форма ждёт данные редактируемой сделки или черновика.
+ *
+ * Значение выставляется СИНХРОННО, до первой отрисовки: иначе на время
+ * загрузки мастер показывает пустые поля, и это читается как «создаём новую
+ * сделку» — партнёр может начать заполнять её заново поверх существующей.
+ */
+const prefillLoading = ref(!!route.query.edit || route.query.resume === '1')
+const prefillLabel = computed(() =>
+  route.query.edit ? 'Загружаем сделку' : 'Восстанавливаем черновик',
+)
 const isEditMode = computed(() => !!editId.value)
 
 // Plan-limit gate. Editing existing deals is always allowed (Approach A:
@@ -172,6 +210,7 @@ const profitSplitBase = ref<'MARKUP_ONLY' | 'FULL_MARGIN'>('MARKUP_ONLY')
 // to detect whether the partner changed any cashflow-affecting field
 // and show a confirm dialog (server-side rewriteForDeal will recompute
 // CI accruals, so the partner needs to acknowledge).
+const initialClientProfileId = ref<string | null>(null)
 const initialWholesalePrice = ref<number | null>(null)
 const initialProfitSplitBase = ref<'MARKUP_ONLY' | 'FULL_MARGIN'>('MARKUP_ONLY')
 
@@ -231,9 +270,34 @@ function pickDefaultCashBoxId(): string | null {
 // AFTER setup finishes, by which time every const has its value).
 
 onMounted(async () => {
+  // Партнёры-поставщики (только если фича доступна по тарифу).
+  if (suppliersEnabled.value) {
+    suppliersStore.fetchList({ sort: 'name' }).catch(() => {})
+    const rq = route.query.supplierRequestId as string | undefined
+    const sup = route.query.supplierId as string | undefined
+    if (sup) { selectedSupplierId.value = sup; paidToSupplier.value = false }
+    // Конверсия заявки → сделка: предзаполняем товар, закупочную цену и клиента.
+    if (rq) {
+      fromSupplierRequestId.value = rq
+      try {
+        const req = await suppliersStore.getRequest(rq)
+        if (req.supplierId) { selectedSupplierId.value = req.supplierId; paidToSupplier.value = false }
+        if (req.productName && !productName.value) productName.value = req.productName
+        if (req.category && !category.value) category.value = req.category
+        if (req.city && !city.value) city.value = req.city
+        if (req.price != null && purchasePrice.value == null) purchasePrice.value = req.price
+        if (req.clientProfileId && !selectedClientProfileId.value) selectedClientProfileId.value = req.clientProfileId
+      } catch { /* заявка недоступна — продолжаем с пустой формой */ }
+    }
+  }
   try {
+    // Запрос со-инвесторов вынесен из общего Promise.all: раньше его отказ
+    // (скрытый раздел, урезанный тариф, права сотрудника) ронял загрузку
+    // папок и касс вместе с ним — форма создания сделки открывалась пустой.
     const [data] = await Promise.all([
-      api.get<any[]>('/co-investors'),
+      sections.visible('coInvestors')
+        ? api.get<any[]>('/co-investors').catch(() => [] as any[])
+        : Promise.resolve([] as any[]),
       fetchFolders(),
       cashboxesStore.fetchAll(),
     ])
@@ -277,6 +341,7 @@ onMounted(async () => {
       dealDate.value = deal.dealDate ? new Date(deal.dealDate).toISOString().slice(0, 10) : dealDate.value
       customFirstPayment.value = deal.firstPaymentDate ? new Date(deal.firstPaymentDate).toISOString().slice(0, 10) : ''
       selectedClientProfileId.value = deal.clientProfileId || null
+      initialClientProfileId.value = deal.clientProfileId || null
       if (deal.clientProfile) selectedClientProfile.value = deal.clientProfile
       // Поручители: новый упорядоченный набор, с fallback на legacy-поле.
       if (deal.guarantors && deal.guarantors.length) {
@@ -310,10 +375,19 @@ onMounted(async () => {
       // Load the deal's actual co-investor participation (overrides the default
       // set the cashbox watcher built when selectedCashBoxId was assigned above).
       await loadParticipantsForEdit(editId.value)
+
+      // ВАЖНО: цена сделки — истина в рублях, а markupPercent у части сделок
+      // записан от цены продажи (легаси/импорт), поэтому выводить цену из
+      // процента нельзя — она «уплывёт» и молча спишет клиенту долг.
+      // Ставим сохранённую цену как ручную (после nextTick — watch на
+      // purchasePrice/markupValue сбрасывает manualTotalPrice в null).
+      await nextTick()
+      manualTotalPrice.value = deal.totalPrice
     } catch (e: any) {
       toast.error(e.message || 'Не удалось загрузить сделку')
       router.push('/deals')
     }
+    prefillLoading.value = false
     // Editing a real deal — never a draft, don't restore.
     return
   }
@@ -333,7 +407,9 @@ onMounted(async () => {
       (stored.purchasePrice ?? 0) > 0 ||
       !!stored.selectedClientProfileId
     )
-  if (wantsResume && storedHasContent) {
+  // В режиме редактирования черновик не применяем никогда: форма уже заполнена
+  // данными сделки, и восстановление затёрло бы их чужим черновиком.
+  if (wantsResume && storedHasContent && !editId.value) {
     applyDraftToForm()
     wasRestoredOnMount.value = true
     if (selectedCashBoxId.value) await fetchCashBoxCapital(selectedCashBoxId.value)
@@ -343,6 +419,7 @@ onMounted(async () => {
     // up so the floater doesn't light up for nothing.
     dealDraft.clear()
   }
+  prefillLoading.value = false
 })
 
 // Co-investors of the selected cashbox — the candidate pool for participation.
@@ -1129,13 +1206,33 @@ async function submitDeal(acknowledgedOverdraft = false) {
         productName: productName.value,
         purchasePrice: purchasePrice.value || 0,
         markupPercent: markupPercent.value,
-        downPayment: downPaymentAmount.value || undefined,
+        // Явная цена в рублях — источник истины. Без неё сервер пересчитывал
+        // цену из процента, и у сделок с процентом «от цены продажи» долг
+        // клиента молча уменьшался при каждом сохранении.
+        totalPrice: totalPrice.value,
+        // 0 — валидное значение (убрать первоначальный взнос), поэтому ?? , не ||
+        downPayment: downPaymentAmount.value ?? undefined,
         numberOfPayments: termMonths.value,
         dealDate: dealDate.value,
         firstPaymentDate: customFirstPayment.value || undefined,
         wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || 0) : null,
         profitSplitBase: profitSplitBase.value,
       })
+      // Клиент меняется отдельным эндпоинтом: UpdateDealDto его не принимает,
+      // и раньше поле молча отсекалось валидацией — из формы редактирования
+      // клиент не сохранялся вообще. Дёргаем только при реальной смене: вызов
+      // затирает legacy-поля externalClientName/Phone.
+      if (
+        selectedClientProfileId.value &&
+        selectedClientProfileId.value !== initialClientProfileId.value
+      ) {
+        try {
+          await dealsStore.updateClient(editId.value, selectedClientProfileId.value)
+          initialClientProfileId.value = selectedClientProfileId.value
+        } catch (e: any) {
+          toast.error(e.message || 'Не удалось сменить клиента')
+        }
+      }
       // Поручители (до 5) заменяются целиком через отдельный эндпоинт.
       // Порядок = порядок в списке, первый = основной.
       try {
@@ -1203,6 +1300,10 @@ async function submitDeal(acknowledgedOverdraft = false) {
       wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || undefined) : undefined,
       profitSplitBase: useWholesalePrice.value ? profitSplitBase.value : undefined,
       cashBoxId: selectedCashBoxId.value || undefined,
+      // Партнёр-поставщик + оплачен ли он. paidToSupplier=false создаёт долг.
+      supplierId: selectedSupplierId.value || undefined,
+      paidToSupplier: selectedSupplierId.value ? paidToSupplier.value : undefined,
+      supplierRequestId: fromSupplierRequestId.value || undefined,
       // Phase 4: when the partner customised participation, send the explicit
       // set WITH the create request so it's applied atomically — before the
       // down-payment accrual runs. Omit otherwise → backend defaults to every
@@ -1283,7 +1384,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
       </button>
     </div>
     <!-- Custom stepper header -->
-    <div class="stepper-header">
+    <div class="stepper-header" :class="{ 'stepper-header--loading': prefillLoading }">
       <div
         v-for="(s, i) in steps"
         :key="s.num"
@@ -1304,7 +1405,61 @@ async function submitDeal(acknowledgedOverdraft = false) {
       </div>
     </div>
 
-    <div class="wizard-layout">
+    <!-- Пока данные сделки/черновика не подставлены, показываем скелет той же
+         формы. Раньше здесь были настоящие пустые поля — визуально
+         неотличимые от создания новой сделки. -->
+    <div v-if="prefillLoading" class="wizard-layout wizard-skeleton" aria-busy="true">
+      <div class="wizard-main">
+        <div class="wz-status">
+          <v-progress-circular indeterminate size="18" width="2" color="primary" />
+          <span>{{ prefillLabel }}…</span>
+        </div>
+
+        <div class="wz-card">
+          <div class="wz-head">
+            <div class="wz-bar wz-bar--icon" />
+            <div class="wz-head-text">
+              <div class="wz-bar" style="width: 190px; height: 15px;" />
+              <div class="wz-bar" style="width: 260px;" />
+            </div>
+          </div>
+
+          <div v-for="n in 4" :key="n" class="wz-field">
+            <div class="wz-bar" style="width: 120px;" />
+            <div class="wz-bar wz-bar--input" />
+          </div>
+
+          <div class="wz-row">
+            <div class="wz-field wz-field--half">
+              <div class="wz-bar" style="width: 90px;" />
+              <div class="wz-bar wz-bar--input" />
+            </div>
+            <div class="wz-field wz-field--half">
+              <div class="wz-bar" style="width: 110px;" />
+              <div class="wz-bar wz-bar--input" />
+            </div>
+          </div>
+        </div>
+
+        <div class="wz-actions">
+          <div class="wz-bar wz-bar--btn" />
+          <div class="wz-bar wz-bar--btn" />
+        </div>
+      </div>
+
+      <aside class="wizard-preview">
+        <div class="wz-card wz-card--preview">
+          <div class="wz-bar" style="width: 130px; height: 14px;" />
+          <div class="wz-bar wz-bar--photo" />
+          <div v-for="n in 5" :key="n" class="wz-preview-row">
+            <div class="wz-bar" style="width: 40%;" />
+            <div class="wz-bar" style="width: 25%;" />
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <div v-else class="wizard-layout">
     <div class="wizard-main">
 
     <!-- Step 1: Product -->
@@ -1442,6 +1597,27 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   <template v-else>
                     Доступно в кассе: {{ formatCurrency(cashBoxCapital.availableCapital) }}
                   </template>
+                </div>
+              </div>
+
+              <!-- Партнёр-поставщик + долг (только если фича доступна по тарифу) -->
+              <div v-if="suppliersEnabled" class="form-field full-width">
+                <label class="field-label">Партнёр-поставщик</label>
+                <SupplierSelect
+                  v-model="selectedSupplierId"
+                  :items="supplierItems"
+                  placeholder="У кого выкупили товар (необязательно)"
+                  @create-new="supplierFormOpen = true"
+                />
+
+                <div v-if="selectedSupplierId" class="sup-paid-row">
+                  <label class="wholesale-checkbox-label">
+                    <input type="checkbox" :checked="paidToSupplier" @change="paidToSupplier = !paidToSupplier" />
+                    <span>Оплачено поставщику</span>
+                  </label>
+                  <span v-if="!paidToSupplier" class="sup-debt-hint">
+                    <v-icon icon="mdi-cash-minus" size="14" /> Долг поставщику: {{ formatCurrency(supplierDebtAmount) }}
+                  </span>
                 </div>
               </div>
 
@@ -2288,10 +2464,17 @@ async function submitDeal(acknowledgedOverdraft = false) {
         </div>
       </v-card>
     </v-dialog>
+
+    <!-- Быстрое создание партнёра-поставщика из формы сделки -->
+    <SupplierFormDialog v-model="supplierFormOpen" @saved="onSupplierCreated" />
   </div>
 </template>
 
 <style scoped>
+/* Партнёр-поставщик в форме сделки */
+.sup-paid-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
+.sup-debt-hint { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; color: #ef4444; }
+
 /* Plan-limit gate (blocks the form when over active-deal limit) */
 .limit-gate {
   max-width: 540px;
@@ -2360,6 +2543,64 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .dark .limit-gate__btn--secondary { background: #2a2a2a; color: #fff; }
 
 /* Wizard two-column layout */
+/* ── Скелет мастера на время подгрузки сделки/черновика ──
+   Повторяет раскладку формы, чтобы при появлении данных ничего не прыгало. */
+.stepper-header--loading { pointer-events: none; opacity: 0.5; }
+
+.wz-status {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 16px;
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+
+.wz-card {
+  padding: 22px;
+  border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgb(var(--v-theme-surface));
+}
+.wz-card--preview { display: flex; flex-direction: column; gap: 14px; }
+
+.wz-head { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+.wz-head-text { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+
+.wz-field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.wz-row { display: flex; gap: 14px; }
+.wz-field--half { flex: 1; min-width: 0; }
+
+.wz-actions { display: flex; justify-content: space-between; margin-top: 20px; }
+
+.wz-preview-row { display: flex; justify-content: space-between; gap: 12px; }
+
+/* Сама «плашка». Мерцание, а не спиннер в каждой строке: спокойнее выглядит
+   и не спорит с индикатором в заголовке. */
+.wz-bar {
+  height: 11px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  animation: wz-pulse 1.4s ease-in-out infinite;
+}
+.wz-bar--icon { width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0; }
+.wz-bar--input { height: 46px; border-radius: 10px; }
+.wz-bar--btn { width: 130px; height: 42px; border-radius: 10px; }
+.wz-bar--photo { height: 120px; border-radius: 12px; }
+
+@keyframes wz-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Разная задержка — «волна» сверху вниз вместо мигания всей формы разом. */
+.wz-field:nth-child(2) .wz-bar { animation-delay: 0.08s; }
+.wz-field:nth-child(3) .wz-bar { animation-delay: 0.16s; }
+.wz-field:nth-child(4) .wz-bar { animation-delay: 0.24s; }
+.wz-field:nth-child(5) .wz-bar { animation-delay: 0.32s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wz-bar { animation: none; }
+}
+
 .wizard-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(480px, 560px);

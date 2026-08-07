@@ -98,7 +98,11 @@ async function handleDelete(box: CashBoxSummary, e: Event) {
 }
 
 function cashboxProgressPct(box: CashBoxSummary): number {
-  const denom = box.initialCapital
+  // Доля капитала, который сейчас «в работе» (в сделках), от ВСЕГО капитала кассы
+  // = свободный баланс + то, что в работе. Раньше знаменателем был initialCapital,
+  // из-за чего у касс без заданного начального капитала (деньги пришли из сделок/
+  // операций) бар всегда показывал 0%. Теперь считается от реального капитала.
+  const denom = box.balance + box.inProgress
   if (denom <= 0) return 0
   return Math.min(100, Math.round((box.inProgress / denom) * 100))
 }
@@ -154,14 +158,10 @@ async function openInfo(box: CashBoxSummary, e: Event) {
 
 <template>
   <div class="cb-page" :class="{ dark: isDark }">
-    <!-- Header -->
-    <div class="cb-page-header">
-      <div>
-        <h1 class="cb-page-title">Кассы</h1>
-        <div class="cb-page-subtitle">
-          Разделите учёт по источникам средств — личные, по инвесторам или просто разные группы продаж
-        </div>
-      </div>
+    <!-- Заголовок раздела — в верхнем баре. Кнопка «Новая касса» убрана:
+         создание доступно add-карточкой в сетке ниже. Верхнюю строку показываем
+         только ради индикатора лимита; на безлимитном тарифе её нет вовсе. -->
+    <div v-if="cashBoxLimit !== -1" class="cb-page-header cb-page-header--actions-only">
       <div class="cb-header-actions">
         <span
           v-if="cashBoxLimit !== -1"
@@ -172,10 +172,6 @@ async function openInfo(box: CashBoxSummary, e: Event) {
           <v-icon :icon="atCashBoxLimit ? 'mdi-lock-outline' : 'mdi-wallet-outline'" size="13" />
           {{ activeCashBoxCount }} / {{ cashBoxLimit }}
         </span>
-        <button class="cb-create-btn" :class="{ 'cb-create-btn--locked': atCashBoxLimit }" @click="openCreate">
-          <v-icon :icon="atCashBoxLimit ? 'mdi-lock-outline' : 'mdi-plus'" size="18" />
-          Новая касса
-        </button>
       </div>
     </div>
 
@@ -404,6 +400,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   display: flex; align-items: flex-start; justify-content: space-between;
   gap: 16px; margin-bottom: 24px;
 }
+.cb-page-header--actions-only { justify-content: flex-end; }
 .cb-page-title { font-size: 28px; font-weight: 800; color: #111; letter-spacing: -0.5px; }
 .cb-page-subtitle { font-size: 14px; color: #737373; margin-top: 6px; max-width: 600px; }
 .cb-page.dark .cb-page-title { color: #f5f5f5; }

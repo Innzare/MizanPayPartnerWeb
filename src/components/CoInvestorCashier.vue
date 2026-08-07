@@ -49,6 +49,8 @@ const cancellingId = ref<string | null>(null)
 // activeDeployment + how the CI's per-deal stake is computed from purchase
 // price × effective profit %. Mirrors backend's getCoInvestorSummary.
 const showActiveBreakdown = ref(false)
+// Раскрывающийся блок «что означают эти цифры» простым языком.
+const showExplain = ref(false)
 // Раскрытие строк активных сделок в модалке «В работе»
 const expandedActiveDeals = ref<Set<string>>(new Set())
 function toggleActiveDeal(id: string) {
@@ -73,6 +75,17 @@ type ActiveDeal = CoInvestorSummary['activeDealsBreakdown'][number]
 function dealDone(d: ActiveDeal): boolean {
   return d.status === 'COMPLETED'
 }
+// Доля капитала «в работе» — для прогресс-бара под KPI (как на карточке кассы).
+// Знаменатель = max(текущий капитал, в работе): у фикс-% инвестора закупки идут
+// из общей кассы, поэтому «в работе» может превышать его капитал — так бар не
+// уходит за 100% и не делит на ноль.
+const deployPct = computed(() => {
+  const s = summary.value
+  if (!s) return 0
+  const denom = Math.max(s.currentCapital, s.activeDeployment)
+  return denom > 0 ? Math.min(100, Math.round((s.activeDeployment / denom) * 100)) : 0
+})
+
 // Фильтр таба «Сделки»: все / активные / завершённые.
 const dealFilter = ref<'all' | 'active' | 'completed'>('all')
 const allDeals = computed(() => summary.value?.activeDealsBreakdown ?? [])
@@ -95,6 +108,14 @@ const dealsTotals = computed(() => {
   }
   return { inv, part, gross }
 })
+// Нетто «в работе» по сделке — СО ЗНАКОМ. Может быть <0, если клиент уже вернул
+// больше вложенной доли (возврат включает наценку): такая сделка уменьшает итог,
+// поэтому показываем её со знаком, чтобы сумма строк сходилась с KPI (как в KPI,
+// где отрицательные слагаемые тоже учитываются до агрегатного кламп-нуля).
+// fallback на stake — для старых закэшированных ответов без поля deployed.
+function rowDeployed(d: ActiveDeal) {
+  return d.deployed ?? d.stake
+}
 function dealShares(d: ActiveDeal) {
   const gross = d.dealProfit ?? 0
   const invShare = d.expectedProfit ?? 0
@@ -685,6 +706,11 @@ function pluralDeals(n: number) {
             <div class="hero-stat-label">В работе</div>
             <div class="hero-stat-value" style="color: #0ea5e9;">{{ formatCurrency(summary.activeDeployment) }}</div>
             <div class="hero-stat-sub">{{ summary.activeDealsCount }} {{ pluralDeals(summary.activeDealsCount) }}</div>
+            <!-- Прогресс-бар доли капитала в сделках — как на карточке кассы -->
+            <template v-if="summary.activeDealsCount > 0">
+              <div class="cid-bar"><div class="cid-bar-fill" :style="{ width: deployPct + '%' }" /></div>
+              <div class="cid-bar-meta">{{ deployPct }}% капитала в сделках</div>
+            </template>
             <div v-if="summary.activeDealsCount > 0" class="hero-stat-action">
               Подробнее
               <v-icon icon="mdi-arrow-right" size="12" />
@@ -701,6 +727,62 @@ function pluralDeals(n: number) {
           <div class="hero-stat hero-stat--accent">
             <div class="hero-stat-label">Остаток к выплате</div>
             <div class="hero-stat-value" style="color: #f59e0b;">{{ formatCurrency(summary.balanceOwed) }}</div>
+          </div>
+        </div>
+
+        <!-- Простое объяснение каждой цифры «на пальцах» -->
+        <div class="ci-explain mt-4">
+          <button class="ci-explain-head" @click="showExplain = !showExplain">
+            <v-icon icon="mdi-help-circle-outline" size="18" />
+            <span>Что означают эти цифры? Простыми словами</span>
+            <v-icon :icon="showExplain ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="20" class="ci-explain-chev" />
+          </button>
+          <div v-if="showExplain" class="ci-explain-body">
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #3b82f6;" />
+              <div>
+                <div class="ci-explain-term">Текущий капитал — {{ formatCurrency(summary.currentCapital) }}</div>
+                <div class="ci-explain-desc">Сколько всего денег инвестор вложил в эту кассу и пока не забрал. Это его «кошелёк» здесь.</div>
+              </div>
+            </div>
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #0ea5e9;" />
+              <div>
+                <div class="ci-explain-term">В работе — {{ formatCurrency(summary.activeDeployment) }}</div>
+                <div class="ci-explain-desc">Сколько денег инвестора прямо сейчас «в деле»: на них уже куплен товар для клиентов, но клиенты вернули ещё не всё. Когда клиент платит — сумма уменьшается. Нажмите на карточку «В работе», чтобы увидеть расклад по каждой сделке.</div>
+              </div>
+            </div>
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #047857;" />
+              <div>
+                <div class="ci-explain-term">Начислено прибыли — {{ formatCurrency(summary.realizedProfit) }}</div>
+                <div class="ci-explain-desc">Сколько инвестор уже заработал — это его доля с наценки по тем платежам, которые клиенты уже внесли. Растёт по мере того, как клиенты платят.</div>
+              </div>
+            </div>
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #7c3aed;" />
+              <div>
+                <div class="ci-explain-term">Выплачено дивидендов — {{ formatCurrency(summary.totalPayout) }}</div>
+                <div class="ci-explain-desc">Сколько из заработанного инвестору уже отдали на руки.</div>
+              </div>
+            </div>
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #f59e0b;" />
+              <div>
+                <div class="ci-explain-term">Остаток к выплате — {{ formatCurrency(summary.balanceOwed) }}</div>
+                <div class="ci-explain-desc">Сколько заработанного ещё не отдали. Это просто «Начислено прибыли» минус «Выплачено дивидендов». Столько можно выплатить инвестору прямо сейчас.</div>
+              </div>
+            </div>
+            <div class="ci-explain-example">
+              <v-icon icon="mdi-lightbulb-on-outline" size="16" />
+              <div>
+                <strong>Простой пример.</strong> Инвестор вложил 100 000 ₽ — это <b>капитал</b>.
+                На 60 000 ₽ из них купили товар для клиентов — это <b>в работе</b>.
+                Клиенты платят, и инвестор заработал 4 000 ₽ своей доли с наценки — это <b>начислено</b>.
+                Ему уже отдали 1 000 ₽ — это <b>выплачено</b>.
+                Значит, осталось отдать 3 000 ₽ — это <b>остаток к выплате</b>.
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1219,16 +1301,18 @@ function pluralDeals(n: number) {
             </div>
             <div class="active-formula-body">
               <template v-if="detail.costFeeMode">
-                Инвестор в режиме «комиссия от закупки» — деньги в работе равны полной закупочной цене
-                активных сделок (закупка идёт на его средства). По каждой сделке ниже показан делёж наценки:
-                комиссия партнёра и доля инвестора.
+                В режиме «комиссия от закупки» в работе — закупочная цена активных сделок
+                <strong>за вычетом уже возвращённых клиентом денег</strong> (первоначальные взносы
+                и оплаченные платежи). По мере оплат сумма уменьшается. Итог по всем активным
+                сделкам = <strong>{{ formatCurrency(summary.activeDeployment) }}</strong>.
               </template>
               <template v-else>
-                Доля инвестора в кассе — <strong>{{ summary.effectivePct.toFixed(2) }}%</strong>.
-                Для каждой активной сделки берётся
-                <strong>закупочная цена × {{ summary.effectivePct.toFixed(2) }}%</strong>
-                — это та часть, которую вложил инвестор в эту сделку.
-                Суммируем по всем активным сделкам = <strong>{{ formatCurrency(summary.activeDeployment) }}</strong>.
+                По каждой активной сделке берётся доля инвестора в закупке
+                (<strong>закупка × {{ summary.effectivePct.toFixed(2) }}%</strong>)
+                <strong>за вычетом его же доли в деньгах, которые клиент уже вернул</strong>
+                (взносы и оплаченные платежи). По мере оплат «в работе» уменьшается — так же,
+                как на странице кассы. Итог по всем активным сделкам =
+                <strong>{{ formatCurrency(summary.activeDeployment) }}</strong>.
               </template>
             </div>
           </div>
@@ -1236,7 +1320,7 @@ function pluralDeals(n: number) {
           <!-- Deals list -->
           <div class="active-list-header">
             <span>Активные сделки ({{ summary.activeDealsCount }})</span>
-            <span class="text-caption text-medium-emphasis">Доля инвестора</span>
+            <span class="text-caption text-medium-emphasis">В работе</span>
           </div>
           <div class="active-list">
             <div
@@ -1258,18 +1342,14 @@ function pluralDeals(n: number) {
                     <span class="deal-badge" :class="dealDone(d) ? 'deal-badge--done' : 'deal-badge--active'">{{ dealDone(d) ? 'Завершена' : 'Активна' }}</span>
                   </div>
                   <div class="active-row-meta">
-                    Закупка {{ formatCurrency(d.purchasePrice) }} · {{ formatDate(d.dealDate) }}
+                    Закупка {{ formatCurrency(d.purchasePrice) }}<template v-if="(d.received ?? 0) > 0"> · возвращено {{ formatCurrency(d.received ?? 0) }}</template> · {{ formatDate(d.dealDate) }}
                   </div>
                 </div>
                 <div class="active-row-stake">
-                  <template v-if="d.costFee">
-                    <div class="active-row-earn">{{ formatCurrency(d.purchasePrice + (d.costFee.investorShare ?? 0)) }}</div>
-                    <div class="active-row-earn-label">получит</div>
-                  </template>
-                  <template v-else>
-                    <div class="active-row-earn">+{{ formatCurrency(d.expectedProfit ?? 0) }}</div>
-                    <div class="active-row-earn-label">доля инвестора</div>
-                  </template>
+                  <div class="active-row-earn" :style="{ color: rowDeployed(d) > 0 ? '#0ea5e9' : (rowDeployed(d) < 0 ? '#f59e0b' : 'rgba(var(--v-theme-on-surface), 0.4)') }">
+                    {{ rowDeployed(d) > 0 ? formatCurrency(rowDeployed(d)) : (rowDeployed(d) < 0 ? '−' + formatCurrency(-rowDeployed(d)) : 'возвращён') }}
+                  </div>
+                  <div class="active-row-earn-label">{{ rowDeployed(d) < 0 ? 'вернулось больше' : 'в работе' }}</div>
                 </div>
               </div>
 
@@ -1288,6 +1368,22 @@ function pluralDeals(n: number) {
                     </div>
                     <div class="active-divider" />
                   </template>
+
+                  <!-- Секция: сколько сейчас в работе (нетто, как на кассе) -->
+                  <div class="active-sec-label">Сейчас в работе</div>
+                  <div class="active-line">
+                    <span class="active-line-label">{{ d.costFee ? 'Закупочная цена (ваша)' : 'Ваша доля закупки' }}</span>
+                    <span class="active-line-val">{{ formatCurrency(d.costFee ? d.purchasePrice : d.stake) }}</span>
+                  </div>
+                  <div v-if="(d.received ?? 0) > 0" class="active-line">
+                    <span class="active-line-label">− Возвращено клиентом</span>
+                    <span class="active-line-val">−{{ formatCurrency(d.received ?? 0) }}</span>
+                  </div>
+                  <div class="active-line">
+                    <span class="active-line-label active-line-strong">{{ rowDeployed(d) < 0 ? '= Вернулось больше вложенного' : '= В работе' }}</span>
+                    <span class="active-line-val active-line-strong" :style="{ color: rowDeployed(d) < 0 ? '#f59e0b' : '#0ea5e9' }">{{ rowDeployed(d) < 0 ? '−' + formatCurrency(-rowDeployed(d)) : formatCurrency(rowDeployed(d)) }}</span>
+                  </div>
+                  <div class="active-divider" />
 
                   <!-- Секция: экономика сделки -->
                   <div class="active-sec-label">Экономика сделки</div>
@@ -1822,6 +1918,42 @@ function pluralDeals(n: number) {
 }
 .hero-stat-value { font-size: 18px; font-weight: 700; margin-top: 4px; }
 .hero-stat-sub { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4); margin-top: 2px; }
+/* Прогресс-бар «в работе» — стиль карточки кассы */
+.cid-bar {
+  height: 6px; border-radius: 3px; margin-top: 8px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.cid-bar-fill { height: 100%; border-radius: 3px; background: #0ea5e9; transition: width 0.4s ease; }
+.cid-bar-meta { font-size: 10.5px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 4px; }
+/* Блок «Что означают эти цифры» */
+.ci-explain {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.ci-explain-head {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border: none; background: transparent; cursor: pointer;
+  font-size: 13.5px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.8);
+  text-align: left;
+}
+.ci-explain-head .ci-explain-chev { margin-left: auto; color: rgba(var(--v-theme-on-surface), 0.5); }
+.ci-explain-head:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.ci-explain-body {
+  padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 14px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+.ci-explain-item { display: flex; align-items: flex-start; gap: 10px; padding-top: 10px; }
+.ci-explain-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.ci-explain-term { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.9); }
+.ci-explain-desc { font-size: 13px; line-height: 1.5; color: rgba(var(--v-theme-on-surface), 0.62); margin-top: 2px; }
+.ci-explain-example {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 12px; border-radius: 10px; margin-top: 2px;
+  background: rgba(245, 158, 11, 0.08); color: rgba(var(--v-theme-on-surface), 0.78);
+  font-size: 12.5px; line-height: 1.55;
+}
+.ci-explain-example .v-icon { color: #f59e0b; margin-top: 1px; flex-shrink: 0; }
 .hero-stat--clickable {
   position: relative;
   border: 1px solid rgba(14, 165, 233, 0.18);

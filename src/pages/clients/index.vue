@@ -2,6 +2,7 @@
 import { useClientsStore } from '@/stores/clients'
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
+import { useAuthStore } from '@/stores/auth'
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
@@ -12,6 +13,7 @@ import { useToast } from '@/composables/useToast'
 import { useDealLock } from '@/composables/useDealLock'
 
 const router = useRouter()
+const authStore = useAuthStore()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 
@@ -191,8 +193,8 @@ const selectedDealPaidTotal = computed(() =>
     </div>
 
     <template v-else>
-    <!-- KPI Cards -->
-    <div class="stats-row mb-6">
+    <!-- KPI Cards — скрываются у ролей без права clients.kpi -->
+    <div v-if="authStore.can('clients.kpi')" class="stats-row mb-6">
       <div class="stat-card">
         <div class="stat-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
           <v-icon icon="mdi-account-group" size="20" />

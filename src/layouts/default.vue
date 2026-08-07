@@ -6,8 +6,10 @@ import logoDark from "@/assets/images/logo-dark.svg";
 import logoText from "@/assets/images/logo-text.svg";
 import logoTextDark from "@/assets/images/logo-text-dark.svg";
 import { useAuthStore } from "@/stores/auth";
+import { usePageHeaderStore } from "@/stores/pageHeader";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useSubscription } from "@/composables/useSubscription";
+import { useSections } from '@/composables/useSections';
 import { useChats } from "@/composables/useChats";
 import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
@@ -20,8 +22,10 @@ import type { PlanFeatures } from "@/types";
 import { minPlanLabelForFeature } from "@/types";
 
 const authStore = useAuthStore();
+const pageHeader = usePageHeaderStore();
 const notificationsStore = useNotificationsStore();
 const subscription = useSubscription();
+const sections = useSections();
 const chats = useChats();
 const theme = useTheme();
 
@@ -144,11 +148,13 @@ const toggleTheme = () => {
 // Navigation
 const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?: boolean; staffOnly?: boolean; permission?: string; requiredFeature?: keyof PlanFeatures }[] = [
   { path: "/", title: "Главная", icon: "mdi-view-dashboard" },
-  { path: "/analytics", title: "Аналитика", icon: "mdi-chart-line", requiredFeature: "analytics" },
+  { path: "/analytics", title: "Аналитика и отчёты", icon: "mdi-chart-line", requiredFeature: "analytics" },
   { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
   { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
-  { path: "/broadcasts", title: "Рассылки", icon: "mdi-whatsapp", requiredFeature: "whatsapp" },
+  { path: "/debtors", title: "Должники", icon: "mdi-account-alert-outline", requiredFeature: "debtors" },
+  { path: "/suppliers", title: "Партнёры", icon: "mdi-handshake-outline", requiredFeature: "suppliers" },
+  { path: "/broadcasts", title: "Чаты и рассылки", icon: "mdi-whatsapp", requiredFeature: "whatsapp" },
   { path: "/messages", title: "Сообщения", icon: "mdi-message-text-outline", staffOnly: true },
   { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
   { path: "/cashboxes", title: "Кассы", icon: "mdi-wallet-outline", requiredFeature: "finance" },
@@ -157,12 +163,17 @@ const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?:
 ];
 
 const allSecondaryNavRoutes = [
+  { path: "/help", title: "Справка", icon: "mdi-help-circle-outline" },
   { path: "/settings", title: "Настройки", icon: "mdi-cog" },
 ];
 
 const mainNavRoutes = computed(() =>
   allMainNavRoutes
     .filter((r) => {
+      // Скрытый владельцем раздел исчезает ПОЛНОСТЬЮ — без короны и апселла.
+      // Это принципиально отличается от тарифной блокировки ниже: там пункт
+      // остаётся и зовёт купить подписку, здесь раздела для человека нет.
+      if (r.requiredFeature && sections.isHidden(r.requiredFeature)) return false;
       if (r.ownerOnly && !authStore.isOwner) return false;
       if (r.staffOnly && authStore.isOwner) return false;
       if (r.permission && !authStore.can(r.permission)) return false;
@@ -176,6 +187,7 @@ const mainNavRoutes = computed(() =>
 
 const secondaryNavRoutes = computed(() =>
   allSecondaryNavRoutes.filter((r) => {
+    if (r.path === "/help" && sections.isHidden("help")) return false;
     if ((r as any).ownerOnly && !authStore.isOwner) return false;
     return authStore.canAccess(r.path);
   })
@@ -184,11 +196,14 @@ const secondaryNavRoutes = computed(() =>
 // Route titles for header
 const routeTitles: Record<string, string> = {
   "/": "Главная",
-  "/analytics": "Аналитика",
+  "/analytics": "Аналитика и отчёты",
+  "/help": "Справка",
   "/deals": "Сделки",
   "/clients": "Клиенты",
   "/payments": "Платежи",
-  "/broadcasts": "Рассылки",
+  "/debtors": "Должники",
+  "/suppliers": "Партнёры",
+  "/broadcasts": "Чаты и рассылки",
   "/products": "Каталог",
   "/requests": "Заявки",
   "/calculator": "Калькулятор",
@@ -208,9 +223,12 @@ const routeTitles: Record<string, string> = {
 const routeSubtitles: Record<string, string> = {
   "/": "Обзор вашего портфеля",
   "/analytics": "Доход, поступления и прогнозы",
+  "/help": "Как работать с MizanPay",
+  "/suppliers": "Поставщики, долги, заявки и путевые листы",
   "/deals": "Управление сделками",
   "/clients": "Ваши клиенты",
   "/payments": "Все платежи по сделкам",
+  "/broadcasts": "Переписка с клиентами и напоминания по WhatsApp",
   "/products": "Ваш каталог товаров",
   "/requests": "Заявки от клиентов",
   "/notifications": "Все уведомления",
@@ -223,6 +241,26 @@ const routeSubtitles: Record<string, string> = {
   "/activity": "Журнал всех действий в личном кабинете",
   "/messages": "Переписка с сотрудниками",
 };
+
+// Заголовок/подзаголовок бара: приоритет — динамическое переопределение страницы
+// (usePageHeaderStore), затем статические карты по маршруту, затем фолбэки.
+function fallbackTitle(path: string): string {
+  if (path.startsWith("/deals/")) return "Детали сделки";
+  if (path.startsWith("/clients/")) return "Профиль клиента";
+  if (path.startsWith("/suppliers/route-sheets/")) return "Путевой лист";
+  if (path.startsWith("/suppliers/")) return "Партнёр";
+  return "Страница";
+}
+function fallbackSubtitle(path: string): string {
+  if (path.startsWith("/deals/")) return "Подробная информация";
+  if (path.startsWith("/clients/")) return "Документы, сделки и история";
+  return "";
+}
+const headerTitle = computed(() => pageHeader.title || routeTitles[route.path] || fallbackTitle(route.path));
+const headerSubtitle = computed(() => pageHeader.subtitle || routeSubtitles[route.path] || fallbackSubtitle(route.path));
+
+// Сбрасываем переопределение при уходе со страницы (страница сама выставит своё).
+watch(() => route.path, () => pageHeader.clear());
 
 // User initials for avatar
 const userInitials = computed(() => {
@@ -442,12 +480,8 @@ const confirmLogout = async () => {
                 <v-icon icon="mdi-menu" size="22" />
               </button>
               <div class="lyt-header-titles">
-                <h1 class="lyt-header-title">
-                  {{ routeTitles[route.path] || (route.path.startsWith('/deals/') ? 'Детали сделки' : route.path.startsWith('/clients/') ? 'Профиль клиента' : 'Страница') }}
-                </h1>
-                <p class="lyt-header-subtitle" v-if="!isMobile">
-                  {{ routeSubtitles[route.path] || (route.path.startsWith('/deals/') ? 'Подробная информация' : route.path.startsWith('/clients/') ? 'Документы, сделки и история' : '') }}
-                </p>
+                <h1 class="lyt-header-title">{{ headerTitle }}</h1>
+                <p class="lyt-header-subtitle" v-if="!isMobile && headerSubtitle">{{ headerSubtitle }}</p>
               </div>
             </div>
 
@@ -545,6 +579,7 @@ const confirmLogout = async () => {
                     <span>Создать сделку</span>
                   </button>
                   <button
+                    v-if="!sections.isHidden('import')"
                     class="lyt-dropdown-item"
                     :class="{ 'lyt-dropdown-item--locked': !subscription.canAccess('import') }"
                     :disabled="!subscription.canAccess('import')"

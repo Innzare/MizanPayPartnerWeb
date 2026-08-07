@@ -18,6 +18,12 @@ const props = defineProps<{
     monthlyIncome: number
   } | null
   availableCapital?: number | null
+  /**
+   * Чистый заработок — доход по уже полученным деньгам за вычетом доли
+   * со-инвесторов. Считается снаружи (нужны данные с сервера), поэтому
+   * приходит пропом; null — пока не загрузилось.
+   */
+  earnedNet?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -35,7 +41,6 @@ const totalRemaining = computed(() => props.totals ? props.totals.totalRemaining
 const totalRevenue = computed(() => props.totals ? props.totals.totalRevenue : dealsStore.totalRevenue)
 const totalInvested = computed(() => props.totals ? props.totals.totalInvested : dealsStore.totalInvested)
 const totalProfit = computed(() => props.totals ? props.totals.totalProfit : dealsStore.totalProfit)
-const monthlyIncome = computed(() => props.totals ? props.totals.monthlyIncome : dealsStore.monthlyIncome)
 
 // When availableCapital is explicitly passed (including null), use it; otherwise fall back to global capital.
 const displayCapital = computed(() => props.availableCapital !== undefined ? props.availableCapital : capital.value?.availableCapital ?? null)
@@ -76,18 +81,28 @@ const progressWidth = computed(() => totalRevenue.value > 0 ? (received.value / 
         <div class="hs-metric-divider" />
         <div class="hs-metric hs-clickable" @click="emit('metric', 'profit')">
           <span class="hs-metric-value">{{ canView ? formatCurrencyShort(totalProfit) : '—' }}</span>
-          <span class="hs-metric-label">Прибыль</span>
+          <span class="hs-metric-label">Наценка по сделкам</span>
         </div>
         <div class="hs-metric-divider" />
-        <div class="hs-metric hs-clickable" @click="emit('metric', 'monthly')">
-          <span class="hs-metric-value">{{ canView ? formatCurrencyShort(monthlyIncome) : '—' }}</span>
-          <span class="hs-metric-label">Доход / мес</span>
+        <!-- «Заработано» — тот же показатель, что в отчётах: доход по уже
+             полученным деньгам за вычетом доли со-инвесторов. Раньше здесь
+             были «Поступления / мес» — сумма платежей, которая смешивала
+             возврат вложений с доходом и ничего не говорила о заработке. -->
+        <div class="hs-metric hs-clickable" @click="emit('metric', 'earned')">
+          <span class="hs-metric-value">
+            {{ canView ? (earnedNet != null ? formatCurrencyShort(earnedNet) : '…') : '—' }}
+          </span>
+          <span class="hs-metric-label">Заработано</span>
         </div>
       </div>
 
       <div class="hs-progress">
         <div class="hs-progress-header">
-          <span>
+          <span
+            class="hs-received"
+            :class="{ 'hs-clickable': canView }"
+            @click="canView && emit('metric', 'received')"
+          >
             Получено {{ canView ? formatCurrencyShort(received) : '—' }}
             <span class="hs-progress-pct">· {{ canView ? progress : 0 }}%</span>
           </span>
@@ -144,7 +159,25 @@ const progressWidth = computed(() => totalRevenue.value > 0 ? (received.value / 
 .hs-capital-badge:hover .hs-capital-arrow { opacity: 0.8; transform: translateX(3px); }
 
 .hs-main { cursor: default; }
+/* Кликабельность показываем пунктирным подчёркиванием самого значения — тем
+   же приёмом, что у ссылки «из … общего оборота» ниже. Заливка блоков и значки
+   ⓘ в трёх местах подряд выглядели тяжело и спорили с градиентом карточки. */
 .hs-clickable { cursor: pointer; }
+.hs-clickable .hs-metric-value,
+.hs-clickable .hs-amount,
+.hs-received {
+  text-decoration: underline dotted rgba(255, 255, 255, 0.3);
+  text-underline-offset: 5px;
+  text-decoration-skip-ink: none;
+  transition: text-decoration-color 0.15s, opacity 0.15s;
+}
+.hs-clickable:hover .hs-metric-value,
+.hs-clickable:hover .hs-amount,
+.hs-received.hs-clickable:hover {
+  text-decoration-color: rgba(255, 255, 255, 0.75);
+}
+/* Подпись под значением слегка проявляется — подтверждает, что элемент живой. */
+.hs-clickable:hover .hs-metric-label { color: rgba(255, 255, 255, 0.75); }
 
 .hs-label {
   font-size: 13px; font-weight: 500; color: rgba(255, 255, 255, 0.65);

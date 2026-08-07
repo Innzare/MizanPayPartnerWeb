@@ -1,0 +1,54 @@
+/* Единый стиль полей форм — как в визарде создания сделки.
+   Глобальный, на theme-переменных: одинаково работает на страницах и в
+   модалках (v-dialog телепортируется в body, поэтому .dark-селектор там не
+   срабатывает — используем var(--v-theme-*), которые Vuetify выставляет на
+   overlay по активной теме). */
+
+.mz-form .form-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.mz-form .field-label { font-size: 13px; font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.6); }
+.mz-form .field-label .required { color: #ef4444; }
+
+.mz-form .field-input {
+  width: 100%; height: 44px; padding: 0 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px; font-size: 14px; color: rgb(var(--v-theme-on-surface));
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  outline: none; transition: all 0.15s;
+}
+.mz-form .field-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.3); }
+.mz-form .field-input:focus {
+  border-color: #047857;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 8%, transparent);
+}
+.mz-form .field-textarea { height: auto; min-height: 76px; padding: 12px 14px; resize: vertical; font-family: inherit; line-height: 1.5; }
+
+.mz-form select.field-select {
+  appearance: none; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M3 5l3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 14px center;
+  padding-right: 36px;
+}
+
+.mz-form .form-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 480px) { .mz-form .form-row-2 { grid-template-columns: 1fr; } }
+
+.mz-form .form-section-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  text-transform: uppercase; margin: 4px 0 12px;
+}
+
+.mz-form .input-suffix-wrap { position: relative; }
+.mz-form .input-suffix-wrap .field-input { padding-right: 34px; }
+.mz-form .input-suffix {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  font-size: 14px; color: rgba(var(--v-theme-on-surface), 0.5); pointer-events: none;
+}
+
+/* Текст кнопок «как в хедере» (кнопка «Создать»): плотнее и без Vuetify-разрядки. */
+.v-btn.mz-btn-text {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  text-transform: none !important;
+}

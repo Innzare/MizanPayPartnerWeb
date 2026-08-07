@@ -45,7 +45,9 @@ export const useDealsStore = defineStore('deals', () => {
   const monthlyIncome = computed(() => {
     return activeDeals.value.reduce((sum, d) => {
       if (d.numberOfPayments > 0) {
-        return sum + d.totalPrice / d.numberOfPayments
+        // График строится на остатке ПОСЛЕ первоначального взноса, поэтому
+        // делим (totalPrice − downPayment), иначе платёж завышается.
+        return sum + Math.max(0, d.totalPrice - (d.downPayment || 0)) / d.numberOfPayments
       }
       return sum
     }, 0)
@@ -169,6 +171,10 @@ export const useDealsStore = defineStore('deals', () => {
     wholesalePrice?: number
     profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
     cashBoxId?: string
+    // Партнёр-поставщик товара + оплачен ли он (false → создаётся долг).
+    supplierId?: string
+    paidToSupplier?: boolean
+    supplierRequestId?: string
     // Phase 4: explicit co-investor participation, applied atomically at
     // creation (so the down-payment accrual already respects it). Omit to
     // default to every CI of the deal's cashbox.
@@ -228,6 +234,16 @@ export const useDealsStore = defineStore('deals', () => {
     trash.value = []
   }
 
+  // Сменить клиента сделки. Отдельный эндпоинт: UpdateDealDto клиента не
+  // принимает, и поле молча отсекалось валидацией — из формы редактирования
+  // клиент не сохранялся вообще.
+  async function updateClient(dealId: string, clientProfileId: string) {
+    const updated = await api.patch<Deal>(`/deals/${dealId}/client`, { clientProfileId })
+    const idx = deals.value.findIndex(d => d.id === dealId)
+    if (idx !== -1) deals.value[idx] = updated
+    return updated
+  }
+
   // Заменить весь набор поручителей сделки (до 5). Порядок = приоритет,
   // первый = основной. Пустой массив очищает поручителей.
   async function updateGuarantors(dealId: string, guarantorProfileIds: string[]) {
@@ -242,6 +258,6 @@ export const useDealsStore = defineStore('deals', () => {
     totalInvested, totalRevenue, totalProfit, totalRemaining, monthlyIncome, roi,
     fetchDeals, getDeal, fetchDeal, updateDealStatus, updateDeal, fetchAnalytics, createDirectDeal,
     trash, trashLoading, fetchTrash, restoreDeal, restoreBatch, permanentDelete, emptyTrash,
-    updateGuarantors,
+    updateGuarantors, updateClient,
   }
 })

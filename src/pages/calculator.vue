@@ -161,17 +161,8 @@ function reset() {
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
-    <!-- Page header -->
-    <div class="page-header">
-      <div class="page-header-left">
-        <div class="page-icon-wrap">
-          <v-icon icon="mdi-calculator-variant-outline" size="22" />
-        </div>
-        <div>
-          <div class="page-title">Калькулятор</div>
-          <div class="page-subtitle">Рассчитайте условия рассрочки</div>
-        </div>
-      </div>
+    <!-- Заголовок раздела — в верхнем баре; тут только действие «Сбросить». -->
+    <div class="page-header page-header--actions-only">
       <button class="btn-text" @click="reset">
         <v-icon icon="mdi-refresh" size="16" />
         Сбросить
@@ -441,6 +432,7 @@ function reset() {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 20px;
 }
+.page-header--actions-only { justify-content: flex-end; }
 .page-header-left { display: flex; align-items: center; gap: 14px; }
 .page-icon-wrap {
   width: 44px; height: 44px; min-width: 44px; border-radius: 12px;

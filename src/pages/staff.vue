@@ -8,7 +8,7 @@ import { useChats } from '@/composables/useChats'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import ChatPanel from '@/components/ChatPanel.vue'
 import RolesManager from '@/components/RolesManager.vue'
-import type { StaffMember, StaffRole, DealsAccessMode, Deal, DealStatus, StaffRoleTemplate } from '@/types'
+import type { StaffMember, StaffRole, DealsAccessMode, Deal, DealStatus, StaffRoleTemplate, ActivityLog } from '@/types'
 import { STAFF_ROLE_LABELS } from '@/types'
 import { formatCurrency } from '@/utils/formatters'
 
@@ -114,12 +114,33 @@ function closeSelected() {
 }
 
 // Tabs in right panel: chat (default) or assigned deals list
-type RightPanelTab = 'chat' | 'deals'
+type RightPanelTab = 'chat' | 'deals' | 'activity'
 const activeTab = ref<RightPanelTab>('chat')
 
 // Assigned deals — loaded when partner selects a staff and opens "Сделки" tab
 const assignedDeals = ref<Deal[]>([])
 const assignedDealsLoading = ref(false)
+
+// История операций сотрудника — все его действия (activity log по actorId).
+const staffActivity = ref<ActivityLog[]>([])
+const staffActivityLoading = ref(false)
+async function loadStaffActivity() {
+  if (!selectedStaff.value) { staffActivity.value = []; return }
+  staffActivityLoading.value = true
+  try {
+    const res = await api.get<{ items: ActivityLog[] }>(
+      `/activity?actorId=${selectedStaff.value.id}&limit=100`,
+    )
+    staffActivity.value = res.items
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось загрузить историю операций')
+  } finally {
+    staffActivityLoading.value = false
+  }
+}
+function formatActTime(d: string) {
+  return new Date(d).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
 
 async function loadAssignedDeals() {
   if (!selectedStaff.value) {
@@ -140,6 +161,7 @@ async function loadAssignedDeals() {
 
 watch([activeTab, selectedStaff], ([tab, staff]) => {
   if (tab === 'deals' && staff) loadAssignedDeals()
+  if (tab === 'activity' && staff) loadStaffActivity()
 })
 
 // Detach a deal from currently selected staff
@@ -512,6 +534,14 @@ onBeforeUnmount(() => {
                 <span>Сделки</span>
                 <span v-if="assignedDeals.length > 0" class="sf-tab-badge sf-tab-badge--neutral">{{ assignedDeals.length }}</span>
               </button>
+              <button
+                class="sf-tab"
+                :class="{ 'sf-tab--active': activeTab === 'activity' }"
+                @click="activeTab = 'activity'"
+              >
+                <v-icon icon="mdi-history" size="14" />
+                <span>История операций</span>
+              </button>
             </div>
 
             <!-- Chat tab -->
@@ -523,7 +553,7 @@ onBeforeUnmount(() => {
             </template>
 
             <!-- Deals tab -->
-            <div v-else class="sf-deals-tab">
+            <div v-else-if="activeTab === 'deals'" class="sf-deals-tab">
               <div class="sf-deals-header">
                 <div class="sf-deals-title">
                   Назначенные сделки
@@ -575,6 +605,30 @@ onBeforeUnmount(() => {
                     <v-icon icon="mdi-link-off" size="14" />
                   </button>
                 </RouterLink>
+              </div>
+            </div>
+
+            <!-- Activity tab -->
+            <div v-else-if="activeTab === 'activity'" class="sf-act-tab">
+              <div v-if="staffActivityLoading" class="d-flex justify-center pa-6">
+                <v-progress-circular indeterminate size="20" color="primary" />
+              </div>
+              <div v-else-if="staffActivity.length === 0" class="sf-deals-empty">
+                <v-icon icon="mdi-history" size="32" color="grey-lighten-1" />
+                <div class="sf-deals-empty-title">Пока нет операций</div>
+                <div class="sf-deals-empty-sub">
+                  Здесь появятся все действия сотрудника: сделки, платежи, изменения и т.д.
+                </div>
+              </div>
+              <div v-else class="sf-act-list">
+                <div v-for="a in staffActivity" :key="a.id" class="sf-act-row">
+                  <div class="sf-act-dot"><v-icon icon="mdi-history" size="13" /></div>
+                  <div class="sf-act-main">
+                    <div class="sf-act-title">{{ a.title }}</div>
+                    <div v-if="a.description" class="sf-act-desc">{{ a.description }}</div>
+                    <div class="sf-act-time">{{ formatActTime(a.createdAt) }}</div>
+                  </div>
+                </div>
               </div>
             </div>
           </template>
@@ -1529,6 +1583,20 @@ onBeforeUnmount(() => {
 }
 
 /* ── Deals tab content ── */
+/* ── История операций ── */
+.sf-act-tab { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 12px 14px; overflow-y: auto; }
+.sf-act-list { display: flex; flex-direction: column; gap: 2px; }
+.sf-act-row { display: flex; gap: 10px; padding: 10px 8px; border-radius: 10px; transition: background .12s; }
+.sf-act-row:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.sf-act-dot {
+  width: 26px; height: 26px; min-width: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+  background: rgba(var(--v-theme-primary), 0.1); color: rgb(var(--v-theme-primary)); margin-top: 1px;
+}
+.sf-act-main { min-width: 0; flex: 1; }
+.sf-act-title { font-size: 13.5px; font-weight: 600; line-height: 1.3; }
+.sf-act-desc { font-size: 12.5px; opacity: 0.65; margin-top: 2px; word-break: break-word; }
+.sf-act-time { font-size: 11.5px; opacity: 0.45; margin-top: 3px; }
+
 .sf-deals-tab {
   flex: 1;
   display: flex;

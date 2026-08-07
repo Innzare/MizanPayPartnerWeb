@@ -1,9 +1,10 @@
 <script lang="ts" setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { useAuthStore } from '@/stores/auth'
 import { useDealLock } from '@/composables/useDealLock'
 import { formatCurrency, formatDate } from '@/utils/formatters'
@@ -15,15 +16,198 @@ import { formatCurrency, formatDate } from '@/utils/formatters'
 
 const toast = useToast()
 const { isDark } = useIsDark()
+const { isMobile } = useIsMobile()
 const authStore = useAuthStore()
 const router = useRouter()
+const route = useRoute()
 const { isDealLocked } = useDealLock()
 
 function goToDeal(dealId: string) { router.push(`/deals/${dealId}`) }
 function goToClient(clientProfileId: string | null) { if (clientProfileId) router.push(`/clients/${clientProfileId}`) }
 
-type Tab = 'send' | 'auto' | 'connection'
-const activeTab = ref<Tab>('send')
+type Tab = 'send' | 'auto' | 'chats' | 'connection'
+const activeTab = ref<Tab>('chats')
+
+// ── Переписка с клиентами (inbox) ──
+interface ChatListItem {
+  id: string; name: string; phone: string
+  dealId: string; productName: string; activeDealsCount: number
+  remaining: number; nextDueDate: number | null; nextDueAmount: number
+  overdueAmount: number; overdueDays: number
+  status: 'overdue' | 'soon' | 'ok'; lastReminderAt: number | null
+  lastMessage: string | null; lastTimestamp: number | null; lastDirection: 'in' | 'out' | null
+}
+interface ChatMessage { id: string; direction: 'in' | 'out'; text: string; typeMessage: string; downloadUrl: string | null; timestamp: number; status: string | null; senderName: string | null }
+
+const chatList = ref<ChatListItem[]>([])
+const chatListLoading = ref(false)
+const chatSearch = ref('')
+const selectedChat = ref<ChatListItem | null>(null)
+const chatMessages = ref<ChatMessage[]>([])
+const chatMessagesLoading = ref(false)
+const replyText = ref('')
+const replySending = ref(false)
+const chatScrollRef = ref<HTMLElement | null>(null)
+const onlyOverdue = ref(false)              // фильтр «только просроченные»
+const reminderDealId = ref<string | null>(null) // если текущий ответ — напоминание по сделке
+
+function fmtDay(ms: number) {
+  return new Date(ms).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+}
+function isRemindedRecently(ms: number | null) {
+  return !!ms && Date.now() - ms < 24 * 3600 * 1000
+}
+// Грузим только последние сообщения: входящие есть лишь с момента подключения,
+// тянуть старую историю смысла нет.
+const CHAT_MSG_COUNT = 50
+const inboxEnabling = ref(false)   // приём входящих только что включён (идёт перезапуск)
+
+const filteredChats = computed(() => {
+  let list = chatList.value
+  if (onlyOverdue.value) list = list.filter((c) => c.status === 'overdue')
+  const q = chatSearch.value.trim().toLowerCase()
+  if (q) list = list.filter((c) => c.name.toLowerCase().includes(q) || c.phone.includes(q))
+  return list
+})
+const overdueCount = computed(() => chatList.value.filter((c) => c.status === 'overdue').length)
+
+// «Напомнить»: генерим текст по сделке и вставляем в поле (редактируемо).
+async function insertReminder() {
+  const dealId = selectedChat.value?.dealId
+  if (!dealId) return
+  try {
+    const r = await api.get<{ canSend: boolean; message?: string; error?: string }>(
+      `/whatsapp/reminder-text?dealId=${dealId}`,
+    )
+    if (r.message) { replyText.value = r.message; reminderDealId.value = dealId }
+    else toast.error(r.error || 'Не удалось сформировать напоминание')
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка')
+  }
+}
+
+async function loadChatList() {
+  chatListLoading.value = true
+  try {
+    const res = await api.get<{ connected: boolean; inboxEnabling?: boolean; chats: ChatListItem[] }>('/whatsapp/chats')
+    chatList.value = res.chats
+    inboxEnabling.value = !!res.inboxEnabling
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось загрузить чаты')
+  } finally {
+    chatListLoading.value = false
+  }
+}
+
+function scrollChatToBottom() {
+  const el = chatScrollRef.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+// Аватары контактов — ленивая подгрузка (только когда строка появляется).
+const avatarUrls = ref<Record<string, string>>({})
+const avatarTried = new Set<string>()
+async function loadAvatar(phone: string) {
+  if (!phone || avatarTried.has(phone)) return
+  avatarTried.add(phone)
+  try {
+    const r = await api.get<{ url: string | null }>(`/whatsapp/avatar?phone=${encodeURIComponent(phone)}`)
+    if (r.url) avatarUrls.value[phone] = r.url
+  } catch { /* оставим инициалы */ }
+}
+// Директива: грузит аватар, когда элемент попадает в зону видимости.
+const vLazyAvatar = {
+  mounted(el: HTMLElement & { _io?: IntersectionObserver }, binding: { value: () => void }) {
+    const io = new IntersectionObserver((entries, obs) => {
+      if (entries.some((e) => e.isIntersecting)) { binding.value(); obs.disconnect() }
+    }, { rootMargin: '150px' })
+    io.observe(el)
+    el._io = io
+  },
+  unmounted(el: HTMLElement & { _io?: IntersectionObserver }) { el._io?.disconnect() },
+}
+
+async function openChat(c: ChatListItem) {
+  selectedChat.value = c
+  reminderDealId.value = null
+  replyText.value = ''
+  loadAvatar(c.phone) // аватар для шапки диалога
+  chatMessages.value = []
+  chatMessagesLoading.value = true
+  try {
+    chatMessages.value = await api.get<ChatMessage[]>(
+      `/whatsapp/chat-history?phone=${encodeURIComponent(c.phone)}&count=${CHAT_MSG_COUNT}`,
+    )
+    await nextTick()
+    scrollChatToBottom()
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось загрузить переписку')
+  } finally {
+    chatMessagesLoading.value = false
+  }
+}
+
+async function sendReply() {
+  if (!selectedChat.value || !replyText.value.trim()) return
+  const text = replyText.value.trim()
+  const dealId = reminderDealId.value === selectedChat.value.dealId ? reminderDealId.value : null
+  replySending.value = true
+  try {
+    const res = await api.post<{ sent: boolean }>('/whatsapp/chat-send', {
+      phone: selectedChat.value.phone, text, dealId: dealId || undefined,
+    })
+    if (res.sent) {
+      chatMessages.value.push({ id: 'local-' + Date.now(), direction: 'out', text, typeMessage: 'textMessage', downloadUrl: null, timestamp: Math.floor(Date.now() / 1000), status: 'sent', senderName: null })
+      replyText.value = ''
+      if (dealId) {
+        reminderDealId.value = null
+        const t = Date.now()
+        selectedChat.value.lastReminderAt = t
+        const it = chatList.value.find((c) => c.id === selectedChat.value!.id)
+        if (it) it.lastReminderAt = t
+      }
+      await nextTick()
+      scrollChatToBottom()
+    } else {
+      toast.error('Не удалось отправить сообщение')
+    }
+  } catch (e: any) {
+    toast.error(e.message || 'Ошибка отправки')
+  } finally {
+    replySending.value = false
+  }
+}
+
+function fmtChatTime(ts: number) {
+  return new Date(ts * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+// Время в пузыре (только ЧЧ:ММ) и метка-разделитель даты (Сегодня/Вчера/дата).
+function fmtTime(ts: number) {
+  return new Date(ts * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+}
+function fmtDateLabel(ts: number) {
+  const d = new Date(ts * 1000)
+  const today = new Date()
+  const yest = new Date(); yest.setDate(today.getDate() - 1)
+  if (d.toDateString() === today.toDateString()) return 'Сегодня'
+  if (d.toDateString() === yest.toDateString()) return 'Вчера'
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+}
+// Сообщения с вставленными разделителями дат (как в WhatsApp).
+const groupedMessages = computed(() => {
+  const out: Array<{ kind: 'date'; id: string; label: string } | { kind: 'msg'; id: string; m: ChatMessage }> = []
+  let lastKey = ''
+  for (const m of chatMessages.value) {
+    const key = new Date(m.timestamp * 1000).toDateString()
+    if (key !== lastKey) { out.push({ kind: 'date', id: 'd-' + key, label: fmtDateLabel(m.timestamp) }); lastKey = key }
+    out.push({ kind: 'msg', id: m.id, m })
+  }
+  return out
+})
+
+watch(activeTab, (t) => {
+  if (t === 'chats' && !chatList.value.length) loadChatList()
+})
 const showGuide = ref(false)
 const showProtect = ref(false)
 
@@ -524,6 +708,18 @@ onMounted(async () => {
     if (active) { campaign.value = active; startCampaignPoll(active.id) }
   } catch { /* none */ }
   await checkStatus()
+  // Чаты — вкладка по умолчанию; подгружаем список, если WhatsApp подключён.
+  if (connected.value) {
+    await loadChatList()
+    // Переход из раздела «Должники» с ?chat=<цифры> — открыть чат клиента.
+    const chatQ = route.query.chat
+    if (typeof chatQ === 'string' && chatQ) {
+      activeTab.value = 'chats'
+      const tail = chatQ.replace(/\D/g, '').slice(-10)
+      const item = chatList.value.find((c) => c.phone.replace(/\D/g, '').slice(-10) === tail)
+      if (item) openChat(item)
+    }
+  }
 })
 onUnmounted(() => { stopPolling(); stopCampaignPoll() })
 
@@ -532,13 +728,26 @@ function goConnect() { activeTab.value = 'connection' }
 
 <template>
   <div class="bc-page" :class="{ dark: isDark }">
-    <!-- Header -->
-    <div class="bc-header">
-      <div>
-        <h1 class="bc-title">Рассылки</h1>
-        <div class="bc-subtitle">Напоминания клиентам по WhatsApp — вручную и автоматически</div>
+    <!-- Один блок на всю ширину: слева табы, справа действия раздела
+         (заголовок раздела — в верхнем баре) -->
+    <div class="bc-tabs">
+      <div class="bc-tabs-list">
+        <button class="bc-tab" :class="{ active: activeTab === 'chats' }" @click="activeTab = 'chats'">
+          <v-icon icon="mdi-message-text-outline" size="16" /> Чаты с клиентами
+        </button>
+        <button class="bc-tab" :class="{ active: activeTab === 'send' }" @click="activeTab = 'send'">
+          <v-icon icon="mdi-send-outline" size="16" /> Напоминания
+        </button>
+        <button class="bc-tab" :class="{ active: activeTab === 'auto' }" @click="activeTab = 'auto'">
+          <v-icon icon="mdi-clock-check-outline" size="16" /> Авто-напоминания и шаблоны
+        </button>
+        <button class="bc-tab" :class="{ active: activeTab === 'connection' }" @click="activeTab = 'connection'">
+          <v-icon icon="mdi-link-variant" size="16" /> Подключение
+          <span v-if="!connected && waStatus !== 'loading'" class="bc-tab-dot" />
+        </button>
       </div>
-      <div class="bc-header-right">
+
+      <div class="bc-tabs-actions">
         <button class="bc-guide-btn" @click="showGuide = true" title="Как не получить блокировку">
           <v-icon icon="mdi-shield-alert-outline" size="16" />
           Защита от бана
@@ -548,20 +757,6 @@ function goConnect() { activeTab.value = 'connection' }
           {{ waStatus === 'loading' ? 'Проверка…' : connected ? 'Подключён' : 'Не подключён' }}
         </div>
       </div>
-    </div>
-
-    <!-- Tabs -->
-    <div class="bc-tabs">
-      <button class="bc-tab" :class="{ active: activeTab === 'send' }" @click="activeTab = 'send'">
-        <v-icon icon="mdi-send-outline" size="16" /> Напоминания
-      </button>
-      <button class="bc-tab" :class="{ active: activeTab === 'auto' }" @click="activeTab = 'auto'">
-        <v-icon icon="mdi-clock-check-outline" size="16" /> Авто-напоминания и шаблоны
-      </button>
-      <button class="bc-tab" :class="{ active: activeTab === 'connection' }" @click="activeTab = 'connection'">
-        <v-icon icon="mdi-link-variant" size="16" /> Подключение
-        <span v-if="!connected && waStatus !== 'loading'" class="bc-tab-dot" />
-      </button>
     </div>
 
     <!-- ══════════════ TAB: Напоминания ══════════════ -->
@@ -910,6 +1105,172 @@ function goConnect() { activeTab.value = 'connection' }
       </div>
     </template>
 
+    <!-- ══════════════ TAB: Чаты с клиентами ══════════════ -->
+    <template v-else-if="activeTab === 'chats'">
+      <div v-if="inboxEnabling" class="bc-card bc-conn bc-conn--center pa-6">
+        <div class="bc-conn-ico bc-conn-ico--lg"><v-icon icon="mdi-progress-download" size="34" /></div>
+        <div class="bc-conn-title">Включаем приём сообщений</div>
+        <div class="bc-conn-desc">Раньше приём входящих был выключен, поэтому ответы клиентов не сохранялись. Сейчас включаем — инстанс перезапускается (~2–5 мин). После этого новые сообщения клиентов будут появляться здесь. Обновите страницу через несколько минут.</div>
+      </div>
+
+      <div v-else class="bc-chat-shell">
+        <!-- Список чатов (на мобиле скрыт, когда открыт диалог) -->
+        <!-- На телефоне панели чередуются. Пока номер не подключён, показываем не
+             пустой список, а сразу предложение подключить — иначе призыв к
+             действию оказался бы на скрытой панели. -->
+        <aside class="bc-chat-list" v-show="!isMobile || (connected && !selectedChat)">
+          <div v-if="connected" class="bc-chat-search">
+            <v-icon icon="mdi-magnify" size="16" />
+            <input v-model="chatSearch" placeholder="Поиск клиента…" />
+          </div>
+          <button v-if="connected && overdueCount > 0" class="bc-chat-filter" :class="{ active: onlyOverdue }" @click="onlyOverdue = !onlyOverdue">
+            Только просроченные · {{ overdueCount }}
+          </button>
+          <!-- Пока номер не подключён, чатов не бывает в принципе — показываем
+               спокойную заглушку вместо пустого списка с поиском. -->
+          <div v-if="!connected" class="bc-chat-off">
+            <v-icon icon="mdi-chat-outline" size="30" />
+            <div class="bc-chat-off-title">Пока пусто</div>
+            <div class="bc-chat-off-text">
+              Здесь появятся клиенты, которые вам написали,
+              и те, кому вы отправляли напоминания
+            </div>
+          </div>
+          <div v-else-if="chatListLoading" class="bc-chat-loading"><v-progress-circular indeterminate size="22" color="#047857" /></div>
+          <div v-else class="bc-chat-rows">
+            <button
+              v-for="c in filteredChats"
+              :key="c.id"
+              class="bc-chat-row"
+              :class="{ active: selectedChat?.id === c.id }"
+              @click="openChat(c)"
+            >
+              <div class="bc-chat-ava" v-lazy-avatar="() => loadAvatar(c.phone)">
+                <img v-if="avatarUrls[c.phone]" :src="avatarUrls[c.phone]" class="bc-chat-ava-img" alt="" @error="delete avatarUrls[c.phone]" />
+                <template v-else>{{ (c.name[0] || '?').toUpperCase() }}</template>
+              </div>
+              <div class="bc-chat-row-main">
+                <div class="bc-chat-row-top">
+                  <span class="bc-chat-row-name">{{ c.name }}</span>
+                  <span v-if="c.lastTimestamp" class="bc-chat-row-time">{{ fmtChatTime(c.lastTimestamp) }}</span>
+                </div>
+                <div class="bc-chat-row-preview">
+                  <span v-if="c.lastDirection === 'out'" class="bc-chat-you">Вы: </span>{{ c.lastMessage || c.productName }}
+                </div>
+                <div class="bc-chat-row-tags">
+                  <span class="bc-tag" :class="'bc-tag--' + c.status">
+                    <template v-if="c.status === 'overdue'">Просрочка {{ c.overdueDays }} дн · {{ formatCurrency(c.overdueAmount) }}</template>
+                    <template v-else-if="c.status === 'soon' && c.nextDueDate">Платёж {{ fmtDay(c.nextDueDate) }} · {{ formatCurrency(c.nextDueAmount) }}</template>
+                    <template v-else>Активна</template>
+                  </span>
+                  <span v-if="isRemindedRecently(c.lastReminderAt)" class="bc-tag bc-tag--done">✓ напомнили</span>
+                </div>
+              </div>
+            </button>
+            <div v-if="!filteredChats.length" class="bc-chat-empty-list">Клиентов не найдено</div>
+          </div>
+        </aside>
+
+        <!-- Переписка (на мобиле показывается только при выбранном чате) -->
+        <section class="bc-chat-conv" v-show="!isMobile || selectedChat || !connected">
+          <template v-if="selectedChat">
+            <header class="bc-chat-conv-head">
+              <button v-if="isMobile" class="bc-chat-back" @click="selectedChat = null" aria-label="Назад к списку">
+                <v-icon icon="mdi-arrow-left" size="22" />
+              </button>
+              <div class="bc-chat-ava">
+                <img v-if="avatarUrls[selectedChat.phone]" :src="avatarUrls[selectedChat.phone]" class="bc-chat-ava-img" alt="" @error="delete avatarUrls[selectedChat.phone]" />
+                <template v-else>{{ (selectedChat.name[0] || '?').toUpperCase() }}</template>
+              </div>
+              <div class="bc-chat-conv-who">
+                <div class="bc-chat-conv-name">{{ selectedChat.name }}</div>
+                <div class="bc-chat-conv-phone">{{ selectedChat.phone }}</div>
+              </div>
+            </header>
+
+            <!-- Контекст сделки + напоминание -->
+            <div v-if="selectedChat.dealId" class="bc-chat-ctx" :class="'bc-chat-ctx--' + selectedChat.status">
+              <div class="bc-chat-ctx-info">
+                <div class="bc-chat-ctx-title">
+                  {{ selectedChat.productName }}
+                  <span v-if="selectedChat.activeDealsCount > 1" class="bc-chat-ctx-more">+{{ selectedChat.activeDealsCount - 1 }} сделк.</span>
+                </div>
+                <div class="bc-chat-ctx-sub">
+                  <template v-if="selectedChat.status === 'overdue'">Просрочка {{ selectedChat.overdueDays }} дн · {{ formatCurrency(selectedChat.overdueAmount) }}</template>
+                  <template v-else-if="selectedChat.nextDueDate">Платёж {{ fmtDay(selectedChat.nextDueDate) }} · {{ formatCurrency(selectedChat.nextDueAmount) }}</template>
+                  <template v-else>Нет предстоящих платежей</template>
+                  · остаток {{ formatCurrency(selectedChat.remaining) }}
+                  <span v-if="isRemindedRecently(selectedChat.lastReminderAt)" class="bc-chat-ctx-reminded"> · ✓ напомнили</span>
+                </div>
+              </div>
+              <div class="bc-chat-ctx-actions">
+                <RouterLink :to="`/deals/${selectedChat.dealId}`" class="bc-ctx-btn">Сделка</RouterLink>
+                <button class="bc-ctx-btn bc-ctx-btn--primary" @click="insertReminder">Напомнить</button>
+              </div>
+            </div>
+
+            <div ref="chatScrollRef" class="bc-chat-msgs">
+              <div v-if="chatMessagesLoading" class="bc-chat-loading"><v-progress-circular indeterminate size="22" color="#047857" /></div>
+              <template v-else>
+                <div class="bc-chat-tip">
+                  <v-icon icon="mdi-information-outline" size="13" />
+                  Входящие показываются только с момента подключения WhatsApp
+                </div>
+                <div v-if="!chatMessages.length" class="bc-chat-empty">Сообщений пока нет</div>
+                <template v-for="item in groupedMessages" :key="item.id">
+                  <div v-if="item.kind === 'date'" class="bc-chat-date"><span>{{ item.label }}</span></div>
+                  <div
+                    v-else
+                    class="bc-msg"
+                    :class="item.m.direction === 'out' ? 'bc-msg--out' : 'bc-msg--in'"
+                  >
+                    <div class="bc-msg-bubble">
+                      <a v-if="item.m.downloadUrl" :href="item.m.downloadUrl" target="_blank" class="bc-msg-media">
+                        <v-icon icon="mdi-paperclip" size="13" /> Вложение
+                      </a>
+                      <span class="bc-msg-text">{{ item.m.text }}</span>
+                      <span class="bc-msg-time">{{ fmtTime(item.m.timestamp) }}</span>
+                    </div>
+                  </div>
+                </template>
+              </template>
+            </div>
+            <div class="bc-chat-reply">
+              <input v-model="replyText" placeholder="Написать сообщение…" @keydown.enter="sendReply" />
+              <button class="bc-chat-send" :disabled="replySending || !replyText.trim()" @click="sendReply">
+                <v-progress-circular v-if="replySending" indeterminate size="16" width="2" color="#fff" />
+                <v-icon v-else icon="mdi-send" size="18" />
+              </button>
+            </div>
+          </template>
+          <!-- Не подключён: объясняем и зовём подключить прямо здесь, чтобы
+               человек видел, как раздел будет выглядеть в работе. -->
+          <div v-else-if="!connected" class="bc-chat-placeholder bc-chat-placeholder--off">
+            <div class="bc-off-ico"><v-icon icon="mdi-whatsapp" size="34" /></div>
+            <div class="bc-off-title">WhatsApp пока не подключён</div>
+            <div class="bc-off-text">
+              Подключите свой номер — и здесь появится переписка с клиентами.
+              Можно будет отвечать на сообщения и отправлять напоминания об оплате,
+              не выходя из MizanPay.
+            </div>
+            <button class="bc-btn bc-btn--primary bc-off-btn" @click="goConnect">
+              <v-icon icon="mdi-qrcode-scan" size="18" />
+              Подключить WhatsApp
+            </button>
+            <div class="bc-off-hint">
+              <v-icon icon="mdi-information-outline" size="14" />
+              Понадобится телефон с WhatsApp — подключение занимает около минуты
+            </div>
+          </div>
+
+          <div v-else class="bc-chat-placeholder">
+            <v-icon icon="mdi-message-text-outline" size="48" />
+            <div>Выберите клиента, чтобы открыть переписку</div>
+          </div>
+        </section>
+      </div>
+    </template>
+
     <!-- ══════════════ TAB: Подключение ══════════════ -->
     <template v-else>
       <v-card rounded="lg" elevation="0" border class="bc-card pa-6">
@@ -1056,6 +1417,7 @@ function goConnect() { activeTab.value = 'connection' }
 
 /* Header */
 .bc-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.bc-header--actions-only { justify-content: flex-end; }
 .bc-title { font-size: 28px; font-weight: 800; color: #111; letter-spacing: -0.5px; }
 .bc-subtitle { font-size: 14px; color: #737373; margin-top: 6px; }
 .bc-page.dark .bc-title { color: #f5f5f5; }
@@ -1075,11 +1437,13 @@ function goConnect() { activeTab.value = 'connection' }
 
 /* Tabs — white segmented bar */
 .bc-tabs {
-  display: flex; gap: 4px; margin-bottom: 18px;
+  display: flex; align-items: center; gap: 8px; margin-bottom: 18px;
   background: rgb(var(--v-theme-surface));
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   border-radius: 12px; padding: 5px;
 }
+.bc-tabs-list { display: flex; gap: 4px; flex: 1; min-width: 0; }
+.bc-tabs-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding-right: 3px; }
 .bc-tab {
   position: relative; display: inline-flex; align-items: center; gap: 6px;
   padding: 9px 16px; border: none; background: transparent; cursor: pointer;
@@ -1089,6 +1453,216 @@ function goConnect() { activeTab.value = 'connection' }
 .bc-tab:hover { color: rgba(var(--v-theme-on-surface), 0.85); background: rgba(var(--v-theme-on-surface), 0.04); }
 .bc-tab.active { color: #047857; background: rgba(4, 120, 87, 0.1); }
 .bc-tab.active:hover { background: rgba(4, 120, 87, 0.12); }
+
+/* ── Чаты с клиентами ── */
+.bc-chat-shell {
+  display: grid; grid-template-columns: 320px 1fr; gap: 0;
+  height: calc(100vh - 230px); min-height: 480px;
+  background: rgba(var(--v-theme-surface), 1);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08); border-radius: 16px; overflow: hidden;
+}
+.bc-chat-list { display: flex; flex-direction: column; border-right: 1px solid rgba(var(--v-theme-on-surface), 0.08); min-height: 0; }
+.bc-chat-search {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px; margin: 0;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06); opacity: 0.8;
+}
+.bc-chat-search input { flex: 1; border: none; background: none; outline: none; color: inherit; font-size: 14px; }
+.bc-chat-loading { display: flex; justify-content: center; padding: 30px; }
+.bc-chat-rows { flex: 1; overflow-y: auto; min-height: 0; }
+.bc-chat-row {
+  display: flex; gap: 10px; width: 100%; text-align: left; padding: 10px 14px; cursor: pointer;
+  background: none; border: none; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.04); color: inherit;
+  transition: background .12s;
+}
+.bc-chat-row:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.bc-chat-row.active { background: rgba(4, 120, 87, 0.08); }
+.bc-chat-ava {
+  width: 40px; height: 40px; min-width: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 120, 87, 0.12); color: #047857; font-weight: 700; font-size: 15px; overflow: hidden;
+}
+.bc-chat-ava-img { width: 100%; height: 100%; object-fit: cover; }
+.bc-chat-row-main { min-width: 0; flex: 1; }
+.bc-chat-row-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.bc-chat-row-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-chat-row-time { font-size: 11px; opacity: 0.45; white-space: nowrap; }
+.bc-chat-row-preview { font-size: 12.5px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.bc-chat-you { opacity: 0.7; }
+.bc-chat-empty-list { padding: 24px; text-align: center; opacity: 0.5; font-size: 13px; }
+
+/* Фильтр «только просроченные» */
+.bc-chat-filter {
+  margin: 0 10px 8px; padding: 7px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.7); border: 1px solid transparent; text-align: left;
+}
+.bc-chat-filter.active { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+
+/* Теги статуса платежа в строке списка */
+.bc-chat-row-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.bc-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
+.bc-tag--overdue { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+.bc-tag--soon { background: rgba(245, 158, 11, 0.14); color: #b45309; }
+.bc-tag--ok { background: rgba(16, 185, 129, 0.12); color: #059669; }
+.bc-tag--done { background: rgba(4, 120, 87, 0.1); color: #047857; }
+.bc-page.dark .bc-tag--soon { color: #fbbf24; }
+
+/* Контекст-карточка сделки в чате */
+.bc-chat-ctx {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px;
+  background: rgba(var(--v-theme-surface), 1); border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-left: 3px solid transparent;
+}
+.bc-chat-ctx--overdue { border-left-color: #ef4444; }
+.bc-chat-ctx--soon { border-left-color: #f59e0b; }
+.bc-chat-ctx--ok { border-left-color: #10b981; }
+.bc-chat-ctx-info { min-width: 0; }
+.bc-chat-ctx-title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-chat-ctx-more { font-weight: 500; opacity: 0.55; font-size: 12px; }
+.bc-chat-ctx-sub { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+.bc-chat-ctx-reminded { color: #047857; font-weight: 600; }
+.bc-chat-ctx-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.bc-ctx-btn {
+  display: inline-flex; align-items: center; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  cursor: pointer; border: 1px solid rgba(var(--v-theme-on-surface), 0.14); background: transparent; color: inherit; text-decoration: none;
+}
+.bc-ctx-btn:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+.bc-ctx-btn--primary { background: #047857; color: #fff; border-color: #047857; }
+.bc-ctx-btn--primary:hover { background: #065f46; }
+
+.bc-chat-conv { display: flex; flex-direction: column; min-height: 0; }
+.bc-chat-conv-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: #f0f2f5; border-bottom: 1px solid rgba(0, 0, 0, 0.06); }
+.bc-page.dark .bc-chat-conv-head { background: #202c33; border-bottom-color: rgba(255, 255, 255, 0.06); }
+.bc-chat-conv-name { font-weight: 700; font-size: 15px; }
+.bc-chat-conv-phone { font-size: 12px; opacity: 0.55; }
+.bc-chat-msgs {
+  flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 6px; min-height: 0;
+  background-color: #efeae2;
+  /* Полупрозрачный слой цвета фона поверх паттерна — гасит дудлы, чтобы они не
+     выделялись (особенно в светлой теме). Меняй альфу, чтобы усилить/ослабить. */
+  background-image:
+    linear-gradient(rgba(239, 234, 226, 0.9), rgba(239, 234, 226, 0.9)),
+    url('https://static.whatsapp.net/rsrc.php/yx/r/voSdkk88H7C.svg');
+  background-repeat: repeat;
+}
+.bc-page.dark .bc-chat-msgs {
+  background-color: #0b141a;
+  background-image:
+    linear-gradient(rgba(11, 20, 26, 0.7), rgba(11, 20, 26, 0.7)),
+    url('https://static.whatsapp.net/rsrc.php/yx/r/voSdkk88H7C.svg');
+}
+.bc-chat-empty { text-align: center; opacity: 0.5; font-size: 13px; padding: 30px; }
+.bc-chat-client-ic { color: #047857; margin-right: 3px; vertical-align: -1px; }
+.bc-chat-tip {
+  align-self: center; display: inline-flex; align-items: center; gap: 5px; margin: 2px auto 10px; max-width: 90%;
+  padding: 5px 12px; border-radius: 8px; font-size: 12px; line-height: 1.35; text-align: center;
+  background: #ffeecd; color: #7a6a3f; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05);
+}
+.bc-page.dark .bc-chat-tip { background: #182229; color: #ffd279; box-shadow: none; }
+.bc-msg { display: flex; margin: 1px 0; }
+.bc-msg--out { justify-content: flex-end; }
+.bc-msg--in { justify-content: flex-start; }
+.bc-msg-bubble {
+  max-width: 65%; min-width: 62px; padding: 6px 9px 8px; border-radius: 8px; font-size: 14.2px; line-height: 1.32;
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13); word-break: break-word;
+}
+.bc-msg--in .bc-msg-bubble { background: #ffffff; color: #111b21; border-top-left-radius: 0; }
+.bc-msg--out .bc-msg-bubble { background: #d9fdd3; color: #111b21; border-top-right-radius: 0; }
+.bc-page.dark .bc-msg--in .bc-msg-bubble { background: #202c33; color: #e9edef; box-shadow: none; }
+.bc-page.dark .bc-msg--out .bc-msg-bubble { background: #005c4b; color: #e9edef; box-shadow: none; }
+.bc-msg-text { white-space: pre-wrap; }
+.bc-msg-media { display: flex; align-items: center; gap: 4px; font-size: 12.5px; margin-bottom: 3px; text-decoration: underline; color: inherit; }
+.bc-msg-time { float: right; font-size: 11px; margin: 5px 0 -2px 8px; color: rgba(0, 0, 0, 0.45); }
+.bc-page.dark .bc-msg-time { color: rgba(233, 237, 239, 0.6); }
+
+.bc-chat-date { display: flex; justify-content: center; margin: 10px 0; }
+.bc-chat-date span {
+  font-size: 12px; padding: 5px 12px; border-radius: 8px; background: #ffffff; color: #54656f;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
+}
+.bc-page.dark .bc-chat-date span { background: #182229; color: #8696a0; box-shadow: none; }
+.bc-chat-reply { display: flex; gap: 8px; align-items: center; padding: 8px 14px; background: #f0f2f5; }
+.bc-page.dark .bc-chat-reply { background: #202c33; }
+.bc-chat-reply input {
+  flex: 1; height: 42px; padding: 0 16px; border-radius: 21px; outline: none; color: #111b21; font-size: 14px;
+  background: #ffffff; border: none;
+}
+.bc-page.dark .bc-chat-reply input { background: #2a3942; color: #e9edef; }
+.bc-chat-reply input::placeholder { color: rgba(0, 0, 0, 0.4); }
+.bc-page.dark .bc-chat-reply input::placeholder { color: rgba(233, 237, 239, 0.45); }
+.bc-chat-send {
+  width: 42px; height: 42px; min-width: 42px; border-radius: 50%; border: none; background: #00a884; color: #fff;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background .15s;
+}
+.bc-chat-send:hover:not(:disabled) { background: #06cf9c; }
+.bc-chat-send:disabled { opacity: 0.5; cursor: not-allowed; }
+/* ── Состояние «WhatsApp не подключён» внутри рабочего вида ── */
+/* Показываем настоящую раскладку раздела, а не пустой экран: человек сразу
+   видит, как это будет выглядеть, и понимает, что именно он получит. */
+.bc-chat-off {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center;
+  padding: 48px 24px;
+  gap: 6px;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
+.bc-chat-off :deep(.v-icon) { color: rgba(var(--v-theme-on-surface), 0.22); margin-bottom: 4px; }
+.bc-chat-off-title {
+  font-size: 14px; font-weight: 650;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.bc-chat-off-text { font-size: 12.5px; line-height: 1.5; max-width: 210px; }
+
+.bc-chat-placeholder--off {
+  opacity: 1;
+  padding: 32px 28px;
+  text-align: center;
+  gap: 0;
+}
+.bc-off-ico {
+  width: 62px; height: 62px; border-radius: 18px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(37, 211, 102, 0.12);
+  color: #25d366;
+  margin-bottom: 16px;
+}
+.bc-off-title {
+  font-size: 17px; font-weight: 750;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  margin-bottom: 8px;
+}
+.bc-off-text {
+  font-size: 13.5px; line-height: 1.6;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  max-width: 380px;
+  margin-bottom: 20px;
+}
+.bc-off-btn { margin-bottom: 14px; }
+.bc-off-hint {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.bc-off-hint :deep(.v-icon) { color: rgba(var(--v-theme-on-surface), 0.3); }
+
+.bc-chat-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; opacity: 0.45; font-size: 14px; }
+
+@media (max-width: 760px) {
+  /* Мессенджер-режим: одна панель на весь экран (список ИЛИ диалог,
+     переключение через v-show + кнопку «назад»). */
+  .bc-chat-shell {
+    grid-template-columns: 1fr;
+    height: calc(100vh - 190px); min-height: 420px;
+    border-radius: 12px;
+  }
+  .bc-chat-list { border-right: none; max-height: none; }
+}
+/* Кнопка «назад» в шапке диалога (рендерится только на мобиле — v-if="isMobile"). */
+.bc-chat-back {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; min-width: 36px; margin-left: -6px; margin-right: 2px;
+  border: none; background: none; border-radius: 50%; cursor: pointer; color: inherit;
+  transition: background .12s;
+}
+.bc-chat-back:hover { background: rgba(var(--v-theme-on-surface), 0.08); }
 .bc-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; }
 
 /* Campaign progress */
@@ -1419,9 +1993,12 @@ function goConnect() { activeTab.value = 'connection' }
 
 /* Tablets / large phones — tabs scroll horizontally instead of wrapping. */
 @media (max-width: 760px) {
-  .bc-tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
-  .bc-tabs::-webkit-scrollbar { display: none; }
+  /* Пилюля переносит строки: табы (со скроллом) сверху, действия — под ними. */
+  .bc-tabs { flex-wrap: wrap; }
+  .bc-tabs-list { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex: 1 1 100%; }
+  .bc-tabs-list::-webkit-scrollbar { display: none; }
   .bc-tab { flex: 0 0 auto; white-space: nowrap; padding: 9px 13px; }
+  .bc-tabs-actions { flex: 1 1 100%; justify-content: flex-end; padding: 2px 2px 3px; }
 }
 
 @media (max-width: 599px) {

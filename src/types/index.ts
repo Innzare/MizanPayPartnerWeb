@@ -17,6 +17,8 @@ export interface PlanFeatures {
   finance: boolean
   staff: boolean
   whatsapp: boolean
+  debtors: boolean
+  suppliers: boolean
 }
 
 // Minimum plan required for each feature. Mirrors backend PLAN_FEATURES —
@@ -34,6 +36,8 @@ export const FEATURE_MIN_PLAN: Record<keyof PlanFeatures, SubscriptionPlan> = {
   finance: 'PRO',
   staff: 'PREMIUM',
   whatsapp: 'PREMIUM',
+  debtors: 'PREMIUM',
+  suppliers: 'PREMIUM',
 }
 
 export const PLAN_LABELS: Record<SubscriptionPlan, string> = {
@@ -55,6 +59,7 @@ export interface User {
   lastName: string
   patronymic?: string
   city?: string
+  companyName?: string | null
   avatar?: string
   rating: number
   completedDeals: number
@@ -140,7 +145,7 @@ export const ROLE_ROUTE_ACCESS: Record<StaffRole, string[]> = {
 // Excludes always-on stuff (`/`, `/calculator`, `/notifications`, `/messages`)
 // and action shortcuts (`/create-deal`, `/import`) — those follow their parent.
 export const STAFF_TOGGLEABLE_ROUTES: { path: string; label: string; icon: string }[] = [
-  { path: '/analytics', label: 'Аналитика', icon: 'mdi-chart-line' },
+  { path: '/analytics', label: 'Аналитика и отчёты', icon: 'mdi-chart-line' },
   { path: '/deals', label: 'Сделки', icon: 'mdi-briefcase' },
   { path: '/clients', label: 'Клиенты', icon: 'mdi-account-group' },
   { path: '/payments', label: 'Платежи', icon: 'mdi-cash-multiple' },
@@ -230,6 +235,11 @@ export interface Deal {
   // Staff member assigned as the responsible party for this deal
   assignedStaffId?: string | null
   assignedStaff?: { id: string; firstName: string; lastName: string } | null
+  // Supplier (Партнёры): store the deal was bought from + optional open debt
+  supplierId?: string | null
+  paidToSupplier?: boolean
+  supplier?: { id: string; name: string; phone: string | null; city: string | null } | null
+  supplierDebt?: { id: string; amount: number; paidAmount: number; status: 'OPEN' | 'SETTLED' | 'CANCELLED' } | null
   createdAt: string
   completedAt?: string
   deletedAt?: string
@@ -423,6 +433,9 @@ export interface CoInvestorSummary {
   realizedProfit: number
   totalPayout: number
   balanceOwed: number
+  // «В работе» — НЕТТО: доля инвестора в закупке активных сделок за вычетом уже
+  // возвращённых клиентами денег (взносы + оплаченные платежи). Считается так же,
+  // как «в работе» на странице кассы; уменьшается по мере оплат.
   activeDeployment: number
   activeDealsCount: number
   // Phase 3: CI's effective share of cashbox profit (0..100). Mirrors
@@ -451,6 +464,11 @@ export interface CoInvestorSummary {
     paidPayments?: number
     numberOfPayments?: number
     modeLabel?: string
+    // Доля инвестора в уже возвращённых клиентом деньгах по сделке (взнос + оплаты).
+    received?: number
+    // Нетто «в работе» по сделке = stake − received (может быть ≤0 у почти
+    // выплаченной активной сделки; в UI показываем «возвращён»). 0 для завершённых.
+    deployed?: number
     // Cost-fee deals carry the per-deal split for the «В работе» modal.
     costFee?: { ratePct: number; partnerFee: number; investorShare: number }
   }>
@@ -537,6 +555,9 @@ export interface Payment {
   method?: PaymentMethod
   proofScreenshot?: string
   remainingAfter: number
+  // Плановая сумма строки на момент отметки оплаты (перерасчёт графика).
+  // null/undefined = никогда не оплачивалась ИЛИ оплачена до релиза → «план vs факт» скрыт.
+  scheduledAmount?: number | null
   note?: string
   rescheduledFrom?: string
   rescheduledAt?: string

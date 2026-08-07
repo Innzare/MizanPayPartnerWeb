@@ -60,6 +60,9 @@ interface PublicStake {
     paidPayments?: number
     numberOfPayments?: number
     modeLabel?: string
+    // Доля инвестора в уже возвращённых клиентом деньгах + нетто «в работе» по сделке.
+    received?: number
+    deployed?: number
     costFee?: { ratePct: number; partnerFee: number; investorShare: number }
   }>
 }
@@ -108,6 +111,12 @@ function toggleTheme() {
   document.documentElement.classList.toggle('dark', next === 'dark')
 }
 
+// Нетто «в работе» по сделке — СО ЗНАКОМ. <0 = клиент вернул больше вашей вложенной
+// доли (возврат включает наценку); такие сделки уменьшают итог, показываем со знаком,
+// чтобы строки сходились с KPI. fallback на stake — для старых ответов без deployed.
+function rowDeployed(d: PublicStake['activeDealsBreakdown'][number]) {
+  return d.deployed ?? d.stake
+}
 // Разбор долей сделки для раскрытого блока. partnerProfit приходит с бэкенда
 // только при включённом флаге приватности — иначе доля партнёра скрыта.
 function dealShares(d: PublicStake['activeDealsBreakdown'][number]) {
@@ -142,6 +151,8 @@ const journalLoading = ref(false)
 const loading = ref(true)
 const error = ref('')
 const showActiveBreakdown = ref(false)
+// Блок «что означают эти цифры» простым языком (от 2-го лица — читает инвестор).
+const showExplain = ref(false)
 
 // Which cashbox stake the investor is currently viewing (summary + journal).
 const selectedStakeId = ref<string | null>(null)
@@ -376,6 +387,62 @@ onMounted(load)
           <div class="inv-stat inv-stat--accent">
             <div class="inv-stat-label">Остаток к выплате</div>
             <div class="inv-stat-value" style="color: #f59e0b;">{{ formatCurrency(summary.totals.balanceOwed) }}</div>
+          </div>
+        </div>
+
+        <!-- Простое объяснение каждой цифры «на пальцах» -->
+        <div class="ci-explain mt-4">
+          <button class="ci-explain-head" @click="showExplain = !showExplain">
+            <v-icon icon="mdi-help-circle-outline" size="18" />
+            <span>Что означают эти цифры? Простыми словами</span>
+            <v-icon :icon="showExplain ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="20" class="ci-explain-chev" />
+          </button>
+          <div v-if="showExplain" class="ci-explain-body">
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #3b82f6;" />
+              <div>
+                <div class="ci-explain-term">Текущий капитал — {{ formatCurrency(summary.totals.currentCapital) }}</div>
+                <div class="ci-explain-desc">Сколько всего денег вы вложили и пока не забрали. Это ваш «кошелёк» здесь.</div>
+              </div>
+            </div>
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #0ea5e9;" />
+              <div>
+                <div class="ci-explain-term">В работе — {{ formatCurrency(summary.totals.activeDeployment) }}</div>
+                <div class="ci-explain-desc">Сколько ваших денег прямо сейчас «в деле»: на них уже куплен товар для клиентов, но клиенты вернули ещё не всё. Когда клиент платит — сумма уменьшается. Нажмите на карточку «В работе», чтобы увидеть расклад по каждой сделке.</div>
+              </div>
+            </div>
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #047857;" />
+              <div>
+                <div class="ci-explain-term">Начислено прибыли — {{ formatCurrency(summary.totals.realizedProfit) }}</div>
+                <div class="ci-explain-desc">Сколько вы уже заработали — это ваша доля с наценки по тем платежам, которые клиенты уже внесли. Растёт по мере того, как клиенты платят.</div>
+              </div>
+            </div>
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #7c3aed;" />
+              <div>
+                <div class="ci-explain-term">Выплачено — {{ formatCurrency(summary.totals.totalPayout) }}</div>
+                <div class="ci-explain-desc">Сколько из заработанного вам уже отдали на руки.</div>
+              </div>
+            </div>
+            <div class="ci-explain-item">
+              <span class="ci-explain-dot" style="background: #f59e0b;" />
+              <div>
+                <div class="ci-explain-term">Остаток к выплате — {{ formatCurrency(summary.totals.balanceOwed) }}</div>
+                <div class="ci-explain-desc">Сколько заработанного вам ещё не отдали. Это просто «Начислено прибыли» минус «Выплачено».</div>
+              </div>
+            </div>
+            <div class="ci-explain-example">
+              <v-icon icon="mdi-lightbulb-on-outline" size="16" />
+              <div>
+                <strong>Простой пример.</strong> Вы вложили 100 000 ₽ — это <b>капитал</b>.
+                На 60 000 ₽ из них купили товар для клиентов — это <b>в работе</b>.
+                Клиенты платят, и вы заработали 4 000 ₽ своей доли с наценки — это <b>начислено</b>.
+                Вам уже отдали 1 000 ₽ — это <b>выплачено</b>.
+                Значит, осталось отдать 3 000 ₽ — это <b>остаток к выплате</b>.
+              </div>
+            </div>
           </div>
         </div>
 
@@ -680,7 +747,7 @@ onMounted(load)
                   </div>
                   <!-- «Вся прибыль» скрываем для доли-по-вкладу/фикс, если партнёр
                        не раскрыл долю (иначе она вычислима: прибыль − ваша доля). -->
-                  <div v-if="d.costFee || s.hasPartner" class="inv-deal-line">
+                  <div v-if="(d.costFee || s.hasPartner) && d.dealProfit != null" class="inv-deal-line">
                     <span class="inv-deal-label inv-deal-strong">{{ d.costFee ? 'Наценка рассрочки' : 'Вся прибыль сделки' }}</span>
                     <span class="inv-deal-val inv-deal-strong">{{ formatCurrency(s.gross) }}</span>
                   </div>
@@ -768,22 +835,23 @@ onMounted(load)
             </div>
             <div class="inv-formula-body">
               <template v-if="stake.costFeeMode">
-                Вы в режиме «комиссия от закупки» — деньги в работе равны полной закупочной цене
-                активных сделок (закупка идёт на ваши средства). По каждой сделке ниже — делёж наценки:
-                комиссия партнёра и ваш доход.
+                Вы в режиме «комиссия от закупки»: в работе — закупочная цена активных сделок
+                <strong>за вычетом уже возвращённых вам денег</strong> (первоначальные взносы и оплаченные
+                платежи). По мере оплат сумма уменьшается. Итог по всем активным =
+                <strong>{{ formatCurrency(stake.activeDeployment) }}</strong>.
               </template>
               <template v-else>
-                Ваша доля в кассе — <strong>{{ stake.effectivePct.toFixed(2) }}%</strong>.
-                Для каждой активной сделки: <strong>закупочная цена × {{ stake.effectivePct.toFixed(2) }}%</strong>
-                — это ваша часть в сделке. Сумма по всем активным = <strong>{{ formatCurrency(stake.activeDeployment) }}</strong>.
+                По каждой активной сделке: ваша доля закупки
+                (<strong>закупка × {{ stake.effectivePct.toFixed(2) }}%</strong>)
+                <strong>за вычетом вашей доли в уже возвращённых клиентом деньгах</strong>
+                (взносы и оплаченные платежи). По мере оплат «в работе» уменьшается. Итог по всем
+                активным = <strong>{{ formatCurrency(stake.activeDeployment) }}</strong>.
               </template>
             </div>
           </div>
           <div class="inv-list-header">
             <span>Активные сделки ({{ stake.activeDealsCount }})</span>
-            <span class="text-caption text-medium-emphasis">
-              {{ stake.costFeeMode ? 'Вы получите' : 'Ваша доля' }}
-            </span>
+            <span class="text-caption text-medium-emphasis">В работе</span>
           </div>
           <div class="inv-list">
             <div
@@ -803,16 +871,19 @@ onMounted(load)
                   <template v-else>
                     Закупочная {{ formatCurrency(d.purchasePrice) }} · {{ formatDate(d.dealDate) }}
                   </template>
-                  <template v-if="d.costFee">
+                  <template v-if="(d.received ?? 0) > 0">
+                    <br />
+                    доля закупки {{ formatCurrency(d.costFee ? d.purchasePrice : d.stake) }} − возвращено {{ formatCurrency(d.received ?? 0) }}
+                  </template>
+                  <template v-else-if="d.costFee">
                     <br />
                     возврат {{ formatCurrency(d.purchasePrice) }} + доход {{ formatCurrency(d.costFee.investorShare) }}
                     (комиссия партнёра {{ d.costFee.ratePct }}% = {{ formatCurrency(d.costFee.partnerFee) }})
                   </template>
                 </div>
               </div>
-              <div class="inv-list-stake">
-                <template v-if="d.costFee">{{ formatCurrency(d.purchasePrice + d.costFee.investorShare) }}</template>
-                <template v-else>{{ formatCurrency(d.stake) }}</template>
+              <div class="inv-list-stake" :style="{ color: rowDeployed(d) > 0 ? '#0ea5e9' : (rowDeployed(d) < 0 ? '#f59e0b' : 'rgba(var(--v-theme-on-surface), 0.4)') }">
+                {{ rowDeployed(d) > 0 ? formatCurrency(rowDeployed(d)) : (rowDeployed(d) < 0 ? '−' + formatCurrency(-rowDeployed(d)) : 'возвращён') }}
               </div>
             </div>
           </div>
@@ -867,6 +938,35 @@ onMounted(load)
   padding: 14px 16px; border-radius: 12px;
   background: rgba(var(--v-theme-on-surface), 0.03);
 }
+/* Блок «Что означают эти цифры» */
+.ci-explain {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.ci-explain-head {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border: none; background: transparent; cursor: pointer;
+  font-size: 13.5px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.8);
+  text-align: left;
+}
+.ci-explain-head .ci-explain-chev { margin-left: auto; color: rgba(var(--v-theme-on-surface), 0.5); }
+.ci-explain-head:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.ci-explain-body {
+  padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 14px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+.ci-explain-item { display: flex; align-items: flex-start; gap: 10px; padding-top: 10px; }
+.ci-explain-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.ci-explain-term { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.9); }
+.ci-explain-desc { font-size: 13px; line-height: 1.5; color: rgba(var(--v-theme-on-surface), 0.62); margin-top: 2px; }
+.ci-explain-example {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 12px; border-radius: 10px; margin-top: 2px;
+  background: rgba(245, 158, 11, 0.08); color: rgba(var(--v-theme-on-surface), 0.78);
+  font-size: 12.5px; line-height: 1.55;
+}
+.ci-explain-example .v-icon { color: #f59e0b; margin-top: 1px; flex-shrink: 0; }
 .inv-stat--accent {
   background: rgba(245, 158, 11, 0.06);
   border: 1px solid rgba(245, 158, 11, 0.18);

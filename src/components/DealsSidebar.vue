@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useRecentDeals } from '@/composables/useRecentDeals'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useDealLock } from '@/composables/useDealLock'
-import { formatCurrency, formatPhone } from '@/utils/formatters'
+import { formatCurrency } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import type { Deal } from '@/types'
 
@@ -135,48 +135,6 @@ function clientName(d: Deal): string {
   return 'Без клиента'
 }
 
-function clientPhone(d: Deal): string {
-  const cp = (d as any).clientProfile
-  if (cp?.phone) return formatPhone(cp.phone)
-  const ext = (d as any).externalClientPhone
-  if (ext) return formatPhone(ext)
-  return ''
-}
-
-// Two-letter avatar initials for the client. Falls back to a generic
-// «?» so deals without a client still render a coloured circle.
-function clientInitials(d: Deal): string {
-  const cp = (d as any).clientProfile
-  if (cp) {
-    const first = (cp.firstName?.[0] ?? '').toUpperCase()
-    const last = (cp.lastName?.[0] ?? '').toUpperCase()
-    const v = (last + first).slice(0, 2)
-    if (v) return v
-  }
-  const ext = (d as any).externalClientName as string | undefined
-  if (ext) {
-    const parts = ext.trim().split(/\s+/)
-    const a = parts[0]?.[0] ?? ''
-    const b = parts[1]?.[0] ?? ''
-    return (a + b).toUpperCase() || '?'
-  }
-  return '?'
-}
-
-// Deterministic colour for the avatar so a given client always gets
-// the same shade. Pulls from a small palette tuned for both light and
-// dark themes.
-const AVATAR_COLORS = [
-  '#0ea5e9', '#10b981', '#f59e0b', '#ef4444',
-  '#a855f7', '#ec4899', '#06b6d4', '#84cc16',
-]
-function avatarColor(d: Deal): string {
-  const seed = clientName(d) || d.id
-  let hash = 0
-  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) | 0
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
-}
-
 function statusChipColor(status: string): string {
   return (DEAL_STATUS_CONFIG as any)[status]?.color ?? '#94a3b8'
 }
@@ -285,27 +243,21 @@ function statusChipLabel(status: string): string {
           :class="{ 'deal-locked-dim': isDealLocked(d) }"
           @click="goToDeal(d)"
         >
-          <div class="ds-item-avatar" :style="{ background: avatarColor(d) }">
-            {{ clientInitials(d) }}
-          </div>
           <div class="ds-item-body">
-            <div class="ds-item-headline">
+            <div class="ds-item-line">
               <span class="ds-item-title">{{ d.productName || 'Без названия' }}</span>
-              <span v-if="isDealLocked(d)" class="deal-locked-chip"><v-icon icon="mdi-lock-outline" />Недоступно</span>
+              <span v-if="isDealLocked(d)" class="deal-locked-chip"><v-icon icon="mdi-lock-outline" /></span>
               <span class="ds-item-num">#{{ d.dealNumber }}</span>
             </div>
-            <div class="ds-item-client">{{ clientName(d) }}</div>
-            <div v-if="clientPhone(d)" class="ds-item-phone">
-              <v-icon icon="mdi-phone-outline" size="11" />
-              {{ clientPhone(d) }}
-            </div>
-            <div class="ds-item-footer">
+            <div class="ds-item-line">
+              <!-- Статус точкой, а не бейджем: цвет читается мгновенно,
+                   а места занимает в разы меньше. Название — в подсказке. -->
               <span
-                class="ds-item-status"
-                :style="{ color: statusChipColor(d.status), background: statusChipColor(d.status) + '18' }"
-              >
-                {{ statusChipLabel(d.status) }}
-              </span>
+                class="ds-item-dot"
+                :style="{ background: statusChipColor(d.status) }"
+                :title="statusChipLabel(d.status)"
+              />
+              <span class="ds-item-client">{{ clientName(d) }}</span>
               <span class="ds-item-price">{{ formatCurrency(d.totalPrice) }}</span>
             </div>
           </div>
@@ -453,13 +405,9 @@ function statusChipLabel(status: string): string {
 .ds-list {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 12px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  /* Tinted background so the white deal cards visually pop on top of
-     it. Slightly darker than the toolbar above for contrast. */
-  background: rgba(var(--v-theme-on-surface), 0.05);
+  /* Без боковых отступов: строки идут от края до края панели, отступ живёт
+     внутри самой строки — так подсветка при наведении не обрывается полосками. */
+  padding: 0 0 20px;
 }
 
 .ds-empty {
@@ -477,59 +425,66 @@ function statusChipLabel(status: string): string {
   line-height: 1.5;
 }
 
+/* Строка сделки — две строки без аватара и телефона: панель нужна для
+   быстрого перехода, а не для карточки клиента. Плоский список вместо
+   карточек с тенями даёт вдвое больше сделок на экран. */
 .ds-item {
+  position: relative;
+  width: 100%;
   text-align: left;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.04);
-  /* Solid surface bg lifts the card above the tinted list backdrop. */
-  background: rgb(var(--v-theme-surface));
-  border-radius: 12px;
-  padding: 12px 14px;
+  border: none;
+  background: none;
+  padding: 10px 16px;
   cursor: pointer;
-  transition: all 0.15s;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 12px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  display: block;
+  transition: background 0.13s ease;
 }
-.ds-item:hover {
-  border-color: rgba(4, 120, 87, 0.3);
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+/* Разделитель на самой строке, а не на соседе: он остаётся на месте при
+   наведении, и подсветка не «съедает» линию между строками. */
+.ds-item + .ds-item::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 16px;
+  height: 1px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
 }
 
-.ds-item-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
+.ds-item:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+.dark .ds-item:hover { background: rgba(255, 255, 255, 0.055); }
+
+/* Полоска слева — то, что делает наведение однозначным: видно, какая именно
+   строка сейчас под курсором, даже если подсветка фона еле заметна. */
+.ds-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #047857;
+  opacity: 0;
+  transition: opacity 0.13s ease;
+}
+.ds-item:hover::before { opacity: 1; }
+
+.ds-item:active { background: rgba(var(--v-theme-on-surface), 0.08); }
+
+.ds-item-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+
+.ds-item-line {
   display: flex;
   align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  flex-shrink: 0;
-}
-
-.ds-item-body {
+  gap: 7px;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
 }
 
-.ds-item-headline {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 1px;
-}
 .ds-item-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.92);
-  line-height: 1.25;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -539,48 +494,29 @@ function statusChipLabel(status: string): string {
 .ds-item-num {
   font-size: 11px;
   font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.35);
+  color: rgba(var(--v-theme-on-surface), 0.3);
   flex-shrink: 0;
 }
 
+.ds-item-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
 .ds-item-client {
-  font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.75);
+  font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.ds-item-phone {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  margin-top: 1px;
-}
-
-.ds-item-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.06);
-}
-.ds-item-status {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 6px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+  flex: 1;
+  min-width: 0;
 }
 .ds-item-price {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.9);
+  color: rgba(var(--v-theme-on-surface), 0.85);
   flex-shrink: 0;
 }
 </style>

@@ -1,8 +1,10 @@
 <script lang="ts" setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import { useSections } from '@/composables/useSections'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
+import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { formatCurrency, formatCurrencyShort, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
@@ -11,10 +13,15 @@ import CashflowJournal from '@/components/CashflowJournal.vue'
 import CashBoxEditDialog from '@/components/CashBoxEditDialog.vue'
 
 const route = useRoute()
+const sections = useSections()
 const router = useRouter()
 const toast = useToast()
 const { isDark } = useIsDark()
 const store = useCashBoxesStore()
+const auth = useAuthStore()
+// Право «Видеть капитал и операции кассы». Без него блок капитала/операций
+// скрыт (и мы не грузим финансовые данные, чтобы не ловить 403).
+const canSeeCapital = computed(() => auth.can('cashboxes.capitalView'))
 
 // Reactive mobile flag для fullscreen-диалогов на телефонах.
 const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
@@ -149,10 +156,11 @@ async function loadAll() {
     const [b] = await Promise.all([
       store.findById(id.value),
       store.items.length === 0 ? store.fetchAll() : Promise.resolve(),
-      loadDetails(),
-      loadCategories(),
-      loadCashBoxCoInvestors(),
-      loadCapitalSummary(),
+      // Финансовые данные грузим только при наличии права — иначе 403.
+      canSeeCapital.value ? loadDetails() : Promise.resolve(),
+      canSeeCapital.value ? loadCategories() : Promise.resolve(),
+      canSeeCapital.value ? loadCashBoxCoInvestors() : Promise.resolve(),
+      canSeeCapital.value ? loadCapitalSummary() : Promise.resolve(),
     ])
     box.value = b
   } catch (e: any) {
@@ -247,7 +255,9 @@ function dealCostRecovered(d: CapitalDeal): number {
 }
 function dealProfitEarned(d: CapitalDeal): number {
   if (d.totalPrice <= 0) return 0
-  return Math.round(d.received * (dealTotalMargin(d) / d.totalPrice))
+  // Кламп [0,1]: прибыль не может превышать полученные деньги (битые данные —
+  // наценка в рублях при цене в тысячах — иначе дают коэффициент в сотни раз).
+  return Math.round(d.received * Math.min(dealTotalMargin(d) / d.totalPrice, 1))
 }
 // Partner's own cut on this deal = earned profit minus co-investors' share.
 function dealPartnerProfit(d: CapitalDeal): number {
@@ -282,7 +292,7 @@ function dealProfitRemaining(d: CapitalDeal): number {
 }
 function paymentProfit(d: CapitalDeal, p: CapitalDealPayment): number {
   if (d.totalPrice <= 0) return 0
-  return Math.round(p.amount * (dealTotalMargin(d) / d.totalPrice))
+  return Math.round(p.amount * Math.min(dealTotalMargin(d) / d.totalPrice, 1))
 }
 
 function toggleProfitDeal(id: string) {
@@ -542,6 +552,13 @@ const OP_KIND_CHIPS: { key: OpKind; label: string; color: string }[] = [
   { key: 'MANUAL', label: 'Ручные', color: '#3b82f6' },
 ]
 
+/** Без раздела со-инвесторов выплаты им не появляются — фильтр лишний. */
+const opKindChips = computed(() =>
+  sections.visible('coInvestors')
+    ? OP_KIND_CHIPS
+    : OP_KIND_CHIPS.filter((k) => k.key !== 'PAYOUT'),
+)
+
 function opPeriodFromDate(): Date | null {
   if (opPeriod.value === 'all') return null
   const from = new Date()
@@ -674,6 +691,8 @@ const capDialog = ref(false)
 const capMode = ref<'topup' | 'withdraw'>('topup')
 const capAmount = ref(0)
 const capNote = ref('')
+// Ключ идемпотентности операции с капиталом (живёт на одно открытие диалога).
+const capIdemKey = ref('')
 const capSaving = ref(false)
 
 // Наглядные поля кассы (с фолбэком, если бэк ещё не отдал новые поля).
@@ -713,6 +732,8 @@ function openCapDialog(mode: 'topup' | 'withdraw') {
   capMode.value = mode
   capAmount.value = 0
   capNote.value = ''
+  // Ключ идемпотентности на одно открытие диалога — переживает ретраи отправки.
+  capIdemKey.value = `${Date.now()}-${Math.random().toString(36).slice(2)}`
   capDialog.value = true
 }
 
@@ -726,7 +747,7 @@ async function submitCapital() {
   capSaving.value = true
   try {
     const signed = capMode.value === 'withdraw' ? -amount : amount
-    capitalSummary.value = await store.adjustPartnerCapital(id.value, signed, capNote.value)
+    capitalSummary.value = await store.adjustPartnerCapital(id.value, signed, capNote.value, capIdemKey.value)
     capDialog.value = false
     toast.success(capMode.value === 'topup' ? 'Капитал пополнен' : 'Капитал снят')
     await refreshAfterMutation()
@@ -827,6 +848,13 @@ async function handleDelete() {
             <v-icon icon="mdi-delete-outline" size="17" />
           </button>
         </div>
+      </div>
+
+      <!-- Нет права видеть капитал/операции кассы -->
+      <div v-if="!canSeeCapital" class="cb-no-capital">
+        <v-icon icon="mdi-lock-outline" size="30" />
+        <div class="cb-no-capital-title">Финансовые данные скрыты</div>
+        <div class="cb-no-capital-sub">У вашей роли нет доступа к капиталу и операциям этой кассы.</div>
       </div>
 
       <!-- ============================ -->
@@ -1325,7 +1353,7 @@ async function handleDelete() {
                 <v-card rounded="lg" elevation="4" class="cfj-menu">
                   <div class="cfj-menu-head">Тип операции</div>
                   <button
-                    v-for="k in OP_KIND_CHIPS"
+                    v-for="k in opKindChips"
                     :key="k.key"
                     class="cfj-menu-item"
                     :class="{ 'cfj-menu-item--active': opKinds.includes(k.key) }"
@@ -1988,6 +2016,16 @@ async function handleDelete() {
 }
 
 /* Header */
+.cb-no-capital {
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px;
+  padding: 40px 24px; border-radius: 16px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.14);
+  color: rgba(var(--v-theme-on-surface), 0.6); margin-bottom: 24px;
+}
+.cb-no-capital-title { font-size: 16px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.8); margin-top: 4px; }
+.cb-no-capital-sub { font-size: 13px; max-width: 340px; }
+
 .cb-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .cb-header-left { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1; }
 .cb-header-icon {

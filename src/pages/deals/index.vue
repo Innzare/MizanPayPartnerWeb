@@ -11,6 +11,7 @@ import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 
 const router = useRouter()
@@ -18,6 +19,7 @@ const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const dealsStore = useDealsStore()
 const authStore = useAuthStore()
+const sections = useSections()
 const paymentsStore = usePaymentsStore()
 const { folders, fetchFolders, createFolder, updateFolder, deleteFolder, moveDeal, moveBatch } = useFolders()
 
@@ -519,8 +521,8 @@ const selectedDealPaidTotal = computed(() =>
     </div>
 
     <template v-else>
-    <!-- Summary Cards -->
-    <div class="stats-row mb-6">
+    <!-- Summary Cards (KPI) — скрываются у ролей без права deals.kpi -->
+    <div v-if="authStore.can('deals.kpi')" class="stats-row mb-6">
       <div class="stat-card">
         <div class="stat-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
           <v-icon icon="mdi-briefcase" size="20" />
@@ -635,7 +637,7 @@ const selectedDealPaidTotal = computed(() =>
       </v-menu>
 
       <!-- Staff assignee filter -->
-      <v-menu v-if="authStore.isOwner && staffList.length > 0" :close-on-content-click="true">
+      <v-menu v-if="authStore.isOwner && sections.visible('staff') && staffList.length > 0" :close-on-content-click="true">
         <template #activator="{ props: mp }">
           <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeStaff }">
             <v-icon icon="mdi-account-tie-outline" size="16" />
@@ -1095,7 +1097,7 @@ const selectedDealPaidTotal = computed(() =>
             v-if="!search && !isTrashTab"
             variant="tonal"
             color="primary"
-            class="mt-4"
+            class="mt-4 mz-btn-text"
             prepend-icon="mdi-plus"
             @click="router.push('/create-deal')"
           >

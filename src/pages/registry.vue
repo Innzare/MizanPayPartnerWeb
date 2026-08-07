@@ -5,11 +5,13 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const { isDark } = useIsDark()
 const toast = useToast()
 const { isMobile } = useIsMobile()
 const router = useRouter()
+const authStore = useAuthStore()
 
 // ── Types ──
 
@@ -341,11 +343,9 @@ function renderStars(rating: number): string[] {
 
 <template>
   <div class="rg-page" :class="{ dark: isDark }">
-    <!-- Hero search section -->
+    <!-- Hero search section (заголовок раздела — в верхнем баре) -->
     <div class="rg-hero">
       <div class="rg-hero-content">
-        <h1 class="rg-hero-title">Реестр клиентов</h1>
-        <p class="rg-hero-subtitle">Проверяйте платёжеспособность клиентов перед заключением сделок</p>
         <div class="rg-search-wrap">
           <v-icon icon="mdi-magnify" size="22" class="rg-search-icon" />
           <input
@@ -402,8 +402,8 @@ function renderStars(rating: number): string[] {
       </div>
     </div>
 
-    <!-- Stats bar -->
-    <div class="stats-row mb-5">
+    <!-- Stats bar (KPI) — скрывается у ролей без права registry.kpi -->
+    <div v-if="authStore.can('registry.kpi')" class="stats-row mb-5">
       <div class="stat-card">
         <div class="stat-icon" style="background: rgba(99, 102, 241, 0.1); color: #6366f1;">
           <v-icon icon="mdi-account-multiple" size="20" />
