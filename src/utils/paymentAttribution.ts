@@ -92,6 +92,31 @@ export function offMonthKind(p: AttributablePayment): 'early' | 'late' | null {
   return py * 12 + pm < due.year * 12 + due.month ? 'early' : 'late'
 }
 
+/**
+ * Учитывать ли платёж в деньгах вообще.
+ *
+ * Отсекает то, что деньгами не является или уже не станет:
+ *   - CLOSED_EARLY — нулевые строки-заглушки после досрочного закрытия;
+ *   - платежи отменённых сделок — при отмене график не трогается, строки
+ *     остаются PENDING и иначе всплывают как ожидаемые поступления;
+ *   - открытые строки завершённых сделок — остаются после принудительного
+ *     закрытия (closeMode: 'force') и рисуют несуществующий будущий доход.
+ *
+ * Уже оплаченные строки завершённой сделки, наоборот, нужны — это реальные
+ * полученные деньги. Зеркало `isLivePayment` в мобильном приложении.
+ */
+export function isLivePayment(
+  p: { status: string },
+  deal?: { status?: string; deletedAt?: string | null } | null,
+): boolean {
+  if (p.status === 'CLOSED_EARLY') return false
+  if (!deal) return true
+  if (deal.deletedAt) return false
+  if (deal.status === 'CANCELLED') return false
+  if (deal.status === 'COMPLETED' && p.status !== 'PAID') return false
+  return true
+}
+
 /** Названия месяцев в предложном падеже: «в <месяце>». */
 export const MONTH_PREPOSITIONAL = [
   'январе', 'феврале', 'марте', 'апреле', 'мае', 'июне',

@@ -4,7 +4,7 @@ import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatCurrencyShort, formatPercent, formatDate } from '@/utils/formatters'
 import { useRouter } from 'vue-router'
 import { userName, clientProfileName } from '@/types'
-import { attributionYearMonth, offMonthKind, localDateStr } from '@/utils/paymentAttribution'
+import { attributionYearMonth, offMonthKind, localDateStr, isLivePayment } from '@/utils/paymentAttribution'
 import { paymentProfit } from '@/utils/dealProfit'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -151,7 +151,13 @@ const downPaymentPseudoPayments = computed(() => {
 })
 
 const scopedAllPaymentsFlat = computed(() => {
-  const all = [...paymentsStore.allPaymentsFlat, ...downPaymentPseudoPayments.value] as any[]
+  // Отсекаем строки, которые деньгами не являются: CLOSED_EARLY (нулевые
+  // заглушки) и открытые хвосты отменённых / принудительно закрытых сделок.
+  // Псевдо-взносы фильтр проходят — у них PAID и живая сделка.
+  const live = paymentsStore.allPaymentsFlat.filter((p) =>
+    isLivePayment(p, (p as any).deal ?? dealsStore.getDeal(p.dealId)),
+  )
+  const all = [...live, ...downPaymentPseudoPayments.value] as any[]
   if (!scopedDealIds.value) return all
   return all.filter((p) => scopedDealIds.value!.has(p.dealId))
 })

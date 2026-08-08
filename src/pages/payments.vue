@@ -4,7 +4,7 @@ import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName, clientProfileName } from '@/types'
-import { attributionMonthStr, offMonthKind, monthPrepositional, dueYearMonth } from '@/utils/paymentAttribution'
+import { attributionMonthStr, offMonthKind, monthPrepositional, dueYearMonth, isLivePayment } from '@/utils/paymentAttribution'
 import { useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -176,9 +176,13 @@ const paymentsByDate = computed(() => {
   if (!subscription.canAccess('analyticsCharts')) return {} as Record<string, (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]>
   const map: Record<string, (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]> = {}
   paymentsStore.allPaymentsFlat.forEach(p => {
+    const deal = getDealForPayment(p)
+    // Нулевые строки после досрочного закрытия и хвосты отменённых /
+    // принудительно закрытых сделок деньгами не являются: они подсвечивали дни
+    // без причины и завышали итог месяца несуществующими поступлениями.
+    if (!isLivePayment(p, deal)) return
     const key = p.dueDate.slice(0, 10)
     if (!map[key]) map[key] = []
-    const deal = getDealForPayment(p)
     map[key].push({
       ...p,
       _dealName: getDealName(p),
