@@ -56,7 +56,7 @@ async function deletePromiseEntry(a: CollectionActivity) {
   try {
     await store.deletePromise(a.id)
     activities.value = activities.value.filter((x) => x.id !== a.id)
-    await store.fetchDebtors()
+    await store.refreshCurrent()
   } catch (e: any) {
     error.value = e?.message || 'Не удалось удалить обещание'
   }
@@ -134,7 +134,7 @@ async function submitNote() {
 async function onPromiseSaved() {
   editingPromise.value = null
   await loadActivities()
-  await store.fetchDebtors() // колонка «обещал оплатить» пересчитывается на бэке
+  await store.refreshCurrent() // колонка «обещал оплатить» пересчитывается на бэке
 }
 
 async function removeActivity(id: string) {
@@ -142,7 +142,7 @@ async function removeActivity(id: string) {
   try {
     await store.deleteActivity(id)
     activities.value = activities.value.filter((a) => a.id !== id)
-    if (props.row) await store.fetchDebtors()
+    if (props.row) await store.refreshCurrent()
   } catch (e: any) {
     error.value = e?.message || 'Не удалось удалить'
   }

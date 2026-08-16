@@ -140,6 +140,15 @@
             <div class="draft-info">
               <div class="draft-name">{{ d.originalFileName }}</div>
               <div class="draft-meta">
+                <!-- Фоновая фиксация: черновик остаётся в списке, пока идёт
+                     импорт, — открыв его, партнёр увидит прогресс. -->
+                <template v-if="d.status === 'COMMITTING'">
+                  <span class="draft-committing">
+                    <v-progress-circular indeterminate size="10" width="2" />
+                    импортируется
+                  </span>
+                  <span class="draft-meta-dot">·</span>
+                </template>
                 <span>{{ formatRelative(d.createdAt) }}</span>
                 <span class="draft-meta-dot">·</span>
                 <span class="draft-meta-expire">истекает {{ formatRelative(d.expiresAt) }}</span>
@@ -573,6 +582,12 @@ onMounted(() => {
   display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
 }
 .draft-meta-dot { opacity: 0.5; }
+.draft-committing {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: #047857;
+  font-weight: 600;
+}
+.dark .draft-committing { color: #34d399; }
 .draft-meta-expire { color: rgba(var(--v-theme-on-surface), 0.4); }
 .draft-chevron {
   color: rgba(var(--v-theme-on-surface), 0.35);

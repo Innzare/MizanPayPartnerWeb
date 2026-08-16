@@ -4,8 +4,6 @@ import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatCurrencyShort, formatPercent, formatDate } from '@/utils/formatters'
 import { useRouter } from 'vue-router'
 import { userName, clientProfileName } from '@/types'
-import { attributionYearMonth, offMonthKind, localDateStr, isLivePayment } from '@/utils/paymentAttribution'
-import { paymentProfit } from '@/utils/dealProfit'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
@@ -15,6 +13,8 @@ import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
+import { useAnalyticsSummary, useAnalyticsMonthly, fetchDealsBreakdown, fetchMonthDeals } from '@/composables/useAnalyticsOverview'
+import type { MonthDealRow, MonthDealsResponse } from '@/types/analytics'
 import type { CapitalSummary } from '@/types'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
 import {
@@ -62,10 +62,8 @@ const scopedCapital = ref<CapitalSummary | null>(null)
 // Accrued co-investor profit share per paid payment (paymentId → amount).
 // Same partner-net logic as cashboxes / deal page (from PROFIT_ACCRUED journal).
 // Only PAID payments have a share — pending/overdue keep gross projection.
-const ciProfitByPayment = ref<Record<string, number>>({})
 // Доля со-инвесторов, начисленная с первоначальных взносов { dealId → Σ }.
 // У взносов нет строки графика, поэтому в карте по платежам их нет.
-const ciProfitByDownPayment = ref<Record<string, number>>({})
 
 async function fetchScopedCapital() {
   if (!selectedCashBoxId.value) {
@@ -81,6 +79,10 @@ async function fetchScopedCapital() {
 
 watch(selectedCashBoxId, () => {
   fetchScopedCapital()
+  // Счётчики статусов раньше фильтровались на клиенте и реагировали на выбор
+  // кассы сами. Теперь их считает сервер — без перезапроса диаграмма «Статус
+  // сделок» и её легенда продолжали показывать цифры по всем кассам.
+  dealsStore.fetchDealCounts({ cashBoxId: selectedCashBoxId.value })
 })
 
 const capital = computed(() => selectedCashBoxId.value ? scopedCapital.value : globalCapital.value)
@@ -93,106 +95,18 @@ const capitalUtilization = computed(() => {
   return Math.min(Math.round((capital.value.deployed / capital.value.totalCapital) * 100), 100)
 })
 
-// ── Scoped deals & payments (filtered by selectedCashBoxId) ───────
-// When no cashbox selected — fall back to all data from the stores.
-const scopedInvestorDeals = computed(() =>
-  selectedCashBoxId.value
-    ? dealsStore.investorDeals.filter((d: any) => d.cashBoxId === selectedCashBoxId.value)
-    : dealsStore.investorDeals
-)
-const scopedActiveDeals = computed(() =>
-  selectedCashBoxId.value
-    ? dealsStore.activeDeals.filter((d: any) => d.cashBoxId === selectedCashBoxId.value)
-    : dealsStore.activeDeals
-)
-const scopedCompletedDeals = computed(() =>
-  selectedCashBoxId.value
-    ? dealsStore.completedDeals.filter((d: any) => d.cashBoxId === selectedCashBoxId.value)
-    : dealsStore.completedDeals
-)
-const scopedAllDeals = computed(() =>
-  selectedCashBoxId.value
-    ? dealsStore.deals.filter((d: any) => d.cashBoxId === selectedCashBoxId.value)
-    : dealsStore.deals
-)
-
-// Build a Set of deal IDs in scope for fast payment lookup
-const scopedDealIds = computed(() => {
-  if (!selectedCashBoxId.value) return null // null = no filter
-  return new Set(scopedInvestorDeals.value.map((d: any) => d.id))
-})
-
-// Первоначальный взнос — это реально полученные деньги с долей наценки, и
-// касса его учитывает. Строкой графика он не является, поэтому в аналитику
-// раньше не попадал: доход расходился с кассой. Добавляем его как
-// синтетический «платёж №0» в месяце сделки (id с префиксом dp: — по нему
-// берётся доля со-инвесторов из отдельной карты).
-const DOWN_PAYMENT_PREFIX = 'dp:'
-const downPaymentPseudoPayments = computed(() => {
-  const rows: any[] = []
-  for (const d of dealsStore.investorDeals as any[]) {
-    const amount = d.downPayment || 0
-    if (amount <= 0) continue
-    if (d.status === 'CANCELLED' || d.deletedAt) continue
-    const date = d.dealDate || d.createdAt
-    if (!date) continue
-    rows.push({
-      id: `${DOWN_PAYMENT_PREFIX}${d.id}`,
-      dealId: d.id,
-      amount,
-      status: 'PAID',
-      paidAt: date,
-      dueDate: date,
-      deal: d,
-      isDownPayment: true,
-    })
-  }
-  return rows
-})
-
-const scopedAllPaymentsFlat = computed(() => {
-  // Отсекаем строки, которые деньгами не являются: CLOSED_EARLY (нулевые
-  // заглушки) и открытые хвосты отменённых / принудительно закрытых сделок.
-  // Псевдо-взносы фильтр проходят — у них PAID и живая сделка.
-  const live = paymentsStore.allPaymentsFlat.filter((p) =>
-    isLivePayment(p, (p as any).deal ?? dealsStore.getDeal(p.dealId)),
-  )
-  const all = [...live, ...downPaymentPseudoPayments.value] as any[]
-  if (!scopedDealIds.value) return all
-  return all.filter((p) => scopedDealIds.value!.has(p.dealId))
-})
-const scopedPaidPayments = computed(() =>
-  scopedAllPaymentsFlat.value.filter((p) => p.status === 'PAID')
-)
-const scopedPendingPayments = computed(() =>
-  scopedAllPaymentsFlat.value.filter((p) => p.status === 'PENDING')
-)
-const scopedOverduePayments = computed(() =>
-  scopedAllPaymentsFlat.value.filter((p) => p.status === 'OVERDUE')
-)
-
 const selectedCashBox = computed(() =>
   selectedCashBoxId.value ? cashboxesStore.items.find((b) => b.id === selectedCashBoxId.value) ?? null : null
 )
 
 onMounted(async () => {
   try {
+    // Портфель сделок и все платежи здесь больше не грузятся: помесячные
+    // разрезы и итоги считает сервер (те же формулы, что в «Отчётах»).
     await Promise.all([
-      dealsStore.fetchDeals(),
-      paymentsStore.fetchPayments(),
       fetchCapital(),
       cashboxesStore.fetchAll(),
-      // Co-investor share map — degrade gracefully to gross (empty map) on error.
-      api.get<Record<string, number>>('/finance/coinvestor-profit-by-payment')
-        .then((m) => { ciProfitByPayment.value = m || {} })
-        .catch(() => { ciProfitByPayment.value = {} }),
-      api.get<Record<string, number>>('/finance/coinvestor-profit-by-downpayment')
-        .then((m) => { ciProfitByDownPayment.value = m || {} })
-        .catch(() => { ciProfitByDownPayment.value = {} }),
-      // Configured co-investor ratio per deal — for projecting pending payments.
-      api.get<Record<string, number>>('/finance/deal-coinvestor-ratios')
-        .then((m) => { dealCIRatio.value = m || {} })
-        .catch(() => { dealCIRatio.value = {} }),
+      dealsStore.fetchDealCounts({ cashBoxId: selectedCashBoxId.value }),
     ])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки данных')
@@ -219,13 +133,6 @@ function getMonthKeyFromStr(dateStr: string): string {
   return getMonthKey(new Date(year, month, 1))
 }
 
-// Ключ месяца УЧЁТА денег по платежу (PAID → месяц оплаты, иначе плановый срок).
-// Единое правило — в utils/paymentAttribution. Возвращает null для CLOSED_EARLY.
-function attrMonthKey(p: { status: string; paidAt?: string | null; dueDate: string }): string | null {
-  const ym = attributionYearMonth(p)
-  return ym ? getMonthKey(new Date(ym.year, ym.month, 1)) : null
-}
-
 function getLast6Months() {
   const months: Record<string, number> = {}
   const now = new Date()
@@ -246,80 +153,24 @@ function getNext6Months() {
   return months
 }
 
-// ── Profit calculation ──
-// Формула вынесена в utils/dealProfit.ts — она же используется на главной и
-// зеркалит SQL_MARGIN/SQL_SHARE в отчётах на бэкенде.
-function getDealForPayment(payment: any) {
-  return dealsStore.getDeal(payment.dealId) || payment.deal
-}
-
-function getPaymentProfit(payment: { amount: number; dealId: string; deal?: any }) {
-  return paymentProfit(payment.amount, getDealForPayment(payment))
-}
-
-// Co-investor share accrued on a payment (only for PAID payments). 0 if none.
-function getPaymentCIProfit(p: { id: string; dealId?: string }) {
-  // Синтетический «платёж №0» (первоначальный взнос) — доля инвесторов лежит
-  // в отдельной карте по сделке, т.к. в журнале у неё нет paymentId.
-  if (p.id.startsWith(DOWN_PAYMENT_PREFIX)) {
-    return p.dealId ? ciProfitByDownPayment.value[p.dealId] ?? 0 : 0
-  }
-  return ciProfitByPayment.value[p.id] ?? 0
-}
-
-// Partner net profit of a payment = gross margin − co-investor share.
-function getPaymentPartnerProfit(p: { id: string; amount: number; dealId: string; deal?: any }) {
-  return getPaymentProfit(p) - getPaymentCIProfit(p)
-}
-
-// CONFIGURED co-investor share ratio per deal { dealId → 0..1 }, from the
-// backend (same split math as accrual). Used to project the partner/investor
-// split for PENDING payments — realised (paid) numbers come from
-// ciProfitByPayment. A configured ratio works even for deals with no paid
-// payments yet, so an investor's share isn't hidden until the first payment.
-const dealCIRatio = ref<Record<string, number>>({})
-
 // ── KPI ──
 
-const paymentHealth = computed(() => {
-  const paid = scopedPaidPayments.value
-  if (!paid.length) return 100
-  // Сравниваем КАЛЕНДАРНЫЕ даты: paidAt берём ЛОКАЛЬНО (как и месяц атрибуции —
-  // иначе на ночных оплатах метрика и бейдж «не в свой месяц» противоречат),
-  // dueDate — строкой.
-  const onTime = paid.filter(p => p.paidAt && localDateStr(p.paidAt) <= p.dueDate.slice(0, 10)).length
-  return Math.round((onTime / paid.length) * 100)
-})
-
-const overdueAmount = computed(() =>
-  scopedOverduePayments.value.reduce((s, p) => s + p.amount, 0)
-)
+const overdueAmount = computed(() => summary.value?.payments.overdueSum ?? 0)
 
 // Total earned profit (from paid payments)
-const earnedProfit = computed(() =>
-  scopedPaidPayments.value.reduce((s, p) => s + getPaymentProfit(p), 0)
-)
+// Итоги за всё время считает сервер — теми же формулами, что «Отчёты».
+const { summary } = useAnalyticsSummary(() => selectedCashBoxId.value)
+
+const earnedProfit = computed(() => summary.value?.deals.grossEarned ?? 0)
+
+/** Средний ожидаемый платёж — сумма ожидаемого, делённая на число строк. */
+const avgPendingPayment = computed(() => {
+  const p = summary.value?.payments
+  return p && p.pendingCount > 0 ? Math.round(p.pendingSum / p.pendingCount) : 0
+})
 
 // Expected profit (from pending + overdue payments — not yet received)
-const expectedProfit = computed(() =>
-  scopedAllPaymentsFlat.value
-    .filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
-    .reduce((s, p) => s + getPaymentProfit(p), 0)
-)
-
-// This month's earned profit
-const thisMonthProfit = computed(() => {
-  const now = new Date()
-  const thisMonth = now.getMonth()
-  const thisYear = now.getFullYear()
-  return scopedPaidPayments.value
-    .filter(p => {
-      // Месяц учёта = месяц фактической оплаты (paidAt), а не планового срока.
-      const ym = attributionYearMonth(p)
-      return ym != null && ym.month === thisMonth && ym.year === thisYear
-    })
-    .reduce((s, p) => s + getPaymentProfit(p), 0)
-})
+const expectedProfit = computed(() => summary.value?.deals.grossLeft ?? 0)
 
 // ── Profit detail dialog ──
 
@@ -367,95 +218,94 @@ const profitMonthOptions = computed(() => {
   return [{ key: null as string | null, label: allLabel }, ...months.map(m => ({ key: m, label: m }))]
 })
 
-const profitByDeal = computed(() => {
-  const year = profitDetailYear.value
-  const monthKey = profitDetailMonth.value
+/**
+ * Разбор дохода по сделкам за выбранный период — считает сервер.
+ *
+ * Раньше страница перебирала все платежи партнёра в памяти и группировала их
+ * по сделкам; у крупного это сотни тысяч строк. Правила прежние: факт
+ * относится к периоду по дате оплаты, прогноз — по плановому сроку.
+ */
+const monthDealsRows = ref<MonthDealRow[]>([])
+const monthDealsTotals = ref<MonthDealsResponse['totals'] | null>(null)
+const monthDealsTruncated = ref(false)
+const monthDealsLoading = ref(false)
+let monthDealsReq = 0
 
-  // Источник — всегда и оплаченные, и неоплаченные платежи периода; чем именно
-  // наполнять таблицу, решает фильтр dealFilter. Досрочно закрытые
-  // (CLOSED_EARLY, amount=0) денег не несут — исключаем.
-  const sourcePayments = scopedAllPaymentsFlat.value.filter(p => p.status !== 'CLOSED_EARLY')
-
-  // Фильтр по месяцу/году УЧЁТА (PAID → месяц оплаты, PENDING/OVERDUE → срок).
-  // Единое правило с календарём и графиками — через attributionYearMonth.
-  const paidPayments = sourcePayments.filter(p => {
-    const ym = attributionYearMonth(p)
-    if (!ym) return false
-
-    // Год без конкретного месяца = «весь год».
-    if (year && !monthKey) {
-      return ym.year === year
-    }
-
-    // Конкретный месяц.
-    if (monthKey) {
-      return getMonthKey(new Date(ym.year, ym.month, 1)) === monthKey
-    }
-
-    return true // «За всё время» без года
-  })
-
-  // Group by deal
-  const dealMap: Record<string, { received: number; paidReceived: number; pendingReceived: number; profit: number; paidProfit: number; coInvestorProfit: number; pendingProfit: number; count: number; paidCount: number; pendingCount: number; earlyOffMonth: number; lateOffMonth: number }> = {}
-  for (const p of paidPayments) {
-    if (!dealMap[p.dealId]) dealMap[p.dealId] = { received: 0, paidReceived: 0, pendingReceived: 0, profit: 0, paidProfit: 0, coInvestorProfit: 0, pendingProfit: 0, count: 0, paidCount: 0, pendingCount: 0, earlyOffMonth: 0, lateOffMonth: 0 }
-    const pr = getPaymentProfit(p)
-    dealMap[p.dealId].received += p.amount
-    dealMap[p.dealId].profit += pr
-    dealMap[p.dealId].count++
-    if (p.status === 'PAID') {
-      dealMap[p.dealId].paidCount++
-      dealMap[p.dealId].paidReceived += p.amount
-      dealMap[p.dealId].paidProfit += pr
-      dealMap[p.dealId].coInvestorProfit += getPaymentCIProfit(p)
-      // «Оплачен не в свой месяц» — для бейджа в детализации.
-      const off = offMonthKind(p)
-      if (off === 'early') dealMap[p.dealId].earlyOffMonth++
-      else if (off === 'late') dealMap[p.dealId].lateOffMonth++
-    } else {
-      dealMap[p.dealId].pendingCount++
-      dealMap[p.dealId].pendingReceived += p.amount
-      dealMap[p.dealId].pendingProfit += pr
-    }
-  }
-
-  const result: DealProfit[] = []
-  for (const [dealId, data] of Object.entries(dealMap)) {
-    const deal = dealsStore.getDeal(dealId)
-    // Fallback: find deal data from one of the payments
-    const paymentDeal = !deal ? paidPayments.find(p => p.dealId === dealId)?.deal : null
-    const d = deal || paymentDeal
-    if (!d) continue
-    const ratio = dealCIRatio.value[dealId] ?? 0
-    const projectedCoInvestorProfit = Math.round(data.pendingProfit * ratio)
-    result.push({
-      dealId,
-      productName: d.productName || 'Товар',
-      clientName: d.client ? userName(d.client) : d.clientProfile ? clientProfileName(d.clientProfile) : (d as any).externalClientName || '—',
-      markupPercent: d.markupPercent || 0,
-      totalReceived: data.received,
-      paidReceived: data.paidReceived,
-      pendingReceived: data.pendingReceived,
-      profitEarned: data.profit,
-      paidProfit: data.paidProfit,
-      coInvestorProfit: data.coInvestorProfit,
-      partnerProfit: data.paidProfit - data.coInvestorProfit,
-      pendingProfit: data.pendingProfit,
-      projectedCoInvestorProfit,
-      projectedPartnerProfit: data.pendingProfit - projectedCoInvestorProfit,
-      paymentsCount: data.count,
-      paidCount: data.paidCount,
-      pendingCount: data.pendingCount,
-      earlyOffMonth: data.earlyOffMonth,
-      lateOffMonth: data.lateOffMonth,
-      status: d.status || 'ACTIVE',
+async function loadMonthDeals() {
+  const req = ++monthDealsReq
+  monthDealsLoading.value = true
+  try {
+    // Месяц в состоянии хранится подписью вида «июл 26» — переводим в
+    // 'YYYY-MM', который понимает сервер.
+    const monthKey = profitDetailMonth.value
+      ? monthKeyToYm(profitDetailMonth.value, profitDetailYear.value)
+      : null
+    const res = await fetchMonthDeals({
+      month: monthKey,
+      year: monthKey ? null : profitDetailYear.value,
+      cashBoxId: selectedCashBoxId.value,
     })
+    if (req !== monthDealsReq) return
+    monthDealsRows.value = res.items
+    monthDealsTotals.value = res.totals
+    monthDealsTruncated.value = res.truncated
+  } catch (e: any) {
+    if (req !== monthDealsReq) return
+    console.error('Failed to load month deals:', e)
+  } finally {
+    if (req === monthDealsReq) monthDealsLoading.value = false
   }
+}
 
-  return result.sort((a, b) => b.profitEarned - a.profitEarned)
-})
+/** Подпись месяца («июл 26») → 'YYYY-MM'. */
+function monthKeyToYm(label: string, year: number | null): string | null {
+  const idx = MONTH_SHORT.findIndex((m) => label.toLowerCase().startsWith(m.toLowerCase()))
+  if (idx < 0) return null
+  const y = year ?? (() => {
+    // Год ищем в любом месте подписи, а не только в конце: русская локаль
+    // выдаёт «янв. 27 г.» — с якорем на конец строки год не находился, и
+    // подставлялся текущий, из-за чего «янв 27» открывал январь 2026.
+    const yy = label.match(/\b(\d{2})\b(?!\s*\d)/)
+    return yy ? 2000 + parseInt(yy[1]!, 10) : new Date().getFullYear()
+  })()
+  return `${y}-${String(idx + 1).padStart(2, '0')}`
+}
 
-// Счётчики для вкладок фильтра (сколько сделок в каждой категории)
+/** Строки таблицы диалога в прежней форме — шаблон не меняем. */
+const profitByDeal = computed((): DealProfit[] =>
+  monthDealsRows.value.map((r) => ({
+    dealId: r.dealId,
+    productName: r.productName,
+    clientName: r.clientName,
+    markupPercent: r.markupPercent,
+    totalReceived: r.paidReceived + r.pendingReceived,
+    paidReceived: r.paidReceived,
+    pendingReceived: r.pendingReceived,
+    profitEarned: r.paidGross,
+    paidProfit: r.paidGross,
+    coInvestorProfit: r.ciPaid,
+    partnerProfit: r.paidGross - r.ciPaid,
+    pendingProfit: r.pendingGross,
+    projectedCoInvestorProfit: r.ciPending,
+    projectedPartnerProfit: r.pendingGross - r.ciPending,
+    paymentsCount: r.paidCount + r.pendingCount,
+    paidCount: r.paidCount,
+    pendingCount: r.pendingCount,
+    // Бейджи «оплачен не в свой месяц» считаются по платежам — в разрезе по
+    // сделкам их нет, а на строке таблицы они и не показывались.
+    earlyOffMonth: 0,
+    lateOffMonth: 0,
+    status: r.status,
+  })),
+)
+
+// Перезапрашиваем при смене периода, режима и кассы — но только когда диалог
+// открыт: закрытый не должен дёргать сервер.
+watch(
+  () => [profitDetailDialog.value, profitDetailMonth.value, profitDetailYear.value, selectedCashBoxId.value],
+  () => { if (profitDetailDialog.value) loadMonthDeals() },
+)
+
 const dealFilterCounts = computed(() => ({
   all: profitByDeal.value.filter(d => d.paymentsCount > 0).length,
   paid: profitByDeal.value.filter(d => d.paidCount > 0).length,
@@ -496,18 +346,28 @@ const displayDeals = computed(() => {
     .sort((a, b) => b.net - a.net)
 })
 
-const profitDetailReceived = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.totalReceived, 0)
-)
+/**
+ * Суммы шапки модалки берём из серверных итогов: они посчитаны по ВСЕЙ
+ * выборке, тогда как строк приезжает не больше пятисот. Складывать показанные
+ * строки было бы занижением у партнёра с большим портфелем. Если итогов нет
+ * (старый ответ) — падаем на подсчёт по строкам, как раньше.
+ */
+const profitDetailReceived = computed(() => {
+  const t = monthDealsTotals.value
+  if (t) return t.paidReceived + t.pendingReceived
+  return profitByDeal.value.reduce((s, d) => s + d.totalReceived, 0)
+})
 
 // Денежные (полные суммы): план месяца = пришло + осталось. totalReceived уже
 // суммирует и оплаченные, и неоплаченные платежи выборки — это и есть план.
 const profitDetailPlanned = computed(() => profitDetailReceived.value)
 const profitDetailPaid = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.paidReceived, 0)
+  monthDealsTotals.value?.paidReceived
+    ?? profitByDeal.value.reduce((s, d) => s + d.paidReceived, 0)
 )
 const profitDetailPending = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.pendingReceived, 0)
+  monthDealsTotals.value?.pendingReceived
+    ?? profitByDeal.value.reduce((s, d) => s + d.pendingReceived, 0)
 )
 
 const profitDetailPartner = computed(() =>
@@ -521,13 +381,16 @@ const profitDetailProjectedPartner = computed(() =>
 // Разбор прибыли для подсказок-формул: вся наценка и доля со-инвесторов
 // отдельно по оплаченным (факт) и неоплаченным (прогноз) платежам.
 const profitDetailGrossPaid = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.paidProfit, 0)
+  monthDealsTotals.value?.paidGross
+    ?? profitByDeal.value.reduce((s, d) => s + d.paidProfit, 0)
 )
 const profitDetailCoInvPaid = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit, 0)
+  monthDealsTotals.value?.ciPaid
+    ?? profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit, 0)
 )
 const profitDetailGrossPending = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.pendingProfit, 0)
+  monthDealsTotals.value?.pendingGross
+    ?? profitByDeal.value.reduce((s, d) => s + d.pendingProfit, 0)
 )
 const profitDetailCoInvPending = computed(() =>
   profitByDeal.value.reduce((s, d) => s + d.projectedCoInvestorProfit, 0)
@@ -535,6 +398,9 @@ const profitDetailCoInvPending = computed(() =>
 
 // Доля со-инвесторов со ВСЕХ платежей периода (оплаченные + прогноз по неоплаченным)
 // и весь доход (наценка) со всех платежей — для доли в процентах.
+// ПРОГНОЗНАЯ часть (projectedCoInvestorProfit) считается только по показанным
+// сделкам: коэффициент доли сервер отдаёт вместе со строкой. Когда выборка
+// усечена, об этом сообщает подпись под списком.
 const profitDetailCoInvestorAll = computed(() =>
   profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit + d.projectedCoInvestorProfit, 0)
 )
@@ -582,6 +448,16 @@ interface MonthData {
   isPast: boolean
 }
 
+/**
+ * Помесячный разрез за выбранный год — считает сервер. Раньше страница
+ * перебирала все платежи партнёра в памяти; у крупного это сотни тысяч строк.
+ * Правила те же: факт учитывается по дате оплаты, прогноз — по плановому сроку.
+ */
+const { rows: yearRows } = useAnalyticsMonthly(
+  () => ({ from: `${calYear.value}-01-01`, to: `${calYear.value}-12-31` }),
+  () => selectedCashBoxId.value,
+)
+
 const yearMonths = computed((): MonthData[] => {
   const now = new Date()
   const currentMonth = now.getMonth()
@@ -590,45 +466,27 @@ const yearMonths = computed((): MonthData[] => {
   return Array.from({ length: 12 }, (_, i) => {
     const isPast = calYear.value < currentYear || (calYear.value === currentYear && i <= currentMonth)
     const isCurrent = calYear.value === currentYear && i === currentMonth
+    const key = `${calYear.value}-${String(i + 1).padStart(2, '0')}`
+    const r = yearRows.value.find((x) => x.month === key)
 
-    // Платежи, попадающие в этот месяц по УЧЁТУ: PAID → по месяцу оплаты,
-    // PENDING/OVERDUE → по плановому сроку. Единое правило с детализацией/графиками.
-    const monthPayments = scopedAllPaymentsFlat.value.filter(p => {
-      const ym = attributionYearMonth(p)
-      return ym != null && ym.year === calYear.value && ym.month === i
-    })
-
-    const paidInMonth = monthPayments.filter(p => p.status === 'PAID')
-    const pendingInMonth = monthPayments.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
-
-    const earned = paidInMonth.reduce((s, p) => s + getPaymentProfit(p), 0)
-    const coInvestorEarned = paidInMonth.reduce((s, p) => s + getPaymentCIProfit(p), 0)
-    const expected = pendingInMonth.reduce((s, p) => s + getPaymentProfit(p), 0)
-    const received = paidInMonth.reduce((s, p) => s + p.amount, 0)
-    const pendingAmount = pendingInMonth.reduce((s, p) => s + p.amount, 0)
-
-    // Сколько оплаченных в этом месяце были за ДРУГОЙ плановый месяц (для подписи).
-    let earlyOffMonth = 0
-    let lateOffMonth = 0
-    for (const p of paidInMonth) {
-      const off = offMonthKind(p)
-      if (off === 'early') earlyOffMonth++
-      else if (off === 'late') lateOffMonth++
-    }
+    const earned = r?.grossEarned ?? 0
+    const coInvestorEarned = r?.ciEarned ?? 0
+    const received = r?.received ?? 0
+    const pendingAmount = r?.pendingAmount ?? 0
 
     return {
       month: i,
       label: MONTH_SHORT[i],
-      earned: Math.round(earned),
-      coInvestorEarned: Math.round(coInvestorEarned),
-      partnerEarned: Math.round(earned - coInvestorEarned),
-      expected: Math.round(expected),
-      received: Math.round(received),
-      pendingAmount: Math.round(pendingAmount),
-      planned: Math.round(received + pendingAmount),
-      payments: paidInMonth.length + pendingInMonth.length,
-      earlyOffMonth,
-      lateOffMonth,
+      earned,
+      coInvestorEarned,
+      partnerEarned: earned - coInvestorEarned,
+      expected: r?.expectedGross ?? 0,
+      received,
+      pendingAmount,
+      planned: received + pendingAmount,
+      payments: (r?.paidCount ?? 0) + (r?.pendingCount ?? 0),
+      earlyOffMonth: r?.earlyOffMonth ?? 0,
+      lateOffMonth: r?.lateOffMonth ?? 0,
       isCurrent,
       isPast,
     }
@@ -653,21 +511,52 @@ function openMonthDetail(m: MonthData) {
   openProfitDetail(key, 'all', calYear.value)
 }
 
+// ── Данные графиков ──
+// Одно окно на все четыре графика: пять месяцев назад и пять вперёд. Раньше
+// каждый график перебирал все платежи партнёра в памяти.
+
+function ymKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+const { rows: chartRows } = useAnalyticsMonthly(
+  () => {
+    const now = new Date()
+    const from = new Date(now.getFullYear(), now.getMonth() - 5, 1)
+    const to = new Date(now.getFullYear(), now.getMonth() + 6, 0)
+    return { from: `${ymKey(from)}-01`, to: `${ymKey(to)}-${String(to.getDate()).padStart(2, '0')}` }
+  },
+  () => selectedCashBoxId.value,
+)
+
+/** Значения по окну месяцев: подписи как раньше, суммы — из серверных строк. */
+function seriesFor(
+  direction: 'past' | 'future',
+  pick: (r: { received: number; grossEarned: number; pendingAmount: number; expectedGross: number }) => number,
+) {
+  const now = new Date()
+  const labels: string[] = []
+  const data: number[] = []
+  for (let i = 0; i < 6; i++) {
+    const d = direction === 'past'
+      ? new Date(now.getFullYear(), now.getMonth() - (5 - i), 1)
+      : new Date(now.getFullYear(), now.getMonth() + i, 1)
+    labels.push(getMonthKey(d))
+    const r = chartRows.value.find((x) => x.month === ymKey(d))
+    data.push(Math.round(pick(r ?? { received: 0, grossEarned: 0, pendingAmount: 0, expectedGross: 0 })))
+  }
+  return { labels, data }
+}
+
 // ── CHART 1: Revenue by month (last 6) ──
 
 const revenueChartData = computed(() => {
-  const months = getLast6Months()
-
-  scopedAllPaymentsFlat.value.filter(p => p.status === 'PAID').forEach(p => {
-    const key = attrMonthKey(p) // месяц фактической оплаты
-    if (key && key in months) months[key] += p.amount
-  })
-
+  const { labels, data } = seriesFor('past', (r) => r.received)
   return {
-    labels: Object.keys(months),
+    labels,
     datasets: [{
       label: 'Поступления',
-      data: Object.values(months),
+      data,
       backgroundColor: 'rgba(4, 120, 87, 0.15)',
       borderColor: '#047857',
       borderWidth: 2,
@@ -680,18 +569,12 @@ const revenueChartData = computed(() => {
 // ── CHART 2: Profit by month (last 6) — the KEY new chart ──
 
 const profitChartData = computed(() => {
-  const months = getLast6Months()
-
-  scopedAllPaymentsFlat.value.filter(p => p.status === 'PAID').forEach(p => {
-    const key = attrMonthKey(p) // месяц фактической оплаты
-    if (key && key in months) months[key] += getPaymentProfit(p)
-  })
-
+  const { labels, data } = seriesFor('past', (r) => r.grossEarned)
   return {
-    labels: Object.keys(months),
+    labels,
     datasets: [{
       label: 'Доход',
-      data: Object.values(months).map(v => Math.round(v)),
+      data,
       backgroundColor: 'rgba(16, 185, 129, 0.2)',
       borderColor: '#10b981',
       borderWidth: 2,
@@ -704,18 +587,12 @@ const profitChartData = computed(() => {
 // ── CHART 3: Forecast (next 6) ──
 
 const forecastChartData = computed(() => {
-  const months = getNext6Months()
-
-  scopedAllPaymentsFlat.value.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
-    const key = getMonthKeyFromStr(p.dueDate)
-    if (key in months) months[key] += p.amount
-  })
-
+  const { labels, data } = seriesFor('future', (r) => r.pendingAmount)
   return {
-    labels: Object.keys(months),
+    labels,
     datasets: [{
       label: 'Ожидаемые платежи',
-      data: Object.values(months),
+      data,
       borderColor: '#047857',
       backgroundColor: 'rgba(4, 120, 87, 0.06)',
       borderWidth: 2.5,
@@ -733,18 +610,12 @@ const forecastChartData = computed(() => {
 // ── CHART 4: Profit forecast (next 6) ──
 
 const profitForecastData = computed(() => {
-  const months = getNext6Months()
-
-  scopedAllPaymentsFlat.value.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE').forEach(p => {
-    const key = getMonthKeyFromStr(p.dueDate)
-    if (key in months) months[key] += getPaymentProfit(p)
-  })
-
+  const { labels, data } = seriesFor('future', (r) => r.expectedGross)
   return {
-    labels: Object.keys(months),
+    labels,
     datasets: [{
       label: 'Ожидаемый доход',
-      data: Object.values(months).map(v => Math.round(v)),
+      data,
       borderColor: '#10b981',
       backgroundColor: 'rgba(16, 185, 129, 0.06)',
       borderWidth: 2.5,
@@ -762,10 +633,11 @@ const profitForecastData = computed(() => {
 // ── CHART 5: Status distribution (doughnut) ──
 
 const statusDistribution = computed(() => {
-  const active = scopedActiveDeals.value.length
-  const completed = scopedCompletedDeals.value.length
-  const disputed = scopedAllDeals.value.filter(d => d.status === 'DISPUTED').length
-  const cancelled = scopedAllDeals.value.filter(d => d.status === 'CANCELLED').length
+  const by = dealsStore.counts?.byStatus ?? {}
+  const active = by.ACTIVE ?? 0
+  const completed = by.COMPLETED ?? 0
+  const disputed = by.DISPUTED ?? 0
+  const cancelled = by.CANCELLED ?? 0
   return {
     labels: ['Активные', 'Завершённые', 'Спорные', 'Отменённые'],
     datasets: [{
@@ -870,7 +742,6 @@ const doughnutOptions = {
 }
 
 // ── Metric breakdown dialog ──
-const breakdownOpen = ref(false)
 
 // ── Общая модалка расшифровки показателя ──
 const metricOpen = ref(false)
@@ -879,174 +750,133 @@ const metricHint = ref('')
 const metricColor = ref('#10b981')
 const metricTotal = ref(0)
 const metricItems = ref<any[]>([])
-const breakdownTitle = ref('')
-const breakdownHint = ref('')
 const breakdownIcon = ref('')
-const breakdownColor = ref('')
-const breakdownDeals = ref<{ deal: any; value: number; extra?: string; progress?: number }[]>([])
-const breakdownTotal = ref(0)
-const breakdownSuffix = ref('')
 
-function openBreakdown(metric: string) {
-  let deals: { deal: any; value: number; extra?: string; parts?: any[] }[] = []
-  let title = ''
-  let hint = ''
-  let color = ''
+/** Заголовок, пояснение и цвет расшифровки — по показателю. */
+const BREAKDOWN_META: Record<string, { title: string; hint: string; color: string }> = {
+  invested: { title: 'Инвестировано в товар', hint: 'Сколько денег потрачено на закупку товара по всем сделкам.', color: '#3b82f6' },
+  revenue: { title: 'Общий оборот', hint: 'Сколько всего должны заплатить клиенты — закупка вместе с наценкой.', color: '#0ea5e9' },
+  profit: { title: 'Наценка по сделкам', hint: 'Наценка по каждой сделке: цена продажи минус закупка.', color: '#059669' },
+  remaining: { title: 'Ожидается к получению', hint: 'Сколько клиенты ещё должны заплатить по активным сделкам.', color: '#f59e0b' },
+  received: { title: 'Получено', hint: 'Деньги, которые клиенты уже отдали: взносы и оплаченные платежи.', color: '#10b981' },
+  monthly: { title: 'Ежемесячные поступления', hint: 'Сколько приходит по активным сделкам за месяц по графику.', color: '#8b5cf6' },
+  overdue: { title: 'Просрочено', hint: 'Платежи, срок которых уже прошёл, а деньги не поступили.', color: '#ef4444' },
+}
 
-  const money = (n: number) => formatCurrency(Math.round(n || 0))
-  /** Сколько уже пришло по сделке: первоначальный взнос + оплаченные платежи. */
-  const receivedOf = (d: any) =>
-    (d.downPayment || 0) +
-    scopedAllPaymentsFlat.value
-      .filter((p: any) => p.dealId === d.id && p.status === 'PAID' && !p.isDownPayment)
-      .reduce((s: number, p: any) => s + p.amount, 0)
+const BREAKDOWN_PAGE = 100
+const metricLoading = ref(false)
+const metricMetric = ref<string>('invested')
+/** Всего сделок за показателем — в списке может быть лишь часть. */
+const metricCount = ref(0)
 
+const bdMoney = (n: number) => formatCurrency(Math.round(n || 0))
+
+/** Строка списка из серверной сделки. */
+function breakdownRow(metric: string, d: any) {
+  const base = { id: d.id, title: d.productName || 'Сделка', subtitle: d.clientName || '—' }
   switch (metric) {
     case 'invested':
-      title = 'Инвестировано в товар'
-      hint = 'Сколько денег потрачено на закупку товара по всем сделкам.'
-      color = '#3b82f6'
-      deals = scopedInvestorDeals.value.map((d: any) => ({
-        deal: d, value: d.purchasePrice,
-        extra: `${d.clientName ?? ''}`.trim() || undefined,
-        parts: [
-          { label: 'продано за', value: money(d.totalPrice) },
-          { label: 'наценка', value: money(d.markup) },
-          { label: 'вернулось', value: money(receivedOf(d)) },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.cost, parts: [
+        { label: 'продано за', value: bdMoney(d.totalPrice) },
+        { label: 'наценка', value: bdMoney(d.margin) },
+        { label: 'вернулось', value: bdMoney(d.received) },
+      ] }
     case 'revenue':
-      title = 'Общий оборот'
-      hint = 'Сколько всего должны заплатить клиенты по всем сделкам — закупка вместе с наценкой.'
-      color = '#0ea5e9'
-      deals = scopedInvestorDeals.value.map((d: any) => ({
-        deal: d, value: d.totalPrice,
-        parts: [
-          { label: 'закупка', value: money(d.purchasePrice) },
-          { label: 'наценка', value: money(d.markup) },
-          { label: 'оплачено', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.totalPrice, parts: [
+        { label: 'закупка', value: bdMoney(d.cost) },
+        { label: 'наценка', value: bdMoney(d.margin) },
+      ] }
     case 'profit':
-      title = 'Прибыль по сделкам'
-      hint = 'Наценка по каждой сделке: цена продажи минус закупка. Это доход до вычета доли со-инвесторов.'
-      color = '#059669'
-      deals = scopedInvestorDeals.value.map((d: any) => ({
-        deal: d, value: d.markup,
-        parts: [
-          { label: 'закупка', value: money(d.purchasePrice) },
-          { label: 'цена продажи', value: money(d.totalPrice) },
-          { label: 'оплачено', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.margin, parts: [
+        { label: 'закупка', value: bdMoney(d.cost) },
+        { label: 'цена продажи', value: bdMoney(d.totalPrice) },
+      ] }
     case 'remaining':
-      title = 'Ожидается к получению'
-      hint = 'Сколько клиенты ещё должны заплатить по активным сделкам.'
-      color = '#f59e0b'
-      deals = scopedActiveDeals.value.map((d: any) => ({
-        deal: d, value: d.remainingAmount,
-        parts: [
-          { label: 'всего по сделке', value: money(d.totalPrice) },
-          { label: 'уже получено', value: money(receivedOf(d)) },
-          { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.remaining, parts: [
+        { label: 'всего по сделке', value: bdMoney(d.totalPrice) },
+        { label: 'уже получено', value: bdMoney(d.received) },
+      ] }
     case 'received':
-      title = 'Получено'
-      hint = 'Деньги, которые клиенты уже отдали: первоначальные взносы и оплаченные платежи.'
-      color = '#10b981'
-      deals = scopedInvestorDeals.value.map((d: any) => ({
-        deal: d, value: receivedOf(d),
-        parts: [
-          { label: 'всего по сделке', value: money(d.totalPrice) },
-          { label: 'осталось', value: money(d.remainingAmount) },
-          { label: 'взнос', value: money(d.downPayment || 0) },
-          { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.received, parts: [
+        { label: 'всего по сделке', value: bdMoney(d.totalPrice) },
+        { label: 'осталось', value: bdMoney(d.remaining) },
+        { label: 'взнос', value: bdMoney(d.downPayment) },
+      ] }
     case 'monthly': {
-      title = 'Поступления в месяц'
-      hint =
-        'Сколько денег приходит каждый месяц по активным сделкам. Часть этих денег ' +
-        'возвращает вложения в товар, часть — ваш доход.'
-      color = '#047857'
-      deals = scopedActiveDeals.value
-        .filter((d: any) => d.numberOfPayments > 0)
-        .map((d: any) => {
-          const perMonth = Math.round(
-            Math.max(0, d.totalPrice - (d.downPayment || 0)) / d.numberOfPayments,
-          )
-          // Доля прибыли в каждом рубле платежа — считаем от рублёвой маржи.
-          const share = d.totalPrice > 0 ? Math.min(d.markup / d.totalPrice, 1) : 0
-          const grossPerMonth = Math.round(perMonth * share)
-          const ciRatio = dealCIRatio.value[d.id] ?? 0
-          const netPerMonth = Math.round(grossPerMonth * (1 - ciRatio))
-          return {
-            deal: d, value: perMonth,
-            parts: [
-              { label: 'из них доход', value: money(grossPerMonth) },
-              ...(ciRatio > 0
-                ? [{ label: 'ваш чистый доход', value: money(netPerMonth) }]
-                : []),
-              { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-            ],
-          }
-        })
-      break
+      const perMonth = d.numberOfPayments > 0
+        ? Math.round(Math.max(0, d.totalPrice - d.downPayment) / d.numberOfPayments)
+        : 0
+      const share = d.totalPrice > 0 ? Math.min(d.margin / d.totalPrice, 1) : 0
+      return { ...base, value: perMonth, parts: [
+        { label: 'из них доход', value: bdMoney(perMonth * share) },
+        { label: 'платежей', value: String(d.numberOfPayments) },
+      ] }
     }
-
     case 'overdue':
-      title = 'Просрочено'
-      hint = 'Платежи, срок которых уже прошёл, а деньги не поступили.'
-      color = '#ef4444'
-      deals = scopedOverduePayments.value.map((p: any) => ({
-        deal: { productName: p.deal?.productName || 'Сделка', id: p.dealId },
-        value: p.amount,
-        extra: `Срок: ${formatDate(p.dueDate)}`,
-      }))
-      break
-
+      return { ...base, value: d.overdueAmount, parts: [
+        { label: 'просрочено дней', value: String(d.maxOverdueDays) },
+        { label: 'остаток долга', value: bdMoney(d.remaining) },
+      ] }
     default:
-      return
+      return { ...base, value: 0, parts: [] }
   }
+}
 
-  // Готовим данные для общей модалки «откуда взялась цифра» — она одна на
-  // отчёты и сводку, чтобы расшифровки везде выглядели одинаково.
-  metricItems.value = deals
-    .filter((d) => d.value !== 0)
-    .map((d) => ({
-      id: d.deal?.id ?? '',
-      title: d.deal?.productName || 'Сделка',
-      subtitle: d.extra,
-      value: Math.round(d.value),
-      parts: d.parts,
-    }))
-  metricTotal.value = metricItems.value.reduce((sum, i) => sum + i.value, 0)
-  metricHint.value = hint
-  metricColor.value = color
-  metricTitle.value = title
-  metricHint.value = hint
-  metricColor.value = color
-  metricTotal.value = metricItems.value.reduce((sum, i) => sum + i.value, 0)
+/**
+ * Расшифровка показателя. Сделки грузятся с сервера порциями и с учётом
+ * выбранной кассы — раньше страница перебирала весь портфель в памяти.
+ */
+async function openBreakdown(metric: string) {
+  const meta = BREAKDOWN_META[metric]
+  if (!meta) return
+  metricMetric.value = metric
+  metricTitle.value = meta.title
+  metricHint.value = meta.hint
+  metricColor.value = meta.color
+  metricItems.value = []
+  metricTotal.value = 0
+  metricCount.value = 0
   metricOpen.value = true
+  metricLoading.value = true
+  try {
+    const res = await fetchDealsBreakdown(metric as any, {
+      cashBoxId: selectedCashBoxId.value,
+      limit: BREAKDOWN_PAGE,
+    })
+    metricItems.value = res.items.map((d) => breakdownRow(metric, d))
+    metricCount.value = res.count
+    // Итог считает сервер по ВСЕЙ выборке — в списке может быть лишь часть.
+    metricTotal.value = res.total
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось загрузить расшифровку')
+  } finally {
+    metricLoading.value = false
+  }
 }
 
-const BD_COLORS = ['#047857', '#3b82f6', '#8b5cf6', '#f59e0b', '#0ea5e9', '#ef4444']
-function bdInitial(name?: string) { return name ? name.charAt(0).toUpperCase() : '?' }
-function bdColor(name?: string) {
-  if (!name) return BD_COLORS[0]
-  return BD_COLORS[name.charCodeAt(0) % BD_COLORS.length]
+/** Догрузить следующую порцию сделок. */
+async function loadMoreBreakdown() {
+  if (metricLoading.value) return
+  metricLoading.value = true
+  try {
+    const res = await fetchDealsBreakdown(metricMetric.value as any, {
+      cashBoxId: selectedCashBoxId.value,
+      limit: BREAKDOWN_PAGE,
+      offset: metricItems.value.length,
+    })
+    metricItems.value = [
+      ...metricItems.value,
+      ...res.items.map((d) => breakdownRow(metricMetric.value, d)),
+    ]
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось загрузить ещё')
+  } finally {
+    metricLoading.value = false
+  }
 }
+
+const metricHasMore = computed(() => metricItems.value.length < metricCount.value)
+
 </script>
 
 <template>
@@ -1450,7 +1280,7 @@ function bdColor(name?: string) {
                 <div class="chart-subtitle">За последние 6 месяцев</div>
               </div>
               <div class="chart-total">
-                {{ formatCurrency(scopedPaidPayments.reduce((s, p) => s + p.amount, 0)) }}
+                {{ formatCurrency(summary?.payments.paidSum ?? 0) }}
               </div>
             </div>
             <div class="an-hint mb-3">
@@ -1480,19 +1310,19 @@ function bdColor(name?: string) {
               <div class="forecast-summary-item">
                 <div class="forecast-summary-label">Всего ожидается</div>
                 <div class="forecast-summary-value" style="color: #047857;">
-                  {{ formatCurrency(scopedPendingPayments.reduce((s, p) => s + p.amount, 0)) }}
+                  {{ formatCurrency(summary?.payments.pendingSum ?? 0) }}
                 </div>
               </div>
               <div class="forecast-summary-item">
                 <div class="forecast-summary-label">Платежей</div>
                 <div class="forecast-summary-value" style="color: #f59e0b;">
-                  {{ scopedPendingPayments.length }}
+                  {{ summary?.payments.pendingCount ?? 0 }}
                 </div>
               </div>
               <div class="forecast-summary-item">
                 <div class="forecast-summary-label">Средний платёж</div>
                 <div class="forecast-summary-value" style="color: #8b5cf6;">
-                  {{ formatCurrency(scopedPendingPayments.length > 0 ? scopedPendingPayments.reduce((s, p) => s + p.amount, 0) / scopedPendingPayments.length : 0) }}
+                  {{ formatCurrency(avgPendingPayment) }}
                 </div>
               </div>
             </div>
@@ -1522,22 +1352,22 @@ function bdColor(name?: string) {
                 <div class="status-legend-item">
                   <div class="status-dot" style="background: #047857;" />
                   <span>Активные</span>
-                  <span class="status-legend-count">{{ scopedActiveDeals.length }}</span>
+                  <span class="status-legend-count">{{ dealsStore.counts?.byStatus?.ACTIVE ?? 0 }}</span>
                 </div>
                 <div class="status-legend-item">
                   <div class="status-dot" style="background: #3b82f6;" />
                   <span>Завершённые</span>
-                  <span class="status-legend-count">{{ scopedCompletedDeals.length }}</span>
+                  <span class="status-legend-count">{{ dealsStore.counts?.byStatus?.COMPLETED ?? 0 }}</span>
                 </div>
                 <div class="status-legend-item">
                   <div class="status-dot" style="background: #f59e0b;" />
                   <span>Спорные</span>
-                  <span class="status-legend-count">{{ scopedAllDeals.filter(d => d.status === 'DISPUTED').length }}</span>
+                  <span class="status-legend-count">{{ dealsStore.counts?.byStatus?.DISPUTED ?? 0 }}</span>
                 </div>
                 <div class="status-legend-item">
                   <div class="status-dot" style="background: #ef4444;" />
                   <span>Отменённые</span>
-                  <span class="status-legend-count">{{ scopedAllDeals.filter(d => d.status === 'CANCELLED').length }}</span>
+                  <span class="status-legend-count">{{ dealsStore.counts?.byStatus?.CANCELLED ?? 0 }}</span>
                 </div>
               </div>
             </div>
@@ -1553,23 +1383,23 @@ function bdColor(name?: string) {
                 <div class="payment-summary-icon" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
                   <v-icon icon="mdi-check-circle" size="22" />
                 </div>
-                <div class="payment-summary-value">{{ scopedPaidPayments.length }}</div>
+                <div class="payment-summary-value">{{ summary?.payments.paidCount ?? 0 }}</div>
                 <div class="payment-summary-label">Оплаченных</div>
-                <div class="payment-summary-amount" style="color: #047857;">{{ formatCurrencyShort(scopedPaidPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+                <div class="payment-summary-amount" style="color: #047857;">{{ formatCurrencyShort(summary?.payments.paidSum ?? 0) }}</div>
               </div>
               <div class="payment-summary-card">
                 <div class="payment-summary-icon" style="background: rgba(59, 130, 246, 0.1); color: #3b82f6;">
                   <v-icon icon="mdi-clock-outline" size="22" />
                 </div>
-                <div class="payment-summary-value">{{ scopedPendingPayments.length }}</div>
+                <div class="payment-summary-value">{{ summary?.payments.pendingCount ?? 0 }}</div>
                 <div class="payment-summary-label">Ожидаемых</div>
-                <div class="payment-summary-amount" style="color: #3b82f6;">{{ formatCurrencyShort(scopedPendingPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+                <div class="payment-summary-amount" style="color: #3b82f6;">{{ formatCurrencyShort(summary?.payments.pendingSum ?? 0) }}</div>
               </div>
               <div class="payment-summary-card">
                 <div class="payment-summary-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
                   <v-icon icon="mdi-alert-circle" size="22" />
                 </div>
-                <div class="payment-summary-value">{{ scopedOverduePayments.length }}</div>
+                <div class="payment-summary-value">{{ summary?.payments.overdueCount ?? 0 }}</div>
                 <div class="payment-summary-label">Просроченных</div>
                 <div class="payment-summary-amount" style="color: #ef4444;">{{ formatCurrencyShort(overdueAmount) }}</div>
               </div>
@@ -1620,7 +1450,12 @@ function bdColor(name?: string) {
             <div v-if="profitDetailMode === 'all'" class="pd-stat">
               <div class="pd-stat-label">Ожидается за месяц</div>
               <div class="pd-stat-value">{{ formatCurrency(profitDetailPlanned) }}</div>
-              <div class="pd-stat-hint">весь план: пришло + осталось · {{ profitByDeal.length }} {{ profitByDeal.length === 1 ? 'сделка' : profitByDeal.length < 5 ? 'сделки' : 'сделок' }} · {{ profitByDeal.reduce((s, d) => s + d.paymentsCount, 0) }} платежей</div>
+              <div class="pd-stat-hint">
+                весь план: пришло + осталось ·
+                {{ monthDealsTotals?.dealsCount ?? profitByDeal.length }}
+                {{ (monthDealsTotals?.dealsCount ?? profitByDeal.length) === 1 ? 'сделка' : (monthDealsTotals?.dealsCount ?? profitByDeal.length) < 5 ? 'сделки' : 'сделок' }}
+                <template v-if="monthDealsTruncated"> · показаны крупнейшие {{ profitByDeal.length }}</template>
+              </div>
             </div>
             <div v-if="profitDetailPaid > 0" class="pd-stat">
               <div class="pd-stat-label">Пришло</div>
@@ -1758,72 +1593,13 @@ function bdColor(name?: string) {
       :total="metricTotal"
       :color="metricColor"
       :items="metricItems"
+      :loading="metricLoading"
+      :count="metricCount"
+      :has-more="metricHasMore"
+      @load-more="loadMoreBreakdown"
     />
 
-    <!-- Metric Breakdown Dialog (legacy) -->
-    <v-dialog v-model="breakdownOpen" max-width="580" scrollable :fullscreen="isMobile">
-      <v-card rounded="xl" class="bd-dialog">
-        <!-- Header -->
-        <div class="bd-header">
-          <div class="bd-header-left">
-            <div class="bd-header-icon" :style="{ background: breakdownColor + '15', color: breakdownColor }">
-              <v-icon :icon="breakdownIcon" size="20" />
-            </div>
-            <div>
-              <div class="bd-header-title">{{ breakdownTitle }}</div>
-              <div class="bd-header-hint">{{ breakdownHint }}</div>
-            </div>
-          </div>
-          <button class="bd-close" @click="breakdownOpen = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-        </div>
 
-        <!-- Total hero -->
-        <div class="bd-total-hero" :style="{ background: breakdownColor + '08' }">
-          <div class="bd-total-value" :style="{ color: breakdownColor }">
-            {{ breakdownSuffix ? (Math.round(breakdownTotal * 10) / 10) + breakdownSuffix : formatCurrency(breakdownTotal) }}
-          </div>
-          <div class="bd-total-label">{{ breakdownDeals.length }} {{ breakdownDeals.length === 1 ? 'сделка' : breakdownDeals.length < 5 ? 'сделки' : 'сделок' }}</div>
-        </div>
-
-        <!-- Deals list -->
-        <div class="bd-list bd-list--scroll">
-          <div v-if="!breakdownDeals.length" class="bd-empty">
-            <v-icon icon="mdi-package-variant-closed" size="36" color="grey-lighten-1" />
-            <div>Нет данных</div>
-          </div>
-
-          <router-link
-            v-for="(item, i) in breakdownDeals" :key="i"
-            :to="`/deals/${item.deal?.id}`"
-            class="bd-row"
-          >
-            <div class="bd-avatar" :style="{ background: bdColor(item.deal?.productName) }">
-              {{ bdInitial(item.deal?.productName) }}
-            </div>
-            <div class="bd-info">
-              <div class="bd-product">{{ item.deal?.productName || 'Товар' }}</div>
-              <div class="bd-extra">{{ item.extra }}</div>
-              <!-- Progress bar -->
-              <div v-if="item.progress !== undefined" class="bd-progress">
-                <div class="bd-progress-bar">
-                  <div class="bd-progress-fill" :style="{ width: item.progress + '%', background: breakdownColor }" />
-                </div>
-                <span class="bd-progress-text">{{ item.progress }}%</span>
-              </div>
-            </div>
-            <div class="bd-right">
-              <div class="bd-value" :style="{ color: breakdownColor }">
-                {{ breakdownSuffix ? item.value + breakdownSuffix : formatCurrency(item.value) }}
-              </div>
-              <!-- Share of total -->
-              <div class="bd-share">{{ breakdownTotal > 0 ? Math.round((item.value / breakdownTotal) * 100) : 0 }}%</div>
-            </div>
-          </router-link>
-        </div>
-      </v-card>
-    </v-dialog>
   </div>
 </template>
 

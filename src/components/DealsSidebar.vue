@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useDealsStore } from '@/stores/deals'
+import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useRecentDeals } from '@/composables/useRecentDeals'
 import { useIsMobile } from '@/composables/useIsMobile'
@@ -25,7 +25,6 @@ const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 
 const router = useRouter()
 const authStore = useAuthStore()
-const dealsStore = useDealsStore()
 const { isMobile } = useIsMobile()
 const { isDealLocked } = useDealLock()
 const recentDeals = useRecentDeals(authStore.user?.id ?? null)
@@ -34,19 +33,77 @@ const tab = ref<'all' | 'recent'>('all')
 const search = ref('')
 const statusFilter = ref<'active' | 'completed' | 'all'>('active')
 
-// Closed state is the steady-state; only fetch when actually opened so
-// the sidebar doesn't pay for itself on every page load.
+// ══════════════════════════════════════════════════════════════════
+// Серверные выборки
+//
+// Раньше панель поднимала в память весь портфель партнёра и фильтровала его
+// на клиенте. Теперь список приходит страницами по 50, поиск и фильтр статуса
+// считает сервер, а «Недавние» резолвятся одним запросом по списку id.
+// ══════════════════════════════════════════════════════════════════
+
+const PAGE_SIZE = 50
+const items = ref<Deal[]>([])
+const total = ref(0)
+const loading = ref(false)
+// Защита от гонок: быстрый набор в поиске порождает несколько запросов.
+let req = 0
+
+async function load(reset: boolean) {
+  const cur = ++req
+  loading.value = true
+  try {
+    const qs = new URLSearchParams({
+      role: 'investor',
+      limit: String(PAGE_SIZE),
+      offset: String(reset ? 0 : items.value.length),
+      sort: 'createdAt',
+      dir: 'desc',
+    })
+    // «Активные» показывают и спорные сделки — как было на клиенте.
+    if (statusFilter.value === 'active') qs.set('status', 'ACTIVE,DISPUTED')
+    else if (statusFilter.value === 'completed') qs.set('status', 'COMPLETED')
+    const q = search.value.trim()
+    if (q) qs.set('q', q)
+
+    const res = await api.get<{ items: Deal[]; total: number }>(`/deals?${qs.toString()}`)
+    if (cur !== req) return
+    items.value = reset ? res.items : [...items.value, ...res.items]
+    total.value = res.total
+  } catch (e) {
+    if (cur !== req) return
+    console.error('Failed to load sidebar deals:', e)
+  } finally {
+    if (cur === req) loading.value = false
+  }
+}
+
+const hasMore = computed(() => items.value.length < total.value)
+
+/** «Недавние»: id хранятся локально, строки резолвим одним запросом. */
+const recentItems = ref<Deal[]>([])
+const recentLoading = ref(false)
+async function loadRecent() {
+  const ids = recentDeals.recent.value.map((r) => r.id).slice(0, 20)
+  if (!ids.length) {
+    recentItems.value = []
+    return
+  }
+  recentLoading.value = true
+  try {
+    recentItems.value = await api.get<Deal[]>(`/deals/by-ids?ids=${ids.join(',')}`)
+  } catch (e) {
+    console.error('Failed to load recent deals:', e)
+  } finally {
+    recentLoading.value = false
+  }
+}
+
+// Панель закрыта большую часть времени — грузим только при открытии.
 const triedLoad = ref(false)
 async function ensureLoaded() {
   if (triedLoad.value) return
   triedLoad.value = true
-  try {
-    if (dealsStore.deals.length === 0) {
-      await dealsStore.fetchDeals()
-    }
-  } catch {
-    triedLoad.value = false  // allow retry on next open
-  }
+  await Promise.all([load(true), loadRecent()])
 }
 
 watch(
@@ -55,62 +112,27 @@ watch(
 )
 onMounted(() => { if (props.open) ensureLoaded() })
 
-// "Все" tab. Searches across product / client / dealNumber so partners
-// can paste a contract number or type a fragment of a name.
-const baseDeals = computed<Deal[]>(() => {
-  let list = dealsStore.deals.filter((d) => !d.deletedAt)
-  if (statusFilter.value === 'active') {
-    list = list.filter((d) => d.status === 'ACTIVE' || d.status === 'DISPUTED')
-  } else if (statusFilter.value === 'completed') {
-    list = list.filter((d) => d.status === 'COMPLETED')
-  }
-  const q = search.value.trim().toLowerCase()
-  if (q) {
-    list = list.filter((d) => {
-      if (d.productName?.toLowerCase().includes(q)) return true
-      if (String(d.dealNumber).includes(q)) return true
-      // Client name lives in a couple of shapes depending on the deal
-      // (legacy clientId-User, ClientProfile, external string).
-      const cp = (d as any).clientProfile
-      if (cp) {
-        const fullName = [cp.firstName, cp.lastName, cp.patronymic]
-          .filter(Boolean).join(' ').toLowerCase()
-        if (fullName.includes(q)) return true
-        if (cp.phone?.toLowerCase().includes(q)) return true
-      }
-      const ext = (d as any).externalClientName
-      if (ext?.toLowerCase().includes(q)) return true
-      const phone = (d as any).externalClientPhone
-      if (phone?.toLowerCase().includes(q)) return true
-      return false
-    })
-  }
-  // Most recent first — by createdAt fallback dealNumber.
-  return [...list].sort((a, b) => {
-    const aT = new Date(a.createdAt ?? 0).getTime()
-    const bT = new Date(b.createdAt ?? 0).getTime()
-    if (aT !== bT) return bT - aT
-    return b.dealNumber - a.dealNumber
-  })
+// Поиск с задержкой: без неё каждый символ уходил бы запросом.
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(search, () => {
+  if (!triedLoad.value) return
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => load(true), 300)
 })
 
-// "Недавние" tab — resolve full deal rows from the store, in MRU order.
-// Drop entries whose deal has been deleted/cancelled meanwhile so the
-// list doesn't show broken cards.
-const recentDealsList = computed<Deal[]>(() => {
-  const dealsById = new Map(dealsStore.deals.map((d) => [d.id, d]))
-  return recentDeals.recent.value
-    .map((r) => dealsById.get(r.id))
-    .filter((d): d is Deal => !!d && !d.deletedAt)
-})
+watch(statusFilter, () => { if (triedLoad.value) load(true) })
 
-const displayed = computed<Deal[]>(() => {
-  return tab.value === 'recent' ? recentDealsList.value : baseDeals.value
-})
+// Открыли вкладку «Недавние» — обновляем: список мог измениться, пока панель
+// была закрыта.
+watch(tab, (t) => { if (t === 'recent' && triedLoad.value) loadRecent() })
+
+const displayed = computed<Deal[]>(() =>
+  tab.value === 'recent' ? recentItems.value : items.value,
+)
 
 const counts = computed(() => ({
-  all: dealsStore.deals.filter((d) => !d.deletedAt).length,
-  recent: recentDealsList.value.length,
+  all: total.value,
+  recent: recentItems.value.length,
 }))
 
 function close() {
@@ -221,7 +243,7 @@ function statusChipLabel(status: string): string {
 
       <!-- List -->
       <div class="ds-list">
-        <div v-if="displayed.length === 0" class="ds-empty">
+        <div v-if="displayed.length === 0 && !loading && !recentLoading" class="ds-empty">
           <v-icon icon="mdi-package-variant" size="40" />
           <div class="ds-empty-text">
             <template v-if="tab === 'recent'">
@@ -262,6 +284,21 @@ function statusChipLabel(status: string): string {
             </div>
           </div>
         </button>
+
+        <!-- Список приходит порциями: у партнёра тысячи сделок. -->
+        <button
+          v-if="tab !== 'recent' && hasMore"
+          class="ds-more"
+          :disabled="loading"
+          @click="load(false)"
+        >
+          <v-progress-circular v-if="loading" indeterminate size="14" width="2" />
+          <span v-else>Показать ещё</span>
+        </button>
+
+        <div v-else-if="loading && !displayed.length" class="d-flex justify-center py-6">
+          <v-progress-circular indeterminate size="24" width="2" color="primary" />
+        </div>
       </div>
     </div>
   </v-navigation-drawer>
@@ -519,4 +556,19 @@ function statusChipLabel(status: string): string {
   color: rgba(var(--v-theme-on-surface), 0.85);
   flex-shrink: 0;
 }
+/* Догрузка списка: сделки приходят порциями по 50. */
+.ds-more {
+  width: calc(100% - 24px);
+  margin: 8px 12px 12px;
+  padding: 9px;
+  border-radius: 10px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.18);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  transition: background-color 0.15s;
+}
+.ds-more:hover:not(:disabled) { background: rgba(var(--v-theme-primary), 0.06); }
+.ds-more:disabled { opacity: 0.6; }
 </style>

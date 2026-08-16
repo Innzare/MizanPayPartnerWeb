@@ -83,9 +83,16 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
   // inProgress counts ACTIVE deals as (purchasePrice − received), so the modal
   // filters to ACTIVE and reuses the same per-deal `received` (which includes
   // the down payment, since it's booked as PAYMENT_IN).
-  async function fetchDeals(id: string): Promise<CashBoxDealBreakdown[]> {
-    const details = await api.get<{ deals: CashBoxDealBreakdown[] }>(`/cashboxes/${id}/capital/details`)
-    return details.deals ?? []
+  /**
+   * Активные сделки кассы для модалки «В работе». Возвращает и общее число:
+   * у крупной кассы (до 6 405 активных сделок) показать все нельзя, и модалка
+   * обязана честно сказать, сколько строк осталось за кадром.
+   */
+  async function fetchDeals(id: string, limit = 100): Promise<{ items: CashBoxDealBreakdown[]; total: number }> {
+    const res = await api.get<{ items: CashBoxDealBreakdown[]; total: number }>(
+      `/cashboxes/${id}/capital/deals?filter=active&limit=${limit}`,
+    )
+    return { items: res.items ?? [], total: res.total ?? 0 }
   }
 
   async function create(data: CreateCashBoxInput): Promise<CashBoxSummary> {

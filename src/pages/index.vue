@@ -4,8 +4,6 @@ import { usePaymentsStore } from '@/stores/payments'
 import { useRequestsStore } from '@/stores/requests'
 import { useNotificationsStore } from '@/stores/notifications'
 import { formatCurrency, formatCurrencyShort, formatDateShort, formatPhone } from '@/utils/formatters'
-import { localDateStr } from '@/utils/paymentAttribution'
-import { paymentProfit } from '@/utils/dealProfit'
 import { userName, clientProfileName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRouter } from 'vue-router'
@@ -13,10 +11,10 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useDealLock } from '@/composables/useDealLock'
 import { useToast } from '@/composables/useToast'
 import HeroSummary from '@/components/HeroSummary.vue'
+import { useAnalyticsSummary, fetchDealsBreakdown } from '@/composables/useAnalyticsOverview'
 import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
 import { useCapital } from '@/composables/useCapital'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { useClientsStore } from '@/stores/clients'
 import { useAuthStore } from '@/stores/auth'
 import { useSubscription } from '@/composables/useSubscription'
 import { useSections } from '@/composables/useSections'
@@ -35,36 +33,27 @@ const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const requestsStore = useRequestsStore()
 const notificationsStore = useNotificationsStore()
-const clientsStore = useClientsStore()
 const authStore = useAuthStore()
 const subscription = useSubscription()
 const sections = useSections()
 
-// Payment health
-const paymentHealth = computed(() => {
-  const paid = paymentsStore.paidPayments
-  if (!paid.length) return 100
-  // Сравниваем КАЛЕНДАРНЫЕ даты; paidAt берём ЛОКАЛЬНО (согласованно с атрибуцией
-  // месяца). Тот же фикс, что в analytics.vue paymentHealth.
-  const onTime = paid.filter(p => p.paidAt && localDateStr(p.paidAt) <= p.dueDate.slice(0, 10)).length
-  return Math.round((onTime / paid.length) * 100)
-})
-
 // Upcoming payments with deal info
 const upcomingPayments = computed(() => {
   const now = Date.now()
-  return paymentsStore.allUpcoming.slice(0, 5).map((item) => {
-    const deal = dealsStore.getDeal(item.dealId)
-    const dueTime = new Date(item.payment.dueDate).getTime()
-    const daysRemaining = Math.ceil((dueTime - now) / 86_400_000)
-    return { ...item, deal, daysRemaining }
-  })
+  // Сделка приходит вместе с платежом — портфель в памяти для этого больше
+  // не нужен.
+  return upcomingRows.value.map((p: any) => ({
+    payment: p,
+    dealId: p.dealId,
+    deal: p.deal,
+    daysRemaining: Math.ceil((new Date(p.dueDate).getTime() - now) / 86_400_000),
+  }))
 })
 
 // Строки таблицы активных сделок: всё, что показываем, считаем один раз здесь,
 // а не по несколько раз на каждую ячейку при перерисовке.
 const topActiveDeals = computed(() =>
-  dealsStore.activeDeals.slice(0, 4).map((deal: any) => ({
+  topDealRows.value.map((deal: any) => ({
     deal,
     received: dealReceived(deal),
     next: nextPaymentOf(deal.id),
@@ -74,49 +63,36 @@ const topActiveDeals = computed(() =>
   })),
 )
 
-// ── «Заработано»: чистый доход по уже полученным деньгам ──
-// Тот же показатель, что в отчётах на странице аналитики. Доля со-инвесторов
-// приходит с сервера (в журнале она разложена по платежам), поэтому без этих
-// карт цифра была бы валовой и завышенной.
-const ciProfitByPayment = ref<Record<string, number>>({})
-const ciProfitByDownPayment = ref<Record<string, number>>({})
-const ciLoaded = ref(false)
-
-/**
- * Заработок по одной сделке — ровно та же арифметика и тот же порядок
- * округления, что в отчётах на бэкенде (reports.service.ts, totalsFor):
- * округляем валовой доход по сделке, и только потом вычитаем долю
- * со-инвесторов. Иначе карточка и модалка расходились бы на несколько рублей.
- */
-function dealEarnedNet(d: any): number {
-  const received =
-    (d.downPayment || 0) +
-    paymentsStore.allPaymentsFlat
-      .filter((p: any) => p.dealId === d.id && p.status === 'PAID')
-      .reduce((s: number, p: any) => s + p.amount, 0)
-  const ci =
-    (ciProfitByDownPayment.value[d.id] ?? 0) +
-    paymentsStore.allPaymentsFlat
-      .filter((p: any) => p.dealId === d.id && p.status === 'PAID')
-      .reduce((s: number, p: any) => s + (ciProfitByPayment.value[p.id] ?? 0), 0)
-  return Math.round(paymentProfit(received, d)) - ci
-}
-
-// Отменённые сделки не считаются — как и в отчётах.
-const earnedDeals = computed(() =>
-  (dealsStore.investorDeals as any[]).filter((d) => d.status !== 'CANCELLED'),
-)
-
-const earnedNet = computed(() => {
-  if (!ciLoaded.value) return null
-  return earnedDeals.value.reduce((s, d) => s + dealEarnedNet(d), 0)
-})
+// Доход по уже полученным деньгам за вычетом доли со-инвесторов. Считает
+// сервер — теми же формулами, что и раздел «Отчёты».
+const earnedNet = computed(() => summary.value?.deals.earnedNet ?? null)
 
 // ── Счётчики для ключевых показателей ──
-const clientsCount = computed(() => clientsStore.clientsInfo.length)
-const activeClientsCount = computed(() =>
-  clientsStore.clientsInfo.filter((c) => c.activeDealCount > 0).length,
-)
+/** Итоги для hero-блока: сервер считает их теми же формулами, что «Отчёты». */
+const heroTotals = computed(() => {
+  const d = summary.value?.deals
+  if (!d) return null
+  return {
+    // Главная всегда показывала остаток по АКТИВНЫМ сделкам — тем же числом,
+    // что и расшифровка по клику. Поле `remaining` (по всем статусам) остаётся
+    // за вкладкой «Отчёты».
+    totalRemaining: d.remainingActive ?? d.remaining,
+    totalRevenue: d.contractTotal,
+    totalInvested: d.purchaseTotal,
+    totalProfit: d.marginTotal,
+    monthlyIncome: 0, // на главной не показывается
+  }
+})
+
+const dealsTotalCount = computed(() => {
+  const by = dealsStore.counts?.byStatus
+  return by ? Object.values(by).reduce((s, n) => s + n, 0) : 0
+})
+const dealsActiveCount = computed(() => dealsStore.counts?.byStatus?.ACTIVE ?? 0)
+const dealsCompletedCount = computed(() => dealsStore.counts?.byStatus?.COMPLETED ?? 0)
+
+const clientsCount = computed(() => summary.value?.clients.total ?? 0)
+const activeClientsCount = computed(() => summary.value?.clients.withActiveDeals ?? 0)
 
 // Карточки инвесторов и сотрудников показываем, только если они вообще есть —
 // пустой ноль на главной ничего не сообщает, а место занимает.
@@ -129,26 +105,61 @@ const canSeeStaff = computed(() => authStore.isOwner && sections.visible('staff'
 
 
 
+// ══════════════════════════════════════════════════════════════════
+// Серверные данные главной
+//
+// Раньше страница поднимала в память весь портфель сделок и все платежи, а
+// показатели считала сама. Теперь итоги приходят одним запросом, а списки —
+// короткими выборками: пять ближайших платежей и четыре активные сделки.
+// ══════════════════════════════════════════════════════════════════
+
+const { summary } = useAnalyticsSummary(() => null)
+
+/** Ближайшие платежи: сервер сортирует по сроку и отдаёт первые пять. */
+const upcomingRows = ref<any[]>([])
+async function loadUpcoming() {
+  try {
+    const res = await api.get<{ items: any[] }>(
+      '/payments?tab=active&sort=dueDate&dir=asc&limit=5',
+    )
+    upcomingRows.value = res.items ?? []
+  } catch (e) {
+    console.error('Failed to load upcoming payments:', e)
+  }
+}
+
+/** Четыре последние активные сделки для таблицы на главной. */
+const topDealRows = ref<any[]>([])
+async function loadTopDeals() {
+  try {
+    const res = await api.get<{ items: any[] }>(
+      '/deals?role=investor&status=ACTIVE&limit=4&sort=createdAt&dir=desc',
+    )
+    topDealRows.value = res.items ?? []
+    // График нужен, чтобы показать следующий платёж по каждой сделке —
+    // четыре лёгких запроса вместо выгрузки всех платежей партнёра.
+    await Promise.all(
+      topDealRows.value.map((d) => paymentsStore.fetchPaymentsForDeal(d.id).catch(() => {})),
+    )
+  } catch (e) {
+    console.error('Failed to load top deals:', e)
+  }
+}
+
 const pageLoading = ref(true)
 
 onMounted(async () => {
   try {
     await Promise.all([
-      dealsStore.fetchDeals(),
-      paymentsStore.fetchPayments(),
+      // Портфель сделок и все платежи здесь больше не грузятся: у партнёра с
+      // тысячами сделок это были два самых тяжёлых запроса в кабинете. Итоги
+      // считает сервер, списки приходят короткими.
+      dealsStore.fetchDealCounts({}),
+      loadUpcoming(),
+      loadTopDeals(),
       requestsStore.fetchRequests(),
       notificationsStore.fetchNotifications(),
       fetchCapital(),
-      // Доля со-инвесторов: при ошибке молча остаёмся на валовой цифре, чтобы
-      // главная не падала из-за одного вспомогательного запроса.
-      Promise.all([
-        api.get<Record<string, number>>('/finance/coinvestor-profit-by-payment')
-          .then((m) => { ciProfitByPayment.value = m || {} })
-          .catch(() => { ciProfitByPayment.value = {} }),
-        api.get<Record<string, number>>('/finance/coinvestor-profit-by-downpayment')
-          .then((m) => { ciProfitByDownPayment.value = m || {} })
-          .catch(() => { ciProfitByDownPayment.value = {} }),
-      ]).then(() => { ciLoaded.value = true }),
       canSeeCoInvestors.value
         ? api.get<any[]>('/co-investors/persons')
             .then((r) => { investorsCount.value = r?.length ?? 0 })
@@ -168,9 +179,10 @@ onMounted(async () => {
 })
 
 // Overdue amount
-const overdueAmount = computed(() =>
-  paymentsStore.overduePayments.reduce((s, p) => s + p.amount, 0)
-)
+// Сервер считает просрочку по тому же правилу, что и аналитика: платежи
+// отменённых и принудительно закрытых сделок деньгами не являются. Раньше
+// главная их суммировала и показывала завышенную цифру.
+const overdueAmount = computed(() => summary.value?.payments.overdueSum ?? 0)
 
 // ── Metric breakdown dialog ──
 type MetricKey = 'invested' | 'revenue' | 'profit' | 'remaining' | 'received' | 'earned' | 'roi' | 'overdue'
@@ -182,183 +194,171 @@ const metricColor = ref('#10b981')
 const metricTotal = ref(0)
 const metricItems = ref<any[]>([])
 
-function openBreakdown(metric: MetricKey) {
-  let deals: { deal: any; value: number; extra?: string; parts?: any[] }[] = []
-  let title = ''
-  let hint = ''
-  let color = ''
+/** Заголовок, пояснение и цвет для каждой расшифровки. */
+const BREAKDOWN_META: Record<string, { title: string; hint: string; color: string }> = {
+  invested: {
+    title: 'Инвестировано в товар',
+    hint: 'Сколько денег потрачено на закупку товара по всем сделкам.',
+    color: '#3b82f6',
+  },
+  revenue: {
+    title: 'Общий оборот',
+    hint: 'Сколько всего должны заплатить клиенты по всем сделкам — закупка вместе с наценкой.',
+    color: '#0ea5e9',
+  },
+  profit: {
+    title: 'Наценка по сделкам',
+    hint: 'Наценка по каждой сделке: цена продажи минус закупка. Это доход до вычета доли со-инвесторов.',
+    color: '#059669',
+  },
+  remaining: {
+    title: 'Ожидается к получению',
+    hint: 'Сколько клиенты ещё должны заплатить по активным сделкам.',
+    color: '#f59e0b',
+  },
+  received: {
+    title: 'Получено',
+    hint: 'Деньги, которые клиенты уже отдали: первоначальные взносы и оплаченные платежи.',
+    color: '#10b981',
+  },
+  earned: {
+    title: 'Заработано',
+    hint: 'Ваш доход по деньгам, которые клиенты уже отдали.',
+    color: '#047857',
+  },
+  roi: {
+    title: 'Доходность сделок',
+    hint: 'Сколько наценки приносит каждый вложенный рубль — наценка относительно закупки.',
+    color: '#059669',
+  },
+  overdue: {
+    title: 'Просроченные платежи',
+    hint: 'Платежи, срок которых уже прошёл, а деньги не поступили.',
+    color: '#ef4444',
+  },
+}
 
-  const money = (n: number) => formatCurrency(Math.round(n || 0))
-  /** Сколько уже пришло по сделке: первоначальный взнос + оплаченные платежи. */
-  const receivedOf = (d: any) =>
-    (d.downPayment || 0) +
-    paymentsStore.allPaymentsFlat
-      .filter((p: any) => p.dealId === d.id && p.status === 'PAID')
-      .reduce((s: number, p: any) => s + p.amount, 0)
+const BREAKDOWN_PAGE = 100
+const metricLoading = ref(false)
+const metricMetric = ref<MetricKey>('invested')
+/** Всего сделок за показателем — в списке может быть показана лишь часть. */
+const metricCount = ref(0)
 
+const money = (n: number) => formatCurrency(Math.round(n || 0))
+
+/** Строка списка из серверной сделки: значение показателя плюс пояснения. */
+function breakdownRow(metric: MetricKey, d: any) {
+  const base = {
+    id: d.id,
+    title: d.productName || 'Сделка',
+    subtitle: d.clientName || '—',
+  }
   switch (metric) {
     case 'invested':
-      title = 'Инвестировано в товар'
-      hint = 'Сколько денег потрачено на закупку товара по всем сделкам.'
-      color = '#3b82f6'
-      deals = dealsStore.investorDeals.map((d: any) => ({
-        deal: d, value: d.purchasePrice,
-        parts: [
-          { label: 'продано за', value: money(d.totalPrice) },
-          { label: 'наценка', value: money(d.markup) },
-          { label: 'вернулось', value: money(receivedOf(d)) },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.cost, parts: [
+        { label: 'продано за', value: money(d.totalPrice) },
+        { label: 'наценка', value: money(d.margin) },
+        { label: 'вернулось', value: money(d.received) },
+      ] }
     case 'revenue':
-      title = 'Общий оборот'
-      hint = 'Сколько всего должны заплатить клиенты по всем сделкам — закупка вместе с наценкой.'
-      color = '#0ea5e9'
-      deals = dealsStore.investorDeals.map((d: any) => ({
-        deal: d, value: d.totalPrice,
-        parts: [
-          { label: 'закупка', value: money(d.purchasePrice) },
-          { label: 'наценка', value: money(d.markup) },
-          { label: 'оплачено', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.totalPrice, parts: [
+        { label: 'закупка', value: money(d.cost) },
+        { label: 'наценка', value: money(d.margin) },
+      ] }
     case 'profit':
-      title = 'Наценка по сделкам'
-      hint = 'Наценка по каждой сделке: цена продажи минус закупка. Это доход до вычета доли со-инвесторов.'
-      color = '#059669'
-      deals = dealsStore.investorDeals.map((d: any) => ({
-        deal: d, value: d.markup,
-        parts: [
-          { label: 'закупка', value: money(d.purchasePrice) },
-          { label: 'цена продажи', value: money(d.totalPrice) },
-          { label: 'оплачено', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.margin, parts: [
+        { label: 'закупка', value: money(d.cost) },
+        { label: 'цена продажи', value: money(d.totalPrice) },
+      ] }
     case 'remaining':
-      title = 'Ожидается к получению'
-      hint = 'Сколько клиенты ещё должны заплатить по активным сделкам.'
-      color = '#f59e0b'
-      deals = dealsStore.activeDeals.map((d: any) => ({
-        deal: d, value: d.remainingAmount,
-        parts: [
-          { label: 'всего по сделке', value: money(d.totalPrice) },
-          { label: 'уже получено', value: money(receivedOf(d)) },
-          { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-        ],
-      }))
-      break
-
+      return { ...base, value: d.remaining, parts: [
+        { label: 'всего по сделке', value: money(d.totalPrice) },
+        { label: 'уже получено', value: money(d.received) },
+      ] }
     case 'received':
-      title = 'Получено'
-      hint = 'Деньги, которые клиенты уже отдали: первоначальные взносы и оплаченные платежи.'
-      color = '#10b981'
-      deals = dealsStore.investorDeals.map((d: any) => ({
-        deal: d, value: receivedOf(d),
-        parts: [
-          { label: 'всего по сделке', value: money(d.totalPrice) },
-          { label: 'осталось', value: money(d.remainingAmount) },
-          { label: 'взнос', value: money(d.downPayment || 0) },
-          { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-        ],
-      }))
-      break
-
-    case 'earned': {
-      title = 'Заработано'
-      hint =
-        'Ваш доход по деньгам, которые клиенты уже отдали. В каждом платеже есть ' +
-        'доля наценки — она и складывается тут. Доля со-инвесторов уже вычтена.'
-      color = '#047857'
-      deals = earnedDeals.value.map((d: any) => {
-        const got = receivedOf(d)
-        const ci =
-          (ciProfitByDownPayment.value[d.id] ?? 0) +
-          paymentsStore.allPaymentsFlat
-            .filter((p: any) => p.dealId === d.id && p.status === 'PAID')
-            .reduce((s: number, p: any) => s + (ciProfitByPayment.value[p.id] ?? 0), 0)
-        return {
-          deal: d, value: dealEarnedNet(d),
-          parts: [
-            { label: 'получено', value: money(got) },
-            { label: 'наценка по сделке', value: money(d.markup) },
-            ...(ci > 0 ? [{ label: 'со-инвесторам', value: money(ci) }] : []),
-            { label: 'платежей', value: `${d.paidPayments} из ${d.numberOfPayments}` },
-          ],
-        }
-      })
-      break
-    }
-
+      return { ...base, value: d.received, parts: [
+        { label: 'всего по сделке', value: money(d.totalPrice) },
+        { label: 'осталось', value: money(d.remaining) },
+        { label: 'взнос', value: money(d.downPayment) },
+      ] }
+    case 'earned':
+      // Чистый доход считает сервер (прибыль с полученных денег минус доля
+      // со-инвесторов) — раньше здесь стояла наценка, и расшифровка показывала
+      // сумму в разы больше самой карточки.
+      return { ...base, value: d.earnedNet ?? 0, parts: [
+        { label: 'получено', value: money(d.received) },
+        { label: 'наценка по сделке', value: money(d.margin) },
+      ] }
     case 'roi':
-      title = 'Доходность сделок'
-      hint = 'Сколько наценки приносит каждый вложенный рубль — наценка относительно закупки.'
-      color = '#059669'
-      deals = dealsStore.investorDeals
-        .filter((d: any) => d.purchasePrice > 0)
-        .map((d: any) => ({
-          deal: d,
-          value: Math.round((d.markup / d.purchasePrice) * 1000) / 10,
-          parts: [
-            { label: 'закупка', value: money(d.purchasePrice) },
-            { label: 'наценка', value: money(d.markup) },
-          ],
-        }))
-      break
-
-    case 'overdue': {
-      title = 'Просроченные платежи'
-      hint = 'Платежи, срок которых уже прошёл, а деньги не поступили.'
-      color = '#ef4444'
-      const byDeal = new Map<string, { deal: any; value: number; count: number; oldest: string }>()
-      for (const p of paymentsStore.overduePayments) {
-        const deal = dealsStore.getDeal(p.dealId)
-        const cur = byDeal.get(p.dealId)
-        if (cur) {
-          cur.value += p.amount
-          cur.count += 1
-          if (p.dueDate < cur.oldest) cur.oldest = p.dueDate
-        } else {
-          byDeal.set(p.dealId, { deal, value: p.amount, count: 1, oldest: p.dueDate })
-        }
-      }
-      deals = [...byDeal.values()].map((x) => ({
-        deal: x.deal, value: x.value,
+      return {
+        ...base,
+        value: d.cost > 0 ? Math.round((d.margin / d.cost) * 1000) / 10 : 0,
+        suffix: '%',
         parts: [
-          { label: 'платежей', value: `${x.count}` },
-          { label: 'с', value: formatDate(x.oldest) },
-          ...(x.deal ? [{ label: 'остаток долга', value: money(x.deal.remainingAmount) }] : []),
+          { label: 'закупка', value: money(d.cost) },
+          { label: 'наценка', value: money(d.margin) },
         ],
-      }))
-      break
-    }
+      }
+    case 'overdue':
+      return { ...base, value: d.overdueAmount, parts: [
+        { label: 'просрочено дней', value: String(d.maxOverdueDays) },
+        { label: 'остаток долга', value: money(d.remaining) },
+      ] }
+    default:
+      return { ...base, value: 0, parts: [] }
   }
-
-  // ROI — проценты, остальное — рубли.
-  const isPercent = metric === 'roi'
-  metricItems.value = deals
-    .filter((d) => d.value !== 0)
-    .map((d) => ({
-      id: d.deal?.id ?? '',
-      title: d.deal?.productName || 'Сделка',
-      subtitle: dealClientName(d.deal),
-      value: isPercent ? d.value : Math.round(d.value),
-      suffix: isPercent ? '%' : undefined,
-      parts: d.parts,
-    }))
-  // Для процентов общий итог складывать бессмысленно — показываем средний.
-  metricTotal.value = isPercent
-    ? 0
-    : metricItems.value.reduce((sum, i) => sum + i.value, 0)
-  metricTitle.value = title
-  metricHint.value = hint
-  metricColor.value = color
-  metricOpen.value = true
 }
+
+/**
+ * Расшифровка показателя. Сделки грузятся с сервера порциями: у партнёра их
+ * тысячи, и раньше страница перебирала весь портфель в памяти.
+ */
+async function openBreakdown(metric: MetricKey) {
+  const meta = BREAKDOWN_META[metric] ?? BREAKDOWN_META.invested!
+  metricMetric.value = metric
+  metricTitle.value = meta.title
+  metricHint.value = meta.hint
+  metricColor.value = meta.color
+  metricItems.value = []
+  metricTotal.value = 0
+  metricCount.value = 0
+  metricOpen.value = true
+  metricLoading.value = true
+  try {
+    const res = await fetchDealsBreakdown(metric as any, { limit: BREAKDOWN_PAGE })
+    metricItems.value = res.items.map((d) => breakdownRow(metric, d))
+    metricCount.value = res.count
+    // Итог считает сервер по ВСЕЙ выборке — в списке может быть лишь часть.
+    // Для доходности сумма бессмысленна.
+    metricTotal.value = metric === 'roi' ? 0 : res.total
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось загрузить расшифровку')
+  } finally {
+    metricLoading.value = false
+  }
+}
+
+/** Догрузить следующую порцию сделок в открытую расшифровку. */
+async function loadMoreBreakdown() {
+  if (metricLoading.value) return
+  metricLoading.value = true
+  try {
+    const res = await fetchDealsBreakdown(metricMetric.value as any, {
+      limit: BREAKDOWN_PAGE,
+      offset: metricItems.value.length,
+    })
+    metricItems.value = [
+      ...metricItems.value,
+      ...res.items.map((d) => breakdownRow(metricMetric.value, d)),
+    ]
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось загрузить ещё')
+  } finally {
+    metricLoading.value = false
+  }
+}
+
+const metricHasMore = computed(() => metricItems.value.length < metricCount.value)
 
 /** Телефон клиента — по нему обычно и звонят из этих таблиц. */
 function dealClientPhone(deal?: any): string {
@@ -369,12 +369,9 @@ function dealClientPhone(deal?: any): string {
 
 /** Сколько по сделке уже получено: первоначальный взнос + оплаченные платежи. */
 function dealReceived(deal: any): number {
-  return (
-    (deal.downPayment || 0) +
-    paymentsStore.allPaymentsFlat
-      .filter((p: any) => p.dealId === deal.id && p.status === 'PAID')
-      .reduce((s: number, p: any) => s + p.amount, 0)
-  )
+  // Сумма договора минус остаток: то же число, но без перебора всех платежей
+  // партнёра в памяти.
+  return Math.max(0, (deal.totalPrice || 0) - (deal.remainingAmount || 0))
 }
 
 /**
@@ -426,6 +423,7 @@ function getAvatarColor(name?: string) {
     <HeroSummary
       show-analytics-link
       show-locked-overlay
+      :totals="heroTotals"
       :earned-net="earnedNet"
       class="hero-card mb-6"
       @metric="openBreakdown($event as MetricKey)"
@@ -439,7 +437,7 @@ function getAvatarColor(name?: string) {
           <v-icon icon="mdi-briefcase-outline" size="20" />
         </div>
         <div class="kpi-info">
-          <div class="kpi-value">{{ dealsStore.investorDeals.length }}</div>
+          <div class="kpi-value">{{ dealsTotalCount }}</div>
           <div class="kpi-label">Всего сделок</div>
         </div>
       </div>
@@ -449,7 +447,7 @@ function getAvatarColor(name?: string) {
           <v-icon icon="mdi-briefcase-check" size="20" />
         </div>
         <div class="kpi-info">
-          <div class="kpi-value">{{ dealsStore.activeDeals.length }}</div>
+          <div class="kpi-value">{{ dealsActiveCount }}</div>
           <div class="kpi-label">Активных</div>
         </div>
       </div>
@@ -459,7 +457,7 @@ function getAvatarColor(name?: string) {
           <v-icon icon="mdi-check-circle" size="20" />
         </div>
         <div class="kpi-info">
-          <div class="kpi-value">{{ dealsStore.completedDeals.length }}</div>
+          <div class="kpi-value">{{ dealsCompletedCount }}</div>
           <div class="kpi-label">Завершённых</div>
         </div>
       </div>
@@ -611,7 +609,7 @@ function getAvatarColor(name?: string) {
           <div class="d-flex align-center justify-space-between pa-5 pb-3">
             <div>
               <div class="chart-title">Активные сделки</div>
-              <div class="chart-subtitle">{{ dealsStore.activeDeals.length }} сделок в работе</div>
+              <div class="chart-subtitle">{{ dealsActiveCount }} сделок в работе</div>
             </div>
             <button class="dash-link-btn" @click="router.push('/deals')">
               Все сделки
@@ -693,6 +691,10 @@ function getAvatarColor(name?: string) {
       :total="metricTotal"
       :color="metricColor"
       :items="metricItems"
+      :loading="metricLoading"
+      :count="metricCount"
+      :has-more="metricHasMore"
+      @load-more="loadMoreBreakdown"
     />
 
   </div>

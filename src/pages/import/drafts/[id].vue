@@ -283,7 +283,7 @@
 
         <button
           class="tb-btn"
-          :disabled="saving || committing"
+          :disabled="saving || importRunning"
           @click="onAddRow"
         >
           <v-icon icon="mdi-plus" size="14" />
@@ -292,7 +292,7 @@
 
         <button
           class="tb-btn tb-btn--danger"
-          :disabled="committing"
+          :disabled="importRunning"
           @click="onCancel"
         >
           <v-icon icon="mdi-close" size="14" />
@@ -341,7 +341,32 @@
         </div>
         <v-spacer />
 
-        <v-tooltip v-if="!canCommit" location="top">
+        <!-- Прогресс фиксации: файл на тысячи строк импортируется минуты,
+             без счётчика партнёр не отличал бы работу от зависания. -->
+        <div v-if="importRunning" class="commit-progress">
+          <div class="commit-progress-top">
+            <v-progress-circular indeterminate size="14" width="2" color="primary" />
+            <span class="commit-progress-label">
+              {{ isQueued ? 'Ожидает очереди…' : 'Импортируем сделки…' }}
+            </span>
+            <span v-if="commitProgress && !isQueued" class="commit-progress-count">
+              {{ commitProgress.processed }} из {{ commitProgress.total }}
+            </span>
+          </div>
+          <v-progress-linear
+            :model-value="commitProgressPct"
+            :indeterminate="!commitProgress || isQueued"
+            color="primary"
+            height="6"
+            rounded
+          />
+          <div class="commit-progress-hint">
+            <template v-if="isQueued">{{ queueHint }}</template>
+            <template v-else>Импорт идёт на сервере — страницу можно закрыть</template>
+          </div>
+        </div>
+
+        <v-tooltip v-else-if="!canCommit" location="top">
           <template #activator="{ props }">
             <button v-bind="props" class="commit-btn commit-btn--disabled" disabled>
               <v-icon icon="mdi-upload" size="18" />
@@ -354,13 +379,11 @@
         <button
           v-else
           class="commit-btn"
-          :disabled="committing"
           @click="onCommit"
         >
-          <v-progress-circular v-if="committing" indeterminate size="16" width="2" color="white" />
-          <v-icon v-else icon="mdi-upload" size="18" />
-          <span>{{ committing ? 'Импортируем…' : 'Импортировать' }}</span>
-          <span v-if="!committing" class="commit-btn-count">{{ readyCount }}</span>
+          <v-icon icon="mdi-upload" size="18" />
+          <span>Импортировать</span>
+          <span class="commit-btn-count">{{ readyCount }}</span>
         </button>
       </div>
     </template>
@@ -377,7 +400,7 @@ import { AgGridVue } from 'ag-grid-vue3'
 import type {
   ColDef, ColGroupDef, CellClassParams, CellValueChangedEvent, RowClassParams,
 } from 'ag-grid-community'
-import { useImportDraft, type DraftRow, type RowAction } from '@/composables/useImportDraft'
+import { useImportDraft, type CommitProgress, type DraftRow, type RowAction } from '@/composables/useImportDraft'
 import { useToast } from '@/composables/useToast'
 import { formatCurrency } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
@@ -392,7 +415,7 @@ import 'ag-grid-community/styles/ag-theme-quartz.css'
 
 const route = useRoute()
 const router = useRouter()
-const { draft, loading, saving, committing, fetchDraft, savePatches, commit, cancel, addRow, deleteRow, confirmUnits } = useImportDraft()
+const { draft, loading, saving, fetchDraft, savePatches, commit, fetchProgress, cancel, addRow, deleteRow, confirmUnits } = useImportDraft()
 const { show: showToast } = useToast()
 const { isDark } = useIsDark()
 const { folders, fetchFolders } = useFolders()
@@ -988,10 +1011,100 @@ const getRowClass = (params: RowClassParams) => {
 }
 
 function onCellChanged(e: CellValueChangedEvent) {
+  // Во время фиксации черновик заблокирован на сервере — правка всё равно
+  // отлетит с ошибкой, не копим заведомо мёртвые патчи.
+  if (importRunning.value) return
   const row = e.data as DraftRow
   const field = e.colDef.field
   if (!field) return
   queuePatch(row.rowIdx, { [field]: e.newValue } as Partial<DraftRow>)
+}
+
+// ── Прогресс фоновой фиксации ──
+// Большой файл сервер фиксирует в фоне; фронт раз в секунду опрашивает лёгкий
+// эндпоинт прогресса. Синхронный запрос на тысячи строк держал соединение
+// минуты и падал по таймауту — партнёр получал 500 и не знал, что импортировалось.
+const commitProgress = ref<CommitProgress | null>(null)
+const importRunning = ref(false)
+// Место в очереди: одновременных импортов ограниченное число (параллельные
+// прогоны упирались в память сервера и обрывали друг друга), поэтому файл
+// может ждать своей очереди. Без этого партнёр видел бы «импорт идёт» при
+// нулевом прогрессе и решил, что всё зависло.
+const queuePosition = ref<number | null>(null)
+let progressTimer: ReturnType<typeof setInterval> | null = null
+let progressBusy = false
+
+// Состояние очереди определяем и по прогрессу, и по наличию позиции: сервер
+// присылает позицию, только пока черновик реально ждёт, и это надёжнее, чем
+// один флаг (прогресс мог остаться от прерванного прогона).
+const isQueued = computed(
+  () => commitProgress.value?.state === 'queued' || queuePosition.value !== null,
+)
+
+const queueHint = computed(() => {
+  const pos = queuePosition.value
+  if (!pos || pos <= 1) return 'Сейчас импортируются другие файлы — ваш начнётся следующим'
+  const ahead = pos - 1
+  const word = ahead === 1 ? 'импорт' : ahead < 5 ? 'импорта' : 'импортов'
+  return `Перед вами ${ahead} ${word} — ваш начнётся автоматически, страницу можно закрыть`
+})
+
+const commitProgressPct = computed(() => {
+  const p = commitProgress.value
+  if (!p || p.total === 0) return 0
+  return Math.round((p.processed / p.total) * 100)
+})
+
+function stopProgressPolling() {
+  if (progressTimer) { clearInterval(progressTimer); progressTimer = null }
+}
+
+function finishImport(res: { created: number; updated: number; skipped: number }) {
+  stopProgressPolling()
+  importRunning.value = false
+  commitProgress.value = null
+  queuePosition.value = null
+  showToast(
+    `Импорт завершён: создано ${res.created}, обновлено ${res.updated}, пропущено ${res.skipped}`,
+    'success',
+  )
+  router.push('/deals')
+}
+
+function failImport(message: string) {
+  stopProgressPolling()
+  importRunning.value = false
+  commitProgress.value = null
+  queuePosition.value = null
+  showToast(message, 'error')
+  // Черновик вернулся в DRAFT: перечитываем его — сервер мог дописать строкам
+  // externalId, и часть строк уже импортирована (повтор их не задвоит).
+  fetchDraft(draftId.value).catch(() => {})
+}
+
+function startProgressPolling() {
+  stopProgressPolling()
+  progressTimer = setInterval(async () => {
+    if (progressBusy) return // тик медленнее сети — не копим параллельные запросы
+    progressBusy = true
+    try {
+      const s = await fetchProgress(draftId.value)
+      if (s.progress) commitProgress.value = s.progress
+      queuePosition.value = s.queuePosition
+      if (s.status === 'COMMITTED') {
+        finishImport(s.progress ?? { created: 0, updated: 0, skipped: 0 })
+      } else if (s.status === 'DRAFT') {
+        // Прогон упал — сервер вернул черновик в DRAFT и записал причину.
+        failImport(s.progress?.error || 'Импорт прервался — попробуйте ещё раз')
+      } else if (s.stale) {
+        failImport('Импорт прервался на сервере — запустите его ещё раз')
+      }
+    } catch {
+      // Сеть мигнула — молча ждём следующий тик, импорт на сервере не зависит от нас.
+    } finally {
+      progressBusy = false
+    }
+  }, 1000)
 }
 
 async function onCommit() {
@@ -1003,14 +1116,36 @@ async function onCommit() {
     showToast(commitBlockReason.value, 'warning')
     return
   }
+  importRunning.value = true
+  commitProgress.value = null
+  queuePosition.value = null
   try {
     const res = await commit(draftId.value)
-    showToast(
-      `Импорт завершён: создано ${res.created}, обновлено ${res.updated}, пропущено ${res.skipped}`,
-      'success',
-    )
-    router.push('/deals')
+    if ('queued' in res) {
+      // Слоты заняты: сервер поставил импорт в очередь и запустит его сам.
+      // Опрос включаем тот же — он покажет и место в очереди, и прогресс,
+      // когда очередь дойдёт.
+      queuePosition.value = res.position
+      commitProgress.value = {
+        state: 'queued', processed: 0, total: res.total,
+        created: 0, updated: 0, skipped: res.skipped,
+        startedAt: new Date().toISOString(),
+      }
+      startProgressPolling()
+    } else if ('async' in res) {
+      // Большой файл: сервер уже работает в фоне, включаем опрос.
+      commitProgress.value = {
+        state: 'running', processed: 0, total: res.total,
+        created: 0, updated: 0, skipped: res.skipped,
+        startedAt: new Date().toISOString(),
+      }
+      startProgressPolling()
+    } else {
+      // Маленький файл: прежний синхронный контракт, итоги пришли сразу.
+      finishImport(res)
+    }
   } catch (e: any) {
+    importRunning.value = false
     showToast(e.message || 'Не удалось импортировать', 'error')
   }
 }
@@ -1026,10 +1161,20 @@ async function onCancel() {
 }
 
 onMounted(() => {
-  fetchDraft(draftId.value).catch((e: any) => {
-    showToast(e.message || 'Не удалось загрузить черновик', 'error')
-    router.push('/import')
-  })
+  fetchDraft(draftId.value)
+    .then(() => {
+      // Партнёр вернулся на страницу (или обновил её) во время фонового
+      // импорта — подхватываем идущий прогон вместо мёртвого редактора.
+      if (draft.value?.status === 'COMMITTING') {
+        importRunning.value = true
+        commitProgress.value = draft.value.stats?.commitProgress ?? null
+        startProgressPolling()
+      }
+    })
+    .catch((e: any) => {
+      showToast(e.message || 'Не удалось загрузить черновик', 'error')
+      router.push('/import')
+    })
   fetchFolders()
   cashBoxesStore.fetchAll()
 })
@@ -1037,6 +1182,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (flushTimer) clearTimeout(flushTimer)
   if (pendingPatches.value.length) flushPatches()
+  stopProgressPolling()
 })
 
 watch(() => route.params.id, (id) => {
@@ -1578,6 +1724,30 @@ watch(() => route.params.id, (id) => {
   font-size: 12px; font-weight: 700;
   font-variant-numeric: tabular-nums;
   margin-left: 2px;
+}
+
+/* Прогресс фоновой фиксации — занимает место кнопки «Импортировать» */
+.commit-progress {
+  display: flex; flex-direction: column; gap: 6px;
+  min-width: 300px;
+}
+.commit-progress-top {
+  display: flex; align-items: center; gap: 8px;
+}
+.commit-progress-label {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.commit-progress-count {
+  margin-left: auto;
+  font-size: 12px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #047857;
+}
+.dark .commit-progress-count { color: #34d399; }
+.commit-progress-hint {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
 }
 </style>
 

@@ -97,30 +97,104 @@ export interface DebtorAnalytics {
   }[]
 }
 
+/** Параметры страницы — ровно то, что понимает сервер. */
+export interface DebtorsPageParams {
+  q?: string
+  promise?: string
+  /** 'unassigned' | staffId. «Мои» страница разворачивает в свой staffId. */
+  assignee?: string | null
+  sort?: string
+  dir?: 'asc' | 'desc'
+  limit: number
+  offset: number
+}
+
+/** KPI шапки — считаются на сервере по всей выборке, а не по странице. */
+export interface DebtorsKpi {
+  count: number
+  overdueAmount: number
+  overdueCount: number
+  unassigned: number
+  broken: number
+}
+
+interface Page<T> { items: T[]; total: number; limit: number; offset: number }
+
+function debtorsQuery(p: DebtorsPageParams): string {
+  const qs = new URLSearchParams()
+  if (p.q?.trim()) qs.set('q', p.q.trim())
+  if (p.promise && p.promise !== 'all') qs.set('promise', p.promise)
+  if (p.assignee) qs.set('assignee', p.assignee)
+  if (p.sort) qs.set('sort', p.sort)
+  if (p.dir) qs.set('dir', p.dir)
+  qs.set('limit', String(p.limit))
+  if (p.offset) qs.set('offset', String(p.offset))
+  return qs.toString()
+}
+
 export const useDebtorsStore = defineStore('debtors', () => {
+  // Строки ТЕКУЩЕЙ страницы, а не весь список: раздел больше не выкачивает
+  // всех должников партнёра в браузер.
   const rows = ref<DebtorRow[]>([])
+  const total = ref(0)
   const archiveRows = ref<DebtorRow[]>([])
+  const archiveTotal = ref(0)
   const archiveLoading = ref(false)
   const loading = ref(false)
+  const kpi = ref<DebtorsKpi | null>(null)
+  const kpiLoading = ref(false)
   const settings = ref<DebtorSettings>({ minOverdueDays: 1, minOverdueAmount: 0 })
   const settingsLoading = ref(false)
   const staff = ref<StaffMember[]>([])
 
-  async function fetchDebtors() {
+  // Защита от гонок: быстрый набор в поиске порождает несколько запросов, и
+  // ответ на устаревший может прийти последним, затерев свежий результат.
+  let listReq = 0
+  let archiveReq = 0
+  // Последний запрос страницы — чтобы модалки могли перезагрузить список, не
+  // зная ни фильтров, ни номера страницы.
+  let lastParams: { params: DebtorsPageParams; archive: boolean } | null = null
+
+  async function fetchDebtors(params: DebtorsPageParams) {
+    lastParams = { params, archive: false }
+    const req = ++listReq
     loading.value = true
     try {
-      rows.value = await api.get<DebtorRow[]>('/debtors')
+      const res = await api.get<Page<DebtorRow>>(`/debtors?${debtorsQuery(params)}`)
+      if (req !== listReq) return
+      rows.value = res.items
+      total.value = res.total
     } finally {
-      loading.value = false
+      if (req === listReq) loading.value = false
     }
   }
 
-  async function fetchArchive() {
+  async function fetchArchive(params: DebtorsPageParams) {
+    lastParams = { params, archive: true }
+    const req = ++archiveReq
     archiveLoading.value = true
     try {
-      archiveRows.value = await api.get<DebtorRow[]>('/debtors/archive')
+      const res = await api.get<Page<DebtorRow>>(`/debtors/archive?${debtorsQuery(params)}`)
+      if (req !== archiveReq) return
+      archiveRows.value = res.items
+      archiveTotal.value = res.total
     } finally {
-      archiveLoading.value = false
+      if (req === archiveReq) archiveLoading.value = false
+    }
+  }
+
+  /** Перезагрузить текущую страницу теми же условиями (после мутации). */
+  function refreshCurrent(): Promise<void> {
+    if (!lastParams) return Promise.resolve()
+    return lastParams.archive ? fetchArchive(lastParams.params) : fetchDebtors(lastParams.params)
+  }
+
+  async function fetchKpi() {
+    kpiLoading.value = true
+    try {
+      kpi.value = await api.get<DebtorsKpi>('/debtors/kpi')
+    } finally {
+      kpiLoading.value = false
     }
   }
 
@@ -190,23 +264,50 @@ export const useDebtorsStore = defineStore('debtors', () => {
     return api.get<DebtorAnalytics>(`/debtors/analytics${qs ? '?' + qs : ''}`)
   }
 
-  async function bulkAssign(dealIds: string[], staffId: string | null): Promise<{ updated: number }> {
-    const res = await api.patch<{ updated: number }>('/debtors/bulk-assign', { dealIds, staffId })
-    const name = staffId ? (staff.value.find((s) => s.id === staffId) ?? null) : null
-    const staffName = name ? `${name.firstName ?? ''} ${name.lastName ?? ''}`.trim() : null
-    for (const id of dealIds) patchRow(id, { assignedStaffId: staffId, assignedStaffName: staffName })
+  /**
+   * Назначить ответственного. `matching` включает режим «вся выборка»: сервер
+   * сам найдёт сделки теми же фильтрами, а `dealIds` тогда означает снятые
+   * галочки (исключения).
+   */
+  async function bulkAssign(
+    dealIds: string[],
+    staffId: string | null,
+    matching?: { mode: 'active' | 'archive'; q?: string; promise?: string; assignee?: string | null } | null,
+  ): Promise<{ updated: number }> {
+    const res = await api.patch<{ updated: number }>('/debtors/bulk-assign', {
+      dealIds,
+      staffId,
+      ...(matching
+        ? {
+            allMatching: matching.mode,
+            ...(matching.q?.trim() ? { q: matching.q.trim() } : {}),
+            ...(matching.promise && matching.promise !== 'all' ? { promise: matching.promise } : {}),
+            ...(matching.assignee ? { assignee: matching.assignee } : {}),
+          }
+        : {}),
+    })
+    // В режиме «вся выборка» dealIds — это исключения, локально их править
+    // нельзя: страницу перезагружает вызывающий.
+    if (!matching) {
+      const name = staffId ? (staff.value.find((s) => s.id === staffId) ?? null) : null
+      const staffName = name ? `${name.firstName ?? ''} ${name.lastName ?? ''}`.trim() : null
+      for (const id of dealIds) patchRow(id, { assignedStaffId: staffId, assignedStaffName: staffName })
+    }
     return res
   }
 
   /** Локально обновить строку списка без полного рефетча. */
   function patchRow(dealId: string, partial: Partial<DebtorRow>) {
-    const idx = rows.value.findIndex((r) => r.dealId === dealId)
-    if (idx >= 0) rows.value[idx] = { ...rows.value[idx], ...partial } as DebtorRow
+    for (const list of [rows, archiveRows]) {
+      const idx = list.value.findIndex((r) => r.dealId === dealId)
+      if (idx >= 0) list.value[idx] = { ...list.value[idx], ...partial } as DebtorRow
+    }
   }
 
   return {
-    rows, archiveRows, archiveLoading, loading, settings, settingsLoading, staff,
-    fetchDebtors, fetchArchive, fetchSettings, updateSettings,
+    rows, total, archiveRows, archiveTotal, archiveLoading, loading, kpi, kpiLoading,
+    settings, settingsLoading, staff,
+    fetchDebtors, fetchArchive, refreshCurrent, fetchKpi, fetchSettings, updateSettings,
     fetchDealPayments, fetchActivities, addActivity, addPromise, editPromise, deletePromise, deleteActivity, patchRow,
     fetchStaff, bulkAssign, fetchAnalytics,
   }

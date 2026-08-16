@@ -95,6 +95,60 @@ export function useReports(
   const loading = ref(false)
   const error = ref<string | null>(null)
 
+  // ── Страница таблицы сделок ──
+  // Раньше таблица приезжала целиком (4,5 МБ на профиле с 14 813 сделками), а
+  // поиск, сортировка и «Итого» считались в браузере. Теперь всё это на
+  // сервере, а сюда приходит одна страница.
+  const TABLE_PAGE = 50
+  const tablePage = ref(1)
+  const tableSort = ref('dealDate')
+  const tableDir = ref<'asc' | 'desc'>('desc')
+  const tableSearch = ref('')
+  const tableOverdueOnly = ref(false)
+  const tableLoading = ref(false)
+  let tableReq = 0
+
+  /** Параметры страницы таблицы поверх общих (период, касса, статус). */
+  function tableParams(withTotals: boolean): string {
+    const q = new URLSearchParams(params.value)
+    q.set('limit', String(TABLE_PAGE))
+    q.set('offset', String((tablePage.value - 1) * TABLE_PAGE))
+    q.set('sort', tableSort.value)
+    q.set('dir', tableDir.value)
+    if (tableSearch.value.trim()) q.set('search', tableSearch.value.trim())
+    if (tableOverdueOnly.value) q.set('overdueOnly', 'true')
+    // Итоги считаются по всей выборке и стоят прохода по ней — при листании
+    // они не меняются.
+    if (!withTotals) q.set('totals', '0')
+    return q.toString()
+  }
+
+  /** Загрузить страницу таблицы. `withTotals` — при смене условий отбора. */
+  async function loadTable(withTotals = true) {
+    const req = ++tableReq
+    tableLoading.value = true
+    try {
+      const d = await api.get<ReportsDealsTable>(`/reports/deals-table?${tableParams(withTotals)}`)
+      if (req !== tableReq) return
+      // При листании сервер итоги не считает (totals=null) — оставляем прежние,
+      // они посчитаны по всей выборке и от смены страницы не меняются.
+      dealsTable.value = withTotals
+        ? d
+        : { ...d, totals: dealsTable.value?.totals ?? d.totals }
+    } catch (e: any) {
+      if (req === tableReq) error.value = e?.message || 'Не удалось загрузить таблицу'
+    } finally {
+      if (req === tableReq) tableLoading.value = false
+    }
+  }
+
+  // Смена условий возвращает на первую страницу и пересчитывает итоги.
+  watch([tableSort, tableDir, tableSearch, tableOverdueOnly], () => {
+    tablePage.value = 1
+    loadTable(true)
+  })
+  watch(tablePage, () => loadTable(false))
+
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow'
 
   const params = computed(() => {
@@ -115,9 +169,11 @@ export function useReports(
       // Грузим только то, что показано на вкладке. Эндпоинты snapshot /
       // efficiency / risks / monthly на бэкенде остались — соответствующие
       // блоки временно отключены, вернуть их можно без доработок сервера.
+      // Смена периода сбрасывает таблицу на первую страницу.
+      tablePage.value = 1
       const [s, d] = await Promise.all([
         api.get<ReportsSummary>(`/reports/summary?${qs}`),
-        api.get<ReportsDealsTable>(`/reports/deals-table?${qs}`),
+        api.get<ReportsDealsTable>(`/reports/deals-table?${tableParams(true)}`),
       ])
       // Гонка: пока грузили, пользователь мог сменить период — не перетираем.
       if (qs !== params.value) return
@@ -134,5 +190,10 @@ export function useReports(
   // первом открытии вкладки блоки оставались пустыми.
   watch(params, () => { load() }, { immediate: true })
 
-  return { summary, monthly, dealsTable, snapshot, efficiency, risks, loading, error, load }
+  return {
+    summary, monthly, dealsTable, snapshot, efficiency, risks, loading, error, load,
+    // Управление таблицей сделок — страница, сортировка, поиск, фильтр.
+    tablePage, tableSort, tableDir, tableSearch, tableOverdueOnly, tableLoading,
+    TABLE_PAGE, loadTable,
+  }
 }

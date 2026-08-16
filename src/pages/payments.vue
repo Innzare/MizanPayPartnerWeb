@@ -5,7 +5,7 @@ import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone
 import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName, clientProfileName } from '@/types'
 import { attributionMonthStr, offMonthKind, monthPrepositional, dueYearMonth, isLivePayment } from '@/utils/paymentAttribution'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
@@ -16,8 +16,11 @@ import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
+import ServerPager from '@/components/ServerPager.vue'
+import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
 
 const router = useRouter()
+const route = useRoute()
 const { isDark, statusStyle } = useIsDark()
 
 // Reactive mobile detection — used to make dialogs fullscreen on phones.
@@ -68,9 +71,10 @@ const pageLoading = ref(true)
 
 onMounted(async () => {
   try {
+    // Ни все платежи, ни весь портфель сделок здесь больше не грузятся — в
+    // этом и был основной вес страницы.
     await Promise.all([
-      paymentsStore.fetchPayments(),
-      dealsStore.fetchDeals(),
+      refreshList(),
       fetchFolders(),
     ])
   } catch (e: any) {
@@ -81,10 +85,9 @@ onMounted(async () => {
 })
 
 const tab = ref(0)
-watch(tab, (v) => {
-  sortField.value = 'dueDate'
-  sortAsc.value = v === 2 ? false : true
-})
+// Сброс сортировки при смене вкладки живёт НИЖЕ, в серверном блоке: здесь он
+// сработал бы на восстановление вкладки из адреса и затёр бы сортировку,
+// которую партнёр туда сохранил.
 const search = ref('')
 const viewMode = ref<'table' | 'calendar'>('table')
 
@@ -94,10 +97,7 @@ const filterMonth = ref<string | null>(`${now.getFullYear()}-${String(now.getMon
 const filterYear = ref(new Date().getFullYear())
 
 const availableYears = computed(() => {
-  const years = new Set<number>()
-  paymentsStore.allPaymentsFlat.forEach(p => {
-    years.add(parseInt(p.dueDate.slice(0, 4)))
-  })
+  const years = new Set<number>(paymentsStore.facets?.years ?? [])
   years.add(new Date().getFullYear())
   return Array.from(years).sort((a, b) => b - a)
 })
@@ -105,17 +105,18 @@ const availableYears = computed(() => {
 // Count payments per month for the selected year. На вкладке «Оплаченные»
 // считаем по месяцу ФАКТИЧЕСКОЙ оплаты (paidAt) — согласованно с фильтром и
 // аналитикой; на остальных вкладках — по плановому сроку (график).
-const monthPaymentCounts = computed(() => {
-  const counts: Record<string, number> = {}
-  const paidBasis = tab.value === 3
-  paymentsStore.allPaymentsFlat.forEach(p => {
-    if (paidBasis && p.status !== 'PAID') return
-    const ym = paidBasis ? attributionMonthStr(p) : p.dueDate.slice(0, 7)
-    if (ym && ym.startsWith(String(filterYear.value))) {
-      counts[ym] = (counts[ym] || 0) + 1
-    }
-  })
-  return counts
+// Счётчики месяцев считает сервер: на вкладке «Оплаченные» — по дате
+// фактической оплаты, на остальных — по плановому сроку.
+const monthPaymentCounts = computed<Record<string, number>>(() => {
+  const months = paymentsStore.facets?.months
+  if (!months) return {}
+  const src = tab.value === 3 ? months.paid : months.due
+  const year = String(filterYear.value)
+  const out: Record<string, number> = {}
+  for (const [ym, cnt] of Object.entries(src)) {
+    if (ym.startsWith(year)) out[ym] = cnt
+  }
+  return out
 })
 
 // «Оплачен не в свой месяц» для строки списка (только вкладка «Оплаченные»).
@@ -171,47 +172,81 @@ function nextMonth() {
   selectedCalendarDate.value = null
 }
 
-// Map: dateKey (YYYY-MM-DD) -> payments[]
-const paymentsByDate = computed(() => {
-  if (!subscription.canAccess('analyticsCharts')) return {} as Record<string, (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]>
-  const map: Record<string, (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]> = {}
-  paymentsStore.allPaymentsFlat.forEach(p => {
-    const deal = getDealForPayment(p)
-    // Нулевые строки после досрочного закрытия и хвосты отменённых /
-    // принудительно закрытых сделок деньгами не являются: они подсвечивали дни
-    // без причины и завышали итог месяца несуществующими поступлениями.
-    if (!isLivePayment(p, deal)) return
-    const key = p.dueDate.slice(0, 10)
-    if (!map[key]) map[key] = []
-    map[key].push({
-      ...p,
-      _dealName: getDealName(p),
-      _clientName: getClientName(p),
-      _isExternal: !deal?.client && !deal?.clientProfile?.userId && !!(deal?.clientProfile || deal?.externalClientName),
-    })
-  })
-  return map
-})
+/**
+ * Календарь работает на агрегатах сервера: он считает по каждому дню число и
+ * суммы платежей в разрезе статусов. Раньше страница выкачивала все платежи
+ * партнёра и раскладывала их по датам в браузере.
+ *
+ * Заодно чинится расхождение: точки на днях «мёртвые» строки (досрочно
+ * закрытые, хвосты отменённых сделок) уже исключали, а суммы месяца и года —
+ * нет, и итоги завышались. Сервер применяет то же правило к обоим.
+ */
+const CAL_ENABLED = () => subscription.canAccess('analyticsCharts')
+
+/** Границы сетки месяца: 42 ячейки, включая хвосты соседних месяцев. */
+function monthGridRange(year: number, month: number): { from: string; to: string } {
+  const firstDay = new Date(year, month, 1)
+  let startDow = firstDay.getDay() - 1
+  if (startDow < 0) startDow = 6
+  const from = new Date(year, month, 1 - startDow)
+  const to = new Date(from)
+  to.setDate(to.getDate() + 41)
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return { from: fmt(from), to: fmt(to) }
+}
+
+const calendarRange = computed(() =>
+  calendarScale.value === 'year'
+    ? { from: `${calendarYear.value}-01-01`, to: `${calendarYear.value}-12-31` }
+    : monthGridRange(calendarYear.value, calendarMonth.value),
+)
 
 type CalendarDay = {
   day: number
   dateKey: string
   isCurrentMonth: boolean
   isToday: boolean
-  payments: (Payment & { _dealName: string; _clientName: string; _isExternal: boolean })[]
+  count: number
   totalAmount: number
+  /** До трёх точек — по наличию статусов, а не по первым платежам дня. */
+  dots: ('OVERDUE' | 'PENDING' | 'PAID')[]
   hasOverdue: boolean
   hasPending: boolean
   hasPaid: boolean
 }
 
+/** Собирает ячейку дня из агрегата сервера (пустой день — нули). */
+function buildDay(key: string, day: number, isCurrentMonth: boolean, todayKey: string): CalendarDay {
+  const a = paymentsStore.calendarAgg[key]
+  const hasOverdue = (a?.overdueCount ?? 0) > 0
+  const hasPending = (a?.pendingCount ?? 0) > 0
+  const hasPaid = (a?.paidCount ?? 0) > 0
+  const dots: ('OVERDUE' | 'PENDING' | 'PAID')[] = []
+  if (hasOverdue) dots.push('OVERDUE')
+  if (hasPending) dots.push('PENDING')
+  if (hasPaid) dots.push('PAID')
+  return {
+    day,
+    dateKey: key,
+    isCurrentMonth,
+    isToday: key === todayKey,
+    count: (a?.pendingCount ?? 0) + (a?.overdueCount ?? 0) + (a?.paidCount ?? 0),
+    totalAmount: (a?.pendingSum ?? 0) + (a?.overdueSum ?? 0) + (a?.paidSum ?? 0),
+    dots,
+    hasOverdue,
+    hasPending,
+    hasPaid,
+  }
+}
+
 const calendarDays = computed((): CalendarDay[] => {
   const year = calendarYear.value
   const month = calendarMonth.value
-  const firstDay = new Date(year, month, 1)
   const lastDay = new Date(year, month + 1, 0)
 
   // Monday-based: 0=Mon ... 6=Sun
+  const firstDay = new Date(year, month, 1)
   let startDow = firstDay.getDay() - 1
   if (startDow < 0) startDow = 6
 
@@ -219,75 +254,112 @@ const calendarDays = computed((): CalendarDay[] => {
   const today = new Date()
   const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
 
-  // Previous month days
   const prevMonthLast = new Date(year, month, 0).getDate()
   for (let i = startDow - 1; i >= 0; i--) {
     const d = prevMonthLast - i
     const m = month === 0 ? 12 : month
     const y = month === 0 ? year - 1 : year
     const key = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-    const ps = paymentsByDate.value[key] || []
-    days.push({
-      day: d, dateKey: key, isCurrentMonth: false, isToday: key === todayKey,
-      payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
-      hasOverdue: ps.some(p => p.status === 'OVERDUE'),
-      hasPending: ps.some(p => p.status === 'PENDING'),
-      hasPaid: ps.some(p => p.status === 'PAID'),
-    })
+    days.push(buildDay(key, d, false, todayKey))
   }
 
-  // Current month days
   for (let d = 1; d <= lastDay.getDate(); d++) {
     const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-    const ps = paymentsByDate.value[key] || []
-    days.push({
-      day: d, dateKey: key, isCurrentMonth: true, isToday: key === todayKey,
-      payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
-      hasOverdue: ps.some(p => p.status === 'OVERDUE'),
-      hasPending: ps.some(p => p.status === 'PENDING'),
-      hasPaid: ps.some(p => p.status === 'PAID'),
-    })
+    days.push(buildDay(key, d, true, todayKey))
   }
 
-  // Next month days to fill 6 rows
   const remaining = 42 - days.length
   for (let d = 1; d <= remaining; d++) {
     const m = month === 11 ? 1 : month + 2
     const y = month === 11 ? year + 1 : year
     const key = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-    const ps = paymentsByDate.value[key] || []
-    days.push({
-      day: d, dateKey: key, isCurrentMonth: false, isToday: key === todayKey,
-      payments: ps, totalAmount: ps.reduce((s, p) => s + p.amount, 0),
-      hasOverdue: ps.some(p => p.status === 'OVERDUE'),
-      hasPending: ps.some(p => p.status === 'PENDING'),
-      hasPaid: ps.some(p => p.status === 'PAID'),
-    })
+    days.push(buildDay(key, d, false, todayKey))
   }
 
   return days
 })
 
-const selectedDatePayments = computed(() => {
-  if (!selectedCalendarDate.value) return []
-  return paymentsByDate.value[selectedCalendarDate.value] || []
+/**
+ * Платежи выбранного дня. Отдельный запрос: агрегаты календаря несут только
+ * счётчики и суммы, а сайдбару нужны сами строки. У крупного партнёра первое
+ * число месяца может собрать сотни платежей — отсюда лимит и догрузка.
+ */
+const DAY_PAGE_SIZE = 200
+type DayPayment = Payment & { _dealName: string; _clientName: string }
+const dayPayments = ref<DayPayment[]>([])
+const dayPaymentsTotal = ref(0)
+const dayPaymentsLoading = ref(false)
+let dayReq = 0
+
+const selectedDatePayments = computed(() => dayPayments.value)
+/** Сумма загруженных платежей дня — в подзаголовке модалки. */
+const dayTotalAmount = computed(() => dayPayments.value.reduce((s, p) => s + p.amount, 0))
+const dayHasMore = computed(() => dayPayments.value.length < dayPaymentsTotal.value)
+
+function decorateDayPayment(p: Payment): DayPayment {
+  const deal = getDealForPayment(p)
+  return {
+    ...p,
+    _dealName: getDealName(p),
+    _clientName: getClientName(p),
+  }
+}
+
+async function loadDayPayments(key: string, append = false) {
+  const req = ++dayReq
+  dayPaymentsLoading.value = true
+  try {
+    const qs = new URLSearchParams({
+      tab: 'all',
+      dueFrom: key,
+      dueTo: key,
+      tz: TZ,
+      limit: String(DAY_PAGE_SIZE),
+      offset: String(append ? dayPayments.value.length : 0),
+    })
+    if (filterFolder.value) qs.set('folderId', filterFolder.value)
+    if (filterCashBoxId.value) qs.set('cashBoxId', filterCashBoxId.value)
+    if (filterStaff.value) qs.set('assignedStaffId', filterStaff.value)
+    if (debouncedSearch.value.trim()) qs.set('q', debouncedSearch.value.trim())
+
+    const res = await api.get<{ items: Payment[]; total: number }>(`/payments?${qs.toString()}`)
+    if (req !== dayReq) return
+    // «Мёртвые» строки в списочном ответе есть — агрегаты дня их уже
+    // исключают, поэтому фильтруем здесь тем же правилом, иначе список
+    // разошёлся бы с точкой на календаре.
+    const rows = res.items.filter((x) => isLivePayment(x, getDealForPayment(x))).map(decorateDayPayment)
+    dayPayments.value = append ? [...dayPayments.value, ...rows] : rows
+    dayPaymentsTotal.value = res.total
+  } catch (e: any) {
+    if (req !== dayReq) return
+    console.error('Failed to load day payments:', e)
+  } finally {
+    if (req === dayReq) dayPaymentsLoading.value = false
+  }
+}
+
+watch(selectedCalendarDate, (key) => {
+  if (!key) {
+    dayPayments.value = []
+    dayPaymentsTotal.value = 0
+    return
+  }
+  loadDayPayments(key)
 })
 
 // Monthly summary for sidebar
+/** Сводка месяца из агрегатов: суммируем дни выбранного месяца. */
 const monthSummary = computed(() => {
-  const year = calendarYear.value
-  const month = calendarMonth.value
-  const prefix = `${year}-${String(month + 1).padStart(2, '0')}`
+  const prefix = `${calendarYear.value}-${String(calendarMonth.value + 1).padStart(2, '0')}`
   let total = 0, pending = 0, overdue = 0, paid = 0, count = 0
-  paymentsStore.allPaymentsFlat.forEach(p => {
-    if (p.dueDate.startsWith(prefix)) {
-      count++
-      total += p.amount
-      if (p.status === 'PENDING') pending += p.amount
-      if (p.status === 'OVERDUE') overdue += p.amount
-      if (p.status === 'PAID') paid += p.amount
-    }
-  })
+  for (const [key, a] of Object.entries(paymentsStore.calendarAgg)) {
+    if (!key.startsWith(prefix)) continue
+    count += a.pendingCount + a.overdueCount + a.paidCount
+    pending += a.pendingSum
+    overdue += a.overdueSum
+    paid += a.paidSum
+    total += a.pendingSum + a.overdueSum + a.paidSum
+  }
   return { total, pending, overdue, paid, count }
 })
 
@@ -353,19 +425,20 @@ const yearMonths = computed((): YearMonthData[] => {
     let monthHasOverdue = false
     for (let d = 1; d <= lastDay.getDate(); d++) {
       const key = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-      const ps = paymentsByDate.value[key] || []
-      const amt = ps.reduce((s, p) => s + p.amount, 0)
-      const hasOverdue = ps.some(p => p.status === 'OVERDUE')
+      const a = paymentsStore.calendarAgg[key]
+      const cnt = (a?.pendingCount ?? 0) + (a?.overdueCount ?? 0) + (a?.paidCount ?? 0)
+      const amt = (a?.pendingSum ?? 0) + (a?.overdueSum ?? 0) + (a?.paidSum ?? 0)
+      const hasOverdue = (a?.overdueCount ?? 0) > 0
       monthTotal += amt
-      monthPaymentCount += ps.length
+      monthPaymentCount += cnt
       if (hasOverdue) monthHasOverdue = true
       days.push({
         day: d, dateKey: key, isCurrentMonth: true,
         hasOverdue,
-        hasPending: ps.some(p => p.status === 'PENDING'),
-        hasPaid: ps.some(p => p.status === 'PAID'),
+        hasPending: (a?.pendingCount ?? 0) > 0,
+        hasPaid: (a?.paidCount ?? 0) > 0,
         isToday: key === todayKey,
-        paymentCount: ps.length,
+        paymentCount: cnt,
         totalAmount: amt,
       })
     }
@@ -380,20 +453,18 @@ const yearMonths = computed((): YearMonthData[] => {
   })
 })
 
-// Year summary
+/** Сводка года из агрегатов: годовая шкала запрашивает весь год разом. */
 const yearSummary = computed(() => {
-  const year = calendarYear.value
-  const prefix = `${year}-`
+  const prefix = `${calendarYear.value}-`
   let total = 0, pending = 0, overdue = 0, paid = 0, count = 0
-  paymentsStore.allPaymentsFlat.forEach(p => {
-    if (p.dueDate.startsWith(prefix)) {
-      count++
-      total += p.amount
-      if (p.status === 'PENDING') pending += p.amount
-      if (p.status === 'OVERDUE') overdue += p.amount
-      if (p.status === 'PAID') paid += p.amount
-    }
-  })
+  for (const [key, a] of Object.entries(paymentsStore.calendarAgg)) {
+    if (!key.startsWith(prefix)) continue
+    count += a.pendingCount + a.overdueCount + a.paidCount
+    pending += a.pendingSum
+    overdue += a.overdueSum
+    paid += a.paidSum
+    total += a.pendingSum + a.overdueSum + a.paidSum
+  }
   return { total, pending, overdue, paid, count }
 })
 
@@ -404,7 +475,7 @@ function selectYearDay(day: YearMonthData['days'][0]) {
 }
 
 function selectDay(day: CalendarDay) {
-  if (day.payments.length) {
+  if (day.count) {
     selectedCalendarDate.value = selectedCalendarDate.value === day.dateKey ? null : day.dateKey
   }
 }
@@ -428,6 +499,190 @@ function toggleSort(field: SortField) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Серверный список платежей
+//
+// Раньше страница выкачивала ВСЕ платежи партнёра и весь его портфель сделок,
+// а вкладки, месяцы, поиск и сортировку считала поверх этих массивов. Теперь
+// сервер отдаёт страницу, счётчики и агрегаты календаря.
+//
+// Порядок объявлений в этом блоке важен: initFromQuery() читает refs, которые
+// объявлены выше по файлу, и вызывается ДО watch'ей — иначе восстановление
+// состояния из адреса было бы принято за действие партнёра.
+// ══════════════════════════════════════════════════════════════════
+
+const PER_PAGE_OPTIONS = [25, 50, 100, 200] // 200 — серверный максимум
+const page = ref(1)
+const perPage = ref(50)
+
+/** Часовой пояс: от него зависит, в какой месяц и день попадёт платёж. */
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow'
+
+const TAB_KEYS = ['active', 'pending', 'overdue', 'paid', 'all'] as const
+
+// Поиск с задержкой: без неё каждый символ уходил бы отдельным запросом.
+const debouncedSearch = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(search, (v) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { debouncedSearch.value = v }, 350)
+})
+
+/**
+ * На вкладке «Оплаченные» месяц считается по дате фактической оплаты, на
+ * остальных — по плановому сроку. Зеркалит прежнюю клиентскую логику и
+ * атрибуцию дохода в аналитике.
+ */
+const monthBasis = computed<'due' | 'paid'>(() => (tab.value === 3 ? 'paid' : 'due'))
+
+const serverFilters = computed(() => ({
+  folderId: filterFolder.value,
+  cashBoxId: filterCashBoxId.value,
+  assignedStaffId: filterStaff.value,
+  q: debouncedSearch.value,
+}))
+
+/** Параметры счётчиков и календаря — фильтры без вкладки, страницы и сортировки. */
+const facetParams = computed(() => ({ ...serverFilters.value, tz: TZ }))
+
+const serverParams = computed(() => ({
+  ...serverFilters.value,
+  tab: TAB_KEYS[tab.value] ?? 'all',
+  month: filterMonth.value ?? undefined,
+  monthBasis: monthBasis.value,
+  tz: TZ,
+  sort: sortField.value,
+  dir: sortAsc.value ? ('asc' as const) : ('desc' as const),
+  limit: perPage.value,
+  offset: (page.value - 1) * perPage.value,
+}))
+
+const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+
+function initFromQuery() {
+  const q = route.query
+  const str = (v: unknown): string | null => {
+    const s = Array.isArray(v) ? v[0] : v
+    return typeof s === 'string' && s.trim() ? s : null
+  }
+  const int = (v: unknown, def: number): number => {
+    const n = parseInt(str(v) ?? '', 10)
+    return Number.isFinite(n) && n > 0 ? n : def
+  }
+
+  const t = int(q.tab, 0)
+  tab.value = t >= 0 && t <= 4 ? t : 0
+  perPage.value = PER_PAGE_OPTIONS.includes(int(q.per, 50)) ? int(q.per, 50) : 50
+  page.value = int(q.page, 1)
+
+  const qs = str(q.q)
+  if (qs) {
+    search.value = qs
+    debouncedSearch.value = qs // иначе первый запрос ушёл бы без поиска
+  }
+
+  // Месяц: 'all' — все месяцы, 'YYYY-MM' — конкретный, отсутствие — текущий.
+  const m = str(q.month)
+  if (m === 'all') {
+    filterMonth.value = null
+  } else if (m && /^\d{4}-\d{2}$/.test(m)) {
+    filterMonth.value = m
+    filterYear.value = parseInt(m.slice(0, 4), 10)
+  }
+
+  // Валидируем по локальному списку полей: серверные константы сюда тянуть
+  // незачем, а обращение к объявленному ниже const упало бы в браузере.
+  const sc = str(q.sort)
+  if (sc && (['dueDate', 'amount', 'number', 'deal', 'client', 'status'] as string[]).includes(sc)) {
+    sortField.value = sc as SortField
+  }
+  if (str(q.dir)) sortAsc.value = str(q.dir) === 'asc'
+
+  filterFolder.value = str(q.folder)
+  filterCashBoxId.value = str(q.box)
+  filterStaff.value = str(q.staff)
+  if (str(q.view) === 'calendar') viewMode.value = 'calendar'
+}
+
+// ДО watch'ей ниже — см. комментарий в шапке блока.
+initFromQuery()
+
+// Смена вкладки сбрасывает сортировку на дату (просроченные — сначала свежие).
+// Стоит после initFromQuery, иначе затёрло бы сортировку из адреса.
+watch(tab, (v) => {
+  sortField.value = 'dueDate'
+  sortAsc.value = v !== 2
+})
+
+watch(
+  () => [tab.value, page.value, perPage.value, debouncedSearch.value, sortField.value,
+         sortAsc.value, filterMonth.value, filterFolder.value, filterCashBoxId.value,
+         filterStaff.value, viewMode.value],
+  () => {
+    const q: Record<string, string> = {}
+    if (tab.value) q.tab = String(tab.value)
+    if (page.value > 1) q.page = String(page.value)
+    if (perPage.value !== 50) q.per = String(perPage.value)
+    if (debouncedSearch.value.trim()) q.q = debouncedSearch.value.trim()
+    if (sortField.value !== 'dueDate') q.sort = sortField.value
+    if (!sortAsc.value) q.dir = 'desc'
+    if (filterMonth.value === null) q.month = 'all'
+    else if (filterMonth.value !== currentMonthStr) q.month = filterMonth.value
+    if (filterFolder.value) q.folder = filterFolder.value
+    if (filterCashBoxId.value) q.box = filterCashBoxId.value
+    if (filterStaff.value) q.staff = filterStaff.value
+    if (viewMode.value === 'calendar') q.view = 'calendar'
+    // replace, а не push: перебор фильтров не должен забивать историю браузера.
+    router.replace({ query: q }).catch(() => {})
+  },
+)
+
+// Смена выборки — всегда с первой страницы: иначе после сужения партнёр
+// оказался бы на пустой странице.
+watch(
+  () => [serverFilters.value, tab.value, filterMonth.value, sortField.value, sortAsc.value, perPage.value],
+  () => { page.value = 1 },
+  { deep: true },
+)
+
+// Страница и счётчики перезапрашиваются РАЗДЕЛЬНО: переход по страницам не
+// должен тянуть агрегаты, которые от него не зависят.
+watch(serverParams, () => { paymentsStore.fetchPaymentsPage(serverParams.value) }, { deep: true })
+watch(facetParams, () => { paymentsStore.fetchPaymentsFacets(facetParams.value) }, { deep: true })
+
+/**
+ * Перечитать всё, на что влияет правка графика: страницу, счётчики, а в режиме
+ * календаря — ещё агрегаты дней и список открытого дня. Отметка об оплате
+ * меняет и соседние платежи (перерасчёт), поэтому точечным обновлением строки
+ * не обойтись.
+ */
+async function refreshList() {
+  const jobs: Promise<unknown>[] = [
+    paymentsStore.fetchPaymentsPage(serverParams.value),
+    paymentsStore.fetchPaymentsFacets(facetParams.value),
+  ]
+  if (viewMode.value === 'calendar' && CAL_ENABLED()) {
+    const { from, to } = calendarRange.value
+    jobs.push(paymentsStore.fetchPaymentsCalendar(from, to, facetParams.value))
+    if (selectedCalendarDate.value) jobs.push(loadDayPayments(selectedCalendarDate.value))
+  }
+  await Promise.all(jobs)
+}
+
+// Календарь запрашивает агрегаты за видимый диапазон. Стоит здесь, а не рядом
+// с остальным кодом календаря: наблюдатель читает serverFilters/facetParams,
+// объявленные выше по файлу, — обращение к ним из верхней части файла упало бы
+// в браузере (const в мёртвой зоне), а типы и сборка этого не ловят.
+watch(
+  () => [viewMode.value, calendarScale.value, calendarMonth.value, calendarYear.value, serverFilters.value],
+  () => {
+    if (viewMode.value !== 'calendar' || !CAL_ENABLED()) return
+    const { from, to } = calendarRange.value
+    paymentsStore.fetchPaymentsCalendar(from, to, facetParams.value)
+  },
+  { deep: true, immediate: true },
+)
+
 function sortIcon(field: SortField) {
   if (sortField.value !== field) return 'mdi-unfold-more-horizontal'
   return sortAsc.value ? 'mdi-chevron-up' : 'mdi-chevron-down'
@@ -450,7 +705,16 @@ function openDealFromPayment(payment: Payment) {
   if (isDealLocked(deal)) { router.push(`/deals/${deal.id}`); return }
   selectedDeal.value = deal
   showDealDialog.value = true
+  // График подтягиваем на открытие: карта платежей больше не пред-заполнена
+  // полным набором, и блок «График платежей» был бы пуст.
+  dealPaymentsLoading.value = true
+  paymentsStore.fetchPaymentsForDeal(deal.id)
+    .catch(() => {})
+    .finally(() => { dealPaymentsLoading.value = false })
 }
+
+/** Идёт загрузка графика для превью сделки. */
+const dealPaymentsLoading = ref(false)
 
 function goToDeal(deal: Deal) {
   router.push(`/deals/${deal.id}`)
@@ -482,97 +746,46 @@ const reschedulePaymentRef = ref<Payment | null>(null)
 const rescheduleDate = ref('')
 const rescheduleReason = ref('')
 
-// Active payments = pending + overdue (no paid in default view)
-const activePayments = computed(() =>
-  paymentsStore.allPaymentsFlat.filter(p => p.status === 'PENDING' || p.status === 'OVERDUE')
-)
+/**
+ * Строки страницы. Сервер уже применил вкладку, месяц, фильтры, поиск и
+ * сортировку — здесь ничего не пересчитываем. Прежняя клиентская выборка
+ * работала поверх ВСЕХ платежей партнёра в памяти; у крупного партнёра это
+ * сотни тысяч строк.
+ */
+const displayedPayments = computed(() => paymentsStore.list)
 
-const displayedPayments = computed(() => {
-  let payments: Payment[] = []
+/** Всего строк в выборке — для пагинатора и подписи «показано X из N». */
+const totalRows = computed(() => paymentsStore.listTotal)
+/** Сквозной номер строки: на 2-й странице по 50 счёт идёт с 51. */
+function rowNumber(idx: number): number {
+  return (page.value - 1) * perPage.value + idx + 1
+}
 
-  if (tab.value === 0) payments = [...activePayments.value]
-  else if (tab.value === 1) payments = [...paymentsStore.pendingPayments]
-  else if (tab.value === 2) payments = [...paymentsStore.overduePayments]
-  else if (tab.value === 3) payments = [...paymentsStore.paidPayments]
-  else payments = [...paymentsStore.allPaymentsFlat]
+/** Идёт запрос списка — строки гаснут, элементы управления блокируются. */
+const listBusy = computed(() => paymentsStore.listLoading)
+/** Идёт запрос счётчиков — KPI показывают скелетон вместо старых цифр. */
+const statsBusy = computed(() => paymentsStore.facetsLoading)
 
-  // Month filter. На вкладке «Оплаченные» фильтруем по месяцу фактической
-  // оплаты (attributionMonthStr → paidAt), иначе — по плановому сроку.
-  if (filterMonth.value) {
-    const paidBasis = tab.value === 3
-    payments = payments.filter(p => {
-      const ym = paidBasis ? attributionMonthStr(p) : p.dueDate.slice(0, 7)
-      return ym === filterMonth.value
-    })
-  }
-
-  // Folder filter
-  if (filterFolder.value) {
-    payments = payments.filter(p => {
-      const deal = getDealForPayment(p)
-      return deal?.folderId === filterFolder.value
-    })
-  }
-
-  // Cashbox filter
-  if (filterCashBoxId.value) {
-    payments = payments.filter(p => {
-      const deal = getDealForPayment(p)
-      return deal?.cashBoxId === filterCashBoxId.value
-    })
-  }
-
-  // Staff assignee filter
-  if (filterStaff.value) {
-    payments = payments.filter(p => {
-      const deal = getDealForPayment(p) as any
-      return deal?.assignedStaffId === filterStaff.value
-    })
-  }
-
-  if (search.value) {
-    const s = search.value.toLowerCase()
-    payments = payments.filter((p) => {
-      const deal = getDealForPayment(p)
-      const clientName = deal?.client ? userName(deal.client) : deal?.clientProfile ? clientProfileName(deal.clientProfile) : deal?.externalClientName || ''
-      return deal?.productName.toLowerCase().includes(s) || clientName.toLowerCase().includes(s)
-    })
-  }
-
-  // Sort
-  const dir = sortAsc.value ? 1 : -1
-  payments.sort((a, b) => {
-    switch (sortField.value) {
-      case 'dueDate':
-        return dir * (new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())
-      case 'amount':
-        return dir * (a.amount - b.amount)
-      case 'number':
-        return dir * (a.number - b.number)
-      case 'deal': {
-        const da = getDealName(a)
-        const db = getDealName(b)
-        return dir * da.localeCompare(db, 'ru')
-      }
-      case 'client': {
-        const ca = getClientName(a)
-        const cb = getClientName(b)
-        return dir * ca.localeCompare(cb, 'ru')
-      }
-      case 'status': {
-        const order: Record<string, number> = { OVERDUE: 0, PENDING: 1, PAID: 2 }
-        return dir * ((order[a.status] ?? 3) - (order[b.status] ?? 3))
-      }
-      default:
-        return 0
-    }
-  })
-
-  return payments
+/**
+ * Вкладки со счётчиками сервера. Считаются по ТЕКУЩИМ фильтрам (папка, касса,
+ * сотрудник, поиск) — как на странице сделок, поэтому цифры совпадают с тем,
+ * что видно в таблице.
+ */
+const tabFilters = computed(() => {
+  const t = paymentsStore.facets?.tabs
+  return [
+    { label: 'Текущие', count: t?.active ?? 0 },
+    { label: 'Ожидаемые', count: t?.pending ?? 0 },
+    { label: 'Просроченные', count: t?.overdue ?? 0 },
+    { label: 'Оплаченные', count: t?.paid ?? 0 },
+    { label: 'Все', count: t?.all ?? 0 },
+  ]
 })
 
 function getDealForPayment(payment: Payment): Deal | undefined {
-  return dealsStore.getDeal(payment.dealId) || payment.deal
+  // Сначала сделка, пришедшая вместе с платежом: полный портфель эта страница
+  // больше не грузит, и стор сделок здесь по большей части пуст.
+  return payment.deal || dealsStore.getDeal(payment.dealId)
 }
 
 function getDealName(payment: Payment) {
@@ -603,38 +816,28 @@ function daysUntil(dateStr: string) {
   return `через ${diff} дн.`
 }
 
+// Отметка оплаты — общий компонент MarkPaidDialog: та же модалка и тот же
+// функционал, что на странице сделки. Раньше здесь стояла своя урезанная
+// версия (сумма и галочка «в срок»), без перерасчёта графика, фактической
+// даты оплаты, квитанции и скриншота.
 const markPaidDialog = ref(false)
 const markPaidTarget = ref<Payment | null>(null)
-const markPaidAmount = ref<number | null>(null)
-const markPaidLoading = ref(false)
-const markPaidOnTime = ref(false)
+
+/** Сделка отмечаемого платежа — приходит вместе с ним в списке. */
+const markPaidDeal = computed(() =>
+  markPaidTarget.value ? getDealForPayment(markPaidTarget.value) ?? null : null,
+)
 
 function handleMarkPaid(e: Event, payment: Payment) {
   e.stopPropagation()
   markPaidTarget.value = payment
-  markPaidAmount.value = Math.round(payment.amount)
-  markPaidOnTime.value = false
   markPaidDialog.value = true
 }
 
-async function confirmMarkPaid() {
-  if (!markPaidTarget.value) return
-  markPaidLoading.value = true
-  try {
-    const amount = markPaidAmount.value && markPaidAmount.value !== markPaidTarget.value.amount
-      ? markPaidAmount.value : undefined
-    await paymentsStore.markAsPaid(markPaidTarget.value.id, markPaidTarget.value.dealId, {
-      amount,
-      onTime: markPaidOnTime.value || undefined,
-    })
-    toast.success('Платёж отмечен как оплаченный')
-    markPaidDialog.value = false
-    markPaidTarget.value = null
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка при отметке оплаты')
-  } finally {
-    markPaidLoading.value = false
-  }
+/** Платёж отмечен: перечитываем страницу, счётчики и календарь. */
+async function onMarkPaidDone() {
+  markPaidTarget.value = null
+  await refreshList()
 }
 
 const unpaidLoading = ref<string | null>(null)
@@ -645,6 +848,7 @@ async function handleUnmarkPaid(e: Event, payment: Payment) {
   try {
     await paymentsStore.unmarkPaid(payment.id, payment.dealId)
     toast.success('Оплата отменена')
+    await refreshList()
   } catch (e: any) {
     toast.error(e.message || 'Ошибка при отмене оплаты')
   } finally {
@@ -678,6 +882,7 @@ async function confirmReschedule() {
       rescheduleReason.value || undefined,
     )
     toast.success('Платёж перенесён')
+    await refreshList()
     rescheduleDialog.value = false
     reschedulePaymentRef.value = null
   } catch (e: any) {
@@ -708,7 +913,8 @@ const rescheduleReasonOptions = [
           <v-icon icon="mdi-cash-multiple" size="20" />
         </div>
         <div>
-          <div class="stat-value">{{ activePayments.length }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--sm" />
+          <div v-else class="stat-value">{{ paymentsStore.facets?.tabs.active ?? 0 }}</div>
           <div class="stat-label">Текущих платежей</div>
         </div>
       </div>
@@ -717,7 +923,8 @@ const rescheduleReasonOptions = [
           <v-icon icon="mdi-clock-outline" size="20" />
         </div>
         <div>
-          <div class="stat-value">{{ formatCurrency(paymentsStore.pendingPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--md" />
+          <div v-else class="stat-value">{{ formatCurrency(paymentsStore.facets?.sums.pending ?? 0) }}</div>
           <div class="stat-label">Ожидается</div>
         </div>
       </div>
@@ -726,7 +933,8 @@ const rescheduleReasonOptions = [
           <v-icon icon="mdi-alert-circle-outline" size="20" />
         </div>
         <div>
-          <div class="stat-value">{{ paymentsStore.overduePayments.length }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--sm" />
+          <div v-else class="stat-value">{{ paymentsStore.facets?.tabs.overdue ?? 0 }}</div>
           <div class="stat-label">Просрочено</div>
         </div>
       </div>
@@ -735,7 +943,8 @@ const rescheduleReasonOptions = [
           <v-icon icon="mdi-check-circle-outline" size="20" />
         </div>
         <div>
-          <div class="stat-value">{{ formatCurrency(paymentsStore.paidPayments.reduce((s, p) => s + p.amount, 0)) }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--md" />
+          <div v-else class="stat-value">{{ formatCurrency(paymentsStore.facets?.sums.paid ?? 0) }}</div>
           <div class="stat-label">Получено</div>
         </div>
       </div>
@@ -916,7 +1125,7 @@ const rescheduleReasonOptions = [
         </div>
       </div>
       <v-row>
-        <v-col :cols="12" :lg="calendarScale === 'month' ? 8 : 12">
+        <v-col cols="12">
           <v-card rounded="lg" elevation="0" border>
             <div class="pa-4">
               <!-- Scale toggle + navigation -->
@@ -986,22 +1195,24 @@ const rescheduleReasonOptions = [
                     :class="{
                       'cal-day--other': !day.isCurrentMonth,
                       'cal-day--today': day.isToday,
-                      'cal-day--has-payments': day.payments.length > 0,
+                      'cal-day--has-payments': day.count > 0,
                       'cal-day--selected': selectedCalendarDate === day.dateKey,
                       'cal-day--overdue': day.hasOverdue && day.isCurrentMonth,
                     }"
                     @click="selectDay(day)"
                   >
                     <span class="cal-day-num">{{ day.day }}</span>
-                    <div v-if="day.payments.length && day.isCurrentMonth" class="cal-day-dots">
+                    <!-- Точка на каждый статус, присутствующий в дне (до трёх):
+                         сервер отдаёт счётчики по статусам, а не сами платежи. -->
+                    <div v-if="day.count && day.isCurrentMonth" class="cal-day-dots">
                       <span
-                        v-for="(p, pi) in day.payments.slice(0, 3)"
-                        :key="pi"
+                        v-for="st in day.dots"
+                        :key="st"
                         class="cal-dot"
-                        :style="{ background: p.status === 'OVERDUE' ? '#ef4444' : p.status === 'PAID' ? '#047857' : '#f59e0b' }"
+                        :style="{ background: st === 'OVERDUE' ? '#ef4444' : st === 'PAID' ? '#047857' : '#f59e0b' }"
                       />
                     </div>
-                    <div v-if="day.payments.length && day.isCurrentMonth" class="cal-day-amount">
+                    <div v-if="day.count && day.isCurrentMonth" class="cal-day-amount">
                       {{ day.totalAmount >= 1000 ? Math.round(day.totalAmount / 1000) + 'k' : day.totalAmount }}
                     </div>
                   </div>
@@ -1083,145 +1294,133 @@ const rescheduleReasonOptions = [
         </v-col>
 
         <!-- Sidebar — month view only -->
-        <v-col v-if="calendarScale === 'month'" cols="12" lg="4">
-          <v-card rounded="lg" elevation="0" border class="position-sticky" style="top: 80px;">
-            <div class="pa-4">
-              <!-- Selected date -->
-              <template v-if="selectedCalendarDate">
-                <div class="d-flex align-center justify-space-between mb-3">
-                  <div>
-                    <div class="text-body-2 font-weight-bold">{{ formatSelectedDate(selectedCalendarDate) }}</div>
-                    <div class="text-caption text-medium-emphasis">
-                      {{ selectedDatePayments.length }} {{ selectedDatePayments.length === 1 ? 'платёж' : 'платежей' }}
-                    </div>
-                  </div>
-                  <button class="dialog-close-sm" @click="selectedCalendarDate = null">
-                    <v-icon icon="mdi-close" size="16" />
-                  </button>
-                </div>
-
-                <div class="cal-payments-list">
-                  <div
-                    v-for="p in selectedDatePayments"
-                    :key="p.id"
-                    class="cal-payment-item"
-                    :class="{ 'deal-locked-dim': isPaymentLocked(p) }"
-                    @click="openDealFromPayment(p)"
-                  >
-                    <div class="d-flex align-center justify-space-between mb-2">
-                      <span class="font-weight-medium" style="font-size: 13px;">{{ p._dealName }}<v-icon v-if="isPaymentLocked(p)" icon="mdi-lock-outline" size="12" color="#b45309" class="ml-1" /></span>
-                      <div
-                        class="payment-status-chip"
-                        :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
-                      >
-                        {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                      </div>
-                    </div>
-                    <div class="d-flex align-center justify-space-between">
-                      <span class="text-caption text-medium-emphasis">{{ p._clientName }} <span v-if="p._isExternal" class="external-badge">Внешний</span></span>
-                      <span class="font-weight-bold" style="font-size: 15px;">{{ formatCurrency(p.amount) }}</span>
-                    </div>
-                    <div class="d-flex ga-1 mt-2" v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
-                      <button class="action-btn action-btn--success" style="width: 26px; height: 26px;" @click.stop="handleMarkPaid($event, p)">
-                        <v-icon icon="mdi-check" size="14" />
-                      </button>
-                      <button class="action-btn action-btn--warning" style="width: 26px; height: 26px;" @click.stop="openReschedule($event, p)">
-                        <v-icon icon="mdi-calendar-arrow-right" size="14" />
-                      </button>
-                    </div>
-                    <div class="d-flex ga-1 mt-2" v-else-if="p.status === 'PAID'">
-                      <button class="action-btn action-btn--danger" style="width: 26px; height: 26px;" :disabled="unpaidLoading === p.id" @click.stop="handleUnmarkPaid($event, p)">
-                        <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="10" width="2" />
-                        <v-icon v-else icon="mdi-undo" size="14" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </template>
-
-              <!-- Empty state — no date selected -->
-              <template v-else>
-                <div class="cal-sidebar-empty">
-                  <div class="cal-sidebar-empty-icon">
-                    <v-icon icon="mdi-cursor-default-click" size="28" />
-                  </div>
-                  <div class="cal-sidebar-empty-title">Выберите день</div>
-                  <div class="cal-sidebar-empty-text">Нажмите на выделенный день в календаре, чтобы увидеть платежи</div>
-
-                  <!-- Legend -->
-                  <div class="cal-legend">
-                    <div class="cal-legend-item">
-                      <span class="cal-legend-dot" style="background: #f59e0b;" />
-                      <span>Ожидается</span>
-                    </div>
-                    <div class="cal-legend-item">
-                      <span class="cal-legend-dot" style="background: #ef4444;" />
-                      <span>Просрочено</span>
-                    </div>
-                    <div class="cal-legend-item">
-                      <span class="cal-legend-dot" style="background: #047857;" />
-                      <span>Оплачено</span>
-                    </div>
-                  </div>
-                </div>
-              </template>
-            </div>
-          </v-card>
-        </v-col>
       </v-row>
 
       <!-- Year view — date detail dialog -->
-      <v-dialog v-if="calendarScale === 'year'" :model-value="!!selectedCalendarDate" @update:model-value="v => { if (!v) selectedCalendarDate = null }" max-width="440">
-        <v-card v-if="selectedCalendarDate" rounded="lg">
-          <div class="pa-5">
-            <div class="d-flex align-center justify-space-between mb-3">
-              <div>
-                <div class="text-body-2 font-weight-bold">{{ formatSelectedDate(selectedCalendarDate) }}</div>
-                <div class="text-caption text-medium-emphasis">
-                  {{ selectedDatePayments.length }} {{ selectedDatePayments.length === 1 ? 'платёж' : 'платежей' }}
-                </div>
+      <!-- Платежи выбранного дня. Одна модалка на оба масштаба календаря и
+           обычная таблица внутри — та же подача, что в остальных разделах,
+           вместо отдельного списка со своими карточками. -->
+      <v-dialog
+        :model-value="!!selectedCalendarDate"
+        max-width="1100"
+        scrollable
+        :fullscreen="isMobile"
+        @update:model-value="v => { if (!v) selectedCalendarDate = null }"
+      >
+        <v-card v-if="selectedCalendarDate" rounded="lg" class="day-dialog">
+          <div class="day-dialog-head">
+            <div>
+              <div class="day-dialog-title">{{ formatSelectedDate(selectedCalendarDate) }}</div>
+              <div class="day-dialog-sub">
+                {{ dayPaymentsTotal.toLocaleString('ru-RU') }}
+                {{ dayPaymentsTotal === 1 ? 'платёж' : dayPaymentsTotal < 5 ? 'платежа' : 'платежей' }}
+                <template v-if="dayTotalAmount">
+                  · {{ formatCurrency(dayTotalAmount) }}
+                </template>
               </div>
-              <button class="dialog-close-sm" @click="selectedCalendarDate = null">
-                <v-icon icon="mdi-close" size="16" />
-              </button>
+            </div>
+            <button class="dialog-close-sm" @click="selectedCalendarDate = null">
+              <v-icon icon="mdi-close" size="16" />
+            </button>
+          </div>
+
+          <div class="day-dialog-body">
+            <div v-if="dayPaymentsLoading && !selectedDatePayments.length" class="d-flex justify-center py-10">
+              <v-progress-circular indeterminate size="30" width="3" color="primary" />
             </div>
 
-            <div class="cal-payments-list">
-              <div
-                v-for="p in selectedDatePayments"
-                :key="p.id"
-                class="cal-payment-item"
-                @click="selectedCalendarDate = null; openDealFromPayment(p)"
-              >
-                <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="font-weight-medium" style="font-size: 13px;">{{ p._dealName }}</span>
-                  <div
-                    class="payment-status-chip"
-                    :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
-                  >
-                    {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                  </div>
-                </div>
-                <div class="d-flex align-center justify-space-between">
-                  <span class="text-caption text-medium-emphasis">{{ p._clientName }} <span v-if="p._isExternal" class="external-badge">Внешний</span></span>
-                  <span class="font-weight-bold" style="font-size: 15px;">{{ formatCurrency(p.amount) }}</span>
-                </div>
-                <div class="d-flex ga-1 mt-2" v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
-                  <button class="action-btn action-btn--success" style="width: 26px; height: 26px;" @click.stop="handleMarkPaid($event, p)">
-                    <v-icon icon="mdi-check" size="14" />
-                  </button>
-                  <button class="action-btn action-btn--warning" style="width: 26px; height: 26px;" @click.stop="openReschedule($event, p)">
-                    <v-icon icon="mdi-calendar-arrow-right" size="14" />
-                  </button>
-                </div>
-                <div class="d-flex ga-1 mt-2" v-else-if="p.status === 'PAID'">
-                  <button class="action-btn action-btn--danger" style="width: 26px; height: 26px;" :disabled="unpaidLoading === p.id" @click.stop="handleUnmarkPaid($event, p)">
-                    <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="10" width="2" />
-                    <v-icon v-else icon="mdi-undo" size="14" />
-                  </button>
-                </div>
-              </div>
-            </div>
+            <v-table v-else-if="selectedDatePayments.length" density="comfortable" hover class="payments-table">
+              <thead>
+                <tr>
+                  <th class="th-index">№</th>
+                  <th>Сделка</th>
+                  <th>Клиент</th>
+                  <th class="text-right">Сумма</th>
+                  <th>Дата</th>
+                  <th>Статус</th>
+                  <th class="text-center">Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(p, idx) in selectedDatePayments"
+                  :key="p.id"
+                  class="clickable-row"
+                  :class="{ 'deal-locked-dim': isPaymentLocked(p) }"
+                  @click="selectedCalendarDate = null; openDealFromPayment(p)"
+                >
+                  <td class="td-index">{{ idx + 1 }}</td>
+                  <td>
+                    <span class="font-weight-medium">{{ p._dealName }}</span>
+                    <span v-if="isPaymentLocked(p)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span>
+                  </td>
+                  <td>
+                    <div class="client-name">
+                      {{ p._clientName }}
+                    </div>
+                    <div v-if="getClientPhone(p)" class="client-phone">{{ getClientPhone(p) }}</div>
+                  </td>
+                  <td class="text-right text-no-wrap">
+                    <span class="font-weight-bold">{{ formatCurrency(p.amount) }}</span>
+                    <span class="payment-of-total">{{ p.number }} из {{ getDealForPayment(p)?.numberOfPayments || '?' }}</span>
+                  </td>
+                  <td>
+                    <span>{{ formatDateShort(p.dueDate) }}</span>
+                    <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+                      <v-icon icon="mdi-calendar-arrow-right" size="12" />
+                      <span>с {{ formatDateShort(p.rescheduledFrom) }}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="payment-status-chip" :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])">
+                      {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                    </div>
+                  </td>
+                  <td class="text-center">
+                    <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
+                      <v-tooltip text="Отметить оплаченным" location="top">
+                        <template #activator="{ props }">
+                          <button v-bind="props" class="action-btn action-btn--success" @click.stop="handleMarkPaid($event, p)">
+                            <v-icon icon="mdi-check" size="16" />
+                          </button>
+                        </template>
+                      </v-tooltip>
+                      <v-tooltip text="Перенести дату" location="top">
+                        <template #activator="{ props }">
+                          <button v-bind="props" class="action-btn action-btn--warning" @click.stop="openReschedule($event, p)">
+                            <v-icon icon="mdi-calendar-arrow-right" size="16" />
+                          </button>
+                        </template>
+                      </v-tooltip>
+                    </div>
+                    <div v-else class="d-flex align-center justify-center">
+                      <v-tooltip text="Отменить оплату" location="top">
+                        <template #activator="{ props }">
+                          <button v-bind="props" class="action-btn action-btn--danger" :disabled="unpaidLoading === p.id" @click.stop="handleUnmarkPaid($event, p)">
+                            <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                            <v-icon v-else icon="mdi-undo" size="16" />
+                          </button>
+                        </template>
+                      </v-tooltip>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+
+            <div v-else class="text-center py-10 text-medium-emphasis">Платежей нет</div>
+
+            <!-- День может собрать больше платежей, чем помещается в один
+                 запрос: у крупного партнёра первое число набирает сотни строк. -->
+            <button
+              v-if="dayHasMore"
+              class="cal-day-more"
+              :disabled="dayPaymentsLoading"
+              @click="selectedCalendarDate && loadDayPayments(selectedCalendarDate, true)"
+            >
+              <v-progress-circular v-if="dayPaymentsLoading" indeterminate size="14" width="2" />
+              <span v-else>Показать ещё ({{ dayPaymentsTotal - selectedDatePayments.length }})</span>
+            </button>
           </div>
         </v-card>
       </v-dialog>
@@ -1229,22 +1428,17 @@ const rescheduleReasonOptions = [
     </template>
 
     <!-- TABLE VIEW -->
-    <v-card v-if="viewMode === 'table'" rounded="lg" elevation="0" border>
+    <v-card v-if="viewMode === 'table'" rounded="lg" elevation="0" border class="payments-card">
       <div class="pa-4">
         <!-- Tabs + search -->
         <div class="d-flex flex-wrap ga-2 align-center mb-4">
           <div class="d-flex ga-2">
             <button
-              v-for="(f, i) in [
-                { label: 'Текущие', count: activePayments.length },
-                { label: 'Ожидаемые', count: paymentsStore.pendingPayments.length },
-                { label: 'Просроченные', count: paymentsStore.overduePayments.length },
-                { label: 'Оплаченные', count: paymentsStore.paidPayments.length },
-                { label: 'Все', count: paymentsStore.allPaymentsFlat.length },
-              ]"
+              v-for="(f, i) in tabFilters"
               :key="i"
               class="tab-btn"
               :class="{ active: tab === i }"
+              :disabled="listBusy && tab !== i"
               @click="tab = i"
             >
               {{ f.label }}
@@ -1320,7 +1514,7 @@ const rescheduleReasonOptions = [
         <div v-if="filterMonth" class="month-filter-notice">
           <v-icon icon="mdi-filter-outline" size="15" />
           <span>Показаны платежи за <strong>{{ filterMonthLabel }} {{ filterMonth.split('-')[0] }}</strong></span>
-          <span class="month-filter-notice-count">{{ displayedPayments.length }} из {{ paymentsStore.allPaymentsFlat.length }}</span>
+          <span class="month-filter-notice-count">{{ totalRows.toLocaleString('ru-RU') }} из {{ (paymentsStore.facets?.tabs.all ?? 0).toLocaleString('ru-RU') }}</span>
           <button class="month-filter-notice-clear" @click="filterMonth = null">
             Показать все
             <v-icon icon="mdi-close" size="12" />
@@ -1328,6 +1522,13 @@ const rescheduleReasonOptions = [
         </div>
 
         <!-- Table (desktop) -->
+        <!-- Список с индикацией: строки гаснут, а не исчезают — иначе
+             таблица «прыгала» бы при каждом переходе. -->
+        <div class="pl-list-wrap" :class="{ 'pl-list-wrap--busy': listBusy }">
+          <div v-if="listBusy" class="pl-list-overlay">
+            <v-progress-circular indeterminate size="30" width="3" color="primary" />
+          </div>
+
         <v-table v-if="displayedPayments.length" density="comfortable" hover class="payments-table payments-table--desktop">
           <thead>
             <tr>
@@ -1358,7 +1559,7 @@ const rescheduleReasonOptions = [
           </thead>
           <tbody>
             <tr v-for="(p, idx) in displayedPayments" :key="p.id" class="clickable-row" :class="{ 'deal-locked-dim': isPaymentLocked(p) }" @click="openDealFromPayment(p)">
-              <td class="td-index">{{ idx + 1 }}</td>
+              <td class="td-index">{{ rowNumber(idx) }}</td>
               <td>
                 <span class="font-weight-medium">{{ getDealName(p) }}</span>
                 <span v-if="isPaymentLocked(p)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span>
@@ -1366,7 +1567,6 @@ const rescheduleReasonOptions = [
               <td>
                 <div class="client-name">
                   {{ getClientName(p) }}
-                  <span v-if="!getDealForPayment(p)?.client && !getDealForPayment(p)?.clientProfile?.userId" class="external-badge">Внешний</span>
                 </div>
                 <div v-if="getClientPhone(p)" class="client-phone">{{ getClientPhone(p) }}</div>
               </td>
@@ -1449,7 +1649,7 @@ const rescheduleReasonOptions = [
             @click="openDealFromPayment(p)"
           >
             <div class="pay-card-head">
-              <div class="pay-card-num">#{{ idx + 1 }}</div>
+              <div class="pay-card-num">#{{ rowNumber(idx) }}</div>
               <div
                 class="payment-status-chip"
                 :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
@@ -1463,7 +1663,6 @@ const rescheduleReasonOptions = [
             </div>
             <div class="pay-card-client">
               <span>{{ getClientName(p) }}</span>
-              <span v-if="!getDealForPayment(p)?.client && !getDealForPayment(p)?.clientProfile?.userId" class="external-badge">Внешний</span>
             </div>
             <div v-if="getClientPhone(p)" class="pay-card-phone">{{ getClientPhone(p) }}</div>
 
@@ -1528,13 +1727,25 @@ const rescheduleReasonOptions = [
           </div>
         </div>
 
-        <div v-if="!displayedPayments.length" class="text-center pa-12">
+        <div v-if="!displayedPayments.length && !listBusy" class="text-center pa-12">
           <v-icon icon="mdi-cash-multiple" size="56" color="grey-lighten-1" class="mb-3" />
           <p class="text-body-1 font-weight-medium text-medium-emphasis mb-1">Нет платежей</p>
           <p class="text-body-2 text-medium-emphasis">
             {{ search ? 'Попробуйте изменить параметры поиска' : 'Платежи появятся после создания сделки' }}
           </p>
         </div>
+        </div>
+
+        <!-- Пагинация серверного списка — общий компонент разделов. -->
+        <ServerPager
+          :page="page"
+          :total="totalRows"
+          :per-page="perPage"
+          :busy="listBusy"
+          :per-page-options="PER_PAGE_OPTIONS"
+          @update:page="page = $event"
+          @update:per-page="perPage = $event"
+        />
       </div>
     </v-card>
 
@@ -1622,7 +1833,10 @@ const rescheduleReasonOptions = [
 
           <div v-if="selectedDealPayments.length">
             <div class="text-body-2 font-weight-bold mb-3">График платежей</div>
-            <div class="schedule-list">
+            <div v-if="dealPaymentsLoading && !selectedDealPayments.length" class="d-flex justify-center py-4">
+              <v-progress-circular indeterminate size="22" width="2" color="primary" />
+            </div>
+            <div v-else class="schedule-list">
               <div
                 v-for="p in selectedDealPayments"
                 :key="p.id"
@@ -1654,58 +1868,15 @@ const rescheduleReasonOptions = [
 
     <!-- Reschedule Dialog -->
     <!-- Mark Paid Dialog -->
-    <v-dialog v-model="markPaidDialog" max-width="420" :fullscreen="isMobile">
-      <v-card rounded="lg" class="pa-6">
-        <div class="text-h6 font-weight-bold mb-1">Отметить оплату</div>
-        <div class="text-caption text-medium-emphasis mb-4">Подтвердите получение платежа</div>
-
-        <div v-if="markPaidTarget" class="reschedule-info mb-4">
-          <div class="d-flex justify-space-between mb-1">
-            <span class="text-caption text-medium-emphasis">Платёж #{{ markPaidTarget.number }}</span>
-            <span class="font-weight-bold">{{ formatCurrency(markPaidTarget.amount) }}</span>
-          </div>
-          <div class="d-flex justify-space-between">
-            <span class="text-caption text-medium-emphasis">Срок</span>
-            <span>{{ formatDateShort(markPaidTarget.dueDate) }}</span>
-          </div>
-        </div>
-
-        <div class="mb-4">
-          <label class="field-label">Фактическая сумма</label>
-          <div style="position: relative;">
-            <input :value="markPaidAmount || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => markPaidAmount = parseMasked(e)" type="text" inputmode="numeric" class="field-input" style="padding-right: 36px;" />
-            <span style="position: absolute; right: 14px; top: 50%; transform: translateY(-50%); font-size: 14px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.35); pointer-events: none;">₽</span>
-          </div>
-          <div v-if="markPaidTarget && markPaidAmount && markPaidAmount !== markPaidTarget.amount" class="text-caption mt-1" :style="{ color: markPaidAmount > markPaidTarget.amount ? '#10b981' : '#f59e0b' }">
-            {{ markPaidAmount > markPaidTarget.amount ? `Переплата ${formatCurrency(markPaidAmount - markPaidTarget.amount)} — оставшиеся платежи будут пересчитаны` : `Недоплата ${formatCurrency(markPaidTarget.amount - markPaidAmount)}` }}
-          </div>
-        </div>
-
-        <!-- On-time toggle -->
-        <div v-if="markPaidTarget && markPaidTarget.status === 'OVERDUE'" class="ontime-toggle mb-4" :class="{ 'ontime-toggle--active': markPaidOnTime }" @click="markPaidOnTime = !markPaidOnTime">
-          <div class="ontime-toggle-icon">
-            <v-icon :icon="markPaidOnTime ? 'mdi-check-circle' : 'mdi-clock-alert-outline'" size="18" :color="markPaidOnTime ? '#047857' : '#f59e0b'" />
-          </div>
-          <div class="ontime-toggle-content">
-            <div class="ontime-toggle-title">Оплачено без просрочки</div>
-            <div class="ontime-toggle-desc">Не повлияет на рейтинг клиента</div>
-          </div>
-          <div class="ontime-toggle-switch">
-            <div class="ontime-switch-track" :class="{ 'ontime-switch-track--on': markPaidOnTime }">
-              <div class="ontime-switch-thumb" />
-            </div>
-          </div>
-        </div>
-
-        <div class="d-flex ga-3 justify-end">
-          <button class="btn-secondary" @click="markPaidDialog = false">Отмена</button>
-          <button class="btn-primary" :disabled="markPaidLoading || !markPaidAmount" @click="confirmMarkPaid">
-            <v-progress-circular v-if="markPaidLoading" indeterminate size="14" width="2" color="white" class="mr-1" />
-            {{ markPaidLoading ? 'Оплата...' : 'Подтвердить' }}
-          </button>
-        </div>
-      </v-card>
-    </v-dialog>
+    <!-- Отметка оплаты — общий компонент: тот же функционал, что на странице
+         сделки (перерасчёт графика, фактическая дата, квитанция, скриншот). -->
+    <MarkPaidDialog
+      v-model="markPaidDialog"
+      :payment="markPaidTarget"
+      :deal="markPaidDeal"
+      :fullscreen="isMobile"
+      @paid="onMarkPaidDone"
+    />
 
     <v-dialog v-model="rescheduleDialog" max-width="440" :fullscreen="isMobile">
       <v-card v-if="reschedulePaymentRef" rounded="lg">
@@ -2392,36 +2563,6 @@ const rescheduleReasonOptions = [
 }
 
 /* Sidebar empty state */
-.cal-sidebar-empty {
-  text-align: center; padding: 24px 8px;
-}
-.cal-sidebar-empty-icon {
-  width: 56px; height: 56px; border-radius: 14px;
-  background: rgba(var(--v-theme-primary), 0.08);
-  color: rgb(var(--v-theme-primary));
-  display: flex; align-items: center; justify-content: center;
-  margin: 0 auto 14px;
-}
-.cal-sidebar-empty-title {
-  font-size: 15px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  margin-bottom: 6px;
-}
-.cal-sidebar-empty-text {
-  font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.4);
-  line-height: 1.5; margin-bottom: 20px;
-}
-.cal-legend {
-  display: flex; justify-content: center; gap: 16px;
-}
-.cal-legend-item {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
-}
-.cal-legend-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-}
 
 .cal-grid {
   display: grid; grid-template-columns: repeat(7, 1fr);
@@ -2435,11 +2576,22 @@ const rescheduleReasonOptions = [
 
 .cal-day {
   position: relative;
-  min-height: 80px; padding: 8px;
+  /* Календарь занимает всю ширину карточки, поэтому ячейки стали шире.
+     Держим пропорцию: без этого дни выглядели приплюснутыми полосами. */
+  min-height: 108px;
+  padding: 10px 12px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
   cursor: default;
   transition: all 0.15s;
   display: flex; flex-direction: column;
+}
+
+@media (min-width: 1600px) {
+  .cal-day { min-height: 124px; }
+}
+
+@media (max-width: 900px) {
+  .cal-day { min-height: 84px; padding: 8px; }
 }
 .cal-day--other {
   opacity: 0.3;
@@ -2482,7 +2634,7 @@ const rescheduleReasonOptions = [
 }
 
 .cal-day-num {
-  font-size: 13px; font-weight: 500;
+  font-size: 14px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.55);
   line-height: 1;
 }
@@ -2492,14 +2644,14 @@ const rescheduleReasonOptions = [
 }
 
 .cal-day-dots {
-  display: flex; gap: 3px; margin-top: 6px;
+  display: flex; gap: 4px; margin-top: 8px;
 }
 .cal-dot {
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 7px; height: 7px; border-radius: 50%;
 }
 
 .cal-day-amount {
-  font-size: 11px; font-weight: 700; margin-top: auto;
+  font-size: 13px; font-weight: 700; margin-top: auto;
   color: rgba(var(--v-theme-on-surface), 0.45);
 }
 .cal-day--has-payments .cal-day-amount {
@@ -2507,17 +2659,6 @@ const rescheduleReasonOptions = [
 }
 
 /* Calendar sidebar */
-.cal-payments-list {
-  display: flex; flex-direction: column; gap: 8px;
-}
-.cal-payment-item {
-  padding: 12px; border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  cursor: pointer; transition: all 0.15s;
-}
-.cal-payment-item:hover {
-  background: rgba(var(--v-theme-primary), 0.06);
-}
 
 /* Calendar scale toggle */
 .cal-scale-toggle {
@@ -2669,7 +2810,6 @@ const rescheduleReasonOptions = [
 .dark .filter-input::placeholder { color: #71717a; }
 .dark .cal-day { border-color: #2e2e42; }
 .dark .cal-day--has-payments { border-color: #3e3e52; background: rgba(255, 255, 255, 0.02); }
-.dark .cal-payment-item { background: rgba(255, 255, 255, 0.04); }
 .dark .cal-month-stats { background: #1e1e2e; border-color: #2e2e42; }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
 .dark .reschedule-info { background: #1e1e2e; border-color: #2e2e42; }
@@ -2692,12 +2832,6 @@ const rescheduleReasonOptions = [
 }
 .btn-whatsapp-crown {
   color: #e8b931;
-}
-.external-badge {
-  display: inline-flex; padding: 2px 6px; border-radius: 5px;
-  background: rgba(99, 102, 241, 0.1); color: #6366f1;
-  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
-  margin-left: 4px; vertical-align: middle;
 }
 
 /* Month filter */
@@ -3018,5 +3152,108 @@ const rescheduleReasonOptions = [
     min-width: 36px;
     min-height: 36px;
   }
+}
+/* Догрузка платежей дня: день может содержать больше строк, чем один запрос. */
+.cal-day-more {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px dashed rgba(0, 0, 0, 0.16);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgb(var(--v-theme-primary));
+  transition: background-color 0.15s;
+}
+.cal-day-more:hover:not(:disabled) { background: rgba(var(--v-theme-primary), 0.06); }
+.cal-day-more:disabled { opacity: 0.6; }
+.dark .cal-day-more { border-color: rgba(255, 255, 255, 0.18); }
+
+/* ── Индикация загрузки списка ── */
+.pl-list-wrap { position: relative; }
+
+/* Строки гаснут, а не исчезают: таблица не «прыгает» при переходах. */
+.pl-list-wrap--busy > :not(.pl-list-overlay) {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.pl-list-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  /* Кружок у верхнего края: по центру длинной страницы он был бы за экраном. */
+  padding-top: 64px;
+  pointer-events: none;
+}
+
+.tab-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Скелетон KPI ──
+   Пока считаются счётчики, показываем плашку вместо цифры: иначе партнёр
+   успевал прочитать значения предыдущей вкладки как значения новой. */
+.stat-skel {
+  height: 22px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: linear-gradient(90deg,
+    rgba(0, 0, 0, 0.06) 25%, rgba(0, 0, 0, 0.11) 37%, rgba(0, 0, 0, 0.06) 63%);
+  background-size: 400% 100%;
+  animation: pl-skel-shimmer 1.4s ease infinite;
+}
+.stat-skel--sm { width: 56px; }
+.stat-skel--md { width: 108px; }
+
+.dark .stat-skel {
+  background: linear-gradient(90deg,
+    rgba(255, 255, 255, 0.07) 25%, rgba(255, 255, 255, 0.13) 37%, rgba(255, 255, 255, 0.07) 63%);
+  background-size: 400% 100%;
+}
+
+@keyframes pl-skel-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stat-skel { animation: none; }
+}
+
+/* Прилипающая пагинация (ServerPager) требует, чтобы предки не обрезали
+   содержимое — у v-card overflow: hidden по умолчанию. */
+.payments-card { overflow: visible; }
+/* ── Модалка платежей дня ──
+   Обычная широкая таблица вместо прежнего узкого списка карточек: подача
+   такая же, как в остальных разделах кабинета. */
+.day-dialog { display: flex; flex-direction: column; max-height: 86vh; }
+
+.day-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.day-dialog-title { font-size: 16px; font-weight: 700; }
+.day-dialog-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.day-dialog-body { padding: 4px 8px 12px; overflow-y: auto; }
+.day-dialog-body .cal-day-more { margin: 12px 12px 0; width: calc(100% - 24px); }
+
+@media (max-width: 767px) {
+  .day-dialog { max-height: 100vh; }
+  /* На телефоне таблица не помещается — даём горизонтальную прокрутку,
+     а не ломаем колонки. */
+  .day-dialog-body { overflow-x: auto; }
 }
 </style>

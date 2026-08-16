@@ -2,7 +2,6 @@
 import { useDealsStore } from '@/stores/deals'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { usePaymentsStore } from '@/stores/payments'
-import { useClientsStore } from '@/stores/clients'
 import { formatCurrency, formatCurrencyShort, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { userName, clientProfileName, type Deal, type ClientProfile } from '@/types'
@@ -43,7 +42,6 @@ onUnmounted(() => window.removeEventListener('resize', updateMobile))
 
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
-const clientsStore = useClientsStore()
 
 const authStore = useAuthStore()
 const sections = useSections()
@@ -136,10 +134,30 @@ const payments = computed(() => paymentsStore.getPaymentsForDeal(dealId.value))
 // Client info from deal's nested client object
 const client = computed(() => deal.value?.client || null)
 
-const clientInfo = computed(() => {
-  if (!deal.value) return null
-  return clientsStore.clientsInfo.find(c => c.user.id === deal.value!.clientId) || null
-})
+/**
+ * Платёжная дисциплина клиента — с сервера, по всем его сделкам у этого
+ * партнёра. Раньше бралась из списка клиентов, собранного в браузере: работала
+ * только если другая страница успела загрузить весь портфель, и всегда
+ * показывала 100% из-за ошибки в том расчёте.
+ */
+const clientInfo = ref<{ onTimeRate: number } | null>(null)
+
+watch(
+  () => deal.value?.clientProfileId,
+  async (profileId) => {
+    clientInfo.value = null
+    if (!profileId) return
+    try {
+      const stats = await api.get<{ finance?: { onTimeRate: number } }>(
+        `/client-profiles/${profileId}/stats`,
+      )
+      if (stats?.finance) clientInfo.value = { onTimeRate: stats.finance.onTimeRate }
+    } catch {
+      // Профиль недоступен — блок дисциплины просто не показываем.
+    }
+  },
+  { immediate: true },
+)
 
 // Contract photos
 const contractInputRef = ref<HTMLInputElement | null>(null)

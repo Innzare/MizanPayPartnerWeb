@@ -84,11 +84,17 @@ export interface ReportDealRow {
 
 export interface ReportsDealsTable {
   rows: ReportDealRow[]
+  /** Отсутствует при листании (`totals=0`) — итоги тогда не пересчитываются. */
+  total?: number
+  limit?: number
+  offset?: number
   totals: {
     count: number
     cost: number
     totalPrice: number
     margin: number
+    /** Первый взнос — колонка «Итого» на вебе его показывает. */
+    downPayment: number
     received: number
     remaining: number
     grossProfit: number

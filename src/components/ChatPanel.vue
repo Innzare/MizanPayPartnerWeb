@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { useChats } from '@/composables/useChats'
-import { useDealsStore } from '@/stores/deals'
 import { formatCurrency } from '@/utils/formatters'
 import type { ChatMessage, Deal } from '@/types'
 
@@ -19,7 +19,6 @@ const router = useRouter()
 const authStore = useAuthStore()
 const toast = useToast()
 const chats = useChats()
-const dealsStore = useDealsStore()
 
 const messages = ref<ChatMessage[]>([])
 const messagesLoading = ref(false)
@@ -33,7 +32,6 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null)
 // dealNumber prefix and productName substring). Selecting an item replaces the
 // `#partial` token with `#<dealNumber>` so the backend can resolve it.
 const mention = ref<{ startIdx: number; query: string; selectedIdx: number } | null>(null)
-const dealsLoaded = ref(false)
 
 let chatPollTimer: number | null = null
 
@@ -153,31 +151,41 @@ function detectMention(text: string, caretPos: number): { startIdx: number; quer
   return null
 }
 
-const mentionMatches = computed<Deal[]>(() => {
-  if (!mention.value) return []
-  const q = mention.value.query.toLowerCase().trim()
-  const all = dealsStore.investorDeals
-  // No query → show recent deals (already sorted desc by createdAt from backend)
-  if (!q) return all.slice(0, 8)
-  return all
-    .filter(
-      (d) =>
-        String(d.dealNumber).startsWith(q) ||
-        d.productName.toLowerCase().includes(q),
-    )
-    .slice(0, 8)
-})
+/**
+ * Подсказки к упоминанию сделки. Раньше для этого в память поднимался весь
+ * портфель партнёра — ради восьми строк в выпадающем списке. Теперь ищет
+ * сервер: тем же поиском, что и остальные разделы, включая завершённые сделки.
+ */
+const mentionDeals = ref<Deal[]>([])
+const mentionLoading = ref(false)
+// Защита от гонок: партнёр печатает быстрее, чем отвечает сеть.
+let mentionReq = 0
+let mentionTimer: ReturnType<typeof setTimeout> | null = null
 
-async function ensureDealsLoaded() {
-  if (dealsLoaded.value) return
-  if (dealsStore.investorDeals.length > 0) {
-    dealsLoaded.value = true
-    return
-  }
+const mentionMatches = computed<Deal[]>(() =>
+  mention.value ? mentionDeals.value.slice(0, 8) : [],
+)
+
+async function loadMentions(q: string) {
+  const cur = ++mentionReq
+  mentionLoading.value = true
   try {
-    await dealsStore.fetchDeals()
-  } catch { /* silent */ }
-  finally { dealsLoaded.value = true }
+    const res = await api.get<Deal[]>(
+      `/deals/quick-search?status=any&q=${encodeURIComponent(q)}`,
+    )
+    if (cur !== mentionReq) return
+    mentionDeals.value = res ?? []
+  } catch {
+    if (cur === mentionReq) mentionDeals.value = []
+  } finally {
+    if (cur === mentionReq) mentionLoading.value = false
+  }
+}
+
+/** Запрос с задержкой — иначе каждый символ после «#» уходил бы в сеть. */
+function scheduleMentionLoad(q: string) {
+  if (mentionTimer) clearTimeout(mentionTimer)
+  mentionTimer = setTimeout(() => loadMentions(q), 250)
 }
 
 function onInput() {
@@ -185,7 +193,10 @@ function onInput() {
   if (!ta) return
   const detected = detectMention(draft.value, ta.selectionStart)
   if (detected) {
-    if (!mention.value) ensureDealsLoaded()
+    // Первое открытие и каждая правка запроса — новый поиск на сервере.
+    if (!mention.value || mention.value.query !== detected.query) {
+      scheduleMentionLoad(detected.query)
+    }
     mention.value = {
       startIdx: detected.startIdx,
       query: detected.query,
@@ -379,7 +390,7 @@ onBeforeUnmount(() => {
 
         <!-- Empty result hint -->
         <div
-          v-else-if="mention && dealsLoaded && !mentionMatches.length"
+          v-else-if="mention && !mentionLoading && !mentionMatches.length"
           class="cp-mention-menu cp-mention-menu--empty"
           @mousedown.prevent
         >

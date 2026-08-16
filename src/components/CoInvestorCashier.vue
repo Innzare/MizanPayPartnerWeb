@@ -7,9 +7,10 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useCoInvestors } from '@/composables/useCoInvestors'
 import { useCashBoxesStore } from '@/stores/cashboxes'
+import ServerPager from '@/components/ServerPager.vue'
 import CoInvestorRemoveDialog from '@/components/CoInvestorRemoveDialog.vue'
 import { formatCurrency, formatDate, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
-import { PAYOUT_SCHEDULE_LABELS, type CoInvestorJournalEntry, type CoInvestorSummary } from '@/types'
+import { PAYOUT_SCHEDULE_LABELS, type CoInvestorJournalEntry, type CoInvestorSummary, type StakeDealRow } from '@/types'
 
 // The cashier detail of ONE co-investor. Reused by the mobile full-page route
 // (`/co-investors/:id`) and by the desktop master-detail right pane. The parent
@@ -24,7 +25,7 @@ const router = useRouter()
 const toast = useToast()
 const { isDark } = useIsDark()
 const { isMobile } = useIsMobile()
-const { fetchSummary, fetchJournal, payDividends, adjustCapital, reinvest, cancelCapital, cancelDividend, fetchDetail, removeStake } = useCoInvestors()
+const { fetchSummary, fetchStakeDeals, fetchJournal, payDividends, adjustCapital, reinvest, cancelCapital, cancelDividend, fetchDetail, removeStake } = useCoInvestors()
 const cashboxesStore = useCashBoxesStore()
 
 const id = computed(() => props.id)
@@ -49,6 +50,28 @@ const cancellingId = ref<string | null>(null)
 // activeDeployment + how the CI's per-deal stake is computed from purchase
 // price × effective profit %. Mirrors backend's getCoInvestorSummary.
 const showActiveBreakdown = ref(false)
+// Модалка «В работе» показывает активные сделки. Полного списка в компоненте
+// больше нет — подгружаем первые строки при открытии.
+const activeDealsPreview = ref<StakeDealRow[]>([])
+/** Сколько активных сделок всего — строк показываем не больше полусотни. */
+const activeDealsTotal = ref(0)
+const activeDealsLoading = ref(false)
+async function openActiveBreakdown() {
+  showActiveBreakdown.value = true
+  // Перезагружаем при каждом открытии: за время работы с кабинетом суммы
+  // могли измениться (выплата, правка капитала), а кэш показал бы старое.
+  activeDealsLoading.value = true
+  try {
+    const res = await fetchStakeDeals(id.value, { filter: 'active', limit: 50 })
+    activeDealsPreview.value = res.items
+    activeDealsTotal.value = res.total ?? res.items.length
+  } catch {
+    activeDealsPreview.value = []
+    activeDealsTotal.value = 0
+  } finally {
+    activeDealsLoading.value = false
+  }
+}
 // Раскрывающийся блок «что означают эти цифры» простым языком.
 const showExplain = ref(false)
 // Раскрытие строк активных сделок в модалке «В работе»
@@ -70,7 +93,7 @@ const distribution = computed(() => {
   return { totalProfit: st.totalProfit, coInvestorShare: st.coInvestorShare, myShare: st.myShare, investorPct }
 })
 
-type ActiveDeal = CoInvestorSummary['activeDealsBreakdown'][number]
+type ActiveDeal = StakeDealRow
 // Завершена ли сделка.
 function dealDone(d: ActiveDeal): boolean {
   return d.status === 'COMPLETED'
@@ -86,28 +109,70 @@ const deployPct = computed(() => {
   return denom > 0 ? Math.min(100, Math.round((s.activeDeployment / denom) * 100)) : 0
 })
 
-// Фильтр таба «Сделки»: все / активные / завершённые.
+// ── Таб «Сделки»: серверная страница ──
+// Разбор больше не приезжает внутри сводки (у со-инвестора с тысячами сделок
+// это были мегабайты); страница, итоги и счётчики приходят с сервера.
 const dealFilter = ref<'all' | 'active' | 'completed'>('all')
-const allDeals = computed(() => summary.value?.activeDealsBreakdown ?? [])
-const dealCounts = computed(() => {
-  const active = allDeals.value.filter((d) => d.status !== 'COMPLETED').length
-  return { all: allDeals.value.length, active, completed: allDeals.value.length - active }
-})
-const filteredDeals = computed(() => {
-  if (dealFilter.value === 'all') return allDeals.value
-  return allDeals.value.filter((d) => dealFilter.value === 'completed' ? d.status === 'COMPLETED' : d.status !== 'COMPLETED')
-})
-// Сводные доли по ОТФИЛЬТРОВАННЫМ сделкам — для KPI над списком.
-const dealsTotals = computed(() => {
-  let inv = 0, part = 0, gross = 0
-  for (const d of filteredDeals.value) {
-    const g = d.dealProfit ?? 0
-    const i = d.expectedProfit ?? 0
-    inv += i; gross += g
-    part += d.partnerProfit != null ? d.partnerProfit : (d.costFee ? d.costFee.partnerFee : Math.max(0, g - i))
+const DEALS_PAGE = 25
+const deals = ref<ActiveDeal[]>([])
+const dealsTotalRows = ref(0)
+const dealsPage = ref(1)
+const dealsLoading = ref(false)
+const dealCounts = ref({ all: 0, active: 0, completed: 0 })
+const dealsTotals = ref({ inv: 0, part: 0, gross: 0 })
+
+// Защита от гонок: фильтры и страницы переключаются быстрее ответов.
+let dealsReq = 0
+
+async function loadDeals(withTotals = true) {
+  const req = ++dealsReq
+  dealsLoading.value = true
+  try {
+    const res = await fetchStakeDeals(id.value, {
+      filter: dealFilter.value,
+      limit: DEALS_PAGE,
+      offset: (dealsPage.value - 1) * DEALS_PAGE,
+      // При листании итоги не пересчитываем — они стоят прохода по всем
+      // сделкам кассы, а от смены страницы не меняются.
+      withTotals,
+    })
+    if (req !== dealsReq) return
+    deals.value = res.items
+    if (!withTotals) return
+    dealsTotalRows.value = res.total ?? dealsTotalRows.value
+    dealCounts.value = res.counts
+    dealsTotals.value = {
+      inv: res.totals?.inv ?? 0,
+      part: res.totals?.part ?? 0,
+      gross: res.totals?.gross ?? 0,
+    }
+  } catch (e: any) {
+    if (req === dealsReq) {
+      deals.value = []
+      dealsTotalRows.value = 0
+      toast.error(e?.message || 'Не удалось загрузить сделки')
+    }
+  } finally {
+    if (req === dealsReq) dealsLoading.value = false
   }
-  return { inv, part, gross }
-})
+}
+
+watch(tab, (t) => { if (t === 'deals' && !deals.value.length) loadDeals() })
+watch(dealFilter, () => { dealsPage.value = 1; loadDeals() })
+
+/**
+ * Переход по страницам. Не через watch(dealsPage): смена фильтра сбрасывает
+ * страницу на первую, и со страницы ≥2 это давало второй запрос, отменявший
+ * первый — итоги и счётчик оставались от прежнего фильтра.
+ */
+function goToDealsPage(p: number) {
+  if (p === dealsPage.value) return
+  dealsPage.value = p
+  loadDeals(false)
+}
+
+const allDeals = computed(() => deals.value)
+const filteredDeals = computed(() => deals.value)
 // Нетто «в работе» по сделке — СО ЗНАКОМ. Может быть <0, если клиент уже вернул
 // больше вложенной доли (возврат включает наценку): такая сделка уменьшает итог,
 // поэтому показываем её со знаком, чтобы сумма строк сходилась с KPI (как в KPI,
@@ -260,7 +325,10 @@ onMounted(loadAll)
 
 // ── Computed ──
 
-const dealsList = computed(() => detail.value?.dealsList ?? [])
+// Счётчик сделок берём из stats: сам список сделок сюда больше не приезжает
+// (у со-инвестора в режиме кассы это весь портфель партнёра), а вкладка
+// «Сделки» грузит их постранично.
+const dealsCount = computed<number>(() => detail.value?.stats?.totalDeals ?? 0)
 
 // Next planned payout date — partner-scheduled marker. Highlighted red if
 // the date is already past (cron doesn't auto-shift; partner needs to act).
@@ -629,7 +697,7 @@ function pluralDeals(n: number) {
             <div class="hero-meta">
               <span v-if="detail.phone">{{ formatPhone(detail.phone) }}</span>
               <span v-if="detail.phone" class="hero-meta-dot">·</span>
-              <span>{{ dealsList.length }} {{ pluralDeals(dealsList.length) }}</span>
+              <span>{{ dealsCount }} {{ pluralDeals(dealsCount) }}</span>
               <span class="hero-meta-dot">·</span>
               <span>с {{ formatDate(detail.createdAt) }}</span>
             </div>
@@ -701,7 +769,7 @@ function pluralDeals(n: number) {
           <button
             class="hero-stat hero-stat--clickable"
             :disabled="summary.activeDealsCount === 0"
-            @click="showActiveBreakdown = true"
+            @click="openActiveBreakdown()"
           >
             <div class="hero-stat-label">В работе</div>
             <div class="hero-stat-value" style="color: #0ea5e9;">{{ formatCurrency(summary.activeDeployment) }}</div>
@@ -1060,7 +1128,7 @@ function pluralDeals(n: number) {
           <span class="text-caption text-medium-emphasis">Доля инвестора</span>
         </div>
         <!-- Фильтр: все / активные / завершённые -->
-        <div v-if="allDeals.length" class="deal-filter mb-3">
+        <div v-if="dealCounts.all" class="deal-filter mb-3">
           <button
             v-for="f in [{ key: 'all', label: 'Все', count: dealCounts.all }, { key: 'active', label: 'Активные', count: dealCounts.active }, { key: 'completed', label: 'Завершённые', count: dealCounts.completed }] as const"
             :key="f.key"
@@ -1072,7 +1140,7 @@ function pluralDeals(n: number) {
           </button>
         </div>
         <!-- KPI: суммарные доли по отфильтрованным сделкам -->
-        <div v-if="filteredDeals.length" class="deals-kpi mb-3">
+        <div v-if="dealsTotalRows" class="deals-kpi mb-3">
           <div class="deals-kpi-card deals-kpi-card--inv">
             <div class="deals-kpi-label"><span class="deals-kpi-dot deals-kpi-dot--inv" />Доля инвестора</div>
             <div class="deals-kpi-val deals-kpi-val--inv">{{ formatCurrency(dealsTotals.inv) }}</div>
@@ -1086,9 +1154,12 @@ function pluralDeals(n: number) {
             <div class="deals-kpi-val">{{ formatCurrency(dealsTotals.gross) }}</div>
           </div>
         </div>
-        <div v-if="!filteredDeals.length" class="empty">
+        <div v-if="dealsLoading && !deals.length" class="d-flex justify-center pa-8">
+          <v-progress-circular indeterminate color="primary" size="32" />
+        </div>
+        <div v-else-if="!deals.length" class="empty">
           <v-icon icon="mdi-briefcase-off-outline" size="40" color="grey" />
-          <div class="empty-title">{{ allDeals.length ? 'Нет сделок в этом фильтре' : 'Сделок пока нет' }}</div>
+          <div class="empty-title">{{ dealCounts.all ? 'Нет сделок в этом фильтре' : 'Сделок пока нет' }}</div>
           <div class="empty-sub">Здесь появятся сделки, где участвует инвестор</div>
         </div>
         <div v-else class="active-list">
@@ -1190,6 +1261,16 @@ function pluralDeals(n: number) {
             </div>
           </div>
         </div>
+
+        <ServerPager
+          v-if="dealsTotalRows > 0"
+          :page="dealsPage"
+          :total="dealsTotalRows"
+          :per-page="DEALS_PAGE"
+          :busy="dealsLoading"
+          :per-page-options="[DEALS_PAGE]"
+          @update:page="goToDealsPage($event)"
+        />
       </v-card>
 
       <!-- Payouts tab -->
@@ -1319,12 +1400,15 @@ function pluralDeals(n: number) {
 
           <!-- Deals list -->
           <div class="active-list-header">
-            <span>Активные сделки ({{ summary.activeDealsCount }})</span>
+            <span>Активные сделки ({{ activeDealsTotal || summary.activeDealsCount }})</span>
             <span class="text-caption text-medium-emphasis">В работе</span>
           </div>
           <div class="active-list">
+            <div v-if="activeDealsLoading && !activeDealsPreview.length" class="active-item">
+              <span class="text-medium-emphasis">Загружаем сделки…</span>
+            </div>
             <div
-              v-for="d in summary.activeDealsBreakdown.filter((x) => x.status !== 'COMPLETED')"
+              v-for="d in activeDealsPreview"
               :key="d.id"
               class="active-item"
             >
@@ -1439,6 +1523,10 @@ function pluralDeals(n: number) {
                   Открыть сделку →
                 </router-link>
               </div>
+            </div>
+            <!-- Список усечён — иначе сумма строк не сойдётся с итогом выше. -->
+            <div v-if="activeDealsTotal > activeDealsPreview.length" class="active-more">
+              Показаны {{ activeDealsPreview.length }} из {{ activeDealsTotal }} — полный список во вкладке «Сделки»
             </div>
           </div>
         </div>
@@ -2071,6 +2159,12 @@ function pluralDeals(n: number) {
   margin-bottom: 8px;
   font-size: 12px; font-weight: 600;
   color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.active-more {
+  padding: 10px 4px 2px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  text-align: center;
 }
 .active-list {
   border: 1px solid rgba(var(--v-theme-on-surface), 0.06);

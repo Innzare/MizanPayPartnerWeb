@@ -1,19 +1,20 @@
 <script lang="ts" setup>
-import { useClientsStore } from '@/stores/clients'
-import { useDealsStore } from '@/stores/deals'
-import { usePaymentsStore } from '@/stores/payments'
 import { useAuthStore } from '@/stores/auth'
 import { useClientProfilesStore } from '@/stores/clientProfiles'
+import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { type Deal, type ClientProfile, userName, clientProfileName } from '@/types'
+import { type Deal, type ClientProfile, type Payment, userName, clientProfileName } from '@/types'
 import { useRouter } from 'vue-router'
+import { api } from '@/api/client'
+import ServerPager from '@/components/ServerPager.vue'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useDealLock } from '@/composables/useDealLock'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const paymentsStore = usePaymentsStore()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 
@@ -22,124 +23,189 @@ const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
 function updateMobile() { isMobile.value = window.innerWidth < 768 }
 onMounted(() => window.addEventListener('resize', updateMobile))
 onUnmounted(() => window.removeEventListener('resize', updateMobile))
-const clientsStore = useClientsStore()
-const clientProfilesStore = useClientProfilesStore()
-const dealsStore = useDealsStore()
-const paymentsStore = usePaymentsStore()
+
+// ══════════════════════════════════════════════════════════════════
+// Серверный список клиентов
+//
+// Раньше страница выкачивала весь портфель, все платежи и все профили и
+// группировала клиентов в браузере. Теперь группирует сервер — тем же ключом,
+// что фильтрует сделки клиента, поэтому счётчик в карточке всегда совпадает с
+// её содержимым.
+// ══════════════════════════════════════════════════════════════════
+
+/** Строка списка в том же виде, что раньше собирал стор. */
+interface ClientRow {
+  key: string
+  clientProfileId: string | null
+  userId: string | null
+  firstName: string
+  lastName: string
+  phone: string | null
+  city: string | null
+  rating: number
+  hasPassport: boolean
+  isExternal: boolean
+  dealCount: number
+  activeDealCount: number
+  totalVolume: number
+  totalProfit: number
+  remaining: number
+  onTimeRate: number
+  nextPaymentDate: string | null
+}
+
+const PAGE_SIZE = 25
+const rows = ref<ClientRow[]>([])
+const total = ref(0)
+const totalsAgg = ref<{ count: number; totalVolume: number; totalProfit: number; totalRemaining: number } | null>(null)
+const listLoading = ref(false)
+const page = ref(1)
+const search = ref('')
+const debouncedSearch = ref('')
+// Защита от гонок: партнёр печатает быстрее, чем отвечает сеть.
+let listReq = 0
 
 const pageLoading = ref(true)
 
+async function loadClients() {
+  const cur = ++listReq
+  listLoading.value = true
+  try {
+    const qs = new URLSearchParams({
+      limit: String(PAGE_SIZE),
+      offset: String((page.value - 1) * PAGE_SIZE),
+    })
+    if (debouncedSearch.value.trim()) qs.set('q', debouncedSearch.value.trim())
+
+    const res = await api.get<{
+      items: any[]
+      total: number
+      totals: { count: number; totalVolume: number; totalProfit: number; totalRemaining: number }
+    }>(`/client-profiles/summary?${qs.toString()}`)
+    if (cur !== listReq) return
+
+    rows.value = res.items.map((r) => ({
+      key: r.key,
+      clientProfileId: r.clientProfileId ?? null,
+      userId: r.userId ?? null,
+      // Имя: платформенное → реестровое → внешнее из импорта.
+      //
+      // Внешнее имя НЕ разбираем на части: это произвольная строка из файла
+      // импорта. Разбор по пробелу переставлял «Магомедов Магомед
+      // Магомедович» в «Магомед Магомедов» (отчество терялось), а
+      // односложное имя оставляло аватар без первой буквы.
+      firstName: r.firstName ?? (r.externalName ? String(r.externalName).trim() : ''),
+      lastName: r.lastName ?? '',
+      phone: r.phone ?? null,
+      city: r.city ?? null,
+      rating: r.rating ?? 0,
+      hasPassport: !!r.hasPassport,
+      // Внешний — тот, кого нет на платформе.
+      isExternal: !r.userId,
+      dealCount: r.dealCount,
+      activeDealCount: r.activeDealCount,
+      totalVolume: r.totalVolume,
+      totalProfit: r.totalProfit,
+      remaining: r.remaining,
+      onTimeRate: r.onTimeRate,
+      nextPaymentDate: r.nextPaymentDate ?? null,
+    }))
+    total.value = res.total
+    totalsAgg.value = res.totals
+  } catch (e: any) {
+    if (cur !== listReq) return
+    toast.error(e?.message || 'Не удалось загрузить клиентов')
+  } finally {
+    if (cur === listReq) listLoading.value = false
+  }
+}
+
+// Поиск с задержкой: без неё каждый символ уходил бы запросом.
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(search, (v) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    debouncedSearch.value = v
+    page.value = 1
+  }, 350)
+})
+
+watch([page, debouncedSearch], () => { loadClients() })
+
 onMounted(async () => {
   try {
-    await Promise.all([
-      dealsStore.fetchDeals(),
-      paymentsStore.fetchPayments(),
-      clientProfilesStore.fetchMyClients(),
-    ])
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки данных')
+    await loadClients()
   } finally {
     pageLoading.value = false
   }
 })
 
-// Find ClientProfile linked to a client (by matching phone or clientProfileId from deals)
-function getClientProfileId(clientInfo: import('@/stores/clients').ClientInfo): string | null {
-  const key = clientInfo.user.id
-  if (key.startsWith('cp:')) return key.slice(3)
-  const deals = getClientDeals(key)
-  for (const deal of deals) {
-    if (deal.clientProfileId) return deal.clientProfileId
-  }
-  return null
+function goToClientProfile(client: ClientRow) {
+  if (client.clientProfileId) router.push(`/clients/${client.clientProfileId}`)
 }
 
-function goToClientProfile(clientInfo: import('@/stores/clients').ClientInfo) {
-  const profileId = getClientProfileId(clientInfo)
-  if (profileId) {
-    router.push(`/clients/${profileId}`)
-  }
+function hasClientProfile(client: ClientRow): boolean {
+  return !!client.clientProfileId
 }
 
-function hasClientProfile(clientInfo: import('@/stores/clients').ClientInfo): boolean {
-  return !!getClientProfileId(clientInfo)
-}
-
-function getClientPassportStatus(clientInfo: import('@/stores/clients').ClientInfo): boolean {
-  const profileId = getClientProfileId(clientInfo)
-  if (!profileId) return false
-  const profile = clientProfilesStore.getClient(profileId)
-  return !!(profile?.passportSeries && profile?.passportNumber)
-}
-
-const search = ref('')
 const expandedClients = ref<string[]>([])
 
 // Deal dialog
 const selectedDeal = ref<Deal | null>(null)
 const showDialog = ref(false)
 
-const filteredClients = computed(() => {
-  if (!search.value) return clientsStore.clientsInfo
-  // Token-AND: split the query into whitespace-separated pieces and
-  // require each piece to land somewhere in the combined haystack.
-  // Without this "Маашев Шамиль" misses because firstName/lastName are
-  // stored separately and the old `(firstName + ' ' + lastName)`
-  // composite locks in one specific order.
-  const tokens = search.value.toLowerCase().split(/\s+/).filter(Boolean)
-  return clientsStore.clientsInfo.filter((c) => {
-    const haystack = [
-      c.user.firstName,
-      c.user.lastName,
-      c.user.phone,
-      c.user.city,
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-    return tokens.every((t) => haystack.includes(t))
-  })
-})
+/** Поиск серверный — список уже отфильтрован. */
+const filteredClients = computed(() => rows.value)
 
-// Summary stats
-const stats = computed(() => {
-  const clients = clientsStore.clientsInfo
-  const totalVolume = clients.reduce((s, c) => s + c.totalVolume, 0)
-  const totalProfit = clients.reduce((s, c) => s + c.totalProfit, 0)
-  const totalRemaining = clients.reduce((s, c) => s + c.remaining, 0)
-  const avgOnTime = clients.length > 0
-    ? Math.round(clients.reduce((s, c) => s + c.onTimeRate, 0) / clients.length)
-    : 0
-  return { count: clients.length, totalVolume, totalProfit, totalRemaining, avgOnTime }
-})
+// Итоги по ВСЕЙ выборке, а не по странице.
+const stats = computed(() => ({
+  count: totalsAgg.value?.count ?? 0,
+  totalVolume: totalsAgg.value?.totalVolume ?? 0,
+  totalProfit: totalsAgg.value?.totalProfit ?? 0,
+  totalRemaining: totalsAgg.value?.totalRemaining ?? 0,
+  avgOnTime: rows.value.length
+    ? Math.round(rows.value.reduce((s, c) => s + c.onTimeRate, 0) / rows.value.length)
+    : 0,
+}))
+
+// ── Сделки клиента в раскрытой карточке ──
+// Показываем несколько последних; за полным списком — на страницу клиента.
+const CARD_DEALS = 5
+const dealsByClient = ref<Record<string, Deal[]>>({})
+const dealsLoadingKey = ref<string | null>(null)
+
+async function loadClientDeals(key: string) {
+  if (dealsByClient.value[key]) return
+  dealsLoadingKey.value = key
+  try {
+    const res = await api.get<{ items: Deal[] }>(
+      `/deals?role=investor&clientKey=${encodeURIComponent(key)}&limit=${CARD_DEALS}&sort=createdAt&dir=desc`,
+    )
+    dealsByClient.value = { ...dealsByClient.value, [key]: res.items ?? [] }
+  } catch (e) {
+    console.error('Failed to load client deals:', e)
+  } finally {
+    if (dealsLoadingKey.value === key) dealsLoadingKey.value = null
+  }
+}
+
+function getClientDeals(clientKey: string): Deal[] {
+  return dealsByClient.value[clientKey] ?? []
+}
 
 function toggleClient(clientId: string) {
   const idx = expandedClients.value.indexOf(clientId)
-  if (idx >= 0) expandedClients.value.splice(idx, 1)
-  else expandedClients.value.push(clientId)
+  if (idx >= 0) {
+    expandedClients.value.splice(idx, 1)
+    return
+  }
+  expandedClients.value.push(clientId)
+  // Сделки клиента грузим только при раскрытии — и лишь несколько последних.
+  loadClientDeals(clientId)
 }
 
 function isExpanded(clientId: string) {
   return expandedClients.value.includes(clientId)
-}
-
-function getClientDeals(clientKey: string) {
-  if (clientKey.startsWith('ext:')) {
-    return dealsStore.investorDeals.filter((d) => {
-      if (d.clientId || d.clientProfileId) return false
-      const name = (d.externalClientName || '').toLowerCase().trim()
-      const phone = (d.externalClientPhone || '').replace(/\D/g, '')
-      return `ext:${name}:${phone}` === clientKey
-    })
-  }
-  if (clientKey.startsWith('cp:')) {
-    const profileId = clientKey.slice(3)
-    return dealsStore.investorDeals.filter((d) => d.clientProfileId === profileId)
-  }
-  // Platform user — match by clientId OR by clientProfile.userId
-  return dealsStore.investorDeals.filter((d) =>
-    d.clientId === clientKey || d.clientProfile?.userId === clientKey
-  )
 }
 
 function getScoreColor(rate: number) {
@@ -170,13 +236,15 @@ function openDeal(deal: Deal) {
   if (isDealLocked(deal)) { router.push(`/deals/${deal.id}`); return }
   selectedDeal.value = deal
   showDialog.value = true
+  // График сделки больше не приходит вместе с портфелем — тянем точечно.
+  paymentsStore.fetchPaymentsForDeal(deal.id).catch(() => {})
 }
 
 function goToDeal(deal: Deal) {
   router.push(`/deals/${deal.id}`)
 }
 
-const selectedDealPayments = computed(() => {
+const selectedDealPayments = computed<Payment[]>(() => {
   if (!selectedDeal.value) return []
   return paymentsStore.getPaymentsForDeal(selectedDeal.value.id)
 })
@@ -244,7 +312,7 @@ const selectedDealPaidTotal = computed(() =>
     </div>
 
     <!-- Main card -->
-    <v-card rounded="lg" elevation="0" border>
+    <v-card rounded="lg" elevation="0" border class="clients-card">
       <div class="pa-4">
         <!-- Search -->
         <div class="clients-search-row">
@@ -266,18 +334,18 @@ const selectedDealPaidTotal = computed(() =>
         <div v-if="filteredClients.length" class="clients-list">
           <div
             v-for="client in filteredClients"
-            :key="client.user.id"
+            :key="client.key"
             class="client-card"
-            :class="{ 'client-card--expanded': isExpanded(client.user.id) }"
+            :class="{ 'client-card--expanded': isExpanded(client.key) }"
           >
             <!-- Client Header -->
-            <div class="client-header" @click="toggleClient(client.user.id)">
+            <div class="client-header" @click="toggleClient(client.key)">
               <div
                 class="client-avatar"
-                :style="{ background: client.isExternal ? '#6366f1' : getAvatarColor(client.user.firstName), cursor: hasClientProfile(client) ? 'pointer' : 'default' }"
+                :style="{ background: client.isExternal ? '#6366f1' : getAvatarColor(client.firstName), cursor: hasClientProfile(client) ? 'pointer' : 'default' }"
                 @click.stop="goToClientProfile(client)"
               >
-                {{ (client.user.firstName || '?')[0] }}{{ (client.user.lastName || '')[0] }}
+                {{ (client.firstName || '?')[0] }}{{ (client.lastName || '')[0] }}
               </div>
 
               <div class="client-main">
@@ -286,28 +354,14 @@ const selectedDealPaidTotal = computed(() =>
                     class="client-name"
                     :class="{ 'client-name--link': hasClientProfile(client) }"
                     @click.stop="goToClientProfile(client)"
-                  >{{ client.user.firstName }} {{ client.user.lastName }}</span>
-                  <span v-if="client.isExternal" class="external-badge">Внешний</span>
-                  <span v-if="hasClientProfile(client)" class="passport-badge" :class="getClientPassportStatus(client) ? 'passport-badge--ok' : 'passport-badge--warn'">
-                    <v-icon :icon="getClientPassportStatus(client) ? 'mdi-card-account-details-outline' : 'mdi-alert-circle-outline'" size="11" />
-                    {{ getClientPassportStatus(client) ? 'Паспорт' : 'Нет паспорта' }}
+                  >{{ client.firstName }} {{ client.lastName }}</span>
+                  <span v-if="hasClientProfile(client)" class="passport-badge" :class="client.hasPassport ? 'passport-badge--ok' : 'passport-badge--warn'">
+                    <v-icon :icon="client.hasPassport ? 'mdi-card-account-details-outline' : 'mdi-alert-circle-outline'" size="11" />
+                    {{ client.hasPassport ? 'Паспорт' : 'Нет паспорта' }}
                   </span>
-                  <div
-                    class="score-badge"
-                    :style="{ background: getScoreBg(client.onTimeRate), color: getScoreColor(client.onTimeRate) }"
-                  >
-                    {{ client.onTimeRate }}%
-                  </div>
-                  <div class="rating-badge">
-                    <v-icon icon="mdi-star" size="12" color="amber" />
-                    {{ client.user.rating }}
-                  </div>
-                  <div v-if="client.user.verificationLevel >= 2" class="verified-badge">
-                    <v-icon icon="mdi-shield-check" size="14" color="success" />
-                  </div>
                 </div>
                 <div class="client-meta">
-                  {{ client.user.city }} · {{ client.dealCount }} {{ client.dealCount === 1 ? 'сделка' : client.dealCount <= 4 ? 'сделки' : 'сделок' }} · {{ formatPhone(client.user.phone) }}
+                  <template v-if="client.city">{{ client.city }} · </template>{{ client.dealCount }} {{ client.dealCount === 1 ? 'сделка' : client.dealCount <= 4 ? 'сделки' : 'сделок' }}<template v-if="client.phone"> · {{ formatPhone(client.phone) }}</template>
                 </div>
               </div>
 
@@ -328,13 +382,13 @@ const selectedDealPaidTotal = computed(() =>
               </div>
 
               <div class="expand-icon">
-                <v-icon :icon="isExpanded(client.user.id) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="20" />
+                <v-icon :icon="isExpanded(client.key) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="20" />
               </div>
             </div>
 
             <!-- Expanded content -->
             <v-expand-transition>
-              <div v-if="isExpanded(client.user.id)" class="client-expanded">
+              <div v-if="isExpanded(client.key)" class="client-expanded">
                 <!-- Mobile stats -->
                 <div class="client-stats-mobile d-md-none">
                   <div class="client-stat-m">
@@ -376,9 +430,14 @@ const selectedDealPaidTotal = computed(() =>
 
                 <!-- Deals -->
                 <div class="deals-section-title">Сделки</div>
+
+                <div v-if="dealsLoadingKey === client.key" class="d-flex justify-center py-4">
+                  <v-progress-circular indeterminate size="22" width="2" color="primary" />
+                </div>
+
                 <div class="deal-list">
                   <div
-                    v-for="deal in getClientDeals(client.user.id)"
+                    v-for="deal in getClientDeals(client.key)"
                     :key="deal.id"
                     class="deal-item"
                     :class="{ 'deal-locked-dim': isDealLocked(deal) }"
@@ -410,6 +469,18 @@ const selectedDealPaidTotal = computed(() =>
                     </div>
                     <v-icon icon="mdi-chevron-right" size="18" class="deal-chevron" />
                   </div>
+
+                  <!-- Показываем несколько последних; за полным списком —
+                       на страницу клиента, там сделки грузятся порциями. -->
+                  <button
+                    v-if="client.dealCount > getClientDeals(client.key).length && hasClientProfile(client)"
+                    class="client-all-deals"
+                    @click.stop="goToClientProfile(client)"
+                  >
+                    Показать все {{ client.dealCount }}
+                    {{ client.dealCount === 1 ? 'сделку' : client.dealCount < 5 ? 'сделки' : 'сделок' }}
+                    <v-icon icon="mdi-arrow-right" size="14" />
+                  </button>
                 </div>
               </div>
             </v-expand-transition>
@@ -417,13 +488,24 @@ const selectedDealPaidTotal = computed(() =>
         </div>
 
         <!-- Empty state -->
-        <div v-else class="text-center pa-12">
+        <div v-else-if="!listLoading" class="text-center pa-12">
           <v-icon icon="mdi-account-group-outline" size="56" color="grey-lighten-1" class="mb-3" />
           <p class="text-body-1 font-weight-medium text-medium-emphasis mb-1">Нет клиентов</p>
           <p class="text-body-2 text-medium-emphasis">
             {{ search ? 'Попробуйте изменить параметры поиска' : 'Клиенты появятся после создания сделок' }}
           </p>
         </div>
+
+        <!-- Пагинация серверного списка. -->
+        <ServerPager
+          :page="page"
+          :total="total"
+          :per-page="25"
+          :busy="listLoading"
+          :per-page-options="[25]"
+          @update:page="page = $event"
+        />
+
       </div>
     </v-card>
 
@@ -539,6 +621,10 @@ const selectedDealPaidTotal = computed(() =>
 </template>
 
 <style scoped>
+/* Прилипающая пагинация (ServerPager) требует, чтобы карточка не обрезала
+   содержимое — у v-card overflow: hidden по умолчанию. */
+.clients-card { overflow: visible; }
+
 /* Stats row */
 .stats-row {
   display: grid;
@@ -701,23 +787,6 @@ const selectedDealPaidTotal = computed(() =>
 .client-name--link:hover {
   color: rgb(var(--v-theme-primary));
 }
-.external-badge {
-  display: inline-flex; padding: 2px 8px; border-radius: 6px;
-  background: rgba(99, 102, 241, 0.1); color: #6366f1;
-  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
-  margin-left: 6px;
-}
-.score-badge {
-  font-size: 11px; font-weight: 700;
-  padding: 2px 8px; border-radius: 6px;
-}
-.rating-badge {
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 12px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  padding: 2px 8px; border-radius: 6px;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-}
 .verified-badge {
   display: inline-flex; align-items: center;
 }
@@ -782,17 +851,9 @@ const selectedDealPaidTotal = computed(() =>
     font-size: 14px;
     line-height: 1.3;
   }
-  /* Скрываем избыточные бейджи на узком экране, оставляем только score
-     и rating — без них партнёр не понимает, кто перед ним. */
-  .client-name-row .external-badge,
-  .client-name-row .passport-badge,
-  .client-name-row .verified-badge {
+  /* Паспортный бейдж на узком экране лишний — имя важнее. */
+  .client-name-row .passport-badge {
     display: none;
-  }
-  .score-badge,
-  .rating-badge {
-    font-size: 10px;
-    padding: 2px 6px;
   }
 
   .client-meta {
@@ -1095,4 +1156,21 @@ const selectedDealPaidTotal = computed(() =>
   background: rgba(245, 158, 11, 0.1);
   color: #d97706;
 }
+/* Переход к полному списку сделок клиента: в карточке показываем только
+   несколько последних. */
+.client-all-deals {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px dashed rgba(var(--v-theme-primary), 0.35);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  transition: background-color 0.15s;
+}
+.client-all-deals:hover { background: rgba(var(--v-theme-primary), 0.06); }
 </style>

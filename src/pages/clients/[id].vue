@@ -1,7 +1,6 @@
 <script setup lang="ts">
+import { api } from '@/api/client'
 import { useClientProfilesStore } from '@/stores/clientProfiles'
-import { useDealsStore } from '@/stores/deals'
-import { usePaymentsStore } from '@/stores/payments'
 import { useAuthStore } from '@/stores/auth'
 import { useSections } from '@/composables/useSections'
 import { type ClientProfile, type ClientProfileStats, clientProfileName, type Deal } from '@/types'
@@ -16,8 +15,6 @@ const route = useRoute()
 const router = useRouter()
 const { isDealLocked } = useDealLock()
 const clientsStore = useClientProfilesStore()
-const dealsStore = useDealsStore()
-const paymentsStore = usePaymentsStore()
 const authStore = useAuthStore()
 const sections = useSections()
 const { isDark, statusStyle } = useIsDark()
@@ -52,23 +49,17 @@ const form = ref({
 
 onMounted(async () => {
   try {
-    await (dealsStore.deals.length ? Promise.resolve() : dealsStore.fetchDeals())
-
-    let p: ClientProfile | null = null
-    try {
-      p = await clientsStore.findById(profileId.value)
-    } catch {
-      const deal = dealsStore.deals.find(d => d.clientId === profileId.value && d.clientProfileId)
-      if (deal?.clientProfileId) {
-        p = await clientsStore.findById(deal.clientProfileId)
-      }
-    }
-
+    // Портфель здесь больше не грузится: сделки клиента приходят отдельной
+    // выборкой по его ключу, порциями.
+    const p = await clientsStore.findById(profileId.value)
     if (!p) { notFound.value = true; return }
 
     profile.value = p
     resolvedProfileId.value = p.id
-    stats.value = await clientsStore.getStats(p.id)
+    await Promise.all([
+      clientsStore.getStats(p.id).then((st) => { stats.value = st }),
+      loadClientDeals(true),
+    ])
   } catch (e: any) {
     if (e.message?.includes('404') || e.message?.includes('не найден')) {
       notFound.value = true
@@ -80,13 +71,38 @@ onMounted(async () => {
   }
 })
 
-const clientDeals = computed(() => {
-  if (!resolvedProfileId.value) return []
-  return dealsStore.deals.filter(d =>
-    d.clientProfileId === resolvedProfileId.value ||
-    (profile.value?.userId && d.clientId === profile.value.userId)
-  )
-})
+// ── Сделки клиента ──
+// Приходят с сервера по тому же ключу, что группирует список клиентов, —
+// значит счётчик в списке и содержимое этой страницы всегда совпадают.
+const DEALS_PAGE = 20
+const clientDeals = ref<Deal[]>([])
+const dealsTotal = ref(0)
+const dealsLoading = ref(false)
+
+async function loadClientDeals(reset: boolean) {
+  const id = resolvedProfileId.value
+  if (!id) return
+  dealsLoading.value = true
+  try {
+    const qs = new URLSearchParams({
+      role: 'investor',
+      clientKey: `cp:${id}`,
+      limit: String(DEALS_PAGE),
+      offset: String(reset ? 0 : clientDeals.value.length),
+      sort: 'createdAt',
+      dir: 'desc',
+    })
+    const res = await api.get<{ items: Deal[]; total: number }>(`/deals?${qs.toString()}`)
+    clientDeals.value = reset ? res.items : [...clientDeals.value, ...res.items]
+    dealsTotal.value = res.total
+  } catch (e) {
+    console.error('Failed to load client deals:', e)
+  } finally {
+    dealsLoading.value = false
+  }
+}
+
+const hasMoreDeals = computed(() => clientDeals.value.length < dealsTotal.value)
 
 const fullName = computed(() => profile.value ? clientProfileName(profile.value) : '')
 
@@ -100,19 +116,14 @@ const hasPassport = computed(() =>
 )
 
 // Financial stats computed from deals
-const finance = computed(() => {
-  const deals = clientDeals.value
-  const totalVolume = deals.reduce((s, d) => s + d.totalPrice, 0)
-  const totalProfit = deals.reduce((s, d) => s + d.markup, 0)
-  const remaining = deals.filter(d => d.status === 'ACTIVE').reduce((s, d) => s + d.remainingAmount, 0)
-
-  const allPayments = deals.flatMap(d => paymentsStore.getPaymentsForDeal(d.id))
-  const paid = allPayments.filter(p => p.status === 'PAID')
-  const onTime = paid.filter(p => p.paidAt && new Date(p.paidAt) <= new Date(p.dueDate)).length
-  const onTimeRate = paid.length > 0 ? Math.round((onTime / paid.length) * 100) : 100
-
-  return { totalVolume, totalProfit, remaining, onTimeRate }
-})
+// Финансовые итоги считает сервер — по ВСЕМ сделкам клиента, а не только по
+// загруженной странице.
+const finance = computed(() => ({
+  totalVolume: (stats.value as any)?.finance?.totalVolume ?? 0,
+  totalProfit: (stats.value as any)?.finance?.totalProfit ?? 0,
+  remaining: (stats.value as any)?.finance?.remaining ?? 0,
+  onTimeRate: (stats.value as any)?.finance?.onTimeRate ?? 100,
+}))
 
 function cleanPhone(phone: string) {
   return phone.replace(/\D/g, '')
@@ -126,6 +137,44 @@ const canEdit = computed(() => {
   const me = (authStore.user as any)?.id
   return profile.value.createdByInvestorId === me
 })
+
+// ── Удаление клиента ──
+// Сделки при этом остаются: рвётся только связь с карточкой, имя и телефон
+// в самой сделке сохраняются. Сервер откажет, если у клиента есть действующие
+// сделки или он поручитель в чужом договоре.
+const showDeleteDialog = ref(false)
+const deleting = ref(false)
+// Удалять ли заодно сделки клиента. По умолчанию нет: сделки — это история
+// денег, и терять её вместе с карточкой партнёр обычно не хочет.
+const deleteWithDeals = ref(false)
+
+const canDelete = computed(() => canEdit.value && authStore.can('clients.delete'))
+
+function openDeleteDialog() {
+  deleteWithDeals.value = false
+  showDeleteDialog.value = true
+}
+
+async function doDelete() {
+  if (!profile.value) return
+  deleting.value = true
+  try {
+    const res = await api.delete<{ dealsDeleted?: number }>(
+      `/client-profiles/${profile.value.id}${deleteWithDeals.value ? '?withDeals=1' : ''}`,
+    )
+    toast.success(
+      res?.dealsDeleted
+        ? `Клиент удалён, сделок в корзину: ${res.dealsDeleted}`
+        : 'Клиент удалён',
+    )
+    showDeleteDialog.value = false
+    router.push('/registry')
+  } catch (e: any) {
+    toast.error(e.response?.data?.message || e.message || 'Не удалось удалить клиента')
+  } finally {
+    deleting.value = false
+  }
+}
 
 function startEditing() {
   if (!profile.value) return
@@ -295,6 +344,10 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
                 <v-icon icon="mdi-pencil-outline" size="16" />
                 Редактировать профиль
               </button>
+              <button v-if="canDelete" class="delete-profile-btn mt-2" @click="openDeleteDialog">
+                <v-icon icon="mdi-delete-outline" size="16" />
+                Удалить клиента
+              </button>
             </div>
           </v-card>
 
@@ -392,7 +445,7 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
               @click="activeTab = 'deals'"
             >
               <v-icon icon="mdi-handshake-outline" size="16" /> Сделки
-              <span v-if="clientDeals.length" class="tab-badge">{{ clientDeals.length }}</span>
+              <span v-if="dealsTotal" class="tab-badge">{{ dealsTotal }}</span>
             </button>
             <button
               v-if="stats && stats.reviews.length"
@@ -553,7 +606,11 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
 
           <!-- ── Tab: Deals ── -->
           <v-card v-if="activeTab === 'deals'" rounded="xl" elevation="0" border class="pa-5">
-            <div v-if="!clientDeals.length" class="empty-tab">
+            <div v-if="dealsLoading && !clientDeals.length" class="d-flex justify-center py-8">
+              <v-progress-circular indeterminate size="26" width="3" color="primary" />
+            </div>
+
+            <div v-else-if="!clientDeals.length" class="empty-tab">
               <v-icon icon="mdi-handshake-outline" size="48" color="grey-lighten-1" />
               <div class="text-body-2 text-medium-emphasis mt-2">Нет сделок с этим клиентом</div>
             </div>
@@ -588,6 +645,17 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
                 </div>
                 <v-icon icon="mdi-chevron-right" size="18" class="ml-2 text-medium-emphasis flex-shrink-0" />
               </div>
+              <!-- Сделки приходят порциями по 20: у постоянного клиента их
+                   могут быть сотни. -->
+              <button
+                v-if="hasMoreDeals"
+                class="client-more-deals"
+                :disabled="dealsLoading"
+                @click="loadClientDeals(false)"
+              >
+                <v-progress-circular v-if="dealsLoading" indeterminate size="14" width="2" />
+                <span v-else>Показать ещё ({{ dealsTotal - clientDeals.length }})</span>
+              </button>
             </div>
           </v-card>
 
@@ -620,6 +688,66 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
         </v-col>
       </v-row>
     </template>
+
+    <!-- Удаление клиента -->
+    <v-dialog v-model="showDeleteDialog" max-width="460" persistent>
+      <v-card rounded="lg">
+        <v-card-title class="text-h6 pt-5 px-5">Удалить клиента?</v-card-title>
+        <v-card-text class="px-5">
+          <p class="mb-3">
+            <b>{{ profile ? clientProfileName(profile) : '' }}</b> будет удалён из вашего реестра.
+            Действие нельзя отменить.
+          </p>
+          <!-- Выбор: удалять ли сделки вместе с клиентом -->
+          <label class="del-choice" :class="{ 'del-choice--on': deleteWithDeals }">
+            <v-checkbox-btn v-model="deleteWithDeals" density="compact" hide-details color="error" />
+            <div>
+              <div class="del-choice-title">Удалить и сделки этого клиента</div>
+              <div class="del-choice-sub">
+                Сделки отправятся в корзину — их можно восстановить. Доход по ним уйдёт
+                из кассы и аналитики.
+              </div>
+            </div>
+          </label>
+
+          <div class="del-note mt-3">
+            <template v-if="deleteWithDeals">
+              <div class="del-note-row">
+                <v-icon icon="mdi-delete-clock-outline" size="16" color="#ef4444" />
+                <span>Все сделки клиента, включая действующие, уйдут <b>в корзину</b></span>
+              </div>
+              <div class="del-note-row">
+                <v-icon icon="mdi-restore" size="16" color="#10b981" />
+                <span>Из корзины сделки можно вернуть, но карточку клиента — уже нет</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="del-note-row">
+                <v-icon icon="mdi-check-circle-outline" size="16" color="#10b981" />
+                <span>Сделки клиента <b>останутся</b> — имя и телефон в них сохранятся</span>
+              </div>
+              <div class="del-note-row">
+                <v-icon icon="mdi-information-outline" size="16" color="#f59e0b" />
+                <span>Если есть действующие сделки, удалить не получится — отметьте пункт выше</span>
+              </div>
+            </template>
+            <div class="del-note-row">
+              <v-icon icon="mdi-close-circle-outline" size="16" color="#ef4444" />
+              <span>Будут удалены отзывы и записи чёрного списка по этому клиенту</span>
+            </div>
+            <div class="del-note-row">
+              <v-icon icon="mdi-shield-alert-outline" size="16" color="#f59e0b" />
+              <span>Если клиент — поручитель по действующему договору, удалить нельзя</span>
+            </div>
+          </div>
+        </v-card-text>
+        <v-card-actions class="px-5 pb-5">
+          <v-spacer />
+          <v-btn variant="text" :disabled="deleting" @click="showDeleteDialog = false">Отмена</v-btn>
+          <v-btn color="error" variant="flat" :loading="deleting" @click="doDelete">Удалить</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -873,6 +1001,53 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
   border-color: rgba(var(--v-theme-on-surface), 0.2);
 }
 
+/* Удаление — та же форма, что у кнопки редактирования, но приглушённо
+   красная: действие необратимое, а рядом стоит обычное. */
+.delete-profile-btn {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 11px 16px;
+  border-radius: 12px;
+  font-size: 13px; font-weight: 600;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  cursor: pointer; transition: all 0.15s;
+}
+.delete-profile-btn:hover {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+/* Пояснение в окне подтверждения: что переживёт удаление, а что нет. */
+.del-note {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  font-size: 13px; line-height: 1.45;
+}
+.del-note-row { display: flex; align-items: flex-start; gap: 8px; }
+
+/* Выбор «удалить и сделки» — отдельным блоком, чтобы его нельзя было
+   пропустить взглядом: последствия у него совсем другие. */
+.del-choice {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 10px 12px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  cursor: pointer; transition: all 0.15s;
+}
+.del-choice--on {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.05);
+}
+.del-choice-title { font-size: 13.5px; font-weight: 600; margin-top: 3px; }
+.del-choice-sub {
+  font-size: 12.5px; line-height: 1.4; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
 /* ── Edit mode header ── */
 .edit-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -934,4 +1109,19 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.1);
 }
+/* Догрузка сделок клиента порциями. */
+.client-more-deals {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.18);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  transition: background-color 0.15s;
+}
+.client-more-deals:hover:not(:disabled) { background: rgba(var(--v-theme-primary), 0.06); }
+.client-more-deals:disabled { opacity: 0.6; }
 </style>

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
-import type { Deal } from '@/types'
+import type { Deal, DealCounts, Page } from '@/types'
 
 interface DealAnalytics {
   totalDeals: number
@@ -11,66 +11,100 @@ interface DealAnalytics {
   avgRating: number
 }
 
+/** Параметры страницы списка сделок — ровно то, что понимает сервер. */
+export interface DealsPageParams {
+  status?: 'ACTIVE' | 'COMPLETED' | 'DISPUTED' | 'CANCELLED'
+  folderId?: string | null
+  cashBoxId?: string | null
+  assignedStaffId?: string | null
+  q?: string
+  /** Ключ сортировки из DEALS_SORT_KEYS сервера; неизвестный → createdAt. */
+  sort?: string
+  dir?: 'asc' | 'desc'
+  limit: number
+  offset: number
+}
+
+/** Собирает query-строку, пропуская пустые параметры. */
+function dealsQuery(p: Partial<DealsPageParams>): string {
+  const qs = new URLSearchParams({ role: 'investor' })
+  if (p.status) qs.set('status', p.status)
+  if (p.folderId) qs.set('folderId', p.folderId)
+  if (p.cashBoxId) qs.set('cashBoxId', p.cashBoxId)
+  if (p.assignedStaffId) qs.set('assignedStaffId', p.assignedStaffId)
+  if (p.q?.trim()) qs.set('q', p.q.trim())
+  if (p.sort) qs.set('sort', p.sort)
+  if (p.dir) qs.set('dir', p.dir)
+  if (p.limit != null) qs.set('limit', String(p.limit))
+  if (p.offset) qs.set('offset', String(p.offset))
+  return qs.toString()
+}
+
 export const useDealsStore = defineStore('deals', () => {
   const deals = ref<Deal[]>([])
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
-  const investorDeals = computed(() => deals.value.filter((d) => !d.deletedAt))
+  // ══════════════════════════════════════════════════════════════════
+  // Постраничный список (страница «Сделки»)
+  //
+  // `deals` выше — НЕ портфель: это кэш точечно загруженных сделок (страница
+  // сделки, лента событий). Полной загрузки портфеля в кабинете больше нет.
+  // ══════════════════════════════════════════════════════════════════
 
-  const activeDeals = computed(() =>
-    deals.value.filter((d) => d.status === 'ACTIVE' && !d.deletedAt)
-  )
+  const list = ref<Deal[]>([])
+  const listTotal = ref(0)
+  const listLoading = ref(false)
+  const counts = ref<DealCounts | null>(null)
+  const countsLoading = ref(false)
 
-  const completedDeals = computed(() =>
-    deals.value.filter((d) => d.status === 'COMPLETED' && !d.deletedAt)
-  )
+  // Защита от гонок: быстрый набор в поиске порождает несколько запросов, и
+  // ответ на устаревший может прийти последним, затерев свежий результат.
+  let pageReq = 0
+  let countsReq = 0
 
-  const totalInvested = computed(() =>
-    investorDeals.value.reduce((sum, d) => sum + d.purchasePrice, 0)
-  )
-
-  const totalRevenue = computed(() =>
-    investorDeals.value.reduce((sum, d) => sum + d.totalPrice, 0)
-  )
-
-  const totalProfit = computed(() =>
-    investorDeals.value.reduce((sum, d) => sum + d.markup, 0)
-  )
-
-  const totalRemaining = computed(() =>
-    activeDeals.value.reduce((sum, d) => sum + d.remainingAmount, 0)
-  )
-
-  const monthlyIncome = computed(() => {
-    return activeDeals.value.reduce((sum, d) => {
-      if (d.numberOfPayments > 0) {
-        // График строится на остатке ПОСЛЕ первоначального взноса, поэтому
-        // делим (totalPrice − downPayment), иначе платёж завышается.
-        return sum + Math.max(0, d.totalPrice - (d.downPayment || 0)) / d.numberOfPayments
-      }
-      return sum
-    }, 0)
-  })
-
-  const roi = computed(() => {
-    if (totalInvested.value === 0) return 0
-    return (totalProfit.value / totalInvested.value) * 100
-  })
-
-  async function fetchDeals(params?: { status?: string }) {
-    isLoading.value = true
-    error.value = null
+  async function fetchDealsPage(params: DealsPageParams) {
+    const req = ++pageReq
+    listLoading.value = true
     try {
-      let query = '?role=investor'
-      if (params?.status) query += `&status=${params.status}`
-      deals.value = await api.get<Deal[]>(`/deals${query}`)
+      const res = await api.get<Page<Deal>>(`/deals?${dealsQuery(params)}`)
+      if (req !== pageReq) return // пришёл ответ на отменённый запрос
+      list.value = res.items
+      listTotal.value = res.total
     } catch (e: any) {
+      if (req !== pageReq) return
       error.value = e.message || 'Ошибка загрузки сделок'
-      console.error('Failed to fetch deals:', e)
+      console.error('Failed to fetch deals page:', e)
     } finally {
-      isLoading.value = false
+      if (req === pageReq) listLoading.value = false
     }
+  }
+
+  async function fetchDealCounts(params: Omit<DealsPageParams, 'sort' | 'dir' | 'limit' | 'offset'>) {
+    const req = ++countsReq
+    countsLoading.value = true
+    try {
+      const res = await api.get<DealCounts>(`/deals/counts?${dealsQuery(params)}`)
+      if (req !== countsReq) return
+      counts.value = res
+    } catch (e: any) {
+      if (req !== countsReq) return
+      console.error('Failed to fetch deal counts:', e)
+    } finally {
+      if (req === countsReq) countsLoading.value = false
+    }
+  }
+
+  /**
+   * Отразить изменённую сделку в текущей странице. Мутации ниже правят только
+   * `deals`; без этого правка с карточки сделки не была бы видна в таблице до
+   * перезагрузки страницы.
+   */
+  function patchInList(updated: Deal) {
+    const i = list.value.findIndex((d) => d.id === updated.id)
+    // Сохраняем поля, которых нет в ответе мутации: страница списка приходит
+    // со slim-select сервера и несёт вычисленный scheduleEndAt.
+    if (i >= 0) list.value[i] = { ...list.value[i], ...updated }
   }
 
   function getDeal(id: string): Deal | undefined {
@@ -86,6 +120,7 @@ export const useDealsStore = defineStore('deals', () => {
       } else {
         deals.value.push(deal)
       }
+      patchInList(deal)
       return deal
     } catch (e: any) {
       // Тарифная блокировка — пробрасываем, чтобы страница сделки показала
@@ -110,6 +145,7 @@ export const useDealsStore = defineStore('deals', () => {
       if (index >= 0) {
         deals.value[index] = updated
       }
+      patchInList(updated)
     } catch (e: any) {
       console.error('Failed to update deal status:', e)
       throw e
@@ -134,6 +170,7 @@ export const useDealsStore = defineStore('deals', () => {
     const updated = await api.patch<Deal>(`/deals/${id}`, data)
     const index = deals.value.findIndex((d) => d.id === id)
     if (index >= 0) deals.value[index] = updated
+    patchInList(updated)
     return updated
   }
 
@@ -196,42 +233,89 @@ export const useDealsStore = defineStore('deals', () => {
 
   // ==================== TRASH ====================
 
+  // Строки ТЕКУЩЕЙ страницы корзины, а не всё её содержимое: после массового
+  // удаления там могут лежать тысячи сделок.
   const trash = ref<Deal[]>([])
+  const trashTotal = ref(0)
+  const trashCount = ref(0)
   const trashLoading = ref(false)
 
-  async function fetchTrash() {
+  // Защита от гонки: быстрый набор в поиске порождает несколько запросов.
+  let trashReq = 0
+  let lastTrashParams: {
+    q?: string; sort?: string; dir?: 'asc' | 'desc'; limit: number; offset: number
+  } | null = null
+
+  async function fetchTrash(params?: {
+    q?: string; sort?: string; dir?: 'asc' | 'desc'; limit?: number; offset?: number
+  }) {
+    const p = {
+      q: params?.q ?? '', sort: params?.sort, dir: params?.dir,
+      limit: params?.limit ?? 50, offset: params?.offset ?? 0,
+    }
+    lastTrashParams = p
+    const req = ++trashReq
     trashLoading.value = true
     try {
-      trash.value = await api.get<Deal[]>('/deals/trash/list')
+      const qs = new URLSearchParams()
+      if (p.q.trim()) qs.set('q', p.q.trim())
+      if (p.sort) qs.set('sort', p.sort)
+      if (p.dir) qs.set('dir', p.dir)
+      qs.set('limit', String(p.limit))
+      if (p.offset) qs.set('offset', String(p.offset))
+      const res = await api.get<Page<Deal>>(`/deals/trash/list?${qs}`)
+      if (req !== trashReq) return
+      trash.value = res.items
+      trashTotal.value = res.total
+      trashCount.value = res.total
     } catch (e: any) {
       console.error('Failed to fetch trash:', e)
     } finally {
-      trashLoading.value = false
+      if (req === trashReq) trashLoading.value = false
     }
+  }
+
+  /** Только счётчик — для вкладки, без загрузки содержимого корзины. */
+  async function fetchTrashCount() {
+    try {
+      const res = await api.get<{ count: number }>('/deals/trash/count')
+      trashCount.value = res.count
+    } catch {
+      /* счётчик не критичен */
+    }
+  }
+
+  /** Перезагрузить текущую страницу корзины (после восстановления/удаления). */
+  function refreshTrash(): Promise<void> {
+    return fetchTrash(lastTrashParams ?? undefined)
   }
 
   async function restoreDeal(id: string) {
     await api.patch(`/deals/trash/${id}/restore`)
-    const deal = trash.value.find((d) => d.id === id)
     trash.value = trash.value.filter((d) => d.id !== id)
-    if (deal) deals.value.unshift(deal)
+    trashTotal.value = Math.max(0, trashTotal.value - 1)
+    trashCount.value = Math.max(0, trashCount.value - 1)
   }
 
   async function restoreBatch(ids: string[]) {
     await api.post('/deals/trash/restore-batch', { ids })
-    const restored = trash.value.filter((d) => ids.includes(d.id))
     trash.value = trash.value.filter((d) => !ids.includes(d.id))
-    deals.value.unshift(...restored)
+    trashTotal.value = Math.max(0, trashTotal.value - ids.length)
+    trashCount.value = Math.max(0, trashCount.value - ids.length)
   }
 
   async function permanentDelete(id: string) {
     await api.delete(`/deals/trash/${id}/permanent`)
     trash.value = trash.value.filter((d) => d.id !== id)
+    trashTotal.value = Math.max(0, trashTotal.value - 1)
+    trashCount.value = Math.max(0, trashCount.value - 1)
   }
 
   async function emptyTrash() {
     await api.delete('/deals/trash/empty')
     trash.value = []
+    trashTotal.value = 0
+    trashCount.value = 0
   }
 
   // Сменить клиента сделки. Отдельный эндпоинт: UpdateDealDto клиента не
@@ -241,6 +325,7 @@ export const useDealsStore = defineStore('deals', () => {
     const updated = await api.patch<Deal>(`/deals/${dealId}/client`, { clientProfileId })
     const idx = deals.value.findIndex(d => d.id === dealId)
     if (idx !== -1) deals.value[idx] = updated
+    patchInList(updated)
     return updated
   }
 
@@ -250,14 +335,17 @@ export const useDealsStore = defineStore('deals', () => {
     const updated = await api.patch<Deal>(`/deals/${dealId}/guarantor`, { guarantorProfileIds })
     const idx = deals.value.findIndex(d => d.id === dealId)
     if (idx !== -1) deals.value[idx] = updated
+    patchInList(updated)
     return updated
   }
 
   return {
-    deals, isLoading, error, investorDeals, activeDeals, completedDeals,
-    totalInvested, totalRevenue, totalProfit, totalRemaining, monthlyIncome, roi,
-    fetchDeals, getDeal, fetchDeal, updateDealStatus, updateDeal, fetchAnalytics, createDirectDeal,
-    trash, trashLoading, fetchTrash, restoreDeal, restoreBatch, permanentDelete, emptyTrash,
+    deals, isLoading, error,
+    getDeal, fetchDeal, updateDealStatus, updateDeal, fetchAnalytics, createDirectDeal,
+    list, listTotal, listLoading, counts, countsLoading, fetchDealsPage, fetchDealCounts, patchInList,
+    trash, trashTotal, trashCount, trashLoading,
+    fetchTrash, fetchTrashCount, refreshTrash,
+    restoreDeal, restoreBatch, permanentDelete, emptyTrash,
     updateGuarantors, updateClient,
   }
 })

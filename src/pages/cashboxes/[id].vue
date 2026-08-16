@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useSections } from '@/composables/useSections'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import ServerPager from '@/components/ServerPager.vue'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -64,7 +65,8 @@ interface CapitalDeal {
   received: number
   status: string
   progress: number
-  payments: CapitalDealPayment[]
+  /** Приходит не со списком, а при раскрытии конкретной сделки. */
+  payments?: CapitalDealPayment[]
   // Profit accrued to co-investors on THIS deal. Partner's cut = earned − this.
   coInvestorProfit?: number
   // Per-investor breakdown: name, terms (why), optional clarifying note, amount.
@@ -93,8 +95,19 @@ interface CapitalDetails {
   coInvestorPayout: number
   manualBalance: number
   availableCapital: number
-  deals: CapitalDeal[]
-  operations: CapitalOperation[]
+  /**
+   * Статистика по сделкам кассы. Раньше веб считал её сам, пройдя по всему
+   * массиву сделок; теперь сами сделки приезжают постранично, а суммы даёт
+   * сервер — иначе они зависели бы от того, сколько строк успело загрузиться.
+   */
+  /** Число ручных операций кассы — для кнопки панели (список ленив). */
+  manualCount?: number
+  dealsStats?: {
+    activeCount: number
+    profitCount: number
+    activeCost: number
+    activeRecovered: number
+  }
   // Co-investors of this cashbox with per-deal accrual breakdown (reserve panel).
   coInvestors?: Array<{
     id: string
@@ -102,7 +115,19 @@ interface CapitalDetails {
     realizedProfit: number
     totalPayout: number
     balanceOwed?: number
-    deals?: Array<{ id: string; productName: string; amount: number }>
+    /** Хвост за пределами показанного списка сделок (0 — список полный). */
+    dealsRest?: { count: number; amount: number }
+    deals?: Array<{
+      id: string
+      productName: string
+      amount: number
+      /** Вся прибыль сделки на полученные деньги — считает сервер. */
+      gross?: number
+      purchasePrice?: number
+      isCostFee?: boolean
+      /** Подпись способа деления: «Фикс 30%» / «По вкладу · комиссия 5%». */
+      modeLabel?: string
+    }>
   }>
 }
 
@@ -147,7 +172,6 @@ function toggleReserveCi(id: string) {
 
 // Bottom tabs
 const detailsTab = ref<'journal' | 'operations' | 'deals'>('journal')
-const showAllOps = ref(false)
 
 // ─── Loaders ──────────────────────────────────────────────────────────────
 async function loadAll() {
@@ -173,7 +197,10 @@ async function loadAll() {
 
 async function loadDetails() {
   try {
-    capitalDetails.value = await api.get<CapitalDetails>(`/cashboxes/${id.value}/capital/details`)
+    // slim=1 — только агрегаты: списки сделок и лента приезжают постранично.
+    // Без этого признака сервер отдаёт прежний тяжёлый ответ (нужен мобильному
+    // приложению, пока оно не переведено на новые эндпоинты).
+    capitalDetails.value = await api.get<CapitalDetails>(`/cashboxes/${id.value}/capital/details?slim=1`)
   } catch (e: any) {
     toast.error(e.message || 'Не удалось загрузить детали кассы')
   }
@@ -220,6 +247,11 @@ async function refreshAfterMutation() {
     loadDetails(),
     loadCapitalSummary(),
     store.fetchAll(),
+    // Списки тоже устаревают: раньше их привозил тот же запрос, что и суммы.
+    // Без этого удалённая операция оставалась на экране, а счётчик и итоги
+    // уже показывали новое значение — экран спорил сам с собой.
+    loadOperations(),
+    manualOperations.value.length || wfExpanded.value === 'manual' ? loadManualOperations() : Promise.resolve(),
   ])
   // Re-sync local `box` with the refreshed store data so the header values
   // (balance, dealsCount, activeDealsCount) stay in sync without remounting.
@@ -227,7 +259,19 @@ async function refreshAfterMutation() {
   if (fresh) box.value = fresh
 }
 
-watch(() => id.value, () => loadAll())
+watch(() => id.value, () => {
+  // Сбрасываем всё постраничное: в текущей навигации компонент пересоздаётся,
+  // но если появится переход «соседняя касса», без сброса покажутся её данные.
+  operations.value = []
+  operationsTotal.value = 0
+  operationsPage.value = 1
+  manualOperations.value = []
+  profitDeals.value = emptySection()
+  activeDeals.value = emptySection()
+  allDeals.value = emptySection()
+  dealPayments.value = {}
+  loadAll()
+})
 onMounted(loadAll)
 
 // ─── Helpers (mirror finance.vue) ─────────────────────────────────────────
@@ -297,12 +341,12 @@ function paymentProfit(d: CapitalDeal, p: CapitalDealPayment): number {
 
 function toggleProfitDeal(id: string) {
   const next = new Set(expandedInProfit.value)
-  if (next.has(id)) next.delete(id); else next.add(id)
+  if (next.has(id)) next.delete(id); else { next.add(id); loadDealPayments(id) }
   expandedInProfit.value = next
 }
 function toggleProgressDeal(id: string) {
   const next = new Set(expandedInProgress.value)
-  if (next.has(id)) next.delete(id); else next.add(id)
+  if (next.has(id)) next.delete(id); else { next.add(id); loadDealPayments(id) }
   expandedInProgress.value = next
 }
 
@@ -312,14 +356,107 @@ const capitalUtilization = computed(() => {
   return Math.min(Math.round((capitalDetails.value.inProgress / capitalDetails.value.totalCapital) * 100), 100)
 })
 
-const activeDealsPurchaseTotal = computed(() => {
-  if (!capitalDetails.value) return 0
-  return capitalDetails.value.deals.filter(d => d.status === 'ACTIVE').reduce((s, d) => s + dealRealCost(d), 0)
+// Суммы по активным сделкам считает сервер: в браузере лежит одна страница
+// списка, и складывать её строки было бы неверно.
+const activeDealsPurchaseTotal = computed(() => capitalDetails.value?.dealsStats?.activeCost ?? 0)
+const activeDealsCostRecovered = computed(() => capitalDetails.value?.dealsStats?.activeRecovered ?? 0)
+
+// ══════════════════════════════════════════════════════════════════
+// Списки сделок раскрывающихся блоков — серверные страницы
+//
+// Раньше карточка получала ВСЕ сделки кассы вместе с графиками платежей:
+// 14 813 сделок и 93 998 платежей, 39,7 МБ на запрос. Теперь блоки «Прибыль
+// по сделкам» и «В работе» листаются, а графики грузятся при раскрытии
+// конкретной сделки.
+// ══════════════════════════════════════════════════════════════════
+
+const DEALS_PAGE = 25
+
+/** Одна страница списка сделок для блока. */
+interface DealsSection {
+  items: CapitalDeal[]
+  total: number
+  page: number
+  loading: boolean
+}
+function emptySection(): DealsSection {
+  return { items: [], total: 0, page: 1, loading: false }
+}
+
+const profitDeals = ref<DealsSection>(emptySection())
+const activeDeals = ref<DealsSection>(emptySection())
+/** Вкладка «Сделки» — весь список кассы, тоже страницами. */
+const allDeals = ref<DealsSection>(emptySection())
+
+// Защита от гонок: блок можно свернуть и развернуть быстрее, чем придёт ответ.
+const dealsReq = { profit: 0, active: 0, all: 0 }
+
+async function loadDealsSection(kind: 'profit' | 'active' | 'all') {
+  const section = kind === 'profit' ? profitDeals : kind === 'active' ? activeDeals : allDeals
+  const req = ++dealsReq[kind]
+  section.value.loading = true
+  try {
+    const qs = new URLSearchParams({
+      filter: kind,
+      limit: String(DEALS_PAGE),
+      offset: String((section.value.page - 1) * DEALS_PAGE),
+    })
+    const res = await api.get<{ items: CapitalDeal[]; total: number }>(
+      `/cashboxes/${id.value}/capital/deals?${qs}`,
+    )
+    if (req !== dealsReq[kind]) return
+    section.value.items = res.items
+    section.value.total = res.total
+  } catch (e: any) {
+    // «Не загрузилось» и «нет данных» — разные вещи: на финансовом экране
+    // пустой список без объяснения читается как «сделок нет».
+    if (req === dealsReq[kind]) {
+      section.value.items = []
+      section.value.total = 0
+      toast.error(e?.message || 'Не удалось загрузить сделки')
+    }
+  } finally {
+    if (req === dealsReq[kind]) section.value.loading = false
+  }
+}
+
+/** График платежей сделки — грузится при раскрытии строки. */
+const dealPayments = ref<Record<string, CapitalDealPayment[]>>({})
+const dealPaymentsLoading = ref<Set<string>>(new Set())
+
+async function loadDealPayments(dealId: string) {
+  if (dealPayments.value[dealId] || dealPaymentsLoading.value.has(dealId)) return
+  const busy = new Set(dealPaymentsLoading.value)
+  busy.add(dealId)
+  dealPaymentsLoading.value = busy
+  try {
+    const list = await api.get<CapitalDealPayment[]>(`/payments/deal/${dealId}`)
+    dealPayments.value = { ...dealPayments.value, [dealId]: list }
+  } catch {
+    dealPayments.value = { ...dealPayments.value, [dealId]: [] }
+  } finally {
+    const next = new Set(dealPaymentsLoading.value)
+    next.delete(dealId)
+    dealPaymentsLoading.value = next
+  }
+}
+
+// Списки грузятся, только когда их открывают: до этого они не нужны.
+watch(wfExpanded, (v) => {
+  if (v === 'profit' && !profitDeals.value.items.length) loadDealsSection('profit')
+  if (v === 'deployed' && !activeDeals.value.items.length) loadDealsSection('active')
+  if (v === 'manual' && !manualOperations.value.length) loadManualOperations()
 })
-const activeDealsCostRecovered = computed(() => {
-  if (!capitalDetails.value) return 0
-  return capitalDetails.value.deals.filter(d => d.status === 'ACTIVE').reduce((s, d) => s + dealCostRecovered(d), 0)
+watch(detailsTab, (t) => {
+  if (t === 'deals' && !allDeals.value.items.length) loadDealsSection('all')
+  if (t === 'operations' && !operations.value.length) loadOperations()
 })
+watch(() => profitDeals.value.page, () => loadDealsSection('profit'))
+watch(() => activeDeals.value.page, () => loadDealsSection('active'))
+watch(() => allDeals.value.page, () => loadDealsSection('all'))
+
+/** Есть ли у кассы операции вообще — для текста пустого состояния. */
+const hasAnyOperations = computed(() => operationsTotal.value > 0 || !!opSearch.value || opKinds.value.length > 0)
 
 // ─── Categories (shared across all cashboxes for this investor) ───────────
 interface Category {
@@ -577,33 +714,77 @@ function toggleOpKind(k: OpKind) {
   else opKinds.value.push(k)
 }
 
-const filteredOperations = computed<CapitalOperation[]>(() => {
-  if (!capitalDetails.value) return []
-  const from = opPeriodFromDate()
-  const search = opSearch.value.trim().toLowerCase()
-  return capitalDetails.value.operations.filter((op) => {
-    // Period
-    if (from && new Date(op.date) < from) return false
-    // Kind filter — match either MANUAL (isManual) or by type
-    if (opKinds.value.length > 0) {
-      const matchesManual = opKinds.value.includes('MANUAL') && op.isManual
-      const matchesType = (opKinds.value as string[]).includes(op.type)
-      if (!matchesManual && !matchesType) return false
+// ══════════════════════════════════════════════════════════════════
+// Лента операций — серверная страница
+//
+// Фильтры по типу, периоду и поиску выполняет база: в браузере лежит только
+// показанная страница, а операций у кассы 81 486.
+// ══════════════════════════════════════════════════════════════════
+
+const OPS_PAGE = 30
+const operations = ref<CapitalOperation[]>([])
+const operationsTotal = ref(0)
+const operationsPage = ref(1)
+const operationsLoading = ref(false)
+let opsReq = 0
+
+async function loadOperations() {
+  const req = ++opsReq
+  operationsLoading.value = true
+  try {
+    const qs = new URLSearchParams({
+      limit: String(OPS_PAGE),
+      offset: String((operationsPage.value - 1) * OPS_PAGE),
+    })
+    if (opKinds.value.length) qs.set('kinds', opKinds.value.join(','))
+    const from = opPeriodFromDate()
+    // Полная метка времени с зоной: сервер не должен угадывать часовой пояс
+    // партнёра. Раньше уходила только дата, и на сервере в UTC «Сегодня»
+    // начиналось в 03:00 по Москве.
+    if (from) qs.set('from', from.toISOString())
+    if (opSearch.value.trim()) qs.set('q', opSearch.value.trim())
+    const res = await api.get<{ items: CapitalOperation[]; total: number }>(
+      `/cashboxes/${id.value}/capital/operations?${qs}`,
+    )
+    if (req !== opsReq) return
+    operations.value = res.items
+    operationsTotal.value = res.total
+  } catch (e: any) {
+    if (req === opsReq) {
+      operations.value = []
+      operationsTotal.value = 0
+      toast.error(e?.message || 'Не удалось загрузить операции')
     }
-    // Search in description and product
-    if (search) {
-      const hay = `${op.description} ${op.productName ?? ''} ${op.category?.name ?? ''}`.toLowerCase()
-      if (!hay.includes(search)) return false
-    }
-    return true
-  })
-})
+  } finally {
+    if (req === opsReq) operationsLoading.value = false
+  }
+}
+
+
+// Лента приходит уже отфильтрованной сервером.
+const filteredOperations = computed<CapitalOperation[]>(() => operations.value)
+
+// Любая смена условий возвращает на первую страницу.
+watch([opKinds, opPeriod, opSearch], () => {
+  operationsPage.value = 1
+  loadOperations()
+}, { deep: true })
+watch(operationsPage, loadOperations)
 
 // Manual operations list (for the "Ручные операции" waterfall panel)
-const manualOperations = computed<CapitalOperation[]>(() => {
-  if (!capitalDetails.value) return []
-  return capitalDetails.value.operations.filter((op) => op.isManual)
-})
+// Ручные операции — отдельный короткий запрос: их единицы, но раньше они
+// вылавливались из полного списка всех операций кассы.
+const manualOperations = ref<CapitalOperation[]>([])
+async function loadManualOperations() {
+  try {
+    const res = await api.get<{ items: CapitalOperation[] }>(
+      `/cashboxes/${id.value}/capital/operations?kinds=MANUAL&limit=200`,
+    )
+    manualOperations.value = res.items
+  } catch {
+    manualOperations.value = []
+  }
+}
 
 // Phase 3: per-CI share labels. fixed-% CIs take their slice first; weight
 // CIs split (100 − Σ fixedPct) pro-rata by currentCapital. Mirrors backend
@@ -666,19 +847,23 @@ const pendingCiList = computed(() =>
       ...ci,
       pendingPayout: ci.balanceOwed ?? Math.max(0, (ci.realizedProfit ?? 0) - (ci.totalPayout ?? 0)),
       // Обогащаем каждую сделку разбором доли этого инвестора (как в «Чистой прибыли»).
+      // Поля сделки приходят вместе с суммой: общего списка сделок на клиенте
+      // больше нет (он весил мегабайты).
       deals: (ci.deals ?? []).map((dl) => {
-        const dd = capitalDetails.value?.deals.find((x) => x.id === dl.id)
-        const gross = dd ? dealProfitEarned(dd) : 0
+        const gross = dl.gross ?? 0
         return {
           id: dl.id,
           productName: dl.productName,
           amount: dl.amount, // прибыль инвестора с этой сделки (идёт в резерв)
           gross, // вся прибыль сделки
-          isCostFee: dd?.costFeeRatePct != null && (dd?.coInvestorBreakdown?.length ?? 0) === 1,
-          purchasePrice: dd?.purchasePrice ?? 0,
+          isCostFee: dl.isCostFee ?? false,
+          purchasePrice: dl.purchasePrice ?? 0,
           partnerShare: Math.max(0, gross - dl.amount),
-          onHand: (dd?.purchasePrice ?? 0) + dl.amount, // на руки (для cost-fee)
-          mode: dd?.coInvestorBreakdown?.find((b) => b.id === ci.id)?.modeLabel ?? '',
+          onHand: (dl.purchasePrice ?? 0) + dl.amount, // на руки (для cost-fee)
+          // Подпись способа деления приходит с сервера («Фикс 30%», «По
+          // вкладу · комиссия 5%») — раньше она терялась для всех, кроме
+          // режима комиссии.
+          mode: dl.modeLabel ?? (dl.isCostFee ? 'Комиссия от закупки' : ''),
         }
       }),
     }))
@@ -893,10 +1078,10 @@ async function handleDelete() {
               @click="wfExpanded = wfExpanded === 'deployed' ? null : 'deployed'"
             >
               <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.inProgress) }}</div>
-              <div class="wf-item-label">В работе · {{ capitalDetails.deals?.filter(d => d.status === 'ACTIVE').length || 0 }}</div>
+              <div class="wf-item-label">В работе · {{ capitalDetails.dealsStats?.activeCount ?? 0 }}</div>
             </button>
             <button
-              v-if="capitalDetails.manualBalance !== 0 || manualOperations.length > 0"
+              v-if="capitalDetails.manualBalance !== 0 || (capitalDetails.manualCount ?? 0) > 0 || manualOperations.length > 0"
               class="wf-item"
               :class="{ 'wf-item--active': wfExpanded === 'manual' }"
               @click="wfExpanded = wfExpanded === 'manual' ? null : 'manual'"
@@ -904,7 +1089,7 @@ async function handleDelete() {
               <div class="wf-item-value" :style="{ color: capitalDetails.manualBalance > 0 ? '#3b82f6' : '#ef4444' }">
                 {{ capitalDetails.manualBalance > 0 ? '+' : '' }}{{ formatCurrency(capitalDetails.manualBalance) }}
               </div>
-              <div class="wf-item-label">Ручные операции · {{ manualOperations.length }}</div>
+              <div class="wf-item-label">Ручные операции · {{ capitalDetails.manualCount ?? manualOperations.length }}</div>
             </button>
 
             <div class="wf-item wf-item--result">
@@ -995,10 +1180,13 @@ async function handleDelete() {
               </div>
             </template>
 
-            <template v-else-if="wfExpanded === 'profit' && capitalDetails.deals">
+            <template v-else-if="wfExpanded === 'profit'">
               <div class="wf-panel-title">Прибыль по сделкам</div>
+              <div v-if="profitDeals.loading && !profitDeals.items.length" class="d-flex justify-center pa-6">
+                <v-progress-circular indeterminate color="primary" size="28" />
+              </div>
               <div
-                v-for="d in capitalDetails.deals.filter(x => dealTotalMargin(x) > 0)"
+                v-for="d in profitDeals.items"
                 :key="d.id"
                 class="wf-acc"
               >
@@ -1089,7 +1277,10 @@ async function handleDelete() {
                     <span class="wf-pay-flex" />
                     <span class="wf-pay-profit">+{{ formatCurrency(Math.round(d.downPayment * (dealTotalMargin(d) / Math.max(d.totalPrice, 1)))) }}</span>
                   </div>
-                  <div v-for="p in d.payments" :key="p.id" class="wf-pay-row">
+                  <div v-if="dealPaymentsLoading.has(d.id)" class="wf-pay-row">
+                    <span class="wf-pay-name text-medium-emphasis">Загружаем график…</span>
+                  </div>
+                  <div v-for="p in (dealPayments[d.id] ?? [])" :key="p.id" class="wf-pay-row">
                     <span class="wf-pay-status" :class="`wf-pay-status--${p.status.toLowerCase()}`">
                       <v-icon
                         :icon="p.status === 'PAID' ? 'mdi-check' : (p.status === 'OVERDUE' ? 'mdi-alert' : 'mdi-clock-outline')"
@@ -1105,10 +1296,19 @@ async function handleDelete() {
                   </div>
                 </div>
               </div>
-              <div v-if="capitalDetails.deals.every(x => x.markup === 0)" class="wf-expand-empty">Прибыли пока нет</div>
+              <div v-if="!profitDeals.loading && !profitDeals.total" class="wf-expand-empty">Прибыли пока нет</div>
+              <ServerPager
+                v-if="profitDeals.total > DEALS_PAGE"
+                :page="profitDeals.page"
+                :total="profitDeals.total"
+                :per-page="DEALS_PAGE"
+                :busy="profitDeals.loading"
+                :per-page-options="[DEALS_PAGE]"
+                @update:page="profitDeals.page = $event"
+              />
             </template>
 
-            <template v-else-if="wfExpanded === 'deployed' && capitalDetails.deals">
+            <template v-else-if="wfExpanded === 'deployed'">
               <div class="wf-panel-title">Капитал в активных сделках</div>
               <div class="wf-formula">
                 <div class="wf-formula-row">
@@ -1129,7 +1329,10 @@ async function handleDelete() {
                 </div>
               </div>
               <div class="wf-expand-subtitle">По сделкам</div>
-              <div v-for="d in capitalDetails.deals.filter(x => x.status === 'ACTIVE')" :key="d.id" class="wf-acc">
+              <div v-if="activeDeals.loading && !activeDeals.items.length" class="d-flex justify-center pa-6">
+                <v-progress-circular indeterminate color="primary" size="28" />
+              </div>
+              <div v-for="d in activeDeals.items" :key="d.id" class="wf-acc">
                 <button class="wf-acc-head" @click="toggleProgressDeal(d.id)">
                   <v-icon
                     :icon="expandedInProgress.has(d.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'"
@@ -1180,7 +1383,16 @@ async function handleDelete() {
                   </table>
                 </div>
               </div>
-              <div v-if="capitalDetails.deals.every(x => x.status !== 'ACTIVE')" class="wf-expand-empty">Нет активных сделок</div>
+              <div v-if="!activeDeals.loading && !activeDeals.total" class="wf-expand-empty">Нет активных сделок</div>
+              <ServerPager
+                v-if="activeDeals.total > DEALS_PAGE"
+                :page="activeDeals.page"
+                :total="activeDeals.total"
+                :per-page="DEALS_PAGE"
+                :busy="activeDeals.loading"
+                :per-page-options="[DEALS_PAGE]"
+                @update:page="activeDeals.page = $event"
+              />
             </template>
 
             <template v-else-if="wfExpanded === 'manual'">
@@ -1280,6 +1492,21 @@ async function handleDelete() {
                           <span class="ps-val ps-val--ci">{{ formatCurrency(dl.amount) }}</span>
                         </div>
                       </template>
+                      <!-- Хвост за пределами показанных сделок: без него сумма
+                           строк не сходится с «Начислено» выше. -->
+                      <div v-if="(ci.dealsRest?.count ?? 0) > 0" class="ps-deal ps-deal--rest">
+                        <div class="ps-row">
+                          <span class="ps-dot ps-dot--ci" />
+                          <span class="ps-label">
+                            <span class="ps-name">
+                              и ещё {{ ci.dealsRest!.count }}
+                              {{ ci.dealsRest!.count === 1 ? 'сделка' : ci.dealsRest!.count < 5 ? 'сделки' : 'сделок' }}
+                            </span>
+                            <span class="ps-sub">показаны крупнейшие по начислению</span>
+                          </span>
+                          <span class="ps-val ps-val--ci">{{ formatCurrency(ci.dealsRest!.amount) }}</span>
+                        </div>
+                      </div>
                     </div>
                     <!-- Итог: начислено − выплачено = к выплате -->
                     <div class="wf-rf" style="margin-top:4px">
@@ -1422,17 +1649,17 @@ async function handleDelete() {
             <div v-if="filteredOperations.length === 0" class="fn-empty">
               <div class="fn-empty-icon"><v-icon icon="mdi-wallet-outline" size="48" color="grey" /></div>
               <div class="fn-empty-title">
-                {{ capitalDetails.operations.length === 0 ? 'Нет операций' : 'Ничего не найдено' }}
+                {{ hasAnyOperations ? 'Ничего не найдено' : 'Нет операций' }}
               </div>
               <div class="fn-empty-subtitle">
-                {{ capitalDetails.operations.length === 0
-                  ? 'Создайте сделку для этой кассы или добавьте операцию вручную'
-                  : 'Попробуйте изменить фильтры' }}
+                {{ hasAnyOperations
+                  ? 'Попробуйте изменить фильтры'
+                  : 'Создайте сделку для этой кассы или добавьте операцию вручную' }}
               </div>
             </div>
             <div v-else class="fn-transactions-list">
               <div
-                v-for="(op, i) in filteredOperations.slice(0, showAllOps ? undefined : 30)"
+                v-for="(op, i) in filteredOperations"
                 :key="op.transactionId || `auto-${i}`"
                 class="fn-transaction-row"
               >
@@ -1472,21 +1699,28 @@ async function handleDelete() {
                 </router-link>
               </div>
             </div>
-            <div v-if="!showAllOps && filteredOperations.length > 30" class="fn-load-more">
-              <button class="fn-load-more-btn" @click="showAllOps = true">
-                Показать все ({{ filteredOperations.length }})
-              </button>
-            </div>
+            <ServerPager
+              v-if="operationsTotal > 0"
+              :page="operationsPage"
+              :total="operationsTotal"
+              :per-page="OPS_PAGE"
+              :busy="operationsLoading"
+              :per-page-options="[OPS_PAGE]"
+              @update:page="operationsPage = $event"
+            />
           </template>
 
           <!-- Deals breakdown -->
           <template v-if="detailsTab === 'deals'">
-            <div v-if="capitalDetails.deals.length === 0" class="fn-empty">
+            <div v-if="allDeals.loading && !allDeals.items.length" class="d-flex justify-center pa-8">
+              <v-progress-circular indeterminate color="primary" size="32" />
+            </div>
+            <div v-else-if="!allDeals.total" class="fn-empty">
               <div class="fn-empty-icon"><v-icon icon="mdi-handshake-outline" size="48" color="grey" /></div>
               <div class="fn-empty-title">В этой кассе пока нет сделок</div>
             </div>
             <div v-else class="cap-deals-list">
-              <div v-for="deal in capitalDetails.deals" :key="deal.id" class="cap-deal-row">
+              <div v-for="deal in allDeals.items" :key="deal.id" class="cap-deal-row">
                 <div class="cap-deal-info">
                   <div class="cap-deal-name">
                     <router-link :to="`/deals/${deal.id}`" class="cap-deal-link">{{ deal.productName }}</router-link>
@@ -1512,6 +1746,15 @@ async function handleDelete() {
                 </div>
               </div>
             </div>
+            <ServerPager
+              v-if="allDeals.total > DEALS_PAGE"
+              :page="allDeals.page"
+              :total="allDeals.total"
+              :per-page="DEALS_PAGE"
+              :busy="allDeals.loading"
+              :per-page-options="[DEALS_PAGE]"
+              @update:page="allDeals.page = $event"
+            />
           </template>
         </div>
       </v-card>

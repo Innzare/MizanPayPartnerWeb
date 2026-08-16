@@ -116,10 +116,14 @@ function cashboxTotalCapital(box: CashBoxSummary): number {
 const showInfo = ref(false)
 const infoBox = ref<CashBoxSummary | null>(null)
 const infoDeals = ref<CashBoxDealBreakdown[]>([])
+/** Сколько активных сделок в кассе всего — строк показываем не больше сотни. */
+const infoTotal = ref(0)
 const infoLoading = ref(false)
 
 // Only ACTIVE deals contribute to the list-page inProgress; each adds
 // (purchasePrice − received). Sorted by the biggest chunk still in work.
+// Сервер возвращает уже только активные (filter=active) и не более 100 —
+// раньше сюда приезжали все сделки кассы со всеми графиками платежей.
 const infoActiveDeals = computed(() =>
   infoDeals.value
     .filter(d => d.status === 'ACTIVE')
@@ -147,7 +151,9 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   infoLoading.value = true
   infoDeals.value = []
   try {
-    infoDeals.value = await store.fetchDeals(box.id)
+    const res = await store.fetchDeals(box.id)
+    infoDeals.value = res.items
+    infoTotal.value = res.total
   } catch (err: any) {
     toast.error(err.message || 'Не удалось загрузить сделки')
   } finally {
@@ -332,7 +338,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
             <div class="cb-info-title">Капитал в работе</div>
             <div class="cb-info-box-name" v-if="infoBox">
               {{ infoBox.name }}
-              <template v-if="!infoLoading"> · {{ infoActiveDeals.length }}&nbsp;{{ dealsWord(infoActiveDeals.length) }}</template>
+              <template v-if="!infoLoading"> · {{ infoTotal }}&nbsp;{{ dealsWord(infoTotal) }}</template>
             </div>
           </div>
           <button class="cb-info-close" @click="showInfo = false">
@@ -381,6 +387,12 @@ async function openInfo(box: CashBoxSummary, e: Event) {
               <div v-if="i < infoActiveDeals.length - 1" class="cb-info-divider" />
             </template>
           </template>
+        </div>
+
+        <!-- Список усечён — говорим об этом прямо, иначе сумма строк не
+             сойдётся с итогом ниже. -->
+        <div v-if="infoTotal > infoActiveDeals.length" class="cb-info-more">
+          Показаны {{ infoActiveDeals.length }} крупнейших из {{ infoTotal }} — полный список на странице кассы
         </div>
 
         <div class="cb-info-total" v-if="infoBox">
@@ -651,6 +663,12 @@ async function openInfo(box: CashBoxSummary, e: Event) {
 .cb-info-modal.dark .cb-info-row-amount { color: #f5f5f5; }
 .cb-info-row-amount--zero { color: #9ca3af; font-weight: 600; font-size: 12px; }
 
+.cb-info-more {
+  padding: 8px 4px 0;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  text-align: center;
+}
 .cb-info-total {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 22px; margin-top: 4px;

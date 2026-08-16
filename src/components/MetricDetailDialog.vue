@@ -37,9 +37,18 @@ const props = defineProps<{
   valueLabel?: string
   color?: string
   items: MetricDetailItem[]
+  /** Идёт запрос к серверу. */
+  loading?: boolean
+  /** Всего сделок за показателем — в списке может быть лишь часть. */
+  count?: number
+  /** Есть ли что догружать. */
+  hasMore?: boolean
 }>()
 
-const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
+const emit = defineEmits<{
+  (e: 'load-more'): void
+  (e: 'update:modelValue', v: boolean): void
+}>()
 
 const router = useRouter()
 const { isMobile } = useIsMobile()
@@ -98,7 +107,12 @@ function openDeal(id: string) {
             {{ formatCurrency(total) }}
           </div>
           <div class="md-total-label">
-            {{ items.length }} {{ items.length === 1 ? 'сделка' : items.length < 5 ? 'сделки' : 'сделок' }}
+            <template v-if="count && count > items.length">
+              показано {{ items.length }} из {{ count.toLocaleString('ru-RU') }}
+            </template>
+            <template v-else>
+              {{ items.length }} {{ items.length === 1 ? 'сделка' : items.length < 5 ? 'сделки' : 'сделок' }}
+            </template>
           </div>
         </div>
         <input v-model="search" class="md-search" placeholder="Найти товар или клиента…" >
@@ -106,7 +120,11 @@ function openDeal(id: string) {
 
       <!-- Список сделок -->
       <div class="md-list">
-        <div v-if="!rows.length" class="md-empty">
+        <div v-if="loading && !items.length" class="d-flex justify-center py-8">
+          <v-progress-circular indeterminate size="28" width="3" color="primary" />
+        </div>
+
+        <div v-else-if="!rows.length" class="md-empty">
           {{ items.length ? 'Ничего не найдено' : 'Нет сделок для этого показателя' }}
         </div>
 
@@ -124,6 +142,18 @@ function openDeal(id: string) {
             <div class="md-row-value" :style="{ color: color || '#10b981' }">{{ fmt(r) }}</div>
           </div>
         </div>
+
+        <!-- Сделок за показателем может быть тысячи: список приходит
+             порциями, итог сверху при этом посчитан по всем. -->
+        <button
+          v-if="hasMore"
+          class="md-more"
+          :disabled="loading"
+          @click="emit('load-more')"
+        >
+          <v-progress-circular v-if="loading" indeterminate size="14" width="2" />
+          <span v-else>Показать ещё</span>
+        </button>
       </div>
 
       <!-- Итог по отфильтрованному — чтобы поиск не сбивал с толку -->
@@ -227,4 +257,18 @@ function openDeal(id: string) {
   .md-list { padding: 8px; }
   .md-search { min-width: 100%; }
 }
+.md-more {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.18);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  transition: background-color 0.15s;
+}
+.md-more:hover:not(:disabled) { background: rgba(var(--v-theme-primary), 0.06); }
+.md-more:disabled { opacity: 0.6; }
 </style>

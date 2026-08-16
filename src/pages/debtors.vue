@@ -7,6 +7,7 @@ import { useSections } from '@/composables/useSections'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { formatCurrency, formatDateShort } from '@/utils/formatters'
+import ServerPager from '@/components/ServerPager.vue'
 import DebtorDetailModal from '@/components/DebtorDetailModal.vue'
 import PromiseDialog from '@/components/PromiseDialog.vue'
 
@@ -100,22 +101,6 @@ function toggleSort(key: string) {
     sortDir.value = TEXT_COLS.has(key) ? 'asc' : 'desc'
   }
 }
-const SORT_ACCESSOR: Record<string, (d: DebtorRow) => number | string> = {
-  dealNumber: (d) => d.dealNumber,
-  client: (d) => d.clientName.toLowerCase(),
-  product: (d) => d.productName.toLowerCase(),
-  overdueAmount: (d) => d.overdueAmount,
-  overdueCount: (d) => d.overdueCount,
-  overdueDays: (d) => d.overdueDays,
-  remaining: (d) => d.remainingAmount,
-  nextPayment: (d) => d.nextDueDate ?? Infinity,
-  promised: (d) => d.promisedDate ?? Infinity,
-  assignedStaff: (d) => (d.assignedStaffName || '').toLowerCase(),
-  lastActivity: (d) => d.lastActivityAt ?? 0,
-  status: (d) => d.dealStatus,
-  total: (d) => d.totalPrice,
-  progress: (d) => (d.numberOfPayments ? d.paidPayments / d.numberOfPayments : 0),
-}
 const DEAL_STATUS_LABEL: Record<string, string> = {
   ACTIVE: 'Активна', COMPLETED: 'Завершена', DISPUTED: 'Спор', CANCELLED: 'Отменена',
 }
@@ -136,26 +121,6 @@ const PROMISE_FILTERS: { key: PromiseFilter; label: string }[] = [
 ]
 const promiseFilterLabel = computed(() => PROMISE_FILTERS.find((f) => f.key === promiseFilter.value)?.label || 'Все')
 
-function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() }
-function matchesPromiseFilter(d: DebtorRow): boolean {
-  const f = promiseFilter.value
-  if (f === 'all') return true
-  const today = startOfToday()
-  const DAY = 86_400_000
-  const pd = d.promisedDate
-  const active = pd !== null && d.promiseStatus === 'PENDING'
-  switch (f) {
-    case 'has': return active
-    case 'none': return !active
-    case 'today': return active && pd! >= today && pd! < today + DAY
-    case 'tomorrow': return active && pd! >= today + DAY && pd! < today + 2 * DAY
-    case 'next7': return active && pd! >= today && pd! < today + 7 * DAY
-    case 'overdue': return active && pd! < today // обещал, дата прошла, ещё не погасил
-    case 'broken': return d.promiseStatus === 'BROKEN'
-    default: return true
-  }
-}
-
 // Фильтр по ответственному: 'all' | 'unassigned' | 'mine' | <staffId>
 const assigneeFilter = ref<string>('all')
 const assigneeFilterLabel = computed(() => {
@@ -166,53 +131,79 @@ const assigneeFilterLabel = computed(() => {
   const s = store.staff.find((x) => x.id === f)
   return s ? `${s.firstName} ${s.lastName}`.trim() : 'Сотрудник'
 })
-function matchesAssignee(d: DebtorRow): boolean {
+
+
+// ══════════════════════════════════════════════════════════════════
+// Серверная страница
+//
+// Поиск, фильтры, сортировка и постраничность выполняются в базе. Раньше
+// страница получала всех должников партнёра одним куском и фильтровала их в
+// браузере — на профиле с 14 813 сделками это 3 886 строк и больше мегабайта
+// на каждый заход в раздел.
+// ══════════════════════════════════════════════════════════════════
+
+const PER_PAGE_OPTIONS = [25, 50, 100, 200]
+const PAGE_SIZE_KEY = 'debtors:page-size'
+const perPage = ref(Number(localStorage.getItem(PAGE_SIZE_KEY)) || 50)
+const page = ref(1)
+watch(perPage, (v) => {
+  try { localStorage.setItem(PAGE_SIZE_KEY, String(v)) } catch { /* ignore */ }
+})
+
+const displayedRows = computed(() => (isArchive.value ? store.archiveRows : store.rows))
+const totalRows = computed(() => (isArchive.value ? store.archiveTotal : store.total))
+const listLoading = computed(() => (isArchive.value ? store.archiveLoading : store.loading))
+
+/** Фильтр «Мои» разворачивается в конкретного сотрудника — сервер знает только id. */
+const assigneeParam = computed(() => {
   const f = assigneeFilter.value
-  if (f === 'all') return true
-  if (f === 'unassigned') return !d.assignedStaffId
-  if (f === 'mine') return d.assignedStaffId === myStaffId.value
-  return d.assignedStaffId === f
+  if (f === 'all') return null
+  if (f === 'mine') return myStaffId.value
+  return f
+})
+
+function pageParams() {
+  return {
+    q: search.value,
+    promise: promiseFilter.value,
+    assignee: assigneeParam.value,
+    sort: sortCol.value,
+    dir: sortDir.value,
+    limit: perPage.value,
+    offset: (page.value - 1) * perPage.value,
+  }
 }
 
-const sourceRows = computed(() => (isArchive.value ? store.archiveRows : store.rows))
-const displayedRows = computed(() => {
-  let list = sourceRows.value.slice()
-  const q = search.value.trim().toLowerCase()
-  if (q) {
-    list = list.filter((d) =>
-      d.clientName.toLowerCase().includes(q) ||
-      d.productName.toLowerCase().includes(q) ||
-      (d.clientPhone || '').includes(q) ||
-      String(d.dealNumber).includes(q),
-    )
-  }
-  if (promiseFilter.value !== 'all') list = list.filter(matchesPromiseFilter)
-  if (assigneeFilter.value !== 'all') list = list.filter(matchesAssignee)
-  const acc = SORT_ACCESSOR[sortCol.value]
-  if (acc) {
-    list.sort((a, b) => {
-      const av = acc(a)
-      const bv = acc(b)
-      let cmp: number
-      if (typeof av === 'string' || typeof bv === 'string') cmp = String(av).localeCompare(String(bv), 'ru')
-      else cmp = (av as number) - (bv as number)
-      return sortDir.value === 'asc' ? cmp : -cmp
-    })
-  }
-  return list
+function loadPage() {
+  if (isArchive.value) store.fetchArchive(pageParams())
+  else store.fetchDebtors(pageParams())
+}
+
+/** После правки обещания меняются и строка списка, и счётчик нарушенных. */
+function refreshAfterMutation() {
+  loadPage()
+  if (auth.can('debtors.kpi')) store.fetchKpi()
+}
+
+// Любая смена условий возвращает на первую страницу — иначе можно оказаться
+// на 40-й странице выборки, где всего две.
+watch([search, promiseFilter, assigneeFilter, sortCol, sortDir, perPage], () => {
+  page.value = 1
+  loadPage()
 })
+watch(page, loadPage)
+watch(tab, (t) => { if (t === 'list' || t === 'archive') { page.value = 1; loadPage() } })
 
 // ── KPI ──
-const stats = computed(() => {
-  const rows = store.rows
-  return {
-    count: rows.length,
-    overdueAmount: rows.reduce((s, r) => s + r.overdueAmount, 0),
-    overdueCount: rows.reduce((s, r) => s + r.overdueCount, 0),
-    unassigned: rows.filter((r) => !r.assignedStaffId).length,
-  }
-})
-const brokenCount = computed(() => store.rows.filter((r) => r.promiseStatus === 'BROKEN').length)
+// Считаются на сервере по всей выборке: складывать загруженные строки больше
+// нельзя — в браузере лежит только текущая страница.
+const stats = computed(() => ({
+  count: store.kpi?.count ?? 0,
+  overdueAmount: store.kpi?.overdueAmount ?? 0,
+  overdueCount: store.kpi?.overdueCount ?? 0,
+  unassigned: store.kpi?.unassigned ?? 0,
+}))
+const brokenCount = computed(() => store.kpi?.broken ?? 0)
 function toggleQuickFilter(f: PromiseFilter) { promiseFilter.value = promiseFilter.value === f ? 'all' : f }
 
 // ── Настройки порогов ──
@@ -229,7 +220,10 @@ async function saveSettings() {
     })
     settingsSaved.value = true
     setTimeout(() => { settingsSaved.value = false }, 2500)
-    await store.fetchDebtors() // пороги изменились — список пересобираем
+    // Пороги изменились — меняется и состав списка, и цифры в шапке.
+    page.value = 1
+    loadPage()
+    if (auth.can('debtors.kpi')) await store.fetchKpi()
   } finally {
     savingSettings.value = false
   }
@@ -261,16 +255,55 @@ function writeWhatsApp(row: DebtorRow, e?: Event) {
 // ── Выбор строк (скрыт по умолчанию, включается кнопкой — как на сделках) ──
 const selectMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
+/**
+ * Режим «вся выборка»: в браузере лежит только страница, поэтому выделение
+ * всех найденных хранится флагом, а снятые галочки — списком исключений.
+ * Такой же приём используется на странице сделок.
+ */
+const selectAllMatching = ref(false)
+const excludedIds = ref<Set<string>>(new Set())
+
+/** Сколько строк реально будет затронуто действием. */
+const selectionCount = computed(() =>
+  selectAllMatching.value ? Math.max(0, totalRows.value - excludedIds.value.size) : selectedIds.value.size,
+)
+
+function isRowSelected(id: string): boolean {
+  return selectAllMatching.value ? !excludedIds.value.has(id) : selectedIds.value.has(id)
+}
+
 function toggleSelect(id: string) {
+  if (selectAllMatching.value) {
+    const ex = new Set(excludedIds.value)
+    if (ex.has(id)) ex.delete(id); else ex.add(id)
+    excludedIds.value = ex
+    return
+  }
   const s = new Set(selectedIds.value)
   if (s.has(id)) s.delete(id); else s.add(id)
   selectedIds.value = s
 }
+
+/** Выделяет строки ТЕКУЩЕЙ страницы (вся выборка — отдельной кнопкой). */
 function selectAll() {
+  selectAllMatching.value = false
+  excludedIds.value = new Set()
   if (selectedIds.value.size === displayedRows.value.length) selectedIds.value = new Set()
   else selectedIds.value = new Set(displayedRows.value.map((r) => r.dealId))
 }
-function cancelSelect() { selectMode.value = false; selectedIds.value = new Set() }
+
+function selectWholeSelection() {
+  selectAllMatching.value = true
+  excludedIds.value = new Set()
+  selectedIds.value = new Set()
+}
+
+function cancelSelect() {
+  selectMode.value = false
+  selectedIds.value = new Set()
+  selectAllMatching.value = false
+  excludedIds.value = new Set()
+}
 // выходим из режима выбора при смене вкладки
 watch(tab, () => cancelSelect())
 
@@ -278,18 +311,29 @@ const assignOpen = ref(false)
 const assignStaffId = ref<string | null>(null)
 const assigning = ref(false)
 const assignTargetIds = ref<string[]>([]) // bulk из панели или 1 id из модалки
+// Назначение на всю выборку: сервер сам найдёт сделки теми же фильтрами.
+const assignWholeSelection = ref(false)
 function openBulkAssign() {
-  assignTargetIds.value = [...selectedIds.value]
+  assignWholeSelection.value = selectAllMatching.value
+  assignTargetIds.value = selectAllMatching.value ? [...excludedIds.value] : [...selectedIds.value]
   assignStaffId.value = null
   assignOpen.value = true
 }
 async function confirmAssign() {
-  if (!assignTargetIds.value.length) return
+  if (!assignWholeSelection.value && !assignTargetIds.value.length) return
   assigning.value = true
   try {
-    await store.bulkAssign(assignTargetIds.value, assignStaffId.value)
+    await store.bulkAssign(
+      assignTargetIds.value,
+      assignStaffId.value,
+      assignWholeSelection.value
+        ? { mode: isArchive.value ? 'archive' : 'active', q: search.value, promise: promiseFilter.value, assignee: assigneeParam.value }
+        : null,
+    )
     assignOpen.value = false
     cancelSelect()
+    loadPage()
+    if (auth.can('debtors.kpi')) store.fetchKpi()
   } finally {
     assigning.value = false
   }
@@ -377,12 +421,12 @@ const kpiCards = computed(() => {
 })
 
 watch(tab, (t) => {
-  if (t === 'archive' && !store.archiveRows.length) store.fetchArchive()
   if (t === 'analytics' && !analytics.value) loadAnalytics()
 })
 
 onMounted(() => {
-  store.fetchDebtors()
+  loadPage()
+  if (auth.can('debtors.kpi')) store.fetchKpi()
   if (canSettings.value) store.fetchSettings()
   if (canAssign.value) store.fetchStaff()
 })
@@ -442,7 +486,7 @@ onMounted(() => {
       <button class="settings-tab" :class="{ active: tab === 'archive' }" @click="tab = 'archive'">
         <v-icon icon="mdi-archive-outline" size="18" />
         <span>Архив</span>
-        <span v-if="store.archiveRows.length" class="dbt-tabcount" :class="{ 'dbt-tabcount--on': tab === 'archive' }">{{ store.archiveRows.length }}</span>
+        <span v-if="store.archiveTotal" class="dbt-tabcount" :class="{ 'dbt-tabcount--on': tab === 'archive' }">{{ store.archiveTotal }}</span>
       </button>
       <button class="settings-tab" :class="{ active: tab === 'analytics' }" @click="tab = 'analytics'">
         <v-icon icon="mdi-chart-box-outline" size="18" />
@@ -455,7 +499,7 @@ onMounted(() => {
     </div>
 
     <!-- ── Таб: Должники / Архив ── -->
-    <div v-if="tab === 'list' || tab === 'archive'" class="dbt-card">
+    <div v-if="tab === 'list' || tab === 'archive'" class="dbt-card dbt-card--list">
       <div class="pa-4">
         <!-- Тулбар: колонки + фильтр обещаний + поиск -->
         <div class="d-flex justify-space-between align-center ga-2 mb-3 flex-wrap">
@@ -547,20 +591,29 @@ onMounted(() => {
           <div v-if="selectMode" class="dbt-selbar">
             <div class="dbt-selbar-left">
               <v-checkbox-btn
-                :model-value="selectedIds.size === displayedRows.length && displayedRows.length > 0"
-                :indeterminate="selectedIds.size > 0 && selectedIds.size < displayedRows.length"
+                :model-value="selectAllMatching || (selectedIds.size === displayedRows.length && displayedRows.length > 0)"
+                :indeterminate="!selectAllMatching && selectedIds.size > 0 && selectedIds.size < displayedRows.length"
                 density="compact"
                 hide-details
                 @update:model-value="selectAll"
               />
               <span class="dbt-selbar-count">
-                {{ selectedIds.size > 0 ? `Выбрано ${selectedIds.size} из ${displayedRows.length}` : 'Выберите сделки' }}
+                {{ selectionCount > 0 ? `Выбрано ${selectionCount} из ${totalRows}` : 'Выберите сделки' }}
               </span>
+              <!-- Выделение на странице охватывает только её строки; всю
+                   выборку целиком выбирают отдельно — как на сделках. -->
+              <button
+                v-if="!selectAllMatching && selectedIds.size === displayedRows.length && displayedRows.length > 0 && totalRows > displayedRows.length"
+                class="dbt-selbar-link"
+                @click="selectWholeSelection"
+              >
+                Выбрать всех найденных ({{ totalRows }})
+              </button>
             </div>
             <div class="dbt-selbar-right">
-              <button v-if="canAssign && selectedIds.size > 0" class="dbt-selbar-primary" @click="openBulkAssign">
+              <button v-if="canAssign && selectionCount > 0" class="dbt-selbar-primary" @click="openBulkAssign">
                 <v-icon icon="mdi-account-arrow-right-outline" size="18" />
-                <span>Назначить сотрудника ({{ selectedIds.size }})</span>
+                <span>Назначить сотрудника ({{ selectionCount }})</span>
               </button>
               <button class="dbt-selbar-cancel" @click="cancelSelect">
                 <v-icon icon="mdi-close" size="18" />
@@ -571,7 +624,7 @@ onMounted(() => {
         </Transition>
 
         <!-- Загрузка -->
-        <div v-if="isArchive ? store.archiveLoading : store.loading" class="d-flex justify-center pa-12">
+        <div v-if="listLoading" class="d-flex justify-center pa-12">
           <v-progress-circular indeterminate color="primary" size="40" />
         </div>
 
@@ -609,16 +662,16 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, idx) in displayedRows" :key="row.dealId" class="cursor-pointer" :class="{ 'dbt-row--sel': selectedIds.has(row.dealId) }" @click="selectMode ? toggleSelect(row.dealId) : openRow(row)">
+            <tr v-for="(row, idx) in displayedRows" :key="row.dealId" class="cursor-pointer" :class="{ 'dbt-row--sel': isRowSelected(row.dealId) }" @click="selectMode ? toggleSelect(row.dealId) : openRow(row)">
               <td v-if="selectMode" @click.stop>
                 <v-checkbox-btn
-                  :model-value="selectedIds.has(row.dealId)"
+                  :model-value="isRowSelected(row.dealId)"
                   density="compact"
                   hide-details
                   @update:model-value="toggleSelect(row.dealId)"
                 />
               </td>
-              <td class="td-index text-medium-emphasis">{{ idx + 1 }}</td>
+              <td class="td-index text-medium-emphasis">{{ (page - 1) * perPage + idx + 1 }}</td>
 
               <td v-if="isColVisible('dealNumber')" class="text-start text-no-wrap"><span class="dbt-deal-num">#{{ row.dealNumber }}</span></td>
 
@@ -711,6 +764,17 @@ onMounted(() => {
             {{ search ? 'Попробуйте изменить запрос' : isArchive ? 'Сюда попадают должники, по которым велась работа и просрочка погашена' : 'Ни по одной сделке нет просрочек, подходящих под настроенные пороги' }}
           </div>
         </div>
+
+        <ServerPager
+          v-if="totalRows > 0"
+          :page="page"
+          :total="totalRows"
+          :per-page="perPage"
+          :busy="listLoading"
+          :per-page-options="PER_PAGE_OPTIONS"
+          @update:page="page = $event"
+          @update:per-page="perPage = $event"
+        />
       </div>
     </div>
 
@@ -896,7 +960,7 @@ onMounted(() => {
     />
 
     <!-- Обещание из строки таблицы -->
-    <PromiseDialog v-model="rowPromiseOpen" :row="rowPromiseRow" @saved="store.fetchDebtors()" />
+    <PromiseDialog v-model="rowPromiseOpen" :row="rowPromiseRow" @saved="refreshAfterMutation()" />
 
     <!-- Диалог назначения сотрудника -->
     <v-dialog v-model="assignOpen" max-width="440">
@@ -985,6 +1049,9 @@ onMounted(() => {
   border-radius: 12px; border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   background: rgba(var(--v-theme-surface), 1); overflow: hidden;
 }
+/* Прилипающая пагинация (ServerPager) требует, чтобы карточка не обрезала
+   содержимое — как .deals-card и .payments-card в соседних разделах. */
+.dbt-card--list { overflow: visible; }
 
 /* Кнопка тулбара — канонический .fb-btn (как на странице сделок) */
 .fb-btn {
@@ -1022,6 +1089,18 @@ onMounted(() => {
 }
 .dbt-page.dark .dbt-selbar { background: #1e1e2e; border-color: #2e2e42; }
 .dbt-selbar-left { display: flex; align-items: center; gap: 8px; }
+.dbt-selbar-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dbt-selbar-link:hover { opacity: 0.8; }
 .dbt-selbar-count { font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6); }
 .dbt-selbar-right { display: flex; align-items: center; gap: 8px; }
 .dbt-selbar-primary {

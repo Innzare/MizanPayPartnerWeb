@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { api } from '@/api/client'
-import type { CoInvestor, CoInvestorJournal, CoInvestorJournalEntry, CoInvestorSummary, DealCoInvestors, InvestorPerson, InvestorPersonDetail, AddStakeInput } from '@/types'
+import type { CoInvestor, CoInvestorJournal, CoInvestorJournalEntry, CoInvestorSummary, DealCoInvestors, InvestorPerson, InvestorPersonDetail, AddStakeInput, StakeDealsPage } from '@/types'
 
 const coInvestors = ref<CoInvestor[]>([])
 const loading = ref(false)
@@ -86,7 +86,26 @@ export function useCoInvestors() {
   }
 
   async function fetchSummary(id: string) {
-    return api.get<CoInvestorSummary>(`/co-investors/${id}/summary`)
+    // slim=1 — без разбора по сделкам: он приезжает постранично через
+    // fetchStakeDeals. Без признака сервер отдаёт прежний полный ответ,
+    // который нужен ещё не обновлённому мобильному приложению.
+    return api.get<CoInvestorSummary>(`/co-investors/${id}/summary?slim=1`)
+  }
+
+  /**
+   * Страница разбора по сделкам доли. Вынесена из сводки: у со-инвестора с
+   * тысячами связанных сделок она весила мегабайты и грузилась секундами.
+   */
+  async function fetchStakeDeals(
+    id: string,
+    params: { filter?: 'all' | 'active' | 'completed'; limit?: number; offset?: number; withTotals?: boolean } = {},
+  ) {
+    const q = new URLSearchParams()
+    if (params.filter && params.filter !== 'all') q.set('filter', params.filter)
+    q.set('limit', String(params.limit ?? 25))
+    if (params.offset) q.set('offset', String(params.offset))
+    if (params.withTotals === false) q.set('totals', '0')
+    return api.get<StakeDealsPage>(`/co-investors/${id}/deals?${q}`)
   }
 
   async function fetchJournal(id: string, params: { types?: string[]; from?: string; to?: string; limit?: number; offset?: number } = {}) {
@@ -170,6 +189,7 @@ export function useCoInvestors() {
     createCoInvestor,
     updateCoInvestor,
     fetchSummary,
+    fetchStakeDeals,
     fetchJournal,
     payDividends,
     adjustCapital,

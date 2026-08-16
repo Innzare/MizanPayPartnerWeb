@@ -7,6 +7,7 @@ export type DealsAccessMode = 'ALL' | 'ASSIGNED_ONLY'
 export interface PlanFeatures {
   analytics: boolean
   analyticsCharts: boolean
+  reports: boolean
   pdfContract: boolean
   pdfExport: boolean
   excelExport: boolean
@@ -26,6 +27,7 @@ export interface PlanFeatures {
 export const FEATURE_MIN_PLAN: Record<keyof PlanFeatures, SubscriptionPlan> = {
   analytics: 'PRO',
   analyticsCharts: 'BUSINESS',
+  reports: 'BUSINESS',
   pdfContract: 'PRO',
   pdfExport: 'PRO',
   excelExport: 'BUSINESS',
@@ -245,6 +247,60 @@ export interface Deal {
   deletedAt?: string
   updatedAt: string
   payments?: Payment[]
+  // Дата последнего платежа ПО ГРАФИКУ (конец рассрочки). Приходит только в
+  // постраничном списке: сервер считает её MAX(dueDate), а у сделок без
+  // сгенерированного графика — от первого платежа плюс срок.
+  scheduleEndAt?: string | null
+}
+
+/** Постраничный ответ сервера: страница строк плюс размер всей выборки. */
+export interface Page<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/**
+ * Счётчики страницы платежей: вкладки, суммы для KPI и месяцы для навигации.
+ * Считаются сервером по текущим фильтрам — как счётчики на странице сделок.
+ */
+export interface PaymentFacets {
+  /** Ключ 'YYYY-MM' → число платежей. `due` — по плановому сроку, `paid` — по
+   *  дате фактической оплаты (вкладка «Оплаченные» считает по ней). */
+  months: { due: Record<string, number>; paid: Record<string, number> }
+  years: number[]
+  tabs: { active: number; pending: number; overdue: number; paid: number; all: number }
+  /** Суммы для карточек «Ожидается» и «Получено». */
+  sums: { pending: number; overdue: number; paid: number }
+}
+
+/** Агрегат одного дня календаря: сервер считает его вместо выгрузки платежей. */
+export interface PaymentCalendarDay {
+  /** 'YYYY-MM-DD' в часовом поясе запроса. */
+  date: string
+  pendingCount: number
+  overdueCount: number
+  paidCount: number
+  pendingSum: number
+  overdueSum: number
+  paidSum: number
+}
+
+/**
+ * Счётчики и итоги списка сделок — считаются на сервере по тем же фильтрам,
+ * что и страница. Раньше их выводили из полного массива в памяти браузера;
+ * у партнёра с тысячами сделок это и было главной причиной тормозов.
+ */
+export interface DealCounts {
+  byStatus: Record<string, number>
+  /** Ключ 'none' — сделки без папки (аналогично для кассы и сотрудника). */
+  byFolder: Record<string, number>
+  byCashBox: Record<string, number>
+  byStaff: Record<string, number>
+  totals: { count: number; volume: number; profit: number; remaining: number }
+  /** Сделок, закрытых тарифом (видны в списке, открыть нельзя). */
+  locked: number
 }
 
 // Deal Folder
@@ -347,7 +403,7 @@ export interface PersonStakeDetail extends PersonStake {
   activeDealsCount: number
   effectivePct: number
   shareBreakdown?: ShareBreakdown | null
-  activeDealsBreakdown: CoInvestorSummary['activeDealsBreakdown']
+  dealsTotals?: CoInvestorSummary['dealsTotals']
 }
 
 export interface InvestorPersonTotals {
@@ -443,7 +499,16 @@ export interface CoInvestorSummary {
   effectivePct: number
   // Derivation of effectivePct for the detail page (where "16.67%" comes from).
   shareBreakdown?: ShareBreakdown | null
-  activeDealsBreakdown: Array<{
+  /** Итоги и счётчики вкладок таба «Сделки» — считает сервер по всей выборке. */
+  dealsTotals?: Record<'all' | 'active' | 'completed', { count: number; inv: number; gross?: number; part?: number }>
+}
+
+/**
+ * Строка разбора по сделке. Приходит постранично (`/co-investors/:id/deals`),
+ * а не внутри сводки: у со-инвестора с тысячами сделок полный разбор весил
+ * мегабайты.
+ */
+export interface StakeDealRow {
     id: string
     dealNumber: number
     productName: string
@@ -471,7 +536,18 @@ export interface CoInvestorSummary {
     deployed?: number
     // Cost-fee deals carry the per-deal split for the «В работе» modal.
     costFee?: { ratePct: number; partnerFee: number; investorShare: number }
-  }>
+}
+
+/** Ответ постраничного разбора по сделкам. */
+export interface StakeDealsPage {
+  items: StakeDealRow[]
+  /** Отсутствует в режиме листания (`withTotals: false`) — там итоги не считаются. */
+  total?: number
+  limit: number
+  offset: number
+  /** Итоги выбранной вкладки. part/gross отсутствуют, если доля партнёра скрыта. */
+  totals?: { count: number; inv: number; gross?: number; part?: number }
+  counts: { all: number; active: number; completed: number }
 }
 
 // How a co-investor's effective profit % is derived.
@@ -703,6 +779,8 @@ export interface ClientProfile {
   userId?: string
   user?: Partial<User>
   createdByInvestorId?: string
+  /** Профиль клиента платформы (виден всем партнёрам), а не личная запись. */
+  isPublic?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -748,6 +826,7 @@ export type ActivityType =
   | 'PAYMENT_UNPAID'
   | 'PAYMENT_RESCHEDULED'
   | 'CLIENT_BLACKLISTED'
+  | 'CLIENT_DELETED'
   | 'CLIENT_UNBLACKLISTED'
   | 'CLIENT_REVIEW_ADDED'
   | 'TRANSACTION_CREATED'

@@ -59,12 +59,54 @@ export interface DraftRow {
   cashBoxId?: string | null
 }
 
+/** Прогресс фоновой фиксации — сервер пишет его в stats.commitProgress черновика. */
+export interface CommitProgress {
+  state: 'queued' | 'running' | 'done' | 'failed'
+  /** Строк обработано / всего к импорту (без «пропустить»). */
+  processed: number
+  total: number
+  created: number
+  updated: number
+  skipped: number
+  startedAt: string
+  /** Только для state='failed' — причина, уже с номером строки. */
+  error?: string
+}
+
+/** Ответ лёгкого эндпоинта опроса GET /import/drafts/:id/progress. */
+export interface CommitStatus {
+  id: string
+  status: ImportDraft['status']
+  progress: CommitProgress | null
+  /** Прогон молчит дольше допустимого — сервер считает его умершим. */
+  stale: boolean
+  /** Место в очереди (1 — следующий на запуск); null, если импорт не ждёт. */
+  queuePosition: number | null
+}
+
+/**
+ * Маленькие файлы сервер фиксирует синхронно и отвечает итогами (как раньше).
+ * Большие — в фоне: приходит { async: true }, дальше интерфейс опрашивает
+ * прогресс, потому что синхронный запрос на тысячи строк висел минуты и
+ * упирался в таймауты.
+ */
+export type CommitResponse =
+  | { created: number; updated: number; skipped: number }
+  | { async: true; total: number; skipped: number }
+  /**
+   * Слоты заняты — импорт встал в очередь. Одновременных фиксаций ограниченное
+   * число: параллельные прогоны упирались в память сервера и обрывали друг
+   * друга. Интерфейс так же опрашивает прогресс, показывая место в очереди.
+   */
+  | { queued: true; position: number; total: number; skipped: number }
+
 export interface DraftStats {
   total: number
   valid: number
   withErrors: number
   duplicates: number
   byAction: { create: number; update: number; skip: number }
+  commitProgress?: CommitProgress
   unitScale?: {
     suspected: boolean
     rowsTotal: number
@@ -88,7 +130,7 @@ export interface ImportDraft {
   duplicateChecks: Record<string, any>
   validationErrors: Record<string, Record<string, string>>
   stats: DraftStats
-  status: 'DRAFT' | 'COMMITTED' | 'CANCELLED'
+  status: 'DRAFT' | 'QUEUED' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED'
   expiresAt: string
   committedAt: string | null
   createdAt: string
@@ -141,12 +183,15 @@ export function useImportDraft() {
   async function commit(id: string) {
     committing.value = true
     try {
-      return await api.post<{ created: number; updated: number; skipped: number }>(
-        `/import/drafts/${id}/commit`,
-      )
+      return await api.post<CommitResponse>(`/import/drafts/${id}/commit`)
     } finally {
       committing.value = false
     }
+  }
+
+  /** Лёгкий опрос прогресса фоновой фиксации — без normalizedData (мегабайты JSON). */
+  async function fetchProgress(id: string): Promise<CommitStatus> {
+    return api.get<CommitStatus>(`/import/drafts/${id}/progress`)
   }
 
   async function cancel(id: string) {
@@ -173,5 +218,5 @@ export function useImportDraft() {
     }
   }
 
-  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, cancel, addRow, deleteRow, confirmUnits }
+  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, fetchProgress, cancel, addRow, deleteRow, confirmUnits }
 }

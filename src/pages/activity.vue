@@ -1,11 +1,11 @@
 <script lang="ts" setup>
 import { useActivityStore } from '@/stores/activity'
 import { useDealsStore } from '@/stores/deals'
-import { usePaymentsStore } from '@/stores/payments'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useRouter } from 'vue-router'
+import { api } from '@/api/client'
 import { formatCurrency, timeAgo } from '@/utils/formatters'
 import { userName, clientProfileName } from '@/types'
 import type { ActivityType, ActivityLog, Deal, Payment } from '@/types'
@@ -16,18 +16,15 @@ const { isMobile } = useIsMobile()
 const router = useRouter()
 const store = useActivityStore()
 const dealsStore = useDealsStore()
-const paymentsStore = usePaymentsStore()
 
 const pageLoading = ref(true)
 
 onMounted(async () => {
   try {
-    // Load activity + deals + payments in parallel for enriched details
-    await Promise.all([
-      store.fetch(true),
-      dealsStore.deals.length ? Promise.resolve() : dealsStore.fetchDeals(),
-      paymentsStore.allPaymentsFlat.length ? Promise.resolve() : paymentsStore.fetchPayments(),
-    ])
+    // Только сама лента. Сделка и платёж нужны лишь в деталях события —
+    // догружаем их по одному при открытии, а не выкачиваем весь портфель и
+    // все платежи партнёра ради подписей.
+    await store.fetch(true)
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки истории')
   } finally {
@@ -54,6 +51,7 @@ const typeConfig: Record<ActivityType, TypeMeta> = {
   CLIENT_BLACKLISTED: { icon: 'mdi-account-cancel', color: '#ef4444', group: 'client' },
   CLIENT_UNBLACKLISTED: { icon: 'mdi-account-check', color: '#047857', group: 'client' },
   CLIENT_REVIEW_ADDED: { icon: 'mdi-star-outline', color: '#f59e0b', group: 'client' },
+  CLIENT_DELETED: { icon: 'mdi-account-remove-outline', color: '#ef4444', group: 'client' },
   TRANSACTION_CREATED: { icon: 'mdi-wallet-plus-outline', color: '#047857', group: 'finance' },
   TRANSACTION_DELETED: { icon: 'mdi-wallet-minus-outline', color: '#ef4444', group: 'finance' },
   STAFF_INVITED: { icon: 'mdi-account-plus-outline', color: '#3b82f6', group: 'staff' },
@@ -176,6 +174,20 @@ async function openDetails(item: ActivityLog) {
   selected.value = item
   detailsOpen.value = true
   entityMissing.value = false
+  selectedPaymentData.value = null
+
+  // Событие о платеже: тянем сам платёж — он приходит вместе со сделкой.
+  if (item.entityType === 'PAYMENT' && item.entityId) {
+    loadingDetails.value = true
+    try {
+      selectedPaymentData.value = await api.get<Payment>(`/payments/${item.entityId}`)
+    } catch {
+      // Платёж удалён вместе со сделкой — покажем данные из самого события.
+      entityMissing.value = true
+    } finally {
+      loadingDetails.value = false
+    }
+  }
 
   // Lazy-load related deal if needed (for deal-related events the deal might be in trash/not cached)
   const dealId = item.entityType === 'DEAL'
@@ -210,11 +222,9 @@ const selectedDeal = computed<Deal | null>(() => {
 })
 
 // Resolve related payment
-const selectedPayment = computed<Payment | null>(() => {
-  if (!selected.value) return null
-  if (selected.value.entityType !== 'PAYMENT' || !selected.value.entityId) return null
-  return paymentsStore.allPaymentsFlat.find((p: Payment) => p.id === selected.value!.entityId) || null
-})
+/** Платёж открытого события — грузится точечно, вместе со своей сделкой. */
+const selectedPaymentData = ref<Payment | null>(null)
+const selectedPayment = computed<Payment | null>(() => selectedPaymentData.value)
 
 function clientDisplayName(deal: Deal | null): string {
   if (!deal) return '—'
@@ -580,6 +590,40 @@ function navigateToEntity(item: ActivityLog) {
                     <span class="details-kv-key">Комментарий</span>
                     <span class="details-kv-value">{{ metaString(selected.meta, 'comment') }}</span>
                   </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- ═══ УДАЛЕНИЕ КЛИЕНТОВ ═══ -->
+            <template v-else-if="selected.type === 'CLIENT_DELETED'">
+              <div class="details-section">
+                <div class="details-kv">
+                  <div v-if="metaString(selected.meta, 'name')" class="details-kv-row">
+                    <span class="details-kv-key">Клиент</span>
+                    <span class="details-kv-value font-weight-bold">{{ metaString(selected.meta, 'name') }}</span>
+                  </div>
+                  <div v-if="metaString(selected.meta, 'phone')" class="details-kv-row">
+                    <span class="details-kv-key">Телефон</span>
+                    <span class="details-kv-value">{{ metaString(selected.meta, 'phone') }}</span>
+                  </div>
+                  <div v-if="metaNumber(selected.meta, 'deleted')" class="details-kv-row">
+                    <span class="details-kv-key">Удалено клиентов</span>
+                    <span class="details-kv-value font-weight-bold">{{ metaNumber(selected.meta, 'deleted') }}</span>
+                  </div>
+                  <div v-if="metaNumber(selected.meta, 'dealsDeleted')" class="details-kv-row">
+                    <span class="details-kv-key">Сделок в корзину</span>
+                    <span class="details-kv-value font-weight-bold" style="color: #ef4444;">
+                      {{ metaNumber(selected.meta, 'dealsDeleted') }}
+                    </span>
+                  </div>
+                </div>
+                <!-- Сделки не стираются: их можно вернуть из корзины. -->
+                <div v-if="metaNumber(selected.meta, 'dealsDeleted')" class="details-description-block mt-3">
+                  Сделки перемещены в корзину — их можно восстановить в разделе «Сделки».
+                  Карточки клиентов удалены безвозвратно.
+                </div>
+                <div v-else class="details-description-block mt-3">
+                  Сделки этих клиентов сохранены: имя и телефон записаны в самих сделках.
                 </div>
               </div>
             </template>

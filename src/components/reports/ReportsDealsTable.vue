@@ -2,12 +2,29 @@
 import { ref, computed, watch } from 'vue'
 import { useSections } from '@/composables/useSections'
 import { useRouter } from 'vue-router'
+import ServerPager from '@/components/ServerPager.vue'
 import { formatCurrency } from '@/utils/formatters'
 import type { ReportsDealsTable, ReportDealRow } from '@/types/reports'
 
 const props = defineProps<{
   data: ReportsDealsTable
   loading?: boolean
+  /** Управление серверной страницей — таблица больше не фильтрует сама. */
+  page: number
+  perPage: number
+  total: number
+  sortKey: string
+  sortDesc: boolean
+  search: string
+  overdueOnly: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'update:page', v: number): void
+  (e: 'update:sortKey', v: string): void
+  (e: 'update:sortDesc', v: boolean): void
+  (e: 'update:search', v: string): void
+  (e: 'update:overdueOnly', v: boolean): void
 }>()
 
 const router = useRouter()
@@ -90,14 +107,21 @@ function toggleCol(key: ColKey) {
 }
 
 // ── Фильтры и сортировка ─────────────────────────────────────────────────
-const search = ref('')
-const overdueOnly = ref(false)
-const sortKey = ref<ColKey | 'productName'>('netProfit')
-const sortDesc = ref(true)
+// Выполняются на сервере: в браузере лежит одна страница выборки.
+const search = computed({
+  get: () => props.search,
+  set: (v: string) => emit('update:search', v),
+})
+const overdueOnly = computed({
+  get: () => props.overdueOnly,
+  set: (v: boolean) => emit('update:overdueOnly', v),
+})
+const sortKey = computed(() => props.sortKey)
+const sortDesc = computed(() => props.sortDesc)
 
 function toggleSort(key: ColKey | 'productName') {
-  if (sortKey.value === key) sortDesc.value = !sortDesc.value
-  else { sortKey.value = key; sortDesc.value = true }
+  if (props.sortKey === key) emit('update:sortDesc', !props.sortDesc)
+  else { emit('update:sortKey', key); emit('update:sortDesc', true) }
 }
 
 function sortValue(r: ReportDealRow, key: string): number | string {
@@ -120,48 +144,15 @@ function sortValue(r: ReportDealRow, key: string): number | string {
   }
 }
 
-const rows = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  let list = props.data.rows.filter((r) => {
-    if (overdueOnly.value && r.overdueCount === 0) return false
-    if (q && !r.productName.toLowerCase().includes(q) && !r.clientName.toLowerCase().includes(q)) return false
-    return true
-  })
-  const key = sortKey.value
-  list = [...list].sort((a, b) => {
-    const va = sortValue(a, key)
-    const vb = sortValue(b, key)
-    const cmp = typeof va === 'string' && typeof vb === 'string'
-      ? va.localeCompare(vb, 'ru')
-      : Number(va) - Number(vb)
-    return sortDesc.value ? -cmp : cmp
-  })
-  return list
-})
+// Строки уже отфильтрованы и отсортированы базой.
+const rows = computed(() => props.data.rows)
 
-/** ИТОГО пересчитываем по видимым строкам — чтобы сходилось с тем, что на экране. */
-const totals = computed(() =>
-  rows.value.reduce(
-    (a, r) => ({
-      count: a.count + 1,
-      cost: a.cost + r.cost,
-      totalPrice: a.totalPrice + r.totalPrice,
-      margin: a.margin + r.margin,
-      downPayment: a.downPayment + r.downPayment,
-      received: a.received + r.received,
-      remaining: a.remaining + r.remaining,
-      grossProfit: a.grossProfit + r.grossProfitReceived,
-      ciProfit: a.ciProfit + r.ciProfitFact,
-      netProfit: a.netProfit + r.netProfitReceived,
-      projectedNetProfitTotal: a.projectedNetProfitTotal + r.projectedNetProfitTotal,
-      profitLeft: a.profitLeft + r.profitLeft,
-      overdueAmount: a.overdueAmount + r.overdueAmount,
-    }),
-    { count: 0, cost: 0, totalPrice: 0, margin: 0, downPayment: 0, received: 0,
-      remaining: 0, grossProfit: 0, ciProfit: 0, netProfit: 0,
-      projectedNetProfitTotal: 0, profitLeft: 0, overdueAmount: 0 },
-  ),
-)
+/**
+ * ИТОГО приходит с сервера и считается по ВСЕЙ выборке — складывать строки
+ * страницы было бы неверно: их всего полсотни из тысяч.
+ */
+const totals = computed(() => props.data.totals)
+
 
 const STATUS_LABEL: Record<string, string> = {
   ACTIVE: 'Активна', COMPLETED: 'Завершена', OVERDUE: 'Просрочена', DISPUTED: 'Спорная',
@@ -176,7 +167,7 @@ function dateStr(iso: string) {
     <div class="d-flex align-center justify-space-between flex-wrap ga-3 mb-1">
       <div>
         <div class="rp-block-title">Все сделки за период</div>
-        <div class="rp-block-sub">{{ totals.count }} из {{ data.rows.length }} · сделки, выданные в выбранном периоде</div>
+        <div class="rp-block-sub">{{ totals.count }} · сделки, выданные в выбранном периоде</div>
       </div>
       <div class="d-flex align-center ga-2 flex-wrap">
         <input v-model="search" class="rt-search" placeholder="Товар или клиент…" >
@@ -347,6 +338,16 @@ function dateStr(iso: string) {
         </tfoot>
       </table>
     </div>
+
+    <ServerPager
+      v-if="total > perPage"
+      :page="page"
+      :total="total"
+      :per-page="perPage"
+      :busy="loading"
+      :per-page-options="[perPage]"
+      @update:page="emit('update:page', $event)"
+    />
   </v-card>
 </template>
 

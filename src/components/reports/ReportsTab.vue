@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { api } from '@/api/client'
 import { formatCurrency } from '@/utils/formatters'
 import { useReports, rangeForPreset, customLabel } from '@/composables/useReports'
-import type { PeriodPreset, PeriodRange } from '@/types/reports'
+import type { PeriodPreset, PeriodRange, ReportDealRow } from '@/types/reports'
 import ReportsDealsTable from './ReportsDealsTable.vue'
 import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
 import type { MetricDetailItem } from '@/components/MetricDetailDialog.vue'
@@ -115,6 +116,41 @@ async function exportExcel() {
   }
 }
 
+/**
+ * Все строки таблицы за период — для PDF. Сервер отдаёт не больше 200 строк за
+ * раз, поэтому идём страницами; итоги берём из первого ответа (они считаются
+ * по всей выборке).
+ */
+async function fetchAllTableRows() {
+  const PAGE = 200
+  const base = new URLSearchParams({
+    from: period.value.from, to: period.value.to,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow',
+    sort: tableSort.value, dir: tableDir.value, limit: String(PAGE),
+  })
+  if (props.cashBoxId) base.set('cashBoxId', props.cashBoxId)
+  if (dealStatus.value) base.set('status', dealStatus.value)
+  if (tableSearch.value.trim()) base.set('search', tableSearch.value.trim())
+  if (tableOverdueOnly.value) base.set('overdueOnly', 'true')
+
+  const rows: ReportDealRow[] = []
+  let totals = dealsTable.value!.totals
+  for (let offset = 0; ; offset += PAGE) {
+    const q = new URLSearchParams(base)
+    q.set('offset', String(offset))
+    // Итоги считаются по всей выборке — просим их только на первой странице.
+    if (offset > 0) q.set('totals', '0')
+    const res = await api.get<{ rows: ReportDealRow[]; totals?: typeof totals }>(`/reports/deals-table?${q}`)
+    rows.push(...res.rows)
+    if (offset === 0 && res.totals) totals = res.totals
+    if (res.rows.length < PAGE) break
+    // Страховка от бесконечного цикла, если сервер вдруг начнёт отдавать
+    // полную страницу бесконечно.
+    if (rows.length > 50_000) break
+  }
+  return { ...dealsTable.value!, rows, totals }
+}
+
 /** Данные загружены — кнопку выгрузки можно показывать. */
 const ready = computed(() => !!summary.value && !!dealsTable.value)
 
@@ -125,10 +161,14 @@ async function exportPdf() {
     const box = props.cashBoxId
       ? cashboxesStore.items.find((b) => b.id === props.cashBoxId)
       : null
+    // В документе должны быть ВСЕ сделки периода, а не показанная страница:
+    // таблица на экране листается, а PDF уходит инвестору как готовый отчёт —
+    // и его строки обязаны сходиться с собственной строкой «Итого».
+    const full = await fetchAllTableRows()
     generateReportPdf({
       period: period.value,
       summary: summary.value,
-      deals: dealsTable.value,
+      deals: full,
       // В шапке отчёта уместнее название компании, если оно заполнено —
       // документ уходит инвестору или партнёру, а не остаётся внутри.
       partnerName: authStore.user?.companyName?.trim() || authStore.userName,
@@ -142,7 +182,10 @@ async function exportPdf() {
   }
 }
 
-const { summary, dealsTable, loading, error } = useReports(
+const {
+  summary, dealsTable, loading, error,
+  tablePage, tableSort, tableDir, tableSearch, tableOverdueOnly, tableLoading, TABLE_PAGE,
+} = useReports(
   () => period.value,
   () => props.cashBoxId,
   () => dealStatus.value,
@@ -531,11 +574,67 @@ const DETAILS: Record<string, {
 // «Ваш чистый доход» и «Всего ваш доход» показывают то же, что earned/totalProfit.
 DETAILS.netTotal = { ...DETAILS.totalProfit, title: 'Всего ваш доход' }
 
+/**
+ * Строки для расшифровки показателя.
+ *
+ * Берутся отдельным запросом, а не из таблицы: в ней теперь лежит одна
+ * страница выборки, и расшифровка по ней была бы неполной. Просим первые
+ * двести сделок, отсортированных по самому показателю, — это и есть ответ на
+ * вопрос «из чего он сложился».
+ */
+const DETAIL_LIMIT = 200
+const detailRows = ref<any[]>([])
+const detailLoading = ref(false)
+/** Показателю соответствует колонка сортировки на сервере. */
+/**
+ * Показатель → колонка сортировки на сервере. Список должен покрывать ВСЕ
+ * показатели с кнопкой «Подробнее»: без записи запрос уходит с сортировкой по
+ * умолчанию (дата), и в расшифровку попадаютновейшие сделки вместо крупнейших —
+ * при лимите в 200 строк это меняет и состав списка, и его итог.
+ */
+const DETAIL_SORT: Record<string, string> = {
+  contract: 'totalPrice', purchase: 'cost', margin: 'margin',
+  returned: 'received', remaining: 'remaining',
+  grossEarned: 'grossProfit', grossLeft: 'profitLeft', grossTotal: 'margin',
+  ciFact: 'ciProfit', ciLeft: 'profitLeft', ciTotal: 'ciProfit',
+  earned: 'netProfit', left: 'profitLeft',
+  totalProfit: 'projectedNet', netTotal: 'projectedNet',
+}
+
+/** Всего сделок в выборке — чтобы честно сказать, что список усечён. */
+const detailTotal = ref(0)
+// Защита от гонки: показатели переключают быстрее, чем приходят ответы.
+let detailReq = 0
+
+watch(detailKey, async (key) => {
+  if (!key) { detailRows.value = []; detailTotal.value = 0; return }
+  const req = ++detailReq
+  detailLoading.value = true
+  try {
+    const q = new URLSearchParams({
+      from: period.value.from, to: period.value.to,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow',
+      limit: String(DETAIL_LIMIT), dir: 'desc',
+    })
+    if (props.cashBoxId) q.set('cashBoxId', props.cashBoxId)
+    if (dealStatus.value) q.set('status', dealStatus.value)
+    if (DETAIL_SORT[key]) q.set('sort', DETAIL_SORT[key])
+    const res = await api.get<{ rows: any[]; total?: number | null }>(`/reports/deals-table?${q}`)
+    if (req !== detailReq) return
+    detailRows.value = res.rows
+    detailTotal.value = res.total ?? res.rows.length
+  } catch {
+    if (req === detailReq) { detailRows.value = []; detailTotal.value = 0 }
+  } finally {
+    if (req === detailReq) detailLoading.value = false
+  }
+})
+
 const detailConfig = computed(() => {
   const key = detailKey.value
-  if (!key || !DETAILS[key] || !dealsTable.value) return null
+  if (!key || !DETAILS[key]) return null
   const cfg = DETAILS[key]
-  const items: MetricDetailItem[] = dealsTable.value.rows
+  const items: MetricDetailItem[] = detailRows.value
     .map((r: any) => ({
       id: r.id,
       title: r.productName,
@@ -545,10 +644,16 @@ const detailConfig = computed(() => {
     }))
     // Сделки с нулевым вкладом только зашумляют список.
     .filter((i) => i.value !== 0)
+  const shown = items.reduce((s, i) => s + i.value, 0)
+  const truncated = detailTotal.value > detailRows.value.length
   return {
     ...cfg,
     items,
-    total: items.reduce((s, i) => s + i.value, 0),
+    total: shown,
+    // Список усечён — подписываем, иначе итог модалки молча спорит с карточкой.
+    hint: truncated
+      ? `${cfg.hint} Показаны крупнейшие ${detailRows.value.length} сделок из ${detailTotal.value}.`
+      : cfg.hint,
   }
 })
 
@@ -678,7 +783,23 @@ defineExpose({ exportPdf, exportExcel, canExport, ready, exporting })
 
     <template v-if="summary">
       <!-- Таблица сделок -->
-      <ReportsDealsTable v-if="dealsTable" :data="dealsTable" :loading="loading" />
+      <ReportsDealsTable
+        v-if="dealsTable"
+        :data="dealsTable"
+        :loading="loading || tableLoading"
+        :page="tablePage"
+        :per-page="TABLE_PAGE"
+        :total="dealsTable.totals.count"
+        :sort-key="tableSort"
+        :sort-desc="tableDir === 'desc'"
+        :search="tableSearch"
+        :overdue-only="tableOverdueOnly"
+        @update:page="tablePage = $event"
+        @update:sort-key="tableSort = $event"
+        @update:sort-desc="tableDir = $event ? 'desc' : 'asc'"
+        @update:search="tableSearch = $event"
+        @update:overdue-only="tableOverdueOnly = $event"
+      />
     </template>
 
     <!-- Расшифровка показателя: из каких сделок он складывается -->

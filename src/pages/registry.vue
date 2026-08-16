@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { api } from '@/api/client'
+import ServerPager from '@/components/ServerPager.vue'
 import { formatPhone, formatDate, PHONE_MASK } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -83,8 +84,12 @@ const deleteLoading = ref<string | null>(null)
 const showDeleteDialog = ref(false)
 const clientToDelete = ref<ClientProfile | null>(null)
 
+// Удалять ли сделки вместе с клиентом — выбор в окне подтверждения.
+const deleteWithDeals = ref(false)
+
 function confirmDeleteClient(client: ClientProfile) {
   clientToDelete.value = client
+  deleteWithDeals.value = false
   showDeleteDialog.value = true
 }
 
@@ -92,11 +97,17 @@ async function doDelete() {
   if (!clientToDelete.value) return
   deleteLoading.value = clientToDelete.value.id
   try {
-    await api.delete(`/client-profiles/${clientToDelete.value.id}`)
-    allClients.value = allClients.value.filter((c) => c.id !== clientToDelete.value!.id)
-    toast.success('Клиент удалён')
+    const res = await api.delete<{ dealsDeleted?: number }>(
+      `/client-profiles/${clientToDelete.value.id}${deleteWithDeals.value ? '?withDeals=1' : ''}`,
+    )
+    toast.success(
+      res?.dealsDeleted ? `Клиент удалён, сделок в корзину: ${res.dealsDeleted}` : 'Клиент удалён',
+    )
     showDeleteDialog.value = false
     clientToDelete.value = null
+    // Страницу и счётчики пересобирает сервер — иначе на месте удалённого
+    // осталась бы дырка, а следующая страница поехала бы на строку вверх.
+    await Promise.all([fetchClients(), fetchCounts()])
   } catch (e: any) {
     toast.error(e.response?.data?.message || e.message || 'Ошибка удаления')
   } finally {
@@ -159,74 +170,315 @@ function getRatingColor(rating: number) {
 // ── Registry mode: My clients vs Global search ──
 const registryMode = ref<'my' | 'global'>('my')
 
+// ── Постраничная загрузка ──
+
+const PAGE_SIZE_KEY = 'registry:perPage'
+const PER_PAGE_OPTIONS = [25, 50, 100, 200] // 200 — серверный максимум
+
+const page = ref(1)
+const perPage = ref(
+  PER_PAGE_OPTIONS.includes(Number(localStorage.getItem(PAGE_SIZE_KEY)))
+    ? Number(localStorage.getItem(PAGE_SIZE_KEY))
+    : 50,
+)
+const total = ref(0)
+watch(perPage, (v) => localStorage.setItem(PAGE_SIZE_KEY, String(v)))
+
+/** Счётчики шапки и вкладок — приходят с сервера по всей выборке. */
+const counts = ref({
+  total: 0, reliable: 0, delayed: 0, unreliable: 0, blacklisted: 0, platform: 0, external: 0,
+})
+
 // ── Fetch ──
 
 let searchTimeout: ReturnType<typeof setTimeout> | null = null
+// Защита от гонки: при быстром наборе ответ на устаревший запрос может прийти
+// последним и затереть свежий результат.
+let listReq = 0
 
-const allClients = ref<ClientProfile[]>([])
+interface Page<T> { items: T[]; total: number }
 
 async function fetchClients() {
+  const req = ++listReq
   try {
     const params = new URLSearchParams()
     if (search.value.trim()) params.set('search', search.value.trim())
-    params.set('limit', '200')
-    const query = params.toString()
+    if (activeTab.value !== 'all') params.set('status', activeTab.value)
+    if (clientTypeFilter.value !== 'all') params.set('kind', clientTypeFilter.value)
+    params.set('limit', String(perPage.value))
+    params.set('offset', String((page.value - 1) * perPage.value))
 
-    const endpoint = registryMode.value === 'my' ? '/registry/my-clients' : '/registry/clients'
-    allClients.value = await api.get<ClientProfile[]>(`${endpoint}${query ? '?' + query : ''}`)
-    applyFilters()
+    if (registryMode.value === 'my') {
+      const res = await api.get<Page<ClientProfile>>(`/registry/my-clients?${params}`)
+      if (req !== listReq) return
+      clients.value = res.items
+      total.value = res.total
+    } else {
+      // Глобальный поиск — отдельная выдача по всей базе, без постраничности.
+      const gp = new URLSearchParams()
+      if (search.value.trim()) gp.set('search', search.value.trim())
+      gp.set('limit', '200')
+      const res = await api.get<ClientProfile[]>(`/registry/clients?${gp}`)
+      if (req !== listReq) return
+      clients.value = res
+      total.value = res.length
+    }
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки реестра')
+    if (req === listReq) toast.error(e.message || 'Ошибка загрузки реестра')
   } finally {
-    pageLoading.value = false
-    searchLoading.value = false
+    if (req === listReq) {
+      pageLoading.value = false
+      searchLoading.value = false
+    }
   }
+}
+
+/** Счётчики зависят только от поиска — статус и тип на них не влияют. */
+async function fetchCounts() {
+  if (registryMode.value !== 'my') return
+  try {
+    const p = new URLSearchParams()
+    if (search.value.trim()) p.set('search', search.value.trim())
+    counts.value = await api.get<typeof counts.value>(`/registry/my-clients/counts?${p}`)
+  } catch {
+    /* счётчики не критичны — молча оставляем прежние */
+  }
+}
+
+/** Смена фильтра всегда возвращает на первую страницу. */
+function reload(resetPage = true) {
+  if (resetPage) page.value = 1
+  clearSelection()
+  fetchClients()
+}
+
+// ── Выделение и массовое удаление ──
+//
+// Два режима, как в массовом удалении сделок: обычный — выбраны перечисленные
+// строки; «вся выборка» — выбрано всё под текущими фильтрами, а снятые галочки
+// работают как исключения. Иначе шестнадцать тысяч клиентов пришлось бы
+// отмечать вручную.
+const canBulkDelete = computed(() => authStore.can('clients.delete'))
+// Режим выделения включается кнопкой: постоянные галочки в списке только
+// мешают, пока ничего удалять не собираются.
+const selectionMode = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+const selectAllMatching = ref(false)
+const excludedIds = ref<Set<string>>(new Set())
+const bulkDeleting = ref(false)
+const showBulkDeleteDialog = ref(false)
+// Удалять ли сделки вместе с клиентами. По умолчанию нет — сделки это история
+// денег, и терять её вместе с карточками партнёр обычно не хочет.
+const bulkWithDeals = ref(false)
+
+function openBulkDeleteDialog() {
+  bulkWithDeals.value = false
+  showBulkDeleteDialog.value = true
+}
+
+function clearSelection() {
+  selectedIds.value = new Set()
+  selectAllMatching.value = false
+  excludedIds.value = new Set()
+}
+
+function exitSelection() {
+  clearSelection()
+  selectionMode.value = false
+}
+
+function isSelected(id: string): boolean {
+  return selectAllMatching.value ? !excludedIds.value.has(id) : selectedIds.value.has(id)
+}
+
+function toggleSelect(id: string) {
+  if (selectAllMatching.value) {
+    const next = new Set(excludedIds.value)
+    next.has(id) ? next.delete(id) : next.add(id)
+    excludedIds.value = next
+  } else {
+    const next = new Set(selectedIds.value)
+    next.has(id) ? next.delete(id) : next.add(id)
+    selectedIds.value = next
+  }
+}
+
+/** Галочка в шапке отмечает и снимает только показанную страницу. */
+const pageAllSelected = computed(
+  () => clients.value.length > 0 && clients.value.every((c) => isSelected(c.id)),
+)
+
+function togglePage() {
+  const ids = clients.value.map((c) => c.id)
+  const select = !pageAllSelected.value
+  if (selectAllMatching.value) {
+    const next = new Set(excludedIds.value)
+    for (const id of ids) select ? next.delete(id) : next.add(id)
+    excludedIds.value = next
+  } else {
+    const next = new Set(selectedIds.value)
+    for (const id of ids) select ? next.add(id) : next.delete(id)
+    selectedIds.value = next
+  }
+}
+
+/** Сколько клиентов сейчас выбрано — с учётом режима «вся выборка». */
+const selectedCount = computed(() =>
+  selectAllMatching.value ? Math.max(0, total.value - excludedIds.value.size) : selectedIds.value.size,
+)
+
+function selectAll() {
+  selectAllMatching.value = true
+  excludedIds.value = new Set()
+  selectedIds.value = new Set()
+}
+
+/** Отмечена ли хоть одна строка страницы — для промежуточного состояния. */
+const pageSomeSelected = computed(() => clients.value.some((c) => isSelected(c.id)))
+
+/**
+ * Предложение расширить выбор на всю выборку показываем ровно тогда, когда
+ * оно осмысленно: страница отмечена целиком, а за ней есть ещё клиенты.
+ */
+const canOfferSelectAll = computed(
+  () => !selectAllMatching.value && pageAllSelected.value && total.value > clients.value.length,
+)
+
+interface BulkDeleteResult {
+  deleted: number
+  dealsDeleted: number
+  remaining: number
+  skipped: Record<string, number>
+  examples: { name: string; reason: string }[]
+}
+
+// Сколько уже удалено — показывается на кнопке, пока идёт длинная чистка.
+const bulkProgress = ref(0)
+
+async function doBulkDelete() {
+  bulkDeleting.value = true
+  bulkProgress.value = 0
+  try {
+    const pickedIds = [...selectedIds.value]
+    let deleted = 0
+    let dealsDeleted = 0
+    let skipped: Record<string, number> = {}
+    let offset = 0
+
+    // Сервер обрабатывает выборку пачками и возвращает остаток: удаление
+    // сделок пересобирает журнал кассы по каждой, и одним запросом на
+    // пятнадцати тысячах это обернулось бы обрывом по таймауту. Повторяем,
+    // пока остаток не иссякнет; прерывание безопасно — сделанное сохранится.
+    for (;;) {
+      const body = {
+        ...(selectAllMatching.value
+          ? {
+              allMatching: {
+                ...(search.value.trim() ? { search: search.value.trim() } : {}),
+                ...(activeTab.value !== 'all' ? { status: activeTab.value } : {}),
+                ...(clientTypeFilter.value !== 'all' ? { kind: clientTypeFilter.value } : {}),
+              },
+              excludeIds: [...excludedIds.value],
+            }
+          : { ids: pickedIds.slice(offset) }),
+        withDeals: bulkWithDeals.value,
+      }
+
+      const res = await api.post<BulkDeleteResult>('/registry/bulk-delete', body)
+      deleted += res.deleted
+      dealsDeleted += res.dealsDeleted ?? 0
+      skipped = res.skipped ?? skipped
+      bulkProgress.value = deleted
+
+      // Ни одного удаления и остаток не убывает — дальше идти некуда.
+      if (!res.remaining || res.deleted === 0) break
+      offset += res.deleted
+    }
+
+    const skippedTotal = Object.values(skipped).reduce((s, n) => s + n, 0)
+    const dealsPart = dealsDeleted ? `, сделок в корзину: ${dealsDeleted}` : ''
+    if (deleted > 0 && skippedTotal === 0) {
+      toast.success(`Удалено клиентов: ${deleted}${dealsPart}`)
+    } else if (deleted > 0) {
+      toast.success(`Удалено: ${deleted}${dealsPart}. Пропущено: ${skippedTotal} — ${skipSummary(skipped)}`)
+    } else {
+      toast.error(`Ничего не удалено. ${skipSummary(skipped)}`)
+    }
+
+    showBulkDeleteDialog.value = false
+    exitSelection()
+    page.value = 1
+    await Promise.all([fetchClients(), fetchCounts()])
+  } catch (e: any) {
+    toast.error(e.response?.data?.message || e.message || 'Не удалось удалить клиентов')
+  } finally {
+    bulkDeleting.value = false
+    bulkProgress.value = 0
+  }
+}
+
+const SKIP_REASONS: Record<string, string> = {
+  platform: 'зарегистрированы на платформе',
+  foreign: 'созданы другим партнёром',
+  public: 'опубликованы в глобальном реестре',
+  active_deals: 'есть действующие сделки',
+  guarantor: 'выступают поручителями',
+}
+
+function pluralClients(n: number): string {
+  const ten = n % 100
+  if (ten >= 11 && ten <= 14) return 'клиентов'
+  switch (n % 10) {
+    case 1: return 'клиента'
+    case 2:
+    case 3:
+    case 4: return 'клиентов'
+    default: return 'клиентов'
+  }
+}
+
+function skipSummary(skipped: Record<string, number>): string {
+  const parts = Object.entries(skipped ?? {})
+    .filter(([, n]) => n > 0)
+    .map(([reason, n]) => `${n} ${SKIP_REASONS[reason] ?? reason}`)
+  return parts.length ? parts.join(', ') : ''
 }
 
 function switchMode(mode: 'my' | 'global') {
   registryMode.value = mode
   pageLoading.value = true
+  page.value = 1
+  clients.value = []
   fetchClients()
+  fetchCounts()
 }
 
 function onSearchInput() {
   searchLoading.value = true
   if (searchTimeout) clearTimeout(searchTimeout)
-  searchTimeout = setTimeout(() => fetchClients(), 400)
+  searchTimeout = setTimeout(() => {
+    page.value = 1
+    fetchClients()
+    fetchCounts()
+  }, 400)
 }
 
-function applyFilters() {
-  let result = allClients.value
-  if (activeTab.value !== 'all') {
-    result = result.filter((c) => c.status === activeTab.value)
-  }
-  if (clientTypeFilter.value === 'platform') {
-    result = result.filter((c) => c.isOnPlatform)
-  } else if (clientTypeFilter.value === 'external') {
-    result = result.filter((c) => !c.isOnPlatform)
-  }
-  clients.value = result
-}
+// Фильтры и постраничность считает сервер: показываем ровно то, что он отдал.
+watch(activeTab, () => reload())
+watch(clientTypeFilter, () => reload())
+watch(page, () => fetchClients())
+watch(perPage, () => reload())
 
-watch(activeTab, applyFilters)
-watch(clientTypeFilter, applyFilters)
-
-onMounted(fetchClients)
+onMounted(() => {
+  fetchClients()
+  fetchCounts()
+})
 
 // ── Computed ──
 
-const stats = computed(() => {
-  const all = allClients.value
-  return {
-    total: all.length,
-    reliable: all.filter((c) => c.status === 'reliable').length,
-    delayed: all.filter((c) => c.status === 'delayed').length,
-    unreliable: all.filter((c) => c.status === 'unreliable').length,
-    blacklisted: all.filter((c) => c.status === 'blacklisted').length,
-    platform: all.filter((c) => c.isOnPlatform).length,
-    external: all.filter((c) => !c.isOnPlatform).length,
-  }
-})
+// Счётчики берём с сервера — по всей выборке. Раньше они складывались из
+// загруженных строк и показывали не весь реестр, а только первую страницу.
+const stats = computed(() => counts.value)
 
 const tabs: { key: StatusFilter; label: string; color?: string }[] = [
   { key: 'all', label: 'Все' },
@@ -342,7 +594,7 @@ function renderStars(rating: number): string[] {
 </script>
 
 <template>
-  <div class="rg-page" :class="{ dark: isDark }">
+  <div class="at-page rg-page" :class="{ dark: isDark }">
     <!-- Hero search section (заголовок раздела — в верхнем баре) -->
     <div class="rg-hero">
       <div class="rg-hero-content">
@@ -452,7 +704,7 @@ function renderStars(rating: number): string[] {
     </div>
 
     <!-- Main content card -->
-    <v-card rounded="lg" elevation="0" border>
+    <v-card class="rg-list-card" rounded="lg" elevation="0" border>
       <div class="pa-4">
         <!-- Filter tabs -->
         <div class="rg-tabs mb-4">
@@ -484,6 +736,54 @@ function renderStars(rating: number): string[] {
             <v-icon icon="mdi-account-outline" size="14" class="mr-1" />
             Внешние ({{ stats.external }})
           </button>
+
+          <div class="rg-filter-spacer" />
+
+          <button
+            v-if="canBulkDelete && registryMode === 'my' && clients.length && !selectionMode"
+            class="rg-type-btn"
+            @click="selectionMode = true"
+          >
+            <v-icon icon="mdi-checkbox-multiple-outline" size="14" class="mr-1" />
+            Выбрать
+          </button>
+        </div>
+
+        <!-- Режим выделения -->
+        <div v-if="selectionMode" class="rg-sel">
+          <v-checkbox-btn
+            :model-value="pageAllSelected"
+            :indeterminate="pageSomeSelected && !pageAllSelected"
+            density="compact"
+            hide-details
+            @update:model-value="togglePage"
+          />
+          <span class="rg-sel-count">
+            {{ selectedCount ? `Выбрано: ${selectedCount}` : 'Выберите клиентов' }}
+          </span>
+
+          <template v-if="canOfferSelectAll || selectAllMatching">
+            <span class="rg-sel-dot">·</span>
+            <button v-if="canOfferSelectAll" class="rg-sel-link" @click="selectAll">
+              Выбрать все {{ total }}
+            </button>
+            <button v-else class="rg-sel-link" @click="clearSelection">Снять выбор</button>
+          </template>
+
+          <div class="rg-sel-spacer" />
+
+          <button
+            v-if="selectedCount"
+            class="rg-sel-danger"
+            :disabled="bulkDeleting"
+            @click="openBulkDeleteDialog"
+          >
+            <v-icon icon="mdi-delete-outline" size="16" />
+            Удалить
+          </button>
+          <button class="rg-sel-close" title="Выйти из режима выбора" @click="exitSelection">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
         </div>
 
         <!-- Loading -->
@@ -511,10 +811,24 @@ function renderStars(rating: number): string[] {
             :class="{
               'rg-card--expanded': isExpanded(client.phone),
               'rg-card--blacklisted': client.blacklisted,
+              'rg-card--picked': selectionMode && isSelected(client.id),
             }"
           >
-            <!-- Card header -->
-            <div class="rg-header" @click="toggleExpand(client.phone)">
+            <!-- Card header. В режиме выбора клик по строке отмечает клиента,
+                 а не раскрывает карточку — так ставить галочки быстрее. -->
+            <div
+              class="rg-header"
+              @click="selectionMode ? toggleSelect(client.id) : toggleExpand(client.phone)"
+            >
+              <div v-if="selectionMode" class="rg-pick">
+                <v-checkbox-btn
+                  :model-value="isSelected(client.id)"
+                  density="compact"
+                  hide-details
+                  tabindex="-1"
+                  style="pointer-events: none;"
+                />
+              </div>
               <div
                 class="rg-avatar"
                 :style="{
@@ -777,6 +1091,19 @@ function renderStars(rating: number): string[] {
             </v-expand-transition>
           </div>
         </div>
+
+        <!-- Постраничность. В глобальном поиске её нет: там отдельная выдача
+             по всей базе, ограниченная запросом. -->
+        <ServerPager
+          v-if="registryMode === 'my' && total > 0"
+          :page="page"
+          :total="total"
+          :per-page="perPage"
+          :busy="pageLoading || searchLoading"
+          :per-page-options="PER_PAGE_OPTIONS"
+          @update:page="page = $event"
+          @update:per-page="perPage = $event"
+        />
       </div>
     </v-card>
 
@@ -935,9 +1262,21 @@ function renderStars(rating: number): string[] {
             Профиль клиента будет удалён безвозвратно. Все отзывы и записи в чёрном списке, связанные с этим клиентом, также будут удалены.
           </div>
 
-          <div v-if="clientToDelete" style="font-size: 15px; color: rgba(var(--v-theme-on-surface), 0.7);">
+          <div v-if="clientToDelete" class="mb-4" style="font-size: 15px; color: rgba(var(--v-theme-on-surface), 0.7);">
             Вы уверены, что хотите удалить профиль <strong>{{ clientToDelete.firstName }} {{ clientToDelete.lastName }}</strong>?
           </div>
+
+          <label class="rg-bulk-choice" :class="{ 'rg-bulk-choice--on': deleteWithDeals }">
+            <v-checkbox-btn v-model="deleteWithDeals" density="compact" hide-details color="error" />
+            <div>
+              <div class="rg-bulk-choice-title">Удалить и сделки этого клиента</div>
+              <div class="rg-bulk-choice-sub">
+                {{ deleteWithDeals
+                  ? 'Сделки уйдут в корзину — их можно восстановить. Доход по ним уйдёт из кассы.'
+                  : 'Сейчас сделки останутся: имя и телефон в них сохранятся.' }}
+              </div>
+            </div>
+          </label>
         </div>
 
         <div class="rg-dialog-actions">
@@ -952,18 +1291,193 @@ function renderStars(rating: number): string[] {
         </div>
       </v-card>
     </v-dialog>
+
+    <!-- Массовое удаление -->
+    <v-dialog v-model="showBulkDeleteDialog" max-width="480" persistent :fullscreen="isMobile">
+      <v-card rounded="lg">
+        <div class="rg-dialog-header">
+          <span class="rg-dialog-title">Удалить {{ selectedCount }} {{ pluralClients(selectedCount) }}?</span>
+          <button class="rg-dialog-close" :disabled="bulkDeleting" @click="showBulkDeleteDialog = false">
+            <v-icon icon="mdi-close" size="18" />
+          </button>
+        </div>
+
+        <div class="pa-5">
+          <div class="rg-dialog-warning mb-4">
+            <v-icon icon="mdi-alert-circle-outline" size="20" class="mr-2" />
+            Действие нельзя отменить.
+          </div>
+
+          <!-- Выбор: удалять ли сделки вместе с клиентами -->
+          <label class="rg-bulk-choice" :class="{ 'rg-bulk-choice--on': bulkWithDeals }">
+            <v-checkbox-btn v-model="bulkWithDeals" density="compact" hide-details color="error" />
+            <div>
+              <div class="rg-bulk-choice-title">Удалить и сделки этих клиентов</div>
+              <div class="rg-bulk-choice-sub">
+                Сделки отправятся в корзину — их можно восстановить. Доход по ним уйдёт
+                из кассы и аналитики.
+              </div>
+            </div>
+          </label>
+
+          <div class="rg-bulk-facts mt-4">
+            <template v-if="bulkWithDeals">
+              <div class="rg-bulk-fact">
+                <v-icon icon="mdi-delete-clock-outline" size="17" color="#ef4444" />
+                <span>Все сделки этих клиентов, включая действующие, уйдут <b>в корзину</b></span>
+              </div>
+              <div class="rg-bulk-fact">
+                <v-icon icon="mdi-restore" size="17" color="#10b981" />
+                <span>Из корзины сделки можно вернуть, но карточки клиентов — уже нет</span>
+              </div>
+              <div class="rg-bulk-fact">
+                <v-icon icon="mdi-shield-alert-outline" size="17" color="#f59e0b" />
+                <span>
+                  Поручители по действующим договорам, клиенты платформы и опубликованные
+                  в глобальном реестре будут <b>пропущены</b>
+                </span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="rg-bulk-fact">
+                <v-icon icon="mdi-check-circle-outline" size="17" color="#10b981" />
+                <span>Сделки этих клиентов <b>останутся</b> — имя и телефон в них сохранятся</span>
+              </div>
+              <div class="rg-bulk-fact">
+                <v-icon icon="mdi-shield-alert-outline" size="17" color="#f59e0b" />
+                <span>
+                  Клиенты с действующими сделками, поручители, клиенты платформы и
+                  опубликованные в глобальном реестре будут <b>пропущены</b> — их удалить нельзя
+                </span>
+              </div>
+            </template>
+            <div class="rg-bulk-fact">
+              <v-icon icon="mdi-close-circle-outline" size="17" color="#ef4444" />
+              <span>Отзывы и записи чёрного списка по ним будут удалены</span>
+            </div>
+          </div>
+
+          <div v-if="selectAllMatching" class="rg-bulk-scope mt-4">
+            <v-icon icon="mdi-filter-outline" size="16" />
+            <span>
+              Выбрана вся текущая выборка<template v-if="search.trim()"> по запросу «{{ search.trim() }}»</template><template
+                v-if="activeTab !== 'all'"
+              >, вкладка «{{ tabs.find((t) => t.key === activeTab)?.label }}»</template><template
+                v-if="clientTypeFilter !== 'all'"
+              >, {{ clientTypeFilter === 'platform' ? 'на платформе' : 'внешние' }}</template>.
+            </span>
+          </div>
+        </div>
+
+        <div class="rg-dialog-actions">
+          <button class="rg-btn rg-btn--ghost" :disabled="bulkDeleting" @click="showBulkDeleteDialog = false">
+            Отмена
+          </button>
+          <button class="rg-btn rg-btn--danger" :disabled="bulkDeleting" @click="doBulkDelete">
+            <v-progress-circular v-if="bulkDeleting" indeterminate size="16" width="2" color="white" class="mr-2" />
+            <v-icon v-else icon="mdi-delete-outline" size="16" class="mr-1" />
+            {{ bulkDeleting ? (bulkProgress ? `Удалено ${bulkProgress} из ${selectedCount}…` : 'Удаление…') : 'Удалить' }}
+          </button>
+        </div>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <style scoped>
 /* ── Page ── */
+/* Ширину и отступы задаёт общий .at-page, как в остальных разделах: страница
+   занимает всё доступное место, а не колонку в 1200 пикселей по центру.
+   Снизу добавлен запас под прилипающую панель страниц. */
 .rg-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 32px 24px;
+  padding-bottom: 72px;
 }
-@media (max-width: 768px) {
-  .rg-page { padding: 16px 14px; }
+/* Панель страниц прилипает к низу — карточка списка не должна обрезать
+   содержимое (так же сделано в сделках, платежах и должниках). */
+.rg-list-card {
+  overflow: visible;
+}
+
+/* ── Режим выбора ── */
+/* Кнопка «Выбрать» отодвинута вправо от фильтров типа клиента. */
+.rg-filter-spacer { flex: 1 1 auto; }
+
+.rg-sel {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px 6px 10px; margin-bottom: 12px;
+  border-radius: 10px;
+  background: rgba(4, 120, 87, 0.07);
+  border: 1px solid rgba(4, 120, 87, 0.18);
+  font-size: 13px;
+}
+/* Счётчик и «выбрать все» держатся вплотную к галочке: это одна мысль —
+   что выбрано и как выбрать больше, — а не три разрозненных элемента. */
+.rg-sel :deep(.v-selection-control) { flex: 0 0 auto; min-height: 0; }
+.rg-sel-count { font-weight: 600; white-space: nowrap; margin-left: -4px; }
+.rg-sel-spacer { flex: 1 1 auto; }
+/* Разделитель между счётчиком и действием — вместо пустого зазора. */
+.rg-sel-dot { color: rgba(var(--v-theme-on-surface), 0.3); margin: 0 -4px; }
+.rg-sel-link {
+  background: none; border: none; padding: 0;
+  color: #047857; font-size: 13px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.rg-sel-link:hover { text-decoration: underline; }
+.rg-sel-danger {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 8px;
+  background: #ef4444; color: #fff;
+  font-size: 13px; font-weight: 600;
+  border: none; cursor: pointer; white-space: nowrap;
+}
+.rg-sel-danger:hover { background: #dc2626; }
+.rg-sel-danger:disabled { opacity: 0.6; cursor: default; }
+.rg-sel-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px;
+  background: none; border: none; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.rg-sel-close:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+
+/* Галочка в карточке — слева от аватара, без сдвига остальной вёрстки. */
+.rg-pick { flex: 0 0 auto; margin-right: -4px; }
+/* Отмеченная карточка подсвечивается — видно выбор, не вглядываясь в галочки. */
+.rg-card--picked {
+  border-color: rgba(4, 120, 87, 0.45) !important;
+  background: rgba(4, 120, 87, 0.045);
+}
+
+/* Выбор «удалить и сделки» — отдельным блоком: последствия совсем другие,
+   мимо него взгляд проскочить не должен. */
+.rg-bulk-choice {
+  display: flex; align-items: flex-start; gap: 6px;
+  padding: 10px 12px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  cursor: pointer; transition: all 0.15s;
+}
+.rg-bulk-choice--on {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.05);
+}
+.rg-bulk-choice-title { font-size: 13.5px; font-weight: 600; margin-top: 3px; }
+.rg-bulk-choice-sub {
+  font-size: 12.5px; line-height: 1.4; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+
+/* Пояснения в окне подтверждения */
+.rg-bulk-facts { display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; line-height: 1.45; }
+.rg-bulk-fact { display: flex; align-items: flex-start; gap: 8px; }
+.rg-bulk-scope {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 12px; border-radius: 9px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.7);
 }
 
 /* ── Hero search ── */

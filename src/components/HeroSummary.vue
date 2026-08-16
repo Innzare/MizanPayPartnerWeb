@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { useDealsStore } from '@/stores/deals'
 import { useSubscription } from '@/composables/useSubscription'
 import { useCapital } from '@/composables/useCapital'
 import { formatCurrency, formatCurrencyShort, formatPercent } from '@/utils/formatters'
@@ -30,17 +29,18 @@ const emit = defineEmits<{
   (e: 'metric', key: string): void
 }>()
 
-const dealsStore = useDealsStore()
 const subscription = useSubscription()
 const { capital } = useCapital()
 const router = useRouter()
 
 const canView = computed(() => subscription.canAccess('analytics'))
 
-const totalRemaining = computed(() => props.totals ? props.totals.totalRemaining : dealsStore.totalRemaining)
-const totalRevenue = computed(() => props.totals ? props.totals.totalRevenue : dealsStore.totalRevenue)
-const totalInvested = computed(() => props.totals ? props.totals.totalInvested : dealsStore.totalInvested)
-const totalProfit = computed(() => props.totals ? props.totals.totalProfit : dealsStore.totalProfit)
+// Итоги приходят пропом — их считает сервер теми же формулами, что «Отчёты».
+// Запасных значений из портфеля больше нет: он в память не грузится.
+const totalRemaining = computed(() => props.totals?.totalRemaining ?? 0)
+const totalRevenue = computed(() => props.totals?.totalRevenue ?? 0)
+const totalInvested = computed(() => props.totals?.totalInvested ?? 0)
+const totalProfit = computed(() => props.totals?.totalProfit ?? 0)
 
 // When availableCapital is explicitly passed (including null), use it; otherwise fall back to global capital.
 const displayCapital = computed(() => props.availableCapital !== undefined ? props.availableCapital : capital.value?.availableCapital ?? null)

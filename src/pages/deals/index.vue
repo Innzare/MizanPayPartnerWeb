@@ -4,7 +4,7 @@ import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type DealFolder, userName, clientProfileName } from '@/types'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useFolders } from '@/composables/useFolders'
@@ -13,8 +13,10 @@ import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
+import ServerPager from '@/components/ServerPager.vue'
 
 const router = useRouter()
+const route = useRoute()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const dealsStore = useDealsStore()
@@ -101,7 +103,7 @@ async function moveSelectedToFolder(folderId: string | null) {
   if (!ids.length) return
   try {
     await moveBatch(ids, folderId)
-    await dealsStore.fetchDeals()
+    await Promise.all([refreshList(), fetchFolders()])
     selectedIds.value = new Set()
     showMoveMenu.value = false
     toast.success(`${ids.length} сделок перемещено`)
@@ -111,7 +113,7 @@ async function moveSelectedToFolder(folderId: string | null) {
 async function handleMoveSingle(dealId: string, folderId: string | null) {
   try {
     await moveDeal(dealId, folderId)
-    await Promise.all([dealsStore.fetchDeals(), fetchFolders()])
+    await Promise.all([refreshList(), fetchFolders()])
     toast.success(folderId ? 'Сделка перемещена' : 'Сделка убрана из папки')
   } catch (e: any) { toast.error(e.message || 'Ошибка') }
 }
@@ -120,10 +122,14 @@ const pageLoading = ref(true)
 
 onMounted(async () => {
   try {
+    // Полный портфель и все платежи здесь больше не грузятся — в этом и был
+    // главный вес страницы. Корзина нужна для счётчика на вкладке, папки —
+    // для фильтра.
     await Promise.all([
-      dealsStore.fetchDeals(),
-      paymentsStore.fetchPayments(),
-      dealsStore.fetchTrash(),
+      refreshList(),
+      // Только счётчик для вкладки: само содержимое корзины грузится, когда
+      // на неё переходят. Раньше каждый вход в раздел тянул её целиком.
+      dealsStore.fetchTrashCount(),
       fetchFolders(),
     ])
   } catch (e: any) {
@@ -157,13 +163,22 @@ const deleting = ref(false)
 function toggleSelect(id: string) {
   if (selectedIds.value.has(id)) {
     selectedIds.value.delete(id)
+    // В режиме «выбраны все» снятая галочка — исключение: сделка останется,
+    // остальные (включая невидимые страницы) удалятся.
+    if (selectAllMatching.value) excludedIds.value.add(id)
   } else {
     selectedIds.value.add(id)
+    if (selectAllMatching.value) excludedIds.value.delete(id)
   }
   selectedIds.value = new Set(selectedIds.value) // trigger reactivity
+  excludedIds.value = new Set(excludedIds.value)
 }
 
+// Выделяет строки ТЕКУЩЕЙ страницы: вся выборка может быть в тысячи сделок,
+// и массовые действия по ней — отдельная задача, а не молчаливое «выделить всё».
 function selectAll() {
+  selectAllMatching.value = false
+  excludedIds.value = new Set()
   if (selectedIds.value.size === displayedDeals.value.length) {
     selectedIds.value = new Set()
   } else {
@@ -174,19 +189,25 @@ function selectAll() {
 function cancelSelect() {
   selectMode.value = false
   selectedIds.value = new Set()
+  selectAllMatching.value = false
+  excludedIds.value = new Set()
 }
 
 async function deleteSelected() {
-  if (!selectedIds.value.size) return
-  if (!confirm(`Переместить ${selectedIds.value.size} сделок в корзину?`)) return
+  if (!selectionCount.value) return
+  if (!confirm(`Переместить ${selectionCount.value.toLocaleString('ru-RU')} сделок в корзину?`)) return
 
   deleting.value = true
   try {
-    const result = await api.post<{ deleted: number; total: number }>('/deals/delete-batch', {
-      ids: Array.from(selectedIds.value),
-    })
-    toast.success(`${result.deleted} сделок перемещено в корзину`)
-    await dealsStore.fetchDeals()
+    if (selectAllMatching.value) {
+      await deleteWholeSelection()
+    } else {
+      const result = await api.post<{ deleted: number; total: number }>('/deals/delete-batch', {
+        ids: Array.from(selectedIds.value),
+      })
+      toast.success(`${result.deleted} сделок перемещено в корзину`)
+    }
+    await Promise.all([refreshList(), dealsStore.fetchTrashCount(), isTrashTab.value ? dealsStore.refreshTrash() : Promise.resolve()])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка удаления')
   }
@@ -195,12 +216,51 @@ async function deleteSelected() {
   deleting.value = false
 }
 
+/**
+ * Удаление всей выборки. Сервер отбирает сделки теми же фильтрами, что и
+ * список, и удаляет пачками — одним запросом на 15 000 сделок дело кончилось
+ * бы таймаутом: каждая тянет за собой пересборку журнала и долгов.
+ *
+ * Обрыв (закрыли вкладку, пропала сеть) не страшен: удалённое уже в корзине,
+ * повторный запуск доберёт остаток.
+ */
+async function deleteWholeSelection() {
+  bulkProgress.value = { done: 0, total: selectionCount.value }
+  let guard = 0
+  for (;;) {
+    const res = await api.post<{ deleted: number; remaining: number }>('/deals/delete-by-filter', {
+      ...serverFilters.value,
+      excludeIds: Array.from(excludedIds.value),
+      batchSize: 200,
+    })
+    bulkProgress.value = {
+      done: bulkProgress.value.done + res.deleted,
+      total: Math.max(bulkProgress.value.total, bulkProgress.value.done + res.deleted + res.remaining),
+    }
+    if (res.remaining <= 0) break
+    // Ничего не удалилось, а остаток есть — дальше цикл был бы вечным
+    // (например, вся выборка закрыта тарифом).
+    if (res.deleted === 0) break
+    if (++guard > 500) break // страховка от бесконечного цикла
+  }
+  const done = bulkProgress.value.done
+  bulkProgress.value = null
+  toast.success(`${done.toLocaleString('ru-RU')} сделок перемещено в корзину`)
+}
+
+// Прогресс массового удаления: на 15 000 сделок это десятки запросов, и без
+// счётчика партнёр не отличил бы работу от зависания.
+const bulkProgress = ref<{ done: number; total: number } | null>(null)
+
 async function restoreSelected() {
   if (!selectedIds.value.size) return
   deleting.value = true
   try {
     await dealsStore.restoreBatch(Array.from(selectedIds.value))
     toast.success(`${selectedIds.value.size} сделок восстановлено`)
+    // И список, и корзина серверные — обе стороны надо перечитать, иначе на
+    // месте восстановленных строк останется дырка, а страницы съедут.
+    await Promise.all([refreshList(), dealsStore.refreshTrash()])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка восстановления')
   }
@@ -214,6 +274,7 @@ async function emptyTrash() {
   try {
     await dealsStore.emptyTrash()
     toast.success('Корзина очищена')
+    page.value = 1
   } catch (e: any) {
     toast.error(e.message || 'Ошибка очистки')
   }
@@ -224,6 +285,7 @@ async function restoreOne(id: string) {
   try {
     await dealsStore.restoreDeal(id)
     toast.success('Сделка восстановлена')
+    await Promise.all([refreshList(), dealsStore.refreshTrash()])
   } catch (e: any) {
     toast.error(e.message || 'Ошибка восстановления')
   }
@@ -234,6 +296,7 @@ async function permanentDeleteOne(id: string) {
   try {
     await dealsStore.permanentDelete(id)
     toast.success('Сделка удалена навсегда')
+    await dealsStore.refreshTrash()
   } catch (e: any) {
     toast.error(e.message || 'Ошибка удаления')
   }
@@ -248,6 +311,7 @@ async function permanentDeleteSelected() {
       await dealsStore.permanentDelete(id)
     }
     toast.success(`Удалено навсегда`)
+    await dealsStore.refreshTrash()
   } catch (e: any) {
     toast.error(e.message || 'Ошибка удаления')
   }
@@ -287,7 +351,7 @@ const tabFilters = [
 // Trash is now a top-level toggle (separate button above the card) rather
 // than a tab, because it has its own page logic — no folder/cashbox/staff
 // filters, different bulk actions, separate count. tab.value === 3 keeps
-// the existing baseDeals/watcher behaviour.
+// the existing watcher behaviour.
 const TRASH_TAB_INDEX = 3
 function toggleTrash() {
   tab.value = isTrashTab.value ? 0 : TRASH_TAB_INDEX
@@ -349,20 +413,19 @@ function toggleSort(key: string) {
 
 // ── Вычисляемые значения строки ──
 const INTERVAL_UNIT: Record<string, string> = { WEEKLY: 'нед', BIWEEKLY: '×2 нед', MONTHLY: 'мес' }
+// Платежи всех сделок в памяти больше не лежат, поэтому «ежемесячно» считаем
+// формулой — той же, по которой сортирует сервер, так что цифра и порядок
+// строк теперь согласованы. Разница видна только у сделок с перераспределённым
+// графиком: там раньше показывался первый платёж графика.
 function dealMonthly(deal: Deal): number {
-  const ps = paymentsStore.getPaymentsForDeal(deal.id)
-  if (ps.length) return ps[0].amount
   const financed = deal.totalPrice - (deal.downPayment ?? 0)
   return deal.numberOfPayments > 0 ? Math.round(financed / deal.numberOfPayments) : 0
 }
+/** Конец графика: сервер присылает готовое значение для строк страницы. */
 function dealLastPaymentTs(deal: Deal): number | null {
-  const ps = paymentsStore.getPaymentsForDeal(deal.id)
-  if (ps.length) {
-    let max = 0
-    for (const p of ps) { const t = new Date(p.dueDate).getTime(); if (t > max) max = t }
-    return max || null
-  }
-  // фолбэк: firstPaymentDate + (n-1) интервалов
+  if (deal.scheduleEndAt) return new Date(deal.scheduleEndAt).getTime()
+  // Фолбэк для корзины (грузится старым эндпоинтом, без вычисленного поля):
+  // firstPaymentDate + (n−1) интервалов.
   if (!deal.firstPaymentDate || !deal.numberOfPayments) return null
   const d = new Date(deal.firstPaymentDate)
   const n = deal.numberOfPayments - 1
@@ -378,6 +441,162 @@ function dealLastPaymentLabel(deal: Deal): string {
 function dealTermLabel(deal: Deal): string {
   return `${deal.numberOfPayments} ${INTERVAL_UNIT[deal.paymentInterval] ?? 'мес'}`
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Серверный список
+//
+// Раньше страница поднимала в память браузера ВСЕ сделки партнёра и все его
+// платежи, а фильтры/поиск/сортировку считала поверх этих массивов. У партнёра
+// с тысячами сделок это и было причиной тормозов. Теперь сервер отдаёт одну
+// страницу, счётчики и итоги считает сам.
+//
+// Корзина осталась на клиенте: она мала, и её путь ниже не тронут.
+// ══════════════════════════════════════════════════════════════════
+
+const PER_PAGE_OPTIONS = [25, 50, 100, 200] // 200 — серверный максимум
+const page = ref(1)
+const perPage = ref(50)
+
+/** Ключи колонок → ключи сортировки сервера (DEALS_SORT_KEYS). */
+const SERVER_SORT_KEYS: Record<string, string> = {
+  product: 'productName',
+  client: 'clientName',
+  total: 'totalPrice',
+  remaining: 'remainingAmount',
+  lastPayment: 'scheduleEndAt',
+}
+const serverSortKey = computed(() => SERVER_SORT_KEYS[sortCol.value] ?? sortCol.value)
+
+// Поиск с задержкой: без неё каждый символ уходил бы отдельным запросом.
+// VueUse в проекте нет — таймер вручную.
+const debouncedSearch = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(search, (v) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { debouncedSearch.value = v }, 350)
+})
+
+const TAB_STATUS: Record<number, 'ACTIVE' | 'COMPLETED' | undefined> = {
+  0: 'ACTIVE',
+  1: 'COMPLETED',
+  2: undefined, // «Все»
+}
+
+const serverFilters = computed(() => ({
+  status: TAB_STATUS[tab.value],
+  folderId: activeFolder.value,
+  cashBoxId: activeCashBoxId.value,
+  assignedStaffId: activeStaff.value,
+  q: debouncedSearch.value,
+}))
+
+const serverParams = computed(() => ({
+  ...serverFilters.value,
+  sort: serverSortKey.value,
+  dir: sortDir.value,
+  limit: perPage.value,
+  offset: (page.value - 1) * perPage.value,
+}))
+
+/** Перечитать текущую страницу и счётчики (после действий над сделками). */
+async function refreshList() {
+  if (isTrashTab.value) return
+  await Promise.all([
+    dealsStore.fetchDealsPage(serverParams.value),
+    dealsStore.fetchDealCounts(serverFilters.value),
+  ])
+}
+
+// ── Состояние страницы в адресе ──────────────────────────────────────
+// Возврат с карточки сделки раньше сбрасывал всё на первую страницу вкладки
+// «Активные». С серверной пагинацией это стало заметнее (партнёр мог уйти с
+// 7-й страницы), поэтому состояние живёт в адресе — заодно ссылку на выборку
+// можно переслать. Вид (таблица/сетка) и набор колонок остаются в localStorage.
+
+function initFromQuery() {
+  const q = route.query
+  const str = (v: unknown): string | null => {
+    const s = Array.isArray(v) ? v[0] : v
+    return typeof s === 'string' && s.trim() ? s : null
+  }
+  const int = (v: unknown, def: number): number => {
+    const n = parseInt(str(v) ?? '', 10)
+    return Number.isFinite(n) && n > 0 ? n : def
+  }
+
+  const t = int(q.tab, 0)
+  tab.value = t >= 0 && t <= 3 ? t : 0
+  perPage.value = PER_PAGE_OPTIONS.includes(int(q.per, 50)) ? int(q.per, 50) : 50
+  page.value = int(q.page, 1)
+
+  const qs = str(q.q)
+  if (qs) {
+    search.value = qs
+    // Сразу и в debounced: иначе первый запрос ушёл бы без поиска.
+    debouncedSearch.value = qs
+  }
+
+  // Валидируем по списку колонок, а не по SORT_ACCESSOR: тот объявлен ниже по
+  // файлу, и обращение к нему отсюда упало бы в браузере (const в мёртвой зоне).
+  const sc = str(q.sort)
+  if (sc && ALL_COLUMNS.some((c) => c.key === sc)) sortCol.value = sc
+  sortDir.value = str(q.dir) === 'asc' ? 'asc' : 'desc'
+
+  activeFolder.value = str(q.folder)
+  activeCashBoxId.value = str(q.box)
+  activeStaff.value = str(q.staff)
+}
+
+// Вызов ДО подписок ниже: watch не должен принять восстановление состояния за
+// действие партнёра и сбросить страницу на первую.
+initFromQuery()
+
+watch(
+  () => [tab.value, page.value, perPage.value, debouncedSearch.value, sortCol.value, sortDir.value,
+         activeFolder.value, activeCashBoxId.value, activeStaff.value],
+  () => {
+    const q: Record<string, string> = {}
+    if (tab.value) q.tab = String(tab.value)
+    if (page.value > 1) q.page = String(page.value)
+    if (perPage.value !== 50) q.per = String(perPage.value)
+    if (debouncedSearch.value.trim()) q.q = debouncedSearch.value.trim()
+    if (sortCol.value !== 'createdAt') q.sort = sortCol.value
+    if (sortDir.value !== 'desc') q.dir = sortDir.value
+    if (activeFolder.value) q.folder = activeFolder.value
+    if (activeCashBoxId.value) q.box = activeCashBoxId.value
+    if (activeStaff.value) q.staff = activeStaff.value
+    // replace, а не push: перебор фильтров не должен забивать историю браузера.
+    router.replace({ query: q }).catch(() => {})
+  },
+)
+
+// Смена фильтра, поиска, сортировки или вкладки — всегда с первой страницы:
+// иначе на 3-й странице после сужения выборки был бы пустой экран.
+watch(
+  () => [serverFilters.value, serverSortKey.value, sortDir.value, perPage.value],
+  () => { page.value = 1 },
+  { deep: true },
+)
+
+// Страница и счётчики перезапрашиваются РАЗДЕЛЬНО. Счётчики зависят только от
+// фильтров, поэтому переход по страницам — один лёгкий запрос вместо двух:
+// раньше каждый клик по пагинации тянул ещё и шесть агрегатов, которые не
+// могли измениться.
+watch(
+  serverParams,
+  () => {
+    // Корзина ходит на свой эндпоинт, но зависит от тех же страницы и поиска.
+    if (isTrashTab.value) loadTrashPage()
+    else dealsStore.fetchDealsPage(serverParams.value)
+  },
+  { deep: true },
+)
+
+watch(
+  serverFilters,
+  () => { if (!isTrashTab.value) dealsStore.fetchDealCounts(serverFilters.value) },
+  { deep: true },
+)
 
 const SORT_ACCESSOR: Record<string, (d: Deal) => number | string> = {
   dealNumber: (d) => d.dealNumber,
@@ -398,73 +617,144 @@ const SORT_ACCESSOR: Record<string, (d: Deal) => number | string> = {
 
 const isTrashTab = computed(() => tab.value === 3)
 
-const baseDeals = computed(() => {
-  switch (tab.value) {
-    case 0: return dealsStore.activeDeals
-    case 1: return dealsStore.completedDeals
-    case 2: return dealsStore.investorDeals
-    case 3: return dealsStore.trash
-    default: return dealsStore.investorDeals
-  }
-})
+/**
+ * Колонки корзины → поля сделки, по которым умеет сортировать база. Ключей
+ * меньше, чем в списке: производных значений (ежемесячный платёж, последняя
+ * оплата) в самой сделке нет, и считать их по всей корзине ради сортировки
+ * страницы незачем.
+ */
+const TRASH_SORT_KEYS: Record<string, string> = {
+  dealNumber: 'dealNumber',
+  product: 'productName',
+  total: 'totalPrice',
+  markup: 'markup',
+  remaining: 'remainingAmount',
+  downPayment: 'downPayment',
+  dealDate: 'dealDate',
+}
+
+/** Загрузить страницу корзины теми же условиями, что видит партнёр. */
+function loadTrashPage() {
+  dealsStore.fetchTrash({
+    q: debouncedSearch.value,
+    sort: TRASH_SORT_KEYS[sortCol.value],
+    dir: sortDir.value,
+    limit: perPage.value,
+    offset: (page.value - 1) * perPage.value,
+  })
+}
 
 watch(tab, (v) => {
-  if (v === 3 && !dealsStore.trash.length) {
-    dealsStore.fetchTrash()
+  if (v === 3) {
+    page.value = 1
+    loadTrashPage()
   }
 })
 
 const displayedDeals = computed(() => {
-  let result = [...baseDeals.value]
-
-  // Folder filter
-  if (activeFolder.value) {
-    result = result.filter(d => d.folderId === activeFolder.value)
-  }
-
-  // Cashbox filter
-  if (activeCashBoxId.value) {
-    result = result.filter(d => d.cashBoxId === activeCashBoxId.value)
-  }
-
-  // Staff assignee filter
-  if (activeStaff.value) {
-    result = result.filter(d => (d as any).assignedStaffId === activeStaff.value)
-  }
-
-  if (search.value) {
-    const s = search.value.toLowerCase()
-    const sNum = s.replace(/[^\d]/g, '') // цифры из запроса — для фильтра по № договора
-    result = result.filter(d =>
-      d.productName.toLowerCase().includes(s) ||
-      dealClientName(d).toLowerCase().includes(s) ||
-      (sNum.length > 0 && String(d.dealNumber).includes(sNum))
-    )
-  }
-
-  // Сортировка по выбранной колонке (заголовок таблицы / select).
-  const acc = SORT_ACCESSOR[sortCol.value]
-  if (acc) {
-    const dir = sortDir.value === 'asc' ? 1 : -1
-    result.sort((a, b) => {
-      const va = acc(a)
-      const vb = acc(b)
-      if (typeof va === 'string' && typeof vb === 'string') return va.localeCompare(vb, 'ru') * dir
-      return (va < vb ? -1 : va > vb ? 1 : 0) * dir
-    })
-  }
-
-  return result
+  // И обычные вкладки, и корзина: сервер уже отфильтровал, отсортировал и
+  // нарезал страницу. Раньше корзина фильтровалась в браузере — она грузилась
+  // целиком, а после массового удаления там могут быть тысячи сделок.
+  return isTrashTab.value ? dealsStore.trash : dealsStore.list
 })
 
-// Summary stats for current tab
+/** Всего строк в выборке — для пагинатора и подписи «показано X из N». */
+const totalRows = computed(() =>
+  isTrashTab.value ? dealsStore.trashTotal : dealsStore.listTotal,
+)
+/**
+ * Идёт ли запрос списка. Пока он идёт, строки гаснут под оверлеем, а элементы
+ * управления блокируются: без этого партнёр успевал накликать три перехода
+ * подряд и видел результат последнего ответа, а не последнего клика.
+ * Корзина теперь тоже серверная и постраничная — индикация нужна и там.
+ */
+const listBusy = computed(() =>
+  isTrashTab.value ? dealsStore.trashLoading : dealsStore.listLoading,
+)
+
+/** KPI считаются вместе со счётчиками: пока они в пути, показываем скелетон,
+ *  а не старые цифры от предыдущей вкладки. */
+const statsBusy = computed(() => !isTrashTab.value && dealsStore.countsLoading)
+
+/** Сквозной номер строки: на 2-й странице по 50 счёт идёт с 51. */
+function rowNumber(idx: number): number {
+  return (page.value - 1) * perPage.value + idx + 1
+}
+
+// ── Выделение всей выборки ────────────────────────────────────────────
+// Галочки работают в пределах страницы, но у партнёра выборка может быть в
+// тысячи сделок, и очистить её постранично невозможно. Поэтому есть второй
+// режим: «выбрать все N» — тогда действие уходит на сервер фильтрами, а не
+// списком идентификаторов. Снятые вручную галочки становятся исключениями.
+const selectAllMatching = ref(false)
+const excludedIds = ref<Set<string>>(new Set())
+
+/** Сколько сделок реально затронет действие. */
+const selectionCount = computed(() =>
+  selectAllMatching.value
+    ? Math.max(0, totalRows.value - excludedIds.value.size)
+    : selectedIds.value.size,
+)
+
+function enableSelectAllMatching() {
+  selectAllMatching.value = true
+  excludedIds.value = new Set()
+  selectedIds.value = new Set(displayedDeals.value.map((d) => d.id))
+}
+
+function clearSelectAllMatching() {
+  selectAllMatching.value = false
+  excludedIds.value = new Set()
+  selectedIds.value = new Set()
+}
+
+// Сброс режима при смене выборки: «все 14 815» после смены фильтра означали бы
+// уже другие сделки — партнёр удалил бы не то, что видел.
+watch(serverFilters, () => { if (selectAllMatching.value) clearSelectAllMatching() }, { deep: true })
+
+// Итоги по ТЕКУЩЕЙ выборке — считает сервер теми же фильтрами, что и страницу.
+// Раньше суммировались все сделки в памяти; теперь цифры ещё и учитывают
+// поиск с фильтрами, то есть совпадают с тем, что видно в таблице.
 const tabStats = computed(() => {
-  const deals = baseDeals.value
-  const totalVolume = deals.reduce((s, d) => s + d.totalPrice, 0)
-  const totalProfit = deals.reduce((s, d) => s + d.markup, 0)
-  const totalRemaining = deals.reduce((s, d) => s + d.remainingAmount, 0)
-  return { count: deals.length, totalVolume, totalProfit, totalRemaining }
+  if (isTrashTab.value) {
+    const deals = displayedDeals.value
+    return {
+      count: deals.length,
+      totalVolume: deals.reduce((s, d) => s + d.totalPrice, 0),
+      totalProfit: deals.reduce((s, d) => s + d.markup, 0),
+      totalRemaining: deals.reduce((s, d) => s + d.remainingAmount, 0),
+    }
+  }
+  const t = dealsStore.counts?.totals
+  return {
+    count: t?.count ?? 0,
+    totalVolume: t?.volume ?? 0,
+    totalProfit: t?.profit ?? 0,
+    totalRemaining: t?.remaining ?? 0,
+  }
 })
+
+/**
+ * Счётчики вкладок с сервера. Считаются по ТЕКУЩИМ фильтрам (папка, касса,
+ * сотрудник, поиск), поэтому совпадают с содержимым таблицы — раньше они были
+ * глобальными и расходились с тем, что видел партнёр.
+ */
+function tabCount(i: number): number {
+  const by = dealsStore.counts?.byStatus
+  if (!by) return 0
+  if (i === 0) return by.ACTIVE ?? 0
+  if (i === 1) return by.COMPLETED ?? 0
+  return Object.values(by).reduce((s, n) => s + n, 0)
+}
+
+const allFoldersCount = computed(() => {
+  const by = dealsStore.counts?.byFolder
+  return by ? Object.values(by).reduce((s, n) => s + n, 0) : 0
+})
+
+function folderCount(f: DealFolder): number {
+  return dealsStore.counts?.byFolder?.[f.id] ?? 0
+}
 
 function getDealProgress(deal: Deal) {
   return deal.numberOfPayments > 0 ? (deal.paidPayments / deal.numberOfPayments) * 100 : 0
@@ -486,7 +776,7 @@ function dealClientPhone(deal: Deal): string | null {
 // `locked` приходит с бэкенда — он же учитывает истёкшую подписку). Клик по
 // залоченной — апселл вместо открытия.
 const showLockDialog = ref(false)
-const lockedDealsCount = computed(() => dealsStore.investorDeals.filter(d => d.locked).length)
+const lockedDealsCount = computed(() => dealsStore.counts?.locked ?? 0)
 function goToSubscription() {
   showLockDialog.value = false
   router.push('/settings?tab=subscription')
@@ -496,12 +786,20 @@ function openDeal(deal: Deal) {
   if (deal.locked) { showLockDialog.value = true; return }
   selectedDeal.value = deal
   showDialog.value = true
+  // График подтягиваем на открытие: все платежи партнёра в памяти больше не
+  // лежат. Стор кэширует по сделке, повторное открытие запроса не шлёт.
+  dealPaymentsLoading.value = true
+  paymentsStore.fetchPaymentsForDeal(deal.id).finally(() => {
+    dealPaymentsLoading.value = false
+  })
 }
 
 function goToDeal(deal: Deal) {
   if (deal.locked) { showLockDialog.value = true; return }
   router.push(`/deals/${deal.id}`)
 }
+
+const dealPaymentsLoading = ref(false)
 
 const selectedDealPayments = computed(() => {
   if (!selectedDeal.value) return []
@@ -528,7 +826,8 @@ const selectedDealPaidTotal = computed(() =>
           <v-icon icon="mdi-briefcase" size="20" />
         </div>
         <div>
-          <div class="stat-value">{{ tabStats.count }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--sm" />
+          <div v-else class="stat-value">{{ tabStats.count }}</div>
           <div class="stat-label">Сделок</div>
         </div>
       </div>
@@ -537,7 +836,8 @@ const selectedDealPaidTotal = computed(() =>
           <v-icon icon="mdi-cash-multiple" size="20" />
         </div>
         <div>
-          <div class="stat-value">{{ formatCurrency(tabStats.totalVolume) }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--md" />
+          <div v-else class="stat-value">{{ formatCurrency(tabStats.totalVolume) }}</div>
           <div class="stat-label">Общий объём</div>
         </div>
       </div>
@@ -546,7 +846,8 @@ const selectedDealPaidTotal = computed(() =>
           <v-icon icon="mdi-trending-up" size="20" />
         </div>
         <div>
-          <div class="stat-value">{{ formatCurrency(tabStats.totalProfit) }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--md" />
+          <div v-else class="stat-value">{{ formatCurrency(tabStats.totalProfit) }}</div>
           <div class="stat-label">Прибыль</div>
         </div>
       </div>
@@ -555,7 +856,8 @@ const selectedDealPaidTotal = computed(() =>
           <v-icon icon="mdi-clock-outline" size="20" />
         </div>
         <div>
-          <div class="stat-value">{{ formatCurrency(tabStats.totalRemaining) }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--md" />
+          <div v-else class="stat-value">{{ formatCurrency(tabStats.totalRemaining) }}</div>
           <div class="stat-label">Остаток к получению</div>
         </div>
       </div>
@@ -588,8 +890,8 @@ const selectedDealPaidTotal = computed(() =>
         <v-icon :icon="isTrashTab ? 'mdi-arrow-left' : 'mdi-trash-can-outline'" size="16" />
         <span v-if="isTrashTab">Назад</span>
         <span v-else>Корзина</span>
-        <span v-if="!isTrashTab && dealsStore.trash.length" class="fb-btn-count">
-          {{ dealsStore.trash.length }}
+        <span v-if="!isTrashTab && dealsStore.trashCount" class="fb-btn-count">
+          {{ dealsStore.trashCount }}
         </span>
       </button>
       </div>
@@ -703,7 +1005,7 @@ const selectedDealPaidTotal = computed(() =>
             <button class="fb-item" :class="{ 'fb-item--active': !activeFolder }" @click="activeFolder = null">
               <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
               <span class="fb-item-name">Все сделки</span>
-              <span class="fb-item-count">{{ dealsStore.investorDeals.length }}</span>
+              <span class="fb-item-count">{{ allFoldersCount }}</span>
             </button>
 
             <div v-if="folders.length" class="fb-divider" />
@@ -719,7 +1021,7 @@ const selectedDealPaidTotal = computed(() =>
               <span class="fb-item-edit" role="button" @click.stop="openEditFolder(f)" title="Редактировать">
                 <v-icon icon="mdi-pencil-outline" size="12" />
               </span>
-              <span class="fb-item-count">{{ f._count?.deals || 0 }}</span>
+              <span class="fb-item-count">{{ folderCount(f) }}</span>
             </button>
 
             <!-- No folders hint -->
@@ -734,7 +1036,7 @@ const selectedDealPaidTotal = computed(() =>
     </div>
 
     <!-- Main card -->
-    <v-card rounded="lg" elevation="0" border>
+    <v-card rounded="lg" elevation="0" border class="deals-card">
       <div class="pa-4">
         <!-- Tabs + toolbar -->
         <div class="d-flex flex-wrap ga-2 align-center mb-4">
@@ -744,17 +1046,18 @@ const selectedDealPaidTotal = computed(() =>
               :key="f.key"
               class="tab-btn"
               :class="{ active: tab === i }"
+              :disabled="listBusy && tab !== i"
               @click="tab = i"
             >
               {{ f.label }}
-              <span class="tab-count">{{ i === 0 ? dealsStore.activeDeals.length : i === 1 ? dealsStore.completedDeals.length : dealsStore.investorDeals.length }}</span>
+              <span class="tab-count">{{ tabCount(i) }}</span>
             </button>
           </div>
           <!-- Trash header replaces the status tabs while the bin is open. -->
           <div v-else class="d-flex align-center ga-2">
             <v-icon icon="mdi-trash-can-outline" size="18" style="opacity: 0.5;" />
             <span class="text-subtitle-2 font-weight-bold">Корзина</span>
-            <span class="tab-count">{{ dealsStore.trash.length }}</span>
+            <span class="tab-count">{{ dealsStore.trashCount }}</span>
           </div>
 
           <v-spacer class="d-none d-md-block" />
@@ -834,8 +1137,35 @@ const selectedDealPaidTotal = computed(() =>
                 @update:model-value="selectAll"
               />
               <span class="select-bar-count">
-                {{ selectedIds.size > 0 ? `Выбрано ${selectedIds.size} из ${displayedDeals.length}` : 'Выберите сделки' }}
+                <template v-if="selectAllMatching">
+                  Выбраны все {{ selectionCount.toLocaleString('ru-RU') }}
+                  <template v-if="excludedIds.size">
+                    (исключено {{ excludedIds.size }})
+                  </template>
+                </template>
+                <template v-else-if="selectedIds.size > 0">
+                  Выбрано {{ selectedIds.size }} из {{ displayedDeals.length }}
+                </template>
+                <template v-else>Выберите сделки</template>
               </span>
+
+              <!-- Выделение работает по странице, но выборка может быть в
+                   тысячи сделок — постранично её не очистить. -->
+              <button
+                v-if="!isTrashTab && !selectAllMatching && selectedIds.size === displayedDeals.length
+                      && displayedDeals.length > 0 && totalRows > displayedDeals.length"
+                class="select-bar-all"
+                @click="enableSelectAllMatching"
+              >
+                Выбрать все {{ totalRows.toLocaleString('ru-RU') }}
+              </button>
+              <button
+                v-else-if="selectAllMatching"
+                class="select-bar-all"
+                @click="clearSelectAllMatching"
+              >
+                Снять выделение
+              </button>
             </div>
             <div class="select-bar-right">
               <template v-if="isTrashTab">
@@ -859,14 +1189,20 @@ const selectedDealPaidTotal = computed(() =>
                 </button>
               </template>
               <button
-                v-else-if="selectedIds.size > 0"
+                v-else-if="selectionCount > 0"
                 class="select-bar-delete"
                 :disabled="deleting"
                 @click="deleteSelected"
               >
                 <v-progress-circular v-if="deleting" indeterminate size="16" width="2" color="white" />
                 <v-icon v-else icon="mdi-delete-outline" size="18" />
-                <span>{{ deleting ? 'Удаление...' : `В корзину (${selectedIds.size})` }}</span>
+                <span>
+                  {{ deleting
+                    ? (bulkProgress
+                        ? `Удаление ${bulkProgress.done.toLocaleString('ru-RU')} из ${bulkProgress.total.toLocaleString('ru-RU')}…`
+                        : 'Удаление…')
+                    : `В корзину (${selectionCount.toLocaleString('ru-RU')})` }}
+                </span>
               </button>
               <button class="select-bar-cancel" @click="cancelSelect">
                 <v-icon icon="mdi-close" size="18" />
@@ -883,7 +1219,7 @@ const selectedDealPaidTotal = computed(() =>
               <v-icon icon="mdi-delete-clock-outline" size="18" />
             </div>
             <div class="trash-bar-text">
-              <div class="trash-bar-title">{{ dealsStore.trash.length }} {{ dealsStore.trash.length === 1 ? 'сделка' : dealsStore.trash.length < 5 ? 'сделки' : 'сделок' }} в корзине</div>
+              <div class="trash-bar-title">{{ dealsStore.trashTotal }} {{ dealsStore.trashTotal === 1 ? 'сделка' : dealsStore.trashTotal < 5 ? 'сделки' : 'сделок' }} в корзине</div>
               <div class="trash-bar-sub">Автоматически удалятся навсегда через 30 дней</div>
             </div>
           </div>
@@ -910,6 +1246,13 @@ const selectedDealPaidTotal = computed(() =>
           </div>
           <button class="deal-lock-banner-btn" @click="goToSubscription">Повысить тариф</button>
         </div>
+
+        <!-- Список с индикацией загрузки: строки остаются на месте и гаснут,
+             а не исчезают — иначе при каждом переходе таблица «прыгала». -->
+        <div class="dl-list-wrap" :class="{ 'dl-list-wrap--busy': listBusy }">
+          <div v-if="listBusy" class="dl-list-overlay">
+            <v-progress-circular indeterminate size="30" width="3" color="primary" />
+          </div>
 
         <!-- GRID VIEW -->
         <v-row v-if="viewMode === 'grid' && displayedDeals.length">
@@ -1010,7 +1353,7 @@ const selectedDealPaidTotal = computed(() =>
                 />
               </td>
               <!-- № п/п (перечисление, не номер договора) -->
-              <td class="td-index text-medium-emphasis">{{ idx + 1 }}</td>
+              <td class="td-index text-medium-emphasis">{{ rowNumber(idx) }}</td>
 
               <td v-if="isColVisible('dealNumber')" class="text-start text-no-wrap"><span class="table-deal-num">#{{ deal.dealNumber }}</span></td>
 
@@ -1104,6 +1447,20 @@ const selectedDealPaidTotal = computed(() =>
             Новая сделка
           </v-btn>
         </div>
+
+        </div>
+
+        <!-- Пагинация серверного списка — общий компонент разделов. -->
+        <ServerPager
+          v-if="totalRows > 0"
+          :page="page"
+          :total="totalRows"
+          :per-page="perPage"
+          :busy="listBusy"
+          :per-page-options="PER_PAGE_OPTIONS"
+          @update:page="page = $event"
+          @update:per-page="perPage = $event"
+        />
       </div>
     </v-card>
 
@@ -1194,7 +1551,12 @@ const selectedDealPaidTotal = computed(() =>
           <!-- Payment schedule -->
           <div v-if="selectedDealPayments.length">
             <div class="text-body-2 font-weight-bold mb-3">График платежей</div>
-            <div class="schedule-list">
+            <!-- График грузится на открытие диалога: все платежи партнёра в
+                 памяти больше не лежат. -->
+            <div v-if="dealPaymentsLoading && !selectedDealPayments.length" class="d-flex justify-center py-4">
+              <v-progress-circular indeterminate size="22" width="2" color="primary" />
+            </div>
+            <div v-else class="schedule-list">
               <div
                 v-for="p in selectedDealPayments"
                 :key="p.id"
@@ -1444,6 +1806,90 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 .deal-card-photo { position: relative; }
+
+/* Переход к выделению всей выборки — не кнопка-действие, а ссылка рядом со
+   счётчиком: она уточняет масштаб, а не запускает операцию. */
+.select-bar-all {
+  margin-left: 10px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.35);
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 0.15s;
+}
+.select-bar-all:hover { background: rgba(var(--v-theme-primary), 0.16); }
+
+/* ── Скелетон KPI ──
+   Пока считаются счётчики, показываем плашку вместо цифры: иначе партнёр
+   успевал прочитать значения предыдущей вкладки как значения новой. */
+.stat-skel {
+  height: 22px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.06) 25%,
+    rgba(0, 0, 0, 0.11) 37%,
+    rgba(0, 0, 0, 0.06) 63%
+  );
+  background-size: 400% 100%;
+  animation: stat-skel-shimmer 1.4s ease infinite;
+}
+.stat-skel--sm { width: 56px; }
+.stat-skel--md { width: 108px; }
+
+.dark .stat-skel {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.07) 25%,
+    rgba(255, 255, 255, 0.13) 37%,
+    rgba(255, 255, 255, 0.07) 63%
+  );
+  background-size: 400% 100%;
+}
+
+@keyframes stat-skel-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stat-skel { animation: none; }
+}
+
+/* ── Индикация загрузки списка ── */
+.dl-list-wrap { position: relative; }
+
+/* Строки не исчезают, а гаснут: таблица не «прыгает» при каждом переходе. */
+.dl-list-wrap--busy > :not(.dl-list-overlay) {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.dl-list-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  /* Кружок у верхнего края: на длинной странице по центру он оказался бы
+     за пределами экрана. */
+  padding-top: 64px;
+  pointer-events: none;
+}
+
+/* Заблокированная вкладка во время запроса — приглушённая, но не «мёртвая». */
+.tab-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Прилипающая пагинация (ServerPager) требует, чтобы предки не обрезали
+   содержимое — у v-card overflow: hidden по умолчанию. */
+.deals-card { overflow: visible; }
 
 /* ── Управляемые/сортируемые колонки таблицы ── */
 .th-index, .td-index {

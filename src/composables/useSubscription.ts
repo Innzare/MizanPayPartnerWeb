@@ -5,6 +5,7 @@ import type { PlanFeatures } from '@/types'
 const DEFAULT_FREE_FEATURES: PlanFeatures = {
   analytics: false,
   analyticsCharts: false,
+  reports: false,
   pdfContract: false,
   pdfExport: false,
   excelExport: false,

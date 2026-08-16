@@ -16,6 +16,7 @@ definePage({
 import { useTheme } from 'vuetify'
 import { api } from '@/api/client'
 import { useIsDark } from '@/composables/useIsDark'
+import ServerPager from '@/components/ServerPager.vue'
 import { formatCurrency, formatDate, formatPhone } from '@/utils/formatters'
 import type { CoInvestorJournalEntry, CoInvestorJournal, PayoutSchedule, ShareBreakdown } from '@/types'
 import { PAYOUT_SCHEDULE_LABELS } from '@/types'
@@ -44,7 +45,12 @@ interface PublicStake {
   coInvestorShare?: number
   myShare?: number
   shareBreakdown?: ShareBreakdown | null
-  activeDealsBreakdown: Array<{
+  // Итоги и счётчики вкладок таба «Сделки» — считает сервер по всей выборке.
+  dealsTotals?: Record<'all' | 'active' | 'completed', { count: number; inv: number; gross?: number; part?: number }>
+}
+
+/** Строка разбора по сделке — приходит постранично, отдельным запросом. */
+interface DealRow {
     id: string
     dealNumber: number
     productName: string
@@ -63,8 +69,18 @@ interface PublicStake {
     // Доля инвестора в уже возвращённых клиентом деньгах + нетто «в работе» по сделке.
     received?: number
     deployed?: number
-    costFee?: { ratePct: number; partnerFee: number; investorShare: number }
-  }>
+  costFee?: { ratePct: number; partnerFee: number; investorShare: number }
+}
+
+/** Ответ постраничного разбора. */
+interface DealsPage {
+  items: DealRow[]
+  /** Отсутствует при листании: итоги тогда не пересчитываются. */
+  total?: number
+  limit: number
+  offset: number
+  totals?: { count: number; inv: number; gross?: number; part?: number }
+  counts: { all: number; active: number; completed: number }
 }
 
 // `GET /public/co-investors/:token/summary` — now the person aggregate.
@@ -114,12 +130,12 @@ function toggleTheme() {
 // Нетто «в работе» по сделке — СО ЗНАКОМ. <0 = клиент вернул больше вашей вложенной
 // доли (возврат включает наценку); такие сделки уменьшают итог, показываем со знаком,
 // чтобы строки сходились с KPI. fallback на stake — для старых ответов без deployed.
-function rowDeployed(d: PublicStake['activeDealsBreakdown'][number]) {
+function rowDeployed(d: DealRow) {
   return d.deployed ?? d.stake
 }
 // Разбор долей сделки для раскрытого блока. partnerProfit приходит с бэкенда
 // только при включённом флаге приватности — иначе доля партнёра скрыта.
-function dealShares(d: PublicStake['activeDealsBreakdown'][number]) {
+function dealShares(d: DealRow) {
   const gross = d.dealProfit ?? 0
   const invShare = d.expectedProfit ?? 0
   const hasPartner = d.partnerProfit != null
@@ -134,7 +150,7 @@ function dealShares(d: PublicStake['activeDealsBreakdown'][number]) {
 }
 
 // Завершена ли сделка (все платежи оплачены).
-function dealDone(d: PublicStake['activeDealsBreakdown'][number]): boolean {
+function dealDone(d: DealRow): boolean {
   return d.status === 'COMPLETED'
 }
 
@@ -170,28 +186,112 @@ const distribution = computed(() => {
   return { totalProfit: s.totalProfit, coInvestorShare: s.coInvestorShare, myShare: s.myShare ?? 0, investorPct }
 })
 
-// Фильтр таба «Сделки»: все / активные / завершённые.
+// ══════════════════════════════════════════════════════════════════
+// Таб «Сделки» — серверная страница
+//
+// Раньше сводка привозила ВСЕ сделки кассы разом: у со-инвестора с 14 813
+// связанных сделок это 5,7 МБ и 1,3 секунды на каждое открытие кабинета.
+// Теперь сделки приходят страницами, а итоги и счётчики считает сервер по
+// всей выборке.
+// ══════════════════════════════════════════════════════════════════
+
 const dealFilter = ref<'all' | 'active' | 'completed'>('all')
-const allDeals = computed(() => stake.value?.activeDealsBreakdown ?? [])
-const dealCounts = computed(() => {
-  const active = allDeals.value.filter((d) => d.status !== 'COMPLETED').length
-  return { all: allDeals.value.length, active, completed: allDeals.value.length - active }
-})
-const filteredDeals = computed(() => {
-  if (dealFilter.value === 'all') return allDeals.value
-  return allDeals.value.filter((d) => dealFilter.value === 'completed' ? d.status === 'COMPLETED' : d.status !== 'COMPLETED')
-})
-// Сводные доли по ОТФИЛЬТРОВАННЫМ сделкам выбранной кассы (для KPI в табе «Сделки»).
-// Доля партнёра суммируется только по сделкам, где партнёр её раскрыл.
-const dealsTotals = computed(() => {
-  let inv = 0, part = 0, gross = 0, hasPartner = false
-  for (const d of filteredDeals.value) {
-    inv += d.expectedProfit ?? 0
-    gross += d.dealProfit ?? 0
-    if (d.partnerProfit != null) { part += d.partnerProfit; hasPartner = true }
+const DEALS_PAGE = 25
+const deals = ref<DealRow[]>([])
+const dealsTotal = ref(0)
+const dealsLoading = ref(false)
+/** Список не загрузился — это не то же самое, что «сделок нет». */
+const dealsError = ref(false)
+const dealsPage = ref(1)
+const dealCounts = ref({ all: 0, active: 0, completed: 0 })
+const dealsTotals = ref({ inv: 0, part: 0, gross: 0, hasPartner: false })
+
+// Защита от гонок: переключение фильтров и страниц идёт быстрее ответов.
+let dealsReq = 0
+
+async function loadDeals(withTotals = true) {
+  const st = stake.value
+  if (!st) { deals.value = []; dealsTotal.value = 0; return }
+  const req = ++dealsReq
+  dealsLoading.value = true
+  dealsError.value = false
+  try {
+    // Итоги и счётчики просим только когда состав выборки мог измениться:
+    // при простом листании они те же, а их пересчёт стоит прохода по всем
+    // сделкам кассы.
+    const needTotals = withTotals
+    const qs = new URLSearchParams({
+      stakeId: st.id,
+      filter: dealFilter.value,
+      limit: String(DEALS_PAGE),
+      offset: String((dealsPage.value - 1) * DEALS_PAGE),
+      ...(needTotals ? {} : { totals: '0' }),
+    })
+    const res = await api.get<DealsPage>(`/public/co-investors/${token.value}/deals?${qs}`)
+    if (req !== dealsReq) return
+    deals.value = res.items
+    if (!needTotals) return
+    dealsTotal.value = res.total ?? dealsTotal.value
+    dealCounts.value = res.counts
+    // hasPartner: сервер вырезает долю партнёра, если она скрыта настройкой.
+    dealsTotals.value = {
+      inv: res.totals?.inv ?? 0,
+      part: res.totals?.part ?? 0,
+      gross: res.totals?.gross ?? 0,
+      hasPartner: res.totals?.part != null,
+    }
+  } catch {
+    // Сбой сети не должен выглядеть как «сделок нет» — показываем ошибку с
+    // возможностью повторить.
+    if (req === dealsReq) { deals.value = []; dealsTotal.value = 0; dealsError.value = true }
+  } finally {
+    if (req === dealsReq) dealsLoading.value = false
   }
-  return { inv, part, gross, hasPartner }
-})
+}
+
+// Смена фильтра или кассы возвращает на первую страницу.
+watch([dealFilter, selectedStakeId], () => { dealsPage.value = 1; loadDeals() })
+
+/**
+ * Переход по страницам — без пересчёта итогов.
+ *
+ * Загрузку вешать на watch(dealsPage) нельзя: смена фильтра сбрасывает
+ * страницу на первую, и со страницы ≥2 это порождало второй запрос, который
+ * отменял первый. Строки обновлялись, а KPI и счётчик оставались от прежнего
+ * фильтра — инвестор видел чужие суммы над своим списком.
+ */
+function goToDealsPage(p: number) {
+  if (p === dealsPage.value) return
+  dealsPage.value = p
+  loadDeals(false)
+}
+watch(mainTab, (t) => { if (t === 'deals' && !deals.value.length) loadDeals() })
+
+const filteredDeals = computed(() => deals.value)
+const allDeals = computed(() => deals.value)
+
+// Вкладка «Обзор» показывает короткий список активных сделок. Раньше она
+// рисовала их ВСЕ (у крупной кассы это тысячи строк в DOM); теперь берём
+// первые несколько, а за полным списком отправляем в таб «Сделки».
+const OVERVIEW_DEALS = 10
+const overviewDeals = ref<DealRow[]>([])
+let overviewReq = 0
+
+async function loadOverviewDeals() {
+  const st = stake.value
+  if (!st) { overviewDeals.value = []; return }
+  const req = ++overviewReq
+  try {
+    const qs = new URLSearchParams({
+      stakeId: st.id, filter: 'active', limit: String(OVERVIEW_DEALS), offset: '0',
+    })
+    const res = await api.get<DealsPage>(`/public/co-investors/${token.value}/deals?${qs}`)
+    if (req === overviewReq) overviewDeals.value = res.items
+  } catch {
+    if (req === overviewReq) overviewDeals.value = []
+  }
+}
+watch(selectedStakeId, loadOverviewDeals)
 
 const payoutScheduleLabel = computed(() => {
   const s = summary.value?.person.payoutSchedule
@@ -661,7 +761,7 @@ onMounted(load)
           </div>
 
           <!-- Фильтр: все / активные / завершённые -->
-          <div v-if="allDeals.length" class="inv-deal-filter">
+          <div v-if="dealCounts.all" class="inv-deal-filter">
             <button
               v-for="f in [{ key: 'all', label: 'Все', count: dealCounts.all }, { key: 'active', label: 'Активные', count: dealCounts.active }, { key: 'completed', label: 'Завершённые', count: dealCounts.completed }] as const"
               :key="f.key"
@@ -674,7 +774,7 @@ onMounted(load)
           </div>
 
           <!-- KPI: суммарные доли по отфильтрованным сделкам (горизонтальный скролл) -->
-          <div v-if="filteredDeals.length" class="inv-deals-kpi">
+          <div v-if="dealsTotal" class="inv-deals-kpi">
             <div class="inv-deals-kpi-card inv-deals-kpi-card--inv">
               <div class="inv-deals-kpi-label"><span class="inv-deal-dot inv-deal-dot--inv" />Ваша доля</div>
               <div class="inv-deals-kpi-val inv-deals-kpi-val--inv">{{ formatCurrency(dealsTotals.inv) }}</div>
@@ -689,9 +789,17 @@ onMounted(load)
             </div>
           </div>
 
-          <div v-if="!filteredDeals.length" class="inv-empty">
+          <div v-if="dealsLoading && !deals.length" class="d-flex justify-center pa-8">
+            <v-progress-circular indeterminate color="primary" size="32" />
+          </div>
+          <div v-else-if="dealsError" class="inv-empty">
+            <v-icon icon="mdi-wifi-off" size="32" color="grey" />
+            <div>Не удалось загрузить сделки</div>
+            <button class="inv-retry" @click="loadDeals()">Повторить</button>
+          </div>
+          <div v-else-if="!deals.length" class="inv-empty">
             <v-icon icon="mdi-briefcase-off-outline" size="32" color="grey" />
-            <div>{{ allDeals.length ? 'Нет сделок в этом фильтре' : 'Сделок пока нет' }}</div>
+            <div>{{ dealCounts.all ? 'Нет сделок в этом фильтре' : 'Сделок пока нет' }}</div>
           </div>
 
           <div v-else class="inv-deals">
@@ -805,6 +913,16 @@ onMounted(load)
               </div>
             </div>
           </div>
+
+          <ServerPager
+            v-if="dealsTotal > 0"
+            :page="dealsPage"
+            :total="dealsTotal"
+            :per-page="DEALS_PAGE"
+            :busy="dealsLoading"
+            :per-page-options="[DEALS_PAGE]"
+            @update:page="goToDealsPage($event)"
+          />
         </v-card>
       </template>
 
@@ -855,7 +973,7 @@ onMounted(load)
           </div>
           <div class="inv-list">
             <div
-              v-for="d in stake.activeDealsBreakdown.filter((x) => x.status !== 'COMPLETED')"
+              v-for="d in overviewDeals"
               :key="d.id"
               class="inv-list-row"
             >
@@ -886,6 +1004,14 @@ onMounted(load)
                 {{ rowDeployed(d) > 0 ? formatCurrency(rowDeployed(d)) : (rowDeployed(d) < 0 ? '−' + formatCurrency(-rowDeployed(d)) : 'возвращён') }}
               </div>
             </div>
+            <button
+              v-if="stake && stake.activeDealsCount > overviewDeals.length"
+              class="inv-list-more"
+              @click="mainTab = 'deals'"
+            >
+              Показать все {{ stake.activeDealsCount }}
+              <v-icon icon="mdi-chevron-right" size="16" />
+            </button>
           </div>
         </div>
       </v-card>
@@ -1245,6 +1371,17 @@ onMounted(load)
 .inv-cb-head { display: flex; align-items: center; gap: 12px; }
 .inv-cb-name { font-size: 17px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.95); }
 .inv-cb-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 2px; }
+.inv-retry {
+  margin-top: 8px;
+  padding: 6px 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+  border-radius: 8px;
+  background: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  cursor: pointer;
+}
 .inv-empty {
   text-align: center; padding: 24px 12px;
   color: rgba(var(--v-theme-on-surface), 0.5);
@@ -1300,6 +1437,15 @@ onMounted(load)
   font-size: 12px; font-weight: 700; color: #0ea5e9; margin-bottom: 6px;
 }
 .inv-formula-body { font-size: 13px; line-height: 1.5; color: rgba(var(--v-theme-on-surface), 0.78); }
+.inv-list-more {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  width: 100%; padding: 10px;
+  background: none; border: none;
+  font-size: 13px; font-weight: 600;
+  color: rgb(var(--v-theme-primary));
+  cursor: pointer;
+}
+.inv-list-more:hover { opacity: 0.8; }
 .inv-list-header {
   display: flex; justify-content: space-between;
   margin-bottom: 8px; font-size: 12px; font-weight: 600;

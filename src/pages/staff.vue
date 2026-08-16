@@ -183,43 +183,67 @@ const attachSearch = ref('')
 const allInvestorDeals = ref<Deal[]>([])
 const attachLoading = ref(false)
 
-async function openAttachDialog() {
-  attachSearch.value = ''
-  attachDialog.value = true
+/**
+ * Кандидаты на прикрепление. Ищет и отбирает сервер: раньше окно выкачивало
+ * ВЕСЬ портфель партнёра и фильтровало его в браузере — на пятнадцати тысячах
+ * сделок оно открывалось секундами.
+ *
+ * Сначала показываем активные (их и прикрепляют чаще всего), а когда их не
+ * хватает до полусотни — добираем остальными, кроме отменённых.
+ */
+let attachReq = 0
+
+async function loadAttachCandidates() {
+  if (!selectedStaff.value) return
+  const req = ++attachReq
   attachLoading.value = true
   try {
-    // Fetch all partner's deals (no staff filter — we want to see what to attach)
-    allInvestorDeals.value = await api.get<Deal[]>('/deals?role=investor')
+    const base = new URLSearchParams({
+      role: 'investor',
+      excludeStaffId: selectedStaff.value.id,
+      sort: 'createdAt',
+      dir: 'desc',
+      limit: '50',
+    })
+    if (attachSearch.value.trim()) base.set('q', attachSearch.value.trim())
+
+    const active = new URLSearchParams(base)
+    active.set('status', 'ACTIVE,DISPUTED')
+    const activeRes = await api.get<{ items: Deal[]; total: number }>(`/deals?${active}`)
+    if (req !== attachReq) return
+
+    let rows = activeRes.items
+    if (rows.length < 50) {
+      const rest = new URLSearchParams(base)
+      rest.set('status', 'COMPLETED')
+      rest.set('limit', String(50 - rows.length))
+      const restRes = await api.get<{ items: Deal[]; total: number }>(`/deals?${rest}`)
+      if (req !== attachReq) return
+      rows = [...rows, ...restRes.items]
+    }
+    allInvestorDeals.value = rows
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить сделки')
+    if (req === attachReq) toast.error(e.message || 'Не удалось загрузить сделки')
   } finally {
-    attachLoading.value = false
+    if (req === attachReq) attachLoading.value = false
   }
 }
 
-const attachDealCandidates = computed(() => {
-  // Show deals that are NOT yet assigned to this staff. Sort: ACTIVE first, then by recency.
-  if (!selectedStaff.value) return []
-  const staffId = selectedStaff.value.id
-  const q = attachSearch.value.trim().toLowerCase()
-  let list = allInvestorDeals.value.filter(
-    (d) => (d as any).assignedStaffId !== staffId && d.status !== 'CANCELLED',
-  )
-  if (q) {
-    list = list.filter(
-      (d) =>
-        String(d.dealNumber).startsWith(q) ||
-        d.productName.toLowerCase().includes(q),
-    )
-  }
-  // Active first, then by createdAt desc
-  list.sort((a, b) => {
-    if (a.status === 'ACTIVE' && b.status !== 'ACTIVE') return -1
-    if (a.status !== 'ACTIVE' && b.status === 'ACTIVE') return 1
-    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  })
-  return list.slice(0, 50)
+let attachSearchTimer: ReturnType<typeof setTimeout> | null = null
+watch(attachSearch, () => {
+  if (!attachDialog.value) return
+  if (attachSearchTimer) clearTimeout(attachSearchTimer)
+  attachSearchTimer = setTimeout(loadAttachCandidates, 350)
 })
+
+function openAttachDialog() {
+  attachSearch.value = ''
+  attachDialog.value = true
+  allInvestorDeals.value = []
+  loadAttachCandidates()
+}
+
+const attachDealCandidates = computed(() => allInvestorDeals.value)
 
 async function attachDeal(deal: Deal) {
   if (!selectedStaff.value) return

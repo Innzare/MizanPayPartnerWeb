@@ -1,7 +1,6 @@
 <script lang="ts" setup>
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
-import { useDealsStore } from '@/stores/deals'
 import { useAuthStore } from '@/stores/auth'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { formatCurrency, formatCurrencyShort, formatPhone, PHONE_MASK, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
@@ -56,7 +55,6 @@ function togglePersonExpand(id: string) {
   expandedPersons.value = n
 }
 const toast = useToast()
-const dealsStore = useDealsStore()
 const cashboxesStore = useCashBoxesStore()
 const { fetchPersons, deletePerson, addStake } = useCoInvestors()
 const { capital, isCapitalSet, fetchCapital } = useCapital()
@@ -149,7 +147,6 @@ async function fetchData() {
   try {
     const [people] = await Promise.all([
       fetchPersons(),
-      dealsStore.fetchDeals(),
       // Cashboxes are needed for filter chips, badges, and dialog pickers.
       // Skip if already loaded — store caches across pages.
       cashboxesStore.items.length === 0 ? cashboxesStore.fetchAll() : Promise.resolve(),

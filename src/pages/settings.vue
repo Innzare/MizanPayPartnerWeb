@@ -197,7 +197,43 @@ onMounted(() => {
   if (sectionsState.visible('whatsapp')) checkWhatsAppStatus()
   fetchWeeklyExport()
   if (authStore.isOwner) loadSectionBlockers()
+  // Переход по ссылке из еженедельного письма: файл скачивается сразу, но
+  // только после входа — до кабинета такой адрес просто не доведёт.
+  const token = route.query.export
+  if (typeof token === 'string' && token) downloadWeeklyFile(token)
 })
+
+/** Скачать готовый отчёт по токену из письма. */
+async function downloadWeeklyFile(token: string) {
+  exporting.value = true
+  try {
+    const response = await fetch(`${import.meta.env.VITE_API_URL}/export/download/${token}`, {
+      headers: { Authorization: `Bearer ${authStore.accessToken}` },
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      throw new Error(
+        response.status === 410
+          ? 'Срок действия ссылки истёк — сформируйте выгрузку заново'
+          : err.message || 'Не удалось скачать отчёт',
+      )
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `MizanPay_Export_${new Date().toISOString().slice(0, 10)}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('Отчёт скачан')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось скачать отчёт')
+  } finally {
+    exporting.value = false
+    // Убираем токен из адреса, чтобы обновление страницы не качало файл снова.
+    _settingsRouter.replace({ query: { ...route.query, export: undefined } })
+  }
+}
 
 // Export Excel
 const exporting = ref(false)

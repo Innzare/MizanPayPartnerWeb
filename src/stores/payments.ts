@@ -1,65 +1,129 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Payment } from '@/types'
+import type { Page, Payment, PaymentCalendarDay, PaymentFacets } from '@/types'
 import { api } from '@/api/client'
+
+/** Параметры страницы платежей — ровно то, что понимает сервер. */
+export interface PaymentsPageParams {
+  tab?: 'active' | 'pending' | 'overdue' | 'paid' | 'all'
+  /** 'YYYY-MM'; отсутствие — все месяцы. */
+  month?: string
+  /** По плановому сроку или по дате фактической оплаты. */
+  monthBasis?: 'due' | 'paid'
+  tz?: string
+  dueFrom?: string
+  dueTo?: string
+  folderId?: string | null
+  cashBoxId?: string | null
+  assignedStaffId?: string | null
+  q?: string
+  sort?: string
+  dir?: 'asc' | 'desc'
+  limit?: number
+  offset?: number
+}
+
+/** Собирает query-строку, пропуская пустые параметры. */
+function paymentsQuery(p: PaymentsPageParams): string {
+  const qs = new URLSearchParams()
+  if (p.tab) qs.set('tab', p.tab)
+  if (p.month) qs.set('month', p.month)
+  if (p.monthBasis) qs.set('monthBasis', p.monthBasis)
+  if (p.tz) qs.set('tz', p.tz)
+  if (p.dueFrom) qs.set('dueFrom', p.dueFrom)
+  if (p.dueTo) qs.set('dueTo', p.dueTo)
+  if (p.folderId) qs.set('folderId', p.folderId)
+  if (p.cashBoxId) qs.set('cashBoxId', p.cashBoxId)
+  if (p.assignedStaffId) qs.set('assignedStaffId', p.assignedStaffId)
+  if (p.q?.trim()) qs.set('q', p.q.trim())
+  if (p.sort) qs.set('sort', p.sort)
+  if (p.dir) qs.set('dir', p.dir)
+  if (p.limit != null) qs.set('limit', String(p.limit))
+  if (p.offset) qs.set('offset', String(p.offset))
+  return qs.toString()
+}
 
 export const usePaymentsStore = defineStore('payments', () => {
   const payments = ref<Record<string, Payment[]>>({})
   const loading = ref(false)
   const error = ref<string | null>(null)
 
-  // Computed: flat list of all payments
-  const allPaymentsFlat = computed(() => {
-    const result: Payment[] = []
-    for (const dealPayments of Object.values(payments.value)) {
-      result.push(...dealPayments)
-    }
-    return result
-  })
+  // ══════════════════════════════════════════════════════════════════
+  // Постраничный список (страница «Платежи»)
+  //
+  // `payments` выше — НЕ полный набор: это кэш графиков точечно открытых
+  // сделок. Полной загрузки платежей в кабинете больше нет.
+  // ══════════════════════════════════════════════════════════════════
 
-  const pendingPayments = computed(() =>
-    allPaymentsFlat.value.filter((p) => p.status === 'PENDING')
-  )
+  const list = ref<Payment[]>([])
+  const listTotal = ref(0)
+  /** Сумма по ВСЕЙ выборке, а не по странице — сервер считает её вместе с total. */
+  const listSum = ref(0)
+  const listLoading = ref(false)
+  const facets = ref<PaymentFacets | null>(null)
+  const facetsLoading = ref(false)
+  /** Агрегаты календаря по дням: ключ — 'YYYY-MM-DD'. */
+  const calendarAgg = ref<Record<string, PaymentCalendarDay>>({})
+  const calendarLoading = ref(false)
 
-  const overduePayments = computed(() =>
-    allPaymentsFlat.value.filter((p) => p.status === 'OVERDUE')
-  )
+  // Защита от гонок: быстрые переключения вкладок и набор в поиске порождают
+  // несколько запросов, и ответ на устаревший может прийти последним.
+  let pageReq = 0
+  let facetsReq = 0
+  let calendarReq = 0
 
-  const paidPayments = computed(() =>
-    allPaymentsFlat.value.filter((p) => p.status === 'PAID')
-  )
-
-  const allUpcoming = computed(() => {
-    const upcoming: { payment: Payment; dealId: string }[] = []
-    for (const [dealId, dealPayments] of Object.entries(payments.value)) {
-      for (const p of dealPayments) {
-        if (p.status === 'PENDING' || p.status === 'OVERDUE') {
-          upcoming.push({ payment: p, dealId })
-        }
-      }
-    }
-    return upcoming.sort(
-      (a, b) => new Date(a.payment.dueDate).getTime() - new Date(b.payment.dueDate).getTime()
-    )
-  })
-
-  // Fetch all payments and group by dealId
-  async function fetchPayments() {
-    loading.value = true
-    error.value = null
+  async function fetchPaymentsPage(params: PaymentsPageParams) {
+    const req = ++pageReq
+    listLoading.value = true
     try {
-      const data = await api.get<Payment[]>('/payments')
-      const grouped: Record<string, Payment[]> = {}
-      for (const p of data) {
-        if (!grouped[p.dealId]) grouped[p.dealId] = []
-        grouped[p.dealId]!.push(p)
-      }
-      payments.value = grouped
+      const res = await api.get<Page<Payment> & { sums?: { amount: number } }>(
+        `/payments?${paymentsQuery(params)}`,
+      )
+      if (req !== pageReq) return
+      list.value = res.items
+      listTotal.value = res.total
+      listSum.value = res.sums?.amount ?? 0
     } catch (e: any) {
+      if (req !== pageReq) return
       error.value = e.message || 'Ошибка загрузки платежей'
-      throw e
+      console.error('Failed to fetch payments page:', e)
     } finally {
-      loading.value = false
+      if (req === pageReq) listLoading.value = false
+    }
+  }
+
+  async function fetchPaymentsFacets(params: PaymentsPageParams) {
+    const req = ++facetsReq
+    facetsLoading.value = true
+    try {
+      const res = await api.get<PaymentFacets>(`/payments/facets?${paymentsQuery(params)}`)
+      if (req !== facetsReq) return
+      facets.value = res
+    } catch (e: any) {
+      if (req !== facetsReq) return
+      console.error('Failed to fetch payment facets:', e)
+    } finally {
+      if (req === facetsReq) facetsLoading.value = false
+    }
+  }
+
+  async function fetchPaymentsCalendar(from: string, to: string, params: PaymentsPageParams) {
+    const req = ++calendarReq
+    calendarLoading.value = true
+    try {
+      const qs = paymentsQuery({ ...params, dueFrom: undefined, dueTo: undefined })
+      const res = await api.get<PaymentCalendarDay[]>(
+        `/payments/calendar?from=${from}&to=${to}${qs ? `&${qs}` : ''}`,
+      )
+      if (req !== calendarReq) return
+      const byDate: Record<string, PaymentCalendarDay> = {}
+      for (const d of res) byDate[d.date] = d
+      calendarAgg.value = byDate
+    } catch (e: any) {
+      if (req !== calendarReq) return
+      console.error('Failed to fetch payments calendar:', e)
+    } finally {
+      if (req === calendarReq) calendarLoading.value = false
     }
   }
 
@@ -209,12 +273,11 @@ export const usePaymentsStore = defineStore('payments', () => {
     payments,
     loading,
     error,
-    allPaymentsFlat,
-    pendingPayments,
-    overduePayments,
-    paidPayments,
-    allUpcoming,
-    fetchPayments,
+    // Постраничный список страницы «Платежи» — отдельно от полного набора.
+    list, listTotal, listSum, listLoading,
+    facets, facetsLoading,
+    calendarAgg, calendarLoading,
+    fetchPaymentsPage, fetchPaymentsFacets, fetchPaymentsCalendar,
     fetchPaymentsForDeal,
     getPaymentsForDeal,
     getNextPayment,

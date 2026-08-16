@@ -1,6 +1,5 @@
 <script lang="ts" setup>
 import { useProductsStore } from '@/stores/products'
-import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { userName, clientProfileName } from '@/types'
 import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
@@ -17,7 +16,6 @@ const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const route = useRoute()
 const productsStore = useProductsStore()
-const dealsStore = useDealsStore()
 
 const productId = computed(() => route.params.id as string)
 const product = computed(() => productsStore.getProduct(productId.value))
@@ -28,6 +26,8 @@ onMounted(async () => {
     if (!product.value) {
       await productsStore.fetchProduct(productId.value)
     }
+    // Название известно только после загрузки товара.
+    await loadRelatedDeals()
   } catch (e: any) {
     toast.error(e.message || 'Ошибка загрузки товара')
   } finally {
@@ -39,14 +39,23 @@ const categoryIcon = computed(() =>
   CATEGORIES.find(c => c.id === product.value?.category)?.icon || 'mdi-tag'
 )
 
-// Deals related to this product (match by product title)
-const relatedDeals = computed(() => {
-  if (!product.value) return []
-  return dealsStore.investorDeals.filter(d =>
-    d.productName.toLowerCase().includes(product.value!.title.toLowerCase()) ||
-    product.value!.title.toLowerCase().includes(d.productName.toLowerCase())
-  )
-})
+// Сделки по этому товару — ищет сервер по названию. Раньше страница
+// фильтровала весь портфель в памяти, из-за чего показывала пусто, если его
+// не загрузил кто-то другой.
+const relatedDeals = ref<Deal[]>([])
+
+async function loadRelatedDeals() {
+  const title = product.value?.title
+  if (!title) return
+  try {
+    const res = await api.get<{ items: Deal[] }>(
+      `/deals?role=investor&q=${encodeURIComponent(title)}&limit=20&sort=createdAt&dir=desc`,
+    )
+    relatedDeals.value = res.items ?? []
+  } catch (e) {
+    console.error('Failed to load related deals:', e)
+  }
+}
 
 const dealStats = computed(() => {
   const deals = relatedDeals.value
