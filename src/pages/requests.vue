@@ -1447,8 +1447,8 @@ const investorTimelineSteps = computed(() => {
 }
 
 .dark .offer-tab.active {
-  background: #252538;
-  color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated));
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .info-banner {
@@ -1484,51 +1484,51 @@ const investorTimelineSteps = computed(() => {
 
 /* Dark mode overrides */
 .dark .filter-input {
-  background: #252538;
-  border-color: #2e2e42;
-  color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated));
+  border-color: rgb(var(--v-theme-border));
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .dark .filter-input::placeholder {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .dark .filter-input:focus {
   border-color: #047857;
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 
 .dark :deep(.filter-select .v-field) {
-  background: #252538 !important;
-  border-color: #2e2e42;
-  color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated)) !important;
+  border-color: rgb(var(--v-theme-border));
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .dark :deep(.filter-select .v-field .v-field__prepend-inner),
 .dark :deep(.filter-select .v-field .v-field__append-inner) {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .dark :deep(.filter-select .v-field--focused) {
   border-color: #047857 !important;
-  background: #1e1e2e !important;
+  background: rgb(var(--v-theme-surface)) !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent) !important;
 }
 
 .dark .view-toggle {
-  background: #252538;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface-elevated));
+  border-color: rgb(var(--v-theme-border));
 }
 
 .dark .view-toggle-btn.active {
-  background: #2e2e42;
+  background: rgb(var(--v-theme-border));
   box-shadow: none;
 }
 
 .dark .req-tab-btn {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 
 .dark .req-tab-btn:hover {

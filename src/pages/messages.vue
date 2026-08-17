@@ -64,7 +64,7 @@ onMounted(async () => {
   overflow: hidden;
   background: rgb(var(--v-theme-surface));
 }
-.dark .msg-shell { border-color: rgba(255, 255, 255, 0.06); background: #1a1a26; }
+.dark .msg-shell { border-color: rgba(255, 255, 255, 0.06); background: rgb(var(--v-theme-surface-deep)); }
 
 @media (max-width: 768px) {
   .msg-page { height: calc(100vh - 64px); }

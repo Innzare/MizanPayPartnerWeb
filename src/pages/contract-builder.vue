@@ -569,7 +569,7 @@ onBeforeUnmount(() => { editor.value?.destroy() })
   outline: none; text-align: center;
 }
 .cb-margin-field input:focus { border-color: rgb(var(--v-theme-primary)); }
-.dark .cb-margin-field input { background: #1a1a2a; border-color: #2e2e42; }
+.dark .cb-margin-field input { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); }
 
 .cb-vars-title {
   font-size: 14px; font-weight: 700;
@@ -629,15 +629,28 @@ onBeforeUnmount(() => { editor.value?.destroy() })
 .cb-template-desc { font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4); }
 
 /* Dark */
-.dark .cb-editor-wrap { background: #1e1e2e; border-color: #2e2e42; }
+.dark .cb-editor-wrap { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .cb-toolbar { background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.06); }
-.dark .cb-paper-wrap { background: #151520; }
-.dark .cb-paper { background: #1e1e2e; box-shadow: 0 1px 8px rgba(0,0,0,0.3); }
-.dark .cb-paper :deep(.cb-editor-content) { color: #e4e4e7; }
+.dark .cb-paper-wrap { background: rgb(var(--v-theme-surface-deep)); }
+.dark .cb-paper { background: rgb(var(--v-theme-surface)); box-shadow: 0 1px 8px rgba(0,0,0,0.3); }
+.dark .cb-paper :deep(.cb-editor-content) { color: rgba(var(--v-theme-on-surface), 0.92); }
 .dark .cb-paper :deep(.cb-editor-content td),
-.dark .cb-paper :deep(.cb-editor-content th) { border-color: #3e3e52; }
-.dark .cb-vars-panel { background: #1e1e2e; border-color: #2e2e42; }
+.dark .cb-paper :deep(.cb-editor-content th) { border-color: rgb(var(--v-theme-border)); }
+.dark .cb-vars-panel { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .cb-template-card { background: rgba(255,255,255,0.04); }
+/* «Бумага» договора в тёмной теме перекрашена, поэтому её собственная графика
+   должна перекраситься следом: чёрные рамки блоков иначе исчезают на тёмном,
+   светлый разделитель бьёт по глазам, а жёлтый маркер зияет дырой. */
+.dark .cb-paper :deep(.cb-editor-content div[data-bordered]) {
+  border-color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.dark .cb-paper :deep(.cb-editor-content hr) {
+  border-top-color: rgb(var(--v-theme-border));
+}
+.dark .cb-paper :deep(.cb-editor-content mark) {
+  background: rgba(232, 185, 49, 0.28);
+  color: rgba(var(--v-theme-on-surface), 0.95);
+}
 
 @media (max-width: 900px) {
   .cb-layout--with-panel { grid-template-columns: 1fr; }

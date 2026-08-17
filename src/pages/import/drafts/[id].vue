@@ -1207,8 +1207,8 @@ watch(() => route.params.id, (id) => {
   background: rgb(var(--v-theme-surface));
 }
 .dark .stat-card {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 .stat-icon {
   width: 40px; height: 40px; min-width: 40px; border-radius: 10px;
@@ -1350,7 +1350,7 @@ watch(() => route.params.id, (id) => {
 }
 .errors-banner-cta:disabled { opacity: 0.5; cursor: not-allowed; }
 .dark .errors-banner-cta {
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
 }
 
 /* Per-row delete button in actions column */
@@ -1376,8 +1376,8 @@ watch(() => route.params.id, (id) => {
   gap: 2px;
 }
 .dark .filter-pills {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 .filter-pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1398,7 +1398,7 @@ watch(() => route.params.id, (id) => {
   font-weight: 600;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
-.dark .filter-pill.active { background: #2a2a3e; }
+.dark .filter-pill.active { background: rgb(var(--v-theme-surface-elevated)); }
 .filter-pill:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -1660,8 +1660,8 @@ watch(() => route.params.id, (id) => {
   background: rgb(var(--v-theme-surface));
 }
 .dark .action-bar {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 
 .action-summary {

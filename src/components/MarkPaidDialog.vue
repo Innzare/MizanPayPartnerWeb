@@ -751,19 +751,6 @@ async function confirmMarkPaid() {
   transition: all 0.15s;
 }
 .btn-secondary:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
-.dark .field-input {
-  background: #252538;
-  border-color: #2e2e42;
-  color: #e4e4e7;
-}
-.dark .field-input:focus {
-  border-color: #047857; background: #1e1e2e;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
-}
-.dark .reschedule-info {
-  background: #1e1e2e;
-  border-color: #2e2e42;
-}
 .receipt-row { display: flex; align-items: stretch; gap: 6px; }
 .receipt-row .receipt-btn { flex: 1; }
 .receipt-wa-btn {

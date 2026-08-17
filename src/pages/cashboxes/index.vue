@@ -415,8 +415,8 @@ async function openInfo(box: CashBoxSummary, e: Event) {
 .cb-page-header--actions-only { justify-content: flex-end; }
 .cb-page-title { font-size: 28px; font-weight: 800; color: #111; letter-spacing: -0.5px; }
 .cb-page-subtitle { font-size: 14px; color: #737373; margin-top: 6px; max-width: 600px; }
-.cb-page.dark .cb-page-title { color: #f5f5f5; }
-.cb-page.dark .cb-page-subtitle { color: #a3a3a3; }
+.cb-page.dark .cb-page-title { color: rgba(var(--v-theme-on-surface), 0.92); }
+.cb-page.dark .cb-page-subtitle { color: rgba(var(--v-theme-on-surface), 0.65); }
 
 .cb-create-btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -517,7 +517,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   box-shadow: 0 8px 24px rgba(0,0,0,0.08);
   border-color: var(--cb-color);
 }
-.cb-page.dark .cb-card { background: #1c1c1e; border-color: #2a2a2c; }
+.cb-page.dark .cb-card { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-surface-elevated)); }
 .cb-page.dark .cb-card:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
 
 .cb-card-header {
@@ -537,7 +537,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   padding: 2px 8px; border-radius: 6px;
   background: var(--cb-color); color: #fff; opacity: 0.9;
 }
-.cb-page.dark .cb-card-title { color: #f5f5f5; }
+.cb-page.dark .cb-card-title { color: rgba(var(--v-theme-on-surface), 0.92); }
 .cb-card-lock-badge {
   display: inline-flex; align-items: center; gap: 3px; margin-top: 4px;
   font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
@@ -554,7 +554,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   flex-shrink: 0;
 }
 .cb-card-menu:hover { background: rgba(0,0,0,0.05); color: #111; }
-.cb-page.dark .cb-card-menu:hover { background: rgba(255,255,255,0.08); color: #f5f5f5; }
+.cb-page.dark .cb-card-menu:hover { background: rgba(255,255,255,0.08); color: rgba(var(--v-theme-on-surface), 0.92); }
 
 .cb-menu {
   width: 200px;
@@ -584,15 +584,15 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   letter-spacing: -0.3px;
 }
 .cb-card-sub { font-size: 11px; color: #737373; margin-top: 2px; }
-.cb-page.dark .cb-card-amount { color: #f5f5f5; }
+.cb-page.dark .cb-card-amount { color: rgba(var(--v-theme-on-surface), 0.92); }
 
 .cb-card-total {
   display: inline-flex; align-items: center; gap: 5px;
   margin-top: 8px; font-size: 12px; color: #525252;
 }
 .cb-card-total b { font-weight: 700; color: #111; }
-.cb-page.dark .cb-card-total { color: #a3a3a3; }
-.cb-page.dark .cb-card-total b { color: #f5f5f5; }
+.cb-page.dark .cb-card-total { color: rgba(var(--v-theme-on-surface), 0.65); }
+.cb-page.dark .cb-card-total b { color: rgba(var(--v-theme-on-surface), 0.92); }
 
 /* Info "i" button next to the progress meta */
 .cb-card-inwork { display: inline-flex; align-items: center; gap: 4px; }
@@ -607,13 +607,13 @@ async function openInfo(box: CashBoxSummary, e: Event) {
 
 /* Info modal */
 .cb-info-modal { background: #fff; border-radius: 16px; overflow: hidden; }
-.cb-info-modal.dark { background: #1c1c1e; }
+.cb-info-modal.dark { background: rgb(var(--v-theme-surface-elevated)); }
 .cb-info-head {
   display: flex; align-items: flex-start; justify-content: space-between;
   padding: 20px 22px 14px;
 }
 .cb-info-title { font-size: 18px; font-weight: 800; color: #111; }
-.cb-info-modal.dark .cb-info-title { color: #f5f5f5; }
+.cb-info-modal.dark .cb-info-title { color: rgba(var(--v-theme-on-surface), 0.92); }
 .cb-info-box-name { font-size: 13px; color: #737373; margin-top: 2px; }
 .cb-info-close {
   width: 32px; height: 32px; border-radius: 9px; border: none;
@@ -644,7 +644,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
 .cb-info-divider {
   height: 1px; background: #f0f0f0; margin: 0 12px;
 }
-.cb-info-modal.dark .cb-info-divider { background: #2a2a2c; }
+.cb-info-modal.dark .cb-info-divider { background: rgb(var(--v-theme-surface-elevated)); }
 .cb-info-row--clickable { cursor: pointer; border-radius: 8px; transition: background 0.12s; }
 .cb-info-row--clickable:hover { background: rgba(0,0,0,0.035); }
 .cb-info-modal.dark .cb-info-row--clickable:hover { background: rgba(255,255,255,0.05); }
@@ -657,10 +657,10 @@ async function openInfo(box: CashBoxSummary, e: Event) {
 .cb-info-modal.dark .cb-info-num { color: #6b7280; }
 .cb-info-row-main { min-width: 0; flex: 1; }
 .cb-info-deal-name { font-size: 14px; font-weight: 600; color: #111; }
-.cb-info-modal.dark .cb-info-deal-name { color: #f5f5f5; }
+.cb-info-modal.dark .cb-info-deal-name { color: rgba(var(--v-theme-on-surface), 0.92); }
 .cb-info-deal-sub { font-size: 11.5px; color: #737373; margin-top: 2px; }
 .cb-info-row-amount { font-size: 14px; font-weight: 800; color: #111; white-space: nowrap; }
-.cb-info-modal.dark .cb-info-row-amount { color: #f5f5f5; }
+.cb-info-modal.dark .cb-info-row-amount { color: rgba(var(--v-theme-on-surface), 0.92); }
 .cb-info-row-amount--zero { color: #9ca3af; font-weight: 600; font-size: 12px; }
 
 .cb-info-more {
@@ -676,7 +676,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   font-size: 14px; color: #525252;
 }
 .cb-info-total b { font-size: 18px; font-weight: 800; color: #047857; }
-.cb-info-modal.dark .cb-info-total { border-top-color: #2a2a2c; color: #a3a3a3; }
+.cb-info-modal.dark .cb-info-total { border-top-color: rgb(var(--v-theme-surface-elevated)); color: rgba(var(--v-theme-on-surface), 0.65); }
 .cb-info-modal.dark .cb-info-total b { color: #34d399; }
 
 .cb-card-progress {
@@ -695,12 +695,12 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   margin-top: 14px; padding-top: 14px;
   border-top: 1px solid #f0f0f0;
 }
-.cb-page.dark .cb-card-footer { border-top-color: #2a2a2c; }
+.cb-page.dark .cb-card-footer { border-top-color: rgb(var(--v-theme-surface-elevated)); }
 .cb-card-stat {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; color: #525252; font-weight: 500;
 }
-.cb-page.dark .cb-card-stat { color: #a3a3a3; }
+.cb-page.dark .cb-card-stat { color: rgba(var(--v-theme-on-surface), 0.65); }
 .cb-card-arrow { opacity: 0.4; transition: all 0.15s; color: var(--cb-color); }
 .cb-card:hover .cb-card-arrow { opacity: 1; transform: translateX(4px); }
 
@@ -718,7 +718,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
   box-shadow: none;
   transform: none;
 }
-.cb-page.dark .cb-card--add { border-color: #404040; color: #737373; }
+.cb-page.dark .cb-card--add { border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.5); }
 .cb-page.dark .cb-card--add:hover {
   border-color: #047857; color: #34d399;
   background: rgba(4, 120, 87, 0.08);

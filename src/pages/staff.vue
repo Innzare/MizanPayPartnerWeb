@@ -974,7 +974,7 @@ onBeforeUnmount(() => {
   background: #047857; color: #fff; font-weight: 600;
   box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
 }
-.dark .page-tabs { background: #1a1a2e; border-color: #2e2e42; }
+.dark .page-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); }
 .dark .page-tab--active { background: #047857; color: #fff; box-shadow: 0 2px 6px rgba(4, 120, 87, 0.3); }
 
 /* ── Пикер роли в модалке ── */
@@ -1349,7 +1349,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: rgb(var(--v-theme-surface));
 }
-.dark .sf-shell { border-color: rgba(255,255,255,0.06); background: #1a1a26; }
+.dark .sf-shell { border-color: rgba(255,255,255,0.06); background: rgb(var(--v-theme-surface-deep)); }
 
 /* LEFT — staff sidebar */
 .sf-sidebar {
@@ -1359,7 +1359,7 @@ onBeforeUnmount(() => {
   background: rgba(var(--v-theme-on-surface), 0.015);
   min-height: 0;
 }
-.dark .sf-sidebar { border-right-color: rgba(255,255,255,0.06); background: #16161f; }
+.dark .sf-sidebar { border-right-color: rgba(255,255,255,0.06); background: rgb(var(--v-theme-surface-deep)); }
 
 .sf-sidebar-header {
   display: flex;

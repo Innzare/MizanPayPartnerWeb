@@ -1,6 +1,5 @@
 <script lang="ts" setup>
 import { useRoute, useRouter } from "vue-router";
-import { useTheme } from "vuetify";
 import logo from "@/assets/images/logo.svg";
 import logoDark from "@/assets/images/logo-dark.svg";
 import logoText from "@/assets/images/logo-text.svg";
@@ -10,6 +9,7 @@ import { usePageHeaderStore } from "@/stores/pageHeader";
 import { useNotificationsStore } from "@/stores/notifications";
 import { useSubscription } from "@/composables/useSubscription";
 import { useSections } from '@/composables/useSections';
+import { useThemeMode } from '@/composables/useThemeMode';
 import { useChats } from "@/composables/useChats";
 import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
@@ -27,7 +27,6 @@ const notificationsStore = useNotificationsStore();
 const subscription = useSubscription();
 const sections = useSections();
 const chats = useChats();
-const theme = useTheme();
 
 const route = useRoute();
 const router = useRouter();
@@ -126,24 +125,14 @@ onMounted(() => {
   });
 });
 
-// Dark mode
-const isDark = ref(localStorage.getItem("theme") === "dark");
+// Оформление: светлая / тёмная / ночная. Выбор и применение живут в
+// useThemeMode — их дёргает и страница входа, и публичный кабинет инвестора,
+// поэтому держать их в лэйауте кабинета больше нельзя.
+const { current: themeMode, isDark, options: themeOptions, setTheme } = useThemeMode();
 
-const applyDarkClass = (dark: boolean) => {
-  document.documentElement.classList.toggle("dark", dark);
-};
-
-if (isDark.value) {
-  theme.change("dark");
-  applyDarkClass(true);
-}
-
-const toggleTheme = () => {
-  isDark.value = !isDark.value;
-  theme.change(isDark.value ? "dark" : "light");
-  localStorage.setItem("theme", isDark.value ? "dark" : "light");
-  applyDarkClass(isDark.value);
-};
+const activeTheme = computed(
+  () => themeOptions.find((o) => o.id === themeMode.value) ?? themeOptions[0]!,
+);
 
 // Navigation
 const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?: boolean; staffOnly?: boolean; permission?: string; requiredFeature?: keyof PlanFeatures }[] = [
@@ -412,18 +401,37 @@ const confirmLogout = async () => {
 
         <div class="lyt-sidebar-spacer" />
 
-        <!-- Theme toggle -->
-        <button class="lyt-theme-btn" @click="toggleTheme">
-          <div :style="{ display: 'flex', gap: collapsed ? '0' : '12px' }">
-            <v-icon
-              :icon="isDark ? 'mdi-weather-sunny' : 'mdi-weather-night'"
-              size="18"
-            />
-            <span class="lyt-nav-text">{{
-              isDark ? "Светлая тема" : "Тёмная тема"
-            }}</span>
+        <!-- Выбор темы: светлая / тёмная / ночная. Раскрывается вверх — кнопка
+             стоит внизу сайдбара, вниз списку места нет. -->
+        <v-menu location="top" offset="8" :close-on-content-click="true">
+          <template #activator="{ props: menuProps }">
+            <button class="lyt-theme-btn" v-bind="menuProps">
+              <div :style="{ display: 'flex', gap: collapsed ? '0' : '12px' }">
+                <v-icon :icon="activeTheme.icon" size="18" />
+                <span class="lyt-nav-text">{{ activeTheme.title }} тема</span>
+              </div>
+              <v-icon v-if="!collapsed" icon="mdi-chevron-up" size="16" class="lyt-theme-caret" />
+            </button>
+          </template>
+
+          <div class="lyt-theme-menu">
+            <div class="lyt-theme-menu-title">Оформление</div>
+            <button
+              v-for="opt in themeOptions"
+              :key="opt.id"
+              class="lyt-theme-option"
+              :class="{ 'lyt-theme-option--active': opt.id === themeMode }"
+              @click="setTheme(opt.id)"
+            >
+              <v-icon :icon="opt.icon" size="18" class="lyt-theme-option-icon" />
+              <div class="lyt-theme-option-text">
+                <span class="lyt-theme-option-title">{{ opt.title }}</span>
+                <span class="lyt-theme-option-hint">{{ opt.hint }}</span>
+              </div>
+              <v-icon v-if="opt.id === themeMode" icon="mdi-check" size="16" class="lyt-theme-option-check" />
+            </button>
           </div>
-        </button>
+        </v-menu>
 
         <!-- User card in sidebar -->
         <div class="lyt-sidebar-user">
@@ -903,6 +911,77 @@ const confirmLogout = async () => {
 .lyt-theme-btn:hover {
   background: #f3f4f6;
   color: #6b7280;
+}
+
+/* Стрелка вверх подсказывает, что список раскроется над кнопкой. */
+.lyt-theme-caret {
+  margin-left: auto;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+/* Меню выбора темы. Целиком на переменных темы: оно живёт в оверлее и должно
+   перекрашиваться вместе с остальным интерфейсом. */
+.lyt-theme-menu {
+  min-width: 232px;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+.lyt-theme-menu-title {
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.lyt-theme-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+.lyt-theme-option:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+}
+.lyt-theme-option--active {
+  background: rgba(var(--v-theme-primary), 0.1);
+}
+.lyt-theme-option-icon {
+  flex-shrink: 0;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.lyt-theme-option--active .lyt-theme-option-icon,
+.lyt-theme-option-check {
+  color: rgb(var(--v-theme-accent));
+}
+.lyt-theme-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.lyt-theme-option-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.lyt-theme-option-hint {
+  font-size: 11.5px;
+  line-height: 1.2;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .lyt-collapse-btn {
@@ -1484,35 +1563,35 @@ const confirmLogout = async () => {
 /* ============================= */
 
 .dark .lyt-sidebar {
-  background: #1e1e2e !important;
-  border-right-color: #2e2e42 !important;
+  background: rgb(var(--v-theme-surface)) !important;
+  border-right-color: rgb(var(--v-theme-border)) !important;
 }
 
 .dark .lyt-sidebar-logo {
-  border-bottom-color: #2e2e42;
+  border-bottom-color: rgb(var(--v-theme-border));
 }
 
 .dark .lyt-sidebar-brand-label {
   color: #34d399;
-  background: color-mix(in srgb, #059669 12%, #1e1e2e);
+  background: color-mix(in srgb, #059669 12%, rgb(var(--v-theme-surface)));
   border-color: color-mix(in srgb, #059669 25%, transparent);
 }
 
 .dark .lyt-sidebar-brand-name {
-  color: #e4e4e7;
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .dark .lyt-nav-label {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .dark .lyt-nav-item {
-  color: #a1a1aa;
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
 .dark .lyt-nav-item:hover {
-  background: #252538;
-  color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated));
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .dark .lyt-nav-item--active {
@@ -1536,13 +1615,13 @@ const confirmLogout = async () => {
 
 .dark .lyt-theme-btn,
 .dark .lyt-collapse-btn {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .dark .lyt-theme-btn:hover,
 .dark .lyt-collapse-btn:hover {
-  background: #252538;
-  color: #a1a1aa;
+  background: rgb(var(--v-theme-surface-elevated));
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
 .dark .lyt-sidebar-user {
@@ -1552,22 +1631,22 @@ const confirmLogout = async () => {
 .dark .lyt-sidebar-user:hover { background: rgba(255, 255, 255, 0.07); }
 
 .dark .lyt-sidebar-user-name {
-  color: #e4e4e7;
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .dark .lyt-sidebar-user-role {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 .dark .lyt-plan-badge {
   background: rgba(232, 185, 49, 0.08); border-color: rgba(232, 185, 49, 0.18);
 }
-.dark .lyt-avatar-plan-dot { border-color: #1e1e2e; }
+.dark .lyt-avatar-plan-dot { border-color: rgb(var(--v-theme-surface)); }
 .dark .lyt-dropdown-plan-badge {
   background: rgba(232, 185, 49, 0.1); border-color: rgba(232, 185, 49, 0.2);
 }
 
 .dark .lyt-sidebar-logout {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .dark .lyt-sidebar-logout:hover {
@@ -1576,50 +1655,50 @@ const confirmLogout = async () => {
 }
 
 .dark .lyt-content {
-  background: #121220;
+  background: rgb(var(--v-theme-background));
 }
 
 .dark .lyt-header {
-  background: #1e1e2e;
-  border-bottom-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-bottom-color: rgb(var(--v-theme-border));
 }
 
 .dark .lyt-header-title {
-  color: #e4e4e7;
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .dark .lyt-header-subtitle {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .dark .lyt-header-search-btn {
-  background: #252538;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface-elevated));
+  border-color: rgb(var(--v-theme-border));
 }
 .dark .lyt-header-search-btn:hover {
   border-color: #047857;
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 .dark .lyt-header-search-placeholder {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 .dark .lyt-header-search-kbd-key {
-  background: #1e1e2e;
-  border-color: #2e2e42;
-  color: #a1a1aa;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
 .dark .lyt-header-icon-btn {
-  background: #252538;
-  border-color: #2e2e42;
-  color: #a1a1aa;
+  background: rgb(var(--v-theme-surface-elevated));
+  border-color: rgb(var(--v-theme-border));
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
 .dark .lyt-header-icon-btn:hover {
-  background: #2e2e42;
-  color: #e4e4e7;
-  border-color: #3f3f5c;
+  background: rgb(var(--v-theme-border));
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  border-color: rgb(var(--v-theme-border));
 }
 
 .dark .lyt-header-icon-btn--locked {
@@ -1636,41 +1715,41 @@ const confirmLogout = async () => {
 }
 
 .dark .lyt-header-divider {
-  background: #2e2e42;
+  background: rgb(var(--v-theme-border));
 }
 
 .dark .lyt-header-user:hover {
-  background: #252538;
+  background: rgb(var(--v-theme-surface-elevated));
 }
 
 .dark .lyt-header-user-chevron {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .dark .lyt-dropdown {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
 }
 
 .dark .lyt-dropdown-name {
-  color: #e4e4e7;
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .dark .lyt-dropdown-email {
-  color: #71717a;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .dark .lyt-dropdown-divider {
-  background: #2e2e42;
+  background: rgb(var(--v-theme-border));
 }
 
 .dark .lyt-dropdown-item {
-  color: #a1a1aa;
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
 .dark .lyt-dropdown-item:hover {
-  background: #252538;
+  background: rgb(var(--v-theme-surface-elevated));
 }
 
 .dark .lyt-dropdown-item--danger {
@@ -1686,7 +1765,7 @@ const confirmLogout = async () => {
 }
 
 .dark .lyt-logout-dialog {
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
 }
 
 .dark .lyt-logout-dialog-icon {
@@ -1695,20 +1774,20 @@ const confirmLogout = async () => {
 }
 
 .dark .lyt-logout-dialog-title {
-  color: #e4e4e7;
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .dark .lyt-logout-dialog-text {
-  color: #a1a1aa;
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
 .dark .lyt-logout-dialog-btn--cancel {
-  background: #252538;
-  color: #a1a1aa;
+  background: rgb(var(--v-theme-surface-elevated));
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
 .dark .lyt-logout-dialog-btn--cancel:hover {
-  background: #2e2e42;
+  background: rgb(var(--v-theme-border));
 }
 
 /* ===== BURGER BUTTON ===== */
@@ -1733,12 +1812,12 @@ const confirmLogout = async () => {
 }
 
 .dark .lyt-burger-btn {
-  color: #a1a1aa;
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
 .dark .lyt-burger-btn:hover {
-  background: #252538;
-  color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated));
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 /* ===== MOBILE ===== */

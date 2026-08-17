@@ -1032,7 +1032,7 @@ onMounted(() => {
   background: #047857; color: #fff; font-weight: 600;
   box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
 }
-.dbt-page.dark .settings-tabs { background: #1a1a2e; border-color: #2e2e42; box-shadow: none; }
+.dbt-page.dark .settings-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); box-shadow: none; }
 .dbt-tabcount {
   font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 10px;
   background: rgba(var(--v-theme-on-surface), 0.08); line-height: 18px; min-width: 20px; text-align: center;
@@ -1064,7 +1064,7 @@ onMounted(() => {
 }
 .fb-btn:hover { border-color: rgba(var(--v-theme-on-surface), 0.2); color: rgba(var(--v-theme-on-surface), 0.8); }
 .fb-btn--active { border-color: rgba(var(--v-theme-on-surface), 0.15); color: rgba(var(--v-theme-on-surface), 0.8); font-weight: 600; }
-.dbt-page.dark .fb-btn { background: #252538; border-color: #2e2e42; }
+.dbt-page.dark .fb-btn { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); }
 
 /* Быстрый чип-фильтр */
 .dbt-chip {
@@ -1087,7 +1087,7 @@ onMounted(() => {
   background: #fff; border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
-.dbt-page.dark .dbt-selbar { background: #1e1e2e; border-color: #2e2e42; }
+.dbt-page.dark .dbt-selbar { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dbt-selbar-left { display: flex; align-items: center; gap: 8px; }
 .dbt-selbar-link {
   background: none;

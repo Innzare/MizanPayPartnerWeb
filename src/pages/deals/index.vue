@@ -3,7 +3,7 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { type Deal, type DealFolder, userName, clientProfileName } from '@/types'
+import { type Deal, type DealFolder, type Payment, userName, clientProfileName } from '@/types'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -14,6 +14,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
+import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
+import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -809,6 +811,51 @@ const selectedDealPayments = computed(() => {
 const selectedDealPaidTotal = computed(() =>
   selectedDealPayments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
 )
+
+// Отметка оплаты прямо из превью сделки — тот же общий компонент, что на
+// странице платежей (перерасчёт графика, фактическая дата, квитанция,
+// скриншот). Раньше из превью можно было только уйти на полную страницу
+// сделки, чтобы поставить одну галочку.
+const markPaidDialog = ref(false)
+const markPaidTarget = ref<Payment | null>(null)
+
+function handleMarkPaid(e: Event, payment: Payment) {
+  e.stopPropagation()
+  markPaidTarget.value = payment
+  markPaidDialog.value = true
+}
+
+/**
+ * Платёж отмечен. График сделки стор перечитал сам, а вот шапка превью и
+ * строка в списке (оплачено, остаток, прогресс, статус) считаются на сервере —
+ * их перезапрашиваем отдельно.
+ */
+async function onMarkPaidDone(dealId: string) {
+  markPaidTarget.value = null
+  await refreshSelectedDeal(dealId)
+}
+
+// Перенос даты — тот же общий компонент, что на страницах платежей и сделки:
+// в превью не хватало только его, галочка оплаты уже была.
+const rescheduleDialog = ref(false)
+const rescheduleTarget = ref<Payment | null>(null)
+
+function handleReschedule(e: Event, payment: Payment) {
+  e.stopPropagation()
+  rescheduleTarget.value = payment
+  rescheduleDialog.value = true
+}
+
+async function onRescheduled(dealId: string) {
+  rescheduleTarget.value = null
+  await refreshSelectedDeal(dealId)
+}
+
+/** Освежить карточку в превью и строку в списке после правки графика. */
+async function refreshSelectedDeal(dealId: string) {
+  const [fresh] = await Promise.all([dealsStore.fetchDeal(dealId), refreshList()])
+  if (fresh && selectedDeal.value?.id === dealId) selectedDeal.value = fresh
+}
 </script>
 
 <template>
@@ -1567,6 +1614,11 @@ const selectedDealPaidTotal = computed(() =>
                 <div class="schedule-info">
                   <div class="schedule-date">{{ formatDateShort(p.dueDate) }}</div>
                   <div v-if="p.paidAt" class="schedule-paid-at">Оплачено {{ formatDateShort(p.paidAt) }}</div>
+                  <!-- След переноса — как на странице платежей. -->
+                  <div v-if="p.rescheduledFrom" class="schedule-rescheduled">
+                    <v-icon icon="mdi-calendar-arrow-right" size="11" />
+                    с {{ formatDateShort(p.rescheduledFrom) }}
+                  </div>
                 </div>
                 <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
                 <div
@@ -1574,6 +1626,27 @@ const selectedDealPaidTotal = computed(() =>
                   :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
                 >
                   {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                </div>
+                <!-- Отметить оплату и перенести дату, не уходя на страницу
+                     сделки — тот же набор действий, что на «Платежах». Место
+                     под кнопки держим всегда, иначе строки разъезжаются. -->
+                <div class="schedule-action">
+                  <template v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
+                    <v-tooltip text="Отметить оплаченным" location="top">
+                      <template #activator="{ props: tipProps }">
+                        <button v-bind="tipProps" class="action-btn action-btn--success" @click.stop="handleMarkPaid($event, p)">
+                          <v-icon icon="mdi-check" size="16" />
+                        </button>
+                      </template>
+                    </v-tooltip>
+                    <v-tooltip text="Перенести дату" location="top">
+                      <template #activator="{ props: tipProps }">
+                        <button v-bind="tipProps" class="action-btn action-btn--warning" @click.stop="handleReschedule($event, p)">
+                          <v-icon icon="mdi-calendar-arrow-right" size="16" />
+                        </button>
+                      </template>
+                    </v-tooltip>
+                  </template>
                 </div>
               </div>
             </div>
@@ -1660,6 +1733,28 @@ const selectedDealPaidTotal = computed(() =>
         </div>
       </v-card>
     </v-dialog>
+
+    <!-- Отметка оплаты — общий компонент: тот же функционал, что на страницах
+         платежей и сделки (перерасчёт графика, фактическая дата, квитанция,
+         скриншот). График уже загружен превью — передаём его, чтобы компонент
+         не запрашивал его повторно. -->
+    <MarkPaidDialog
+      v-model="markPaidDialog"
+      :payment="markPaidTarget"
+      :deal="selectedDeal"
+      :schedule="selectedDealPayments"
+      :fullscreen="isMobile"
+      @paid="onMarkPaidDone"
+    />
+
+    <!-- Перенос даты — общий компонент. Сделку не передаём: в превью и так
+         видно, о каком договоре речь. -->
+    <ReschedulePaymentDialog
+      v-model="rescheduleDialog"
+      :payment="rescheduleTarget"
+      :fullscreen="isMobile"
+      @rescheduled="onRescheduled"
+    />
   </div>
 </template>
 
@@ -2200,7 +2295,7 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 .dark .trash-bar-btn {
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
 }
 
 /* ── Row action buttons ── */
@@ -2274,8 +2369,8 @@ const selectedDealPaidTotal = computed(() =>
 
 /* Dark mode */
 .dark .select-bar {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 
 .deals-table :deep(td) { font-size: 14px; }
@@ -2421,6 +2516,24 @@ const selectedDealPaidTotal = computed(() =>
   font-size: 11px; font-weight: 600;
   padding: 3px 10px; border-radius: 6px; white-space: nowrap;
 }
+.schedule-rescheduled {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 11px; color: #f59e0b;
+}
+/* Колонка действий: ширина держится и у оплаченных строк, где кнопок нет. */
+.schedule-action {
+  width: 66px; min-width: 66px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+}
+.action-btn {
+  width: 30px; height: 30px; border-radius: 8px; border: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all 0.15s;
+}
+.action-btn--success { background: rgba(4, 120, 87, 0.1); color: #047857; }
+.action-btn--success:hover { background: rgba(4, 120, 87, 0.2); }
+.action-btn--warning { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
+.action-btn--warning:hover { background: rgba(245, 158, 11, 0.2); }
 
 /* Detail link */
 .detail-link-btn {
@@ -2440,30 +2553,30 @@ const selectedDealPaidTotal = computed(() =>
 
 /* Dark mode */
 .dark .stat-card {
-  background: #1e1e2e; border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border));
 }
 .dark .deal-card {
-  background: #1e1e2e; border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border));
 }
 .dark .filter-input {
-  background: #252538; border-color: #2e2e42; color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92);
 }
 .dark .filter-input:focus {
-  border-color: #047857; background: #1e1e2e;
+  border-color: #047857; background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 .dark :deep(.filter-select .v-field) {
-  background: #252538 !important; border-color: #2e2e42; color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated)) !important; border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92);
 }
 .dark :deep(.filter-select .v-field--focused) {
-  border-color: #047857 !important; background: #1e1e2e !important;
+  border-color: #047857 !important; background: rgb(var(--v-theme-surface)) !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent) !important;
 }
-.dark .view-toggle { background: #252538; border-color: #2e2e42; }
-.dark .view-toggle-btn.active { background: #2e2e42; box-shadow: none; }
-.dark .filter-input::placeholder { color: #71717a; }
+.dark .view-toggle { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); }
+.dark .view-toggle-btn.active { background: rgb(var(--v-theme-border)); box-shadow: none; }
+.dark .filter-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.5); }
 .dark :deep(.filter-select .v-field .v-field__prepend-inner),
-.dark :deep(.filter-select .v-field .v-field__append-inner) { color: #71717a; }
+.dark :deep(.filter-select .v-field .v-field__append-inner) { color: rgba(var(--v-theme-on-surface), 0.5); }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
 
 /* Folders */
@@ -2587,8 +2700,8 @@ const selectedDealPaidTotal = computed(() =>
 .fb-empty { padding: 12px; text-align: center; }
 
 .dark .fb-dropdown-header { border-bottom-color: rgba(255,255,255,0.06); }
-.dark .fb-btn { background: #252538; border-color: #2e2e42; }
-.dark .fb-btn:hover { border-color: #3e3e52; }
+.dark .fb-btn { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); }
+.dark .fb-btn:hover { border-color: rgb(var(--v-theme-border)); }
 .dark .fb-btn--active { background: rgba(var(--v-theme-primary), 0.1); border-color: rgba(var(--v-theme-primary), 0.2); }
 .dark .fb-item:hover { background: rgba(255,255,255,0.04); }
 .dark .fb-item--active { background: rgba(var(--v-theme-primary), 0.1); }
@@ -2687,7 +2800,7 @@ const selectedDealPaidTotal = computed(() =>
 
 .dark .folder-chip { background: rgba(255,255,255,0.06); }
 .dark .folder-chip.active { background: rgba(var(--v-theme-primary), 0.15); }
-.dark .fd-input { background: #1e1e2e; border-color: #2e2e42; }
+.dark .fd-input { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .fd-preview { background: rgba(255,255,255,0.04); }
 .dark .fd-footer { border-top-color: rgba(255,255,255,0.06); }
 .dark .fd-color.active { border-color: rgba(255,255,255,0.2); }

@@ -442,3 +442,5 @@
   background: rgba(245, 158, 11, 0.16); color: #b45309;
 }
 .deal-locked-chip .v-icon { font-size: 12px !important; }
+/* В тёмных темах тёмно-янтарный текст тонет — берём светлый янтарь. */
+.dark .deal-locked-chip { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }

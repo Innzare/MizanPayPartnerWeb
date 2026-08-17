@@ -693,7 +693,7 @@ function renderStars(rating: number): string[] {
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon" style="background: rgba(26, 26, 26, 0.1); color: #1a1a1a;">
+        <div class="stat-icon stat-icon--neutral">
           <v-icon icon="mdi-cancel" size="20" />
         </div>
         <div>
@@ -1821,8 +1821,8 @@ function renderStars(rating: number): string[] {
   color: rgba(var(--v-theme-on-surface), 0.55);
 }
 .dark .rg-disclaimer { background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.2); }
-.dark .rg-type-btn { background: #252538; }
-.dark .rg-type-btn.active { background: #2e2e42; }
+.dark .rg-type-btn { background: rgb(var(--v-theme-surface-elevated)); }
+.dark .rg-type-btn.active { background: rgb(var(--v-theme-border)); }
 .dark .rg-type-btn--platform.active { background: rgba(16, 185, 129, 0.12); }
 .dark .rg-type-btn--external.active { background: rgba(99, 102, 241, 0.12); }
 
@@ -2153,8 +2153,8 @@ function renderStars(rating: number): string[] {
   width: 100%;
   padding: 10px 14px;
   border-radius: 10px;
-  border: 1px solid #e5e7eb;
-  background: #f9fafb;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.03);
   font-size: 14px;
   outline: none;
   color: rgba(var(--v-theme-on-surface), 0.85);
@@ -2162,15 +2162,15 @@ function renderStars(rating: number): string[] {
 }
 .rg-field-input:focus {
   border-color: #047857;
-  background: #fff;
+  background: rgba(var(--v-theme-on-surface), 0.06);
   box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.08);
 }
 .rg-field-textarea {
   width: 100%;
   padding: 10px 14px;
   border-radius: 10px;
-  border: 1px solid #e5e7eb;
-  background: #f9fafb;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.03);
   font-size: 14px;
   outline: none;
   color: rgba(var(--v-theme-on-surface), 0.85);
@@ -2181,7 +2181,7 @@ function renderStars(rating: number): string[] {
 }
 .rg-field-textarea:focus {
   border-color: #047857;
-  background: #fff;
+  background: rgba(var(--v-theme-on-surface), 0.06);
   box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.08);
 }
 
@@ -2208,52 +2208,32 @@ function renderStars(rating: number): string[] {
 
 /* ── Dark mode ── */
 .dark .stat-card {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 .dark .rg-card {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 .dark .rg-card:hover {
-  border-color: #3e3e52;
+  border-color: rgb(var(--v-theme-border));
 }
 .dark .rg-card--expanded {
   border-color: rgba(4, 120, 87, 0.35);
 }
 .dark .rg-card--blacklisted {
-  background: #161622;
+  background: rgb(var(--v-theme-surface-deep));
   border-color: rgba(255, 255, 255, 0.08);
 }
-.dark .rg-field-input {
-  background: #252538;
-  border-color: #2e2e42;
-  color: #e4e4e7;
-}
-.dark .rg-field-input:focus {
-  border-color: #047857;
-  background: #1e1e2e;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
-}
-.dark .rg-field-textarea {
-  background: #252538;
-  border-color: #2e2e42;
-  color: #e4e4e7;
-}
-.dark .rg-field-textarea:focus {
-  border-color: #047857;
-  background: #1e1e2e;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
-}
 .dark .rg-btn--ghost {
-  border-color: #2e2e42;
-  color: #a1a1aa;
+  border-color: rgb(var(--v-theme-border));
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 .dark .rg-btn--ghost:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.04);
 }
 .dark .rg-btn--dark {
-  background: #e4e4e7;
+  background: rgba(var(--v-theme-on-surface), 0.92);
   color: #1a1a1a;
 }
 .dark .rg-btn--dark:hover:not(:disabled) {
@@ -2272,10 +2252,10 @@ function renderStars(rating: number): string[] {
   background: rgba(239, 68, 68, 0.06);
 }
 .dark .rg-dialog-header {
-  border-bottom-color: #2e2e42;
+  border-bottom-color: rgb(var(--v-theme-border));
 }
 .dark .rg-dialog-actions {
-  border-top-color: #2e2e42;
+  border-top-color: rgb(var(--v-theme-border));
 }
 .dark .rg-dialog-warning {
   background: rgba(245, 158, 11, 0.1);
@@ -2291,8 +2271,13 @@ function renderStars(rating: number): string[] {
 .dark .rg-tab:hover {
   background: rgba(255, 255, 255, 0.04);
 }
-.dark .stat-icon:last-child {
-  color: #a1a1aa !important;
+/* Нейтральная иконка KPI «В чёрном списке». Прежде цвет стоял инлайном
+   (#1a1a1a), а тёмный вариант целился в `.stat-icon:last-child` — но иконка не
+   последний ребёнок карточки, поэтому правило не срабатывало и в тёмной теме
+   иконка пропадала. */
+.stat-icon--neutral {
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
 
 /* ── Mode switch ── */
@@ -2364,7 +2349,7 @@ function renderStars(rating: number): string[] {
 }
 
 .dark .rg-mode-btn--active {
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 

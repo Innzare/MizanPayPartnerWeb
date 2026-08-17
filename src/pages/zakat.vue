@@ -621,7 +621,7 @@ watch(() => tab.value, (t) => {
   gap: 2px;
   flex-wrap: wrap;
 }
-.dark .tab-pills { background: #1e1e2e; border-color: #2e2e42; }
+.dark .tab-pills { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .tab-pill {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 8px 14px; border-radius: 8px; border: none; background: transparent;
@@ -633,7 +633,7 @@ watch(() => tab.value, (t) => {
   background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.95);
   font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
-.dark .tab-pill.active { background: #2a2a3e; }
+.dark .tab-pill.active { background: rgb(var(--v-theme-surface-elevated)); }
 
 .section-title { font-size: 16px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.9); }
 .block-title {

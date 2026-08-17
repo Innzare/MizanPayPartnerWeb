@@ -191,13 +191,15 @@ function onJumpStep(delta: number) {
      вплотную к нижнему краю, без просвета под собой. */
   margin: 0 -16px -16px;
   padding: 14px 16px;
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   border-radius: 0 0 8px 8px;
   background: rgb(var(--v-theme-surface));
+  /* Тень видна только в светлой теме; в тёмных панель отделяет граница выше —
+     слои там различаются тоном, а не тенями. */
   box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.05);
 }
 
-.sp-info { font-size: 13px; color: rgba(0, 0, 0, 0.55); }
+.sp-info { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6); }
 
 .sp-nav { display: flex; align-items: center; gap: 4px; }
 
@@ -206,17 +208,17 @@ function onJumpStep(delta: number) {
   height: 32px;
   padding: 0 8px;
   border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   background: transparent;
   font-size: 13px;
   font-weight: 500;
-  color: rgba(0, 0, 0, 0.75);
+  color: rgba(var(--v-theme-on-surface), 0.8);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   transition: background-color 0.15s, border-color 0.15s;
 }
-.sp-btn:hover:not(:disabled) { background: rgba(0, 0, 0, 0.04); }
+.sp-btn:hover:not(:disabled) { background: rgba(var(--v-theme-on-surface), 0.06); }
 .sp-btn:disabled { opacity: 0.4; }
 .sp-btn--active {
   background: rgb(var(--v-theme-primary));
@@ -268,31 +270,21 @@ function onJumpStep(delta: number) {
 
 
 .sp-size { display: flex; align-items: center; gap: 8px; }
-.sp-size-label { font-size: 13px; color: rgba(0, 0, 0, 0.55); }
+.sp-size-label { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6); }
 
 .sp-select {
   height: 32px;
   padding: 0 8px;
   border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   background: transparent;
   font-size: 13px;
   color: inherit;
   cursor: pointer;
 }
-.sp-select option { color: initial; }
+.sp-select option { color: initial; background: initial; }
 
-/* Тёмная тема: класс .dark ставится на страницу, поэтому :deep не нужен —
-   компонент внутри неё. */
-:global(.dark) .sp-pager {
-  border-top-color: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.28);
-}
-:global(.dark) .sp-info,
-:global(.dark) .sp-size-label,
-:global(.dark) .sp-btn { border-color: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.8); }
-:global(.dark) .sp-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
-:global(.dark) .sp-select { border-color: rgba(255, 255, 255, 0.12); }
+/* Отдельных правил под тёмные темы не нужно: всё выше — на переменных темы. */
 
 @media (max-width: 720px) {
   .sp-pager { justify-content: center; gap: 12px; }

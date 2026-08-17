@@ -1420,8 +1420,8 @@ function goConnect() { activeTab.value = 'connection' }
 .bc-header--actions-only { justify-content: flex-end; }
 .bc-title { font-size: 28px; font-weight: 800; color: #111; letter-spacing: -0.5px; }
 .bc-subtitle { font-size: 14px; color: #737373; margin-top: 6px; }
-.bc-page.dark .bc-title { color: #f5f5f5; }
-.bc-page.dark .bc-subtitle { color: #a3a3a3; }
+.bc-page.dark .bc-title { color: rgba(var(--v-theme-on-surface), 0.92); }
+.bc-page.dark .bc-subtitle { color: rgba(var(--v-theme-on-surface), 0.65); }
 .bc-header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .bc-guide-btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1566,8 +1566,8 @@ function goConnect() { activeTab.value = 'connection' }
 }
 .bc-msg--in .bc-msg-bubble { background: #ffffff; color: #111b21; border-top-left-radius: 0; }
 .bc-msg--out .bc-msg-bubble { background: #d9fdd3; color: #111b21; border-top-right-radius: 0; }
-.bc-page.dark .bc-msg--in .bc-msg-bubble { background: #202c33; color: #e9edef; box-shadow: none; }
-.bc-page.dark .bc-msg--out .bc-msg-bubble { background: #005c4b; color: #e9edef; box-shadow: none; }
+.bc-page.dark .bc-msg--in .bc-msg-bubble { background: #202c33; color: rgba(var(--v-theme-on-surface), 0.92); box-shadow: none; }
+.bc-page.dark .bc-msg--out .bc-msg-bubble { background: #005c4b; color: rgba(var(--v-theme-on-surface), 0.92); box-shadow: none; }
 .bc-msg-text { white-space: pre-wrap; }
 .bc-msg-media { display: flex; align-items: center; gap: 4px; font-size: 12.5px; margin-bottom: 3px; text-decoration: underline; color: inherit; }
 .bc-msg-time { float: right; font-size: 11px; margin: 5px 0 -2px 8px; color: rgba(0, 0, 0, 0.45); }
@@ -1585,7 +1585,7 @@ function goConnect() { activeTab.value = 'connection' }
   flex: 1; height: 42px; padding: 0 16px; border-radius: 21px; outline: none; color: #111b21; font-size: 14px;
   background: #ffffff; border: none;
 }
-.bc-page.dark .bc-chat-reply input { background: #2a3942; color: #e9edef; }
+.bc-page.dark .bc-chat-reply input { background: #2a3942; color: rgba(var(--v-theme-on-surface), 0.92); }
 .bc-chat-reply input::placeholder { color: rgba(0, 0, 0, 0.4); }
 .bc-page.dark .bc-chat-reply input::placeholder { color: rgba(233, 237, 239, 0.45); }
 .bc-chat-send {

@@ -46,6 +46,7 @@ declare module 'vue' {
     ReportsMoneyNow: typeof import('./components/reports/ReportsMoneyNow.vue')['default']
     ReportsRisks: typeof import('./components/reports/ReportsRisks.vue')['default']
     ReportsTab: typeof import('./components/reports/ReportsTab.vue')['default']
+    ReschedulePaymentDialog: typeof import('./components/ReschedulePaymentDialog.vue')['default']
     RolesManager: typeof import('./components/RolesManager.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

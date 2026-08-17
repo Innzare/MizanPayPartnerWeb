@@ -43,6 +43,6 @@ const id = computed(() => (route.params as { id: string }).id)
   border-color: #d1d5db;
 }
 .dark .back-btn {
-  background: #1e1e2e; border-color: #2e2e42; color: #d4d4d8;
+  background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.8);
 }
 </style>

@@ -13,7 +13,7 @@ import { useRoute } from 'vue-router'
 definePage({
   meta: { layout: 'auth' },
 })
-import { useTheme } from 'vuetify'
+import { useThemeMode } from '@/composables/useThemeMode'
 import { api } from '@/api/client'
 import { useIsDark } from '@/composables/useIsDark'
 import ServerPager from '@/components/ServerPager.vue'
@@ -106,7 +106,6 @@ interface PublicSummary {
 
 const route = useRoute()
 const { isDark } = useIsDark()
-const vTheme = useTheme()
 
 // Верхний таб кабинета: обзор (сводка + журнал) или детальные сделки.
 const mainTab = ref<'overview' | 'deals'>('overview')
@@ -119,12 +118,18 @@ function toggleDealExpand(id: string) {
   expandedDeals.value = n
 }
 
-// Переключатель темы (кабинет живёт на auth-layout, без общего тумблера).
+// Переключатель темы: кабинет инвестора живёт на auth-layout, без сайдбара с
+// селектом, поэтому здесь тем три и они идут по кругу. Раньше тумблер был
+// бинарным и писал в тот же ключ, затирая «ночную», выбранную в кабинете.
+const { current: themeMode, options: themeOptions, setTheme } = useThemeMode()
+
+const activeTheme = computed(
+  () => themeOptions.find((o) => o.id === themeMode.value) ?? themeOptions[0]!,
+)
+
 function toggleTheme() {
-  const next = isDark.value ? 'light' : 'dark'
-  vTheme.change(next)
-  localStorage.setItem('theme', next)
-  document.documentElement.classList.toggle('dark', next === 'dark')
+  const i = themeOptions.findIndex((o) => o.id === themeMode.value)
+  setTheme(themeOptions[(i + 1) % themeOptions.length]!.id)
 }
 
 // Нетто «в работе» по сделке — СО ЗНАКОМ. <0 = клиент вернул больше вашей вложенной
@@ -422,13 +427,6 @@ function pluralCashboxes(n: number) {
   return 'касс'
 }
 
-onMounted(() => {
-  const saved = localStorage.getItem('theme')
-  if (saved === 'dark' || saved === 'light') {
-    vTheme.change(saved)
-    document.documentElement.classList.toggle('dark', saved === 'dark')
-  }
-})
 onMounted(load)
 </script>
 
@@ -461,8 +459,8 @@ onMounted(load)
               <span v-if="summary.person.createdAt">с {{ formatDate(summary.person.createdAt) }}</span>
             </div>
           </div>
-          <button class="inv-theme-btn" :title="isDark ? 'Светлая тема' : 'Тёмная тема'" @click="toggleTheme">
-            <v-icon :icon="isDark ? 'mdi-white-balance-sunny' : 'mdi-weather-night'" size="20" />
+          <button class="inv-theme-btn" :title="`Оформление: ${activeTheme.title}`" @click="toggleTheme">
+            <v-icon :icon="activeTheme.icon" size="20" />
           </button>
         </div>
 

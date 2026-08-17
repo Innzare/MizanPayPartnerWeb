@@ -546,7 +546,7 @@ onMounted(() => {
   transition: all 0.15s;
   font-family: inherit;
 }
-.dark .draft-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .draft-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .draft-card:hover {
   border-color: rgba(var(--v-theme-primary), 0.5);
   transform: translateY(-2px);

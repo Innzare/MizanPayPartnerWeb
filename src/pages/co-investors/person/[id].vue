@@ -498,7 +498,7 @@ async function saveStake() {
   font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s;
 }
 .pp-back:hover { background: rgba(var(--v-theme-on-surface), 0.04); border-color: #d1d5db; }
-.dark .pp-back { background: #1e1e2e; border-color: #2e2e42; color: #d4d4d8; }
+.dark .pp-back { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.8); }
 
 .pp-hero { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .pp-avatar {
@@ -568,8 +568,8 @@ async function saveStake() {
 .ci-menu-item--danger { color: #ef4444; }
 .ci-menu-item--danger :deep(.v-icon) { color: #ef4444; }
 .ci-menu-item--danger:hover { background: #fef2f2; }
-.dark .ci-menu-item { color: #a1a1aa; }
-.dark .ci-menu-item:hover { background: #252538; }
+.dark .ci-menu-item { color: rgba(var(--v-theme-on-surface), 0.65); }
+.dark .ci-menu-item:hover { background: rgb(var(--v-theme-surface-elevated)); }
 .dark .ci-menu-item--danger { color: #f87171; }
 .dark .ci-menu-item--danger:hover { background: rgba(239, 68, 68, 0.12); }
 

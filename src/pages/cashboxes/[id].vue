@@ -2959,16 +2959,20 @@ async function handleDelete() {
   color: rgba(var(--v-theme-on-surface), 0.6);
   margin-bottom: 6px;
 }
+/* Цвета — на theme-переменных, а не хардкодом: диалог уезжает в body, класс
+   .dark со страницы до него не достаёт, и светлый фон оставался светлым в
+   тёмной теме — текст в поле становился нечитаемым. */
 .fn-field-input {
   width: 100%; padding: 10px 14px;
-  border-radius: 10px; border: 1px solid #e5e7eb;
-  background: #f9fafb; font-size: 14px; outline: none;
+  border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.03); font-size: 14px; outline: none;
   color: rgba(var(--v-theme-on-surface), 0.85);
   transition: all 0.15s;
   font-family: inherit;
 }
+.fn-field-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.3); }
 .fn-field-input:focus {
-  border-color: #6366f1; background: #fff;
+  border-color: #6366f1; background: rgba(var(--v-theme-on-surface), 0.06);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
 }
 .fn-field-input-wrap { position: relative; }
@@ -2991,8 +2995,8 @@ async function handleDelete() {
 .fn-field-select-btn {
   width: 100%; display: flex; align-items: center; gap: 8px;
   padding: 10px 12px 10px 14px;
-  border-radius: 10px; border: 1px solid #e5e7eb;
-  background: #f9fafb; font-size: 14px; outline: none;
+  border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.03); font-size: 14px; outline: none;
   color: rgba(var(--v-theme-on-surface), 0.85);
   cursor: pointer; transition: all 0.15s;
   font-family: inherit; text-align: left;
@@ -3002,7 +3006,7 @@ async function handleDelete() {
 }
 .fn-field-select-btn:focus-visible,
 .fn-field-select-btn[aria-expanded="true"] {
-  border-color: #6366f1; background: #fff;
+  border-color: #6366f1; background: rgba(var(--v-theme-on-surface), 0.06);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.08);
 }
 .fn-field-select-icon {
@@ -3082,7 +3086,7 @@ async function handleDelete() {
 .fn-cat-add-btn {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 5px 10px; border-radius: 7px;
-  border: 1px solid #e5e7eb; background: transparent;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12); background: transparent;
   font-size: 12px; font-weight: 600;
   color: rgba(var(--v-theme-on-surface), 0.6);
   cursor: pointer; transition: all 0.15s;
@@ -3144,7 +3148,7 @@ async function handleDelete() {
 }
 .fn-btn--ghost {
   background: transparent; color: rgba(var(--v-theme-on-surface), 0.5);
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
 }
 .fn-btn--ghost:hover:not(:disabled) { background: rgba(var(--v-theme-on-surface), 0.04); }
 .fn-btn--danger { background: #ef4444; color: #fff; }
@@ -3186,7 +3190,7 @@ async function handleDelete() {
   color: #ef4444;
 }
 .fn-icon-btn--add {
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   color: rgba(var(--v-theme-on-surface), 0.5);
 }
 .fn-icon-btn--add:hover {

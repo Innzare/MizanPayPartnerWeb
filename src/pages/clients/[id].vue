@@ -1092,8 +1092,8 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
 }
 
 /* ── Dark mode ── */
-.dark .stat-card { background: #1e1e2e; border-color: #2e2e42; }
-.dark .tab-item.active { background: #1e1e2e; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); }
+.dark .stat-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
+.dark .tab-item.active { background: rgb(var(--v-theme-surface)); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); }
 .dark .tab-bar { background: rgba(255, 255, 255, 0.04); }
 .dark .data-item { background: rgba(255, 255, 255, 0.03); }
 .dark .deal-row:hover { background: rgba(255, 255, 255, 0.04); }

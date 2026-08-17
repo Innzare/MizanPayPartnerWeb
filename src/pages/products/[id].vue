@@ -787,11 +787,11 @@ async function deleteProduct() {
 }
 
 /* Dark mode */
-.dark .installment-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .installment-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .installment-card--featured { background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.2); }
-.dark .deal-item { background: rgba(255,255,255,0.02); border-color: #2e2e42; }
+.dark .deal-item { background: rgba(255,255,255,0.02); border-color: rgb(var(--v-theme-border)); }
 .dark .deal-stats-mini { background: rgba(255,255,255,0.03); }
-.dark .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .field-input { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92); }
 .dark .field-input:focus {
   border-color: #047857;
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);

@@ -57,32 +57,24 @@ const colorMap: Record<string, string> = {
   gap: 10px;
   padding: 12px 16px;
   border-radius: 10px;
-  background: #fff;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1), 0 1px 4px rgba(0, 0, 0, 0.06);
+  /* Тост всплывает над контентом — берём приподнятый слой темы, а не белый:
+     иначе в тёмных темах это светлая плашка посреди тёмного экрана. */
+  background: rgb(var(--v-theme-surface-elevated));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18), 0 1px 4px rgba(0, 0, 0, 0.1);
   border-left: 3px solid var(--gt-color);
   min-width: 280px;
 }
 
-:global(.dark) .gt-toast,
-:global(html.dark) .gt-toast {
-  background: #252538;
-  border-color: #2e2e42;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-}
 
 .gt-message {
   flex: 1;
   font-size: 13px;
   font-weight: 500;
-  color: rgba(0, 0, 0, 0.8);
+  color: rgba(var(--v-theme-on-surface), 0.88);
   line-height: 1.4;
 }
 
-:global(.dark) .gt-message,
-:global(html.dark) .gt-message {
-  color: #e4e4e7;
-}
 
 .gt-close {
   width: 24px;
@@ -90,7 +82,7 @@ const colorMap: Record<string, string> = {
   border-radius: 6px;
   border: none;
   background: none;
-  color: rgba(0, 0, 0, 0.35);
+  color: rgba(var(--v-theme-on-surface), 0.4);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -100,18 +92,11 @@ const colorMap: Record<string, string> = {
 }
 
 .gt-close:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: rgba(0, 0, 0, 0.6);
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.65);
 }
 
-:global(.dark) .gt-close {
-  color: rgba(255, 255, 255, 0.35);
-}
 
-:global(.dark) .gt-close:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.6);
-}
 
 /* Transitions */
 .gt-slide-enter-active {

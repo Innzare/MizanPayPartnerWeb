@@ -214,18 +214,21 @@ function goToSubscription() {
 .cbl-save:hover:not(:disabled) { background: #065f46; }
 .cbl-save:disabled { opacity: 0.7; cursor: default; }
 
-/* Dark */
-:global(.cb-page.dark) .cbl-block { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); }
-:global(.cb-page.dark) .cbl-title { color: #fbbf24; }
-:global(.cb-page.dark) .cbl-subtitle { color: #d4a24e; }
-:global(.cb-page.dark) .cbl-item { background: rgba(255, 255, 255, 0.05); }
-:global(.cb-page.dark) .cbl-item--on { background: #1c1c1e; }
-:global(.cb-page.dark) .cbl-item-name { color: #f5f5f5; }
-
-@media (max-width: 599px) {
-  .cbl-head { flex-wrap: wrap; }
-  .cbl-upgrade { width: 100%; justify-content: center; margin-top: 4px; }
-  .cbl-footer { flex-direction: column; align-items: stretch; gap: 10px; }
-  .cbl-save { width: 100%; }
-}
+/* Тёмные темы. Селектор именно `.dark .x`: класс висит на <html>, поэтому
+   правило достаёт элемент и внутри модалок. Прежний `:global(.cb-page.dark) .x`
+   Vue компилировал в голый `.cb-page.dark` — хвост отбрасывался, и правила
+   красили саму страницу, а не блок. */
+.dark .cbl-block { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); }
+.dark .cbl-title { color: #fbbf24; }
+.dark .cbl-subtitle { color: #d9a95e; }
+.dark .cbl-item { background: rgba(255, 255, 255, 0.05); border-color: rgba(245, 158, 11, 0.3); }
+.dark .cbl-item--on { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-accent)); }
+.dark .cbl-item-name { color: rgba(var(--v-theme-on-surface), 0.92); }
+.dark .cbl-check { border-color: rgba(255, 255, 255, 0.25); }
+.dark .cbl-check--on { background: rgb(var(--v-theme-accent)); border-color: rgb(var(--v-theme-accent)); color: #0b0d11; }
+.dark .cbl-item-tag { color: #fbbf24; }
+.dark .cbl-counter { color: #d9a95e; }
+.dark .cbl-counter--full { color: rgb(var(--v-theme-accent)); }
+.dark .cbl-upgrade { background: #b45309; }
+.dark .cbl-upgrade:hover { background: #c2620b; }
 </style>

@@ -90,7 +90,7 @@ onMounted(() => {
   background: #047857; color: #fff; font-weight: 600;
   box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
 }
-.sup-page.dark .settings-tabs { background: #1a1a2e; border-color: #2e2e42; box-shadow: none; }
+.sup-page.dark .settings-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); box-shadow: none; }
 .sup-tabcount {
   font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 10px;
   background: #fff; color: #047857; line-height: 18px; min-width: 20px; text-align: center;

@@ -18,6 +18,7 @@ import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
 import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
+import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -740,11 +741,10 @@ const selectedDealPaidTotal = computed(() =>
   selectedDealPayments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
 )
 
-// Reschedule dialog
+// Перенос даты — общий компонент ReschedulePaymentDialog: дату, причину и
+// отправку он держит сам, странице остаётся только выбор платежа.
 const rescheduleDialog = ref(false)
 const reschedulePaymentRef = ref<Payment | null>(null)
-const rescheduleDate = ref('')
-const rescheduleReason = ref('')
 
 /**
  * Строки страницы. Сервер уже применил вкладку, месяц, фильтры, поиск и
@@ -859,43 +859,19 @@ async function handleUnmarkPaid(e: Event, payment: Payment) {
 function openReschedule(e: Event, payment: Payment) {
   e.stopPropagation()
   reschedulePaymentRef.value = payment
-  const d = new Date(payment.dueDate)
-  d.setDate(d.getDate() + 7)
-  rescheduleDate.value = d.toISOString().slice(0, 10)
-  rescheduleReason.value = ''
   rescheduleDialog.value = true
 }
 
-const minRescheduleDate = computed(() => {
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  return tomorrow.toISOString().slice(0, 10)
-})
+/** Сделка переносимого платежа — показываем её название в шапке диалога. */
+const rescheduleDeal = computed(() =>
+  reschedulePaymentRef.value ? getDealForPayment(reschedulePaymentRef.value) ?? null : null,
+)
 
-async function confirmReschedule() {
-  if (!reschedulePaymentRef.value || !rescheduleDate.value) return
-  try {
-    await paymentsStore.reschedulePayment(
-      reschedulePaymentRef.value.id,
-      reschedulePaymentRef.value.dealId,
-      new Date(rescheduleDate.value).toISOString(),
-      rescheduleReason.value || undefined,
-    )
-    toast.success('Платёж перенесён')
-    await refreshList()
-    rescheduleDialog.value = false
-    reschedulePaymentRef.value = null
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка при переносе платежа')
-  }
+/** Дата перенесена: перечитываем страницу, счётчики и календарь. */
+async function onRescheduled() {
+  reschedulePaymentRef.value = null
+  await refreshList()
 }
-
-const rescheduleReasonOptions = [
-  'Клиент попросил отсрочку',
-  'Задержка зарплаты клиента',
-  'По договорённости сторон',
-  'Другая причина',
-]
 </script>
 
 <template>
@@ -1878,81 +1854,16 @@ const rescheduleReasonOptions = [
       @paid="onMarkPaidDone"
     />
 
-    <v-dialog v-model="rescheduleDialog" max-width="440" :fullscreen="isMobile">
-      <v-card v-if="reschedulePaymentRef" rounded="lg">
-        <div class="pa-5">
-          <div class="d-flex align-center justify-space-between mb-4">
-            <div class="text-h6 font-weight-bold">Перенос платежа</div>
-            <button class="dialog-close-sm" @click="rescheduleDialog = false">
-              <v-icon icon="mdi-close" size="18" />
-            </button>
-          </div>
-
-          <div class="reschedule-info mb-4">
-            <div class="reschedule-info-row">
-              <span class="reschedule-info-label">Сделка</span>
-              <span class="reschedule-info-value">{{ getDealForPayment(reschedulePaymentRef)?.productName || reschedulePaymentRef.dealId }}</span>
-            </div>
-            <div class="reschedule-info-row">
-              <span class="reschedule-info-label">Платёж №{{ reschedulePaymentRef.number }}</span>
-              <span class="reschedule-info-value font-weight-bold">{{ formatCurrency(reschedulePaymentRef.amount) }}</span>
-            </div>
-            <div class="reschedule-info-row">
-              <span class="reschedule-info-label">Текущая дата</span>
-              <span class="reschedule-info-value" :class="{ 'text-error': reschedulePaymentRef.status === 'OVERDUE' }">
-                {{ formatDate(reschedulePaymentRef.dueDate) }}
-              </span>
-            </div>
-          </div>
-
-          <div class="mb-4">
-            <label class="field-label">Новая дата</label>
-            <input
-              v-model="rescheduleDate"
-              type="date"
-              class="field-input"
-              :min="minRescheduleDate"
-            />
-          </div>
-
-          <div class="mb-5">
-            <label class="field-label">Причина переноса</label>
-            <div class="d-flex flex-wrap ga-2 mb-2">
-              <button
-                v-for="r in rescheduleReasonOptions"
-                :key="r"
-                class="reason-chip"
-                :class="{ active: rescheduleReason === r }"
-                @click="rescheduleReason = rescheduleReason === r ? '' : r"
-              >
-                {{ r }}
-              </button>
-            </div>
-            <textarea
-              v-if="rescheduleReason === 'Другая причина'"
-              v-model="rescheduleReason"
-              class="field-input field-textarea"
-              placeholder="Укажите причину..."
-              rows="2"
-            />
-          </div>
-
-          <div class="d-flex ga-2">
-            <button class="btn-secondary flex-grow-1" @click="rescheduleDialog = false">
-              Отмена
-            </button>
-            <button
-              class="btn-primary flex-grow-1"
-              :disabled="!rescheduleDate"
-              @click="confirmReschedule"
-            >
-              <v-icon icon="mdi-calendar-arrow-right" size="16" />
-              Перенести
-            </button>
-          </div>
-        </div>
-      </v-card>
-    </v-dialog>
+    <!-- Перенос даты — общий компонент: тот же диалог, что на странице сделки
+         и в превью сделки. Сделку передаём — в списке платежей перемешаны
+         договоры, и без неё непонятно, что именно переносим. -->
+    <ReschedulePaymentDialog
+      v-model="rescheduleDialog"
+      :payment="reschedulePaymentRef"
+      :deal="rescheduleDeal"
+      :fullscreen="isMobile"
+      @rescheduled="onRescheduled"
+    />
     </template>
 
     <!-- WhatsApp bulk reminders dialog (preview + per-row selection) -->
@@ -2353,80 +2264,6 @@ const rescheduleReasonOptions = [
   color: rgba(var(--v-theme-on-surface), 0.8);
 }
 
-.reschedule-info {
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  border-radius: 10px; padding: 12px 16px;
-}
-.reschedule-info-row {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 4px 0;
-}
-.reschedule-info-label {
-  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
-}
-.reschedule-info-value {
-  font-size: 14px; color: rgba(var(--v-theme-on-surface), 0.85);
-}
-
-/* Form fields */
-.field-label {
-  display: block; font-size: 13px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.6); margin-bottom: 6px;
-}
-.field-input {
-  width: 100%; height: 42px; padding: 0 14px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  border-radius: 10px; font-size: 14px; color: inherit;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  outline: none; transition: all 0.15s;
-}
-.field-input:focus {
-  border-color: #047857;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 8%, transparent);
-}
-.field-textarea {
-  height: auto; padding: 10px 14px; resize: vertical;
-}
-
-/* Reason chips */
-.reason-chip {
-  padding: 6px 12px; border-radius: 8px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  font-size: 12px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  cursor: pointer; transition: all 0.15s;
-}
-.reason-chip:hover {
-  background: rgba(var(--v-theme-primary), 0.08);
-  color: rgb(var(--v-theme-primary));
-}
-.reason-chip.active {
-  background: rgba(var(--v-theme-primary), 0.12);
-  color: rgb(var(--v-theme-primary)); font-weight: 600;
-}
-
-/* Buttons */
-.btn-primary {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  height: 42px; padding: 0 20px; border-radius: 10px; border: none;
-  background: #047857; color: #fff;
-  font-size: 14px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s;
-}
-.btn-primary:hover { background: #065f46; }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-secondary {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  height: 42px; padding: 0 20px; border-radius: 10px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  background: transparent; color: rgba(var(--v-theme-on-surface), 0.7);
-  font-size: 14px; font-weight: 500;
-  cursor: pointer; transition: all 0.15s;
-}
-.btn-secondary:hover {
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-
 /* View toggle */
 .view-toggle {
   display: flex; border-radius: 10px; overflow: hidden;
@@ -2515,7 +2352,7 @@ const rescheduleReasonOptions = [
 .cal-overlay-btn:hover { background: #065f46; }
 
 .dark .cal-overlay-content {
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
   border-color: rgba(232, 185, 49, 0.25);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
 }
@@ -2787,32 +2624,26 @@ const rescheduleReasonOptions = [
 }
 
 /* Dark mode */
-.dark .cal-summary-card { background: #1e1e2e; border-color: #2e2e42; }
-.dark .stat-card { background: #1e1e2e; border-color: #2e2e42; }
-.dark .view-toggle { background: #252538; border-color: #2e2e42; }
+.dark .cal-summary-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
+.dark .stat-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
+.dark .view-toggle { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); }
 .dark .view-toggle-btn.active { background: rgba(4, 120, 87, 0.15); }
-.dark .cal-scale-toggle { background: #252538; border-color: #2e2e42; }
+.dark .cal-scale-toggle { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); }
 .dark .cal-scale-btn.active { background: rgba(4, 120, 87, 0.15); }
-.dark .year-month-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .year-month-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .mini-day--pending { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
 .dark .mini-day--overdue { background: rgba(239, 68, 68, 0.2); color: #f87171; }
 .dark .mini-day--paid { background: rgba(4, 120, 87, 0.2); color: #34d399; }
-.dark .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .filter-input { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92); }
 .dark .filter-input:focus {
-  border-color: #047857; background: #1e1e2e;
+  border-color: #047857; background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-.dark .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-.dark .field-input:focus {
-  border-color: #047857; background: #1e1e2e;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
-}
-.dark .filter-input::placeholder { color: #71717a; }
-.dark .cal-day { border-color: #2e2e42; }
-.dark .cal-day--has-payments { border-color: #3e3e52; background: rgba(255, 255, 255, 0.02); }
-.dark .cal-month-stats { background: #1e1e2e; border-color: #2e2e42; }
+.dark .filter-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.5); }
+.dark .cal-day { border-color: rgb(var(--v-theme-border)); }
+.dark .cal-day--has-payments { border-color: rgb(var(--v-theme-border)); background: rgba(255, 255, 255, 0.02); }
+.dark .cal-month-stats { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
-.dark .reschedule-info { background: #1e1e2e; border-color: #2e2e42; }
 .btn-whatsapp {
   display: inline-flex; align-items: center; gap: 6px;
   height: 38px; padding: 0 16px; border-radius: 10px; border: none;
@@ -2977,8 +2808,8 @@ const rescheduleReasonOptions = [
 .pf-folder-hint:hover { color: rgb(var(--v-theme-primary)); }
 
 .dark .pf-folder-header { border-bottom-color: rgba(255,255,255,0.06); }
-.dark .pf-folder-btn { background: #252538; border-color: #2e2e42; }
-.dark .pf-folder-btn:hover { border-color: #3e3e52; }
+.dark .pf-folder-btn { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); }
+.dark .pf-folder-btn:hover { border-color: rgb(var(--v-theme-border)); }
 .dark .pf-folder-item:hover { background: rgba(255,255,255,0.04); }
 .dark .pf-folder-item--active { background: rgba(var(--v-theme-primary), 0.1); }
 

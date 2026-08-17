@@ -1685,7 +1685,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
   background: rgba(26, 26, 46, 0.3);
 }
 .dark .an-charts-overlay-content {
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
   border-color: rgba(232, 185, 49, 0.25);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
 }

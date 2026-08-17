@@ -19,10 +19,11 @@ import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
-import { redistribute, validateManual, type RedistributeMode } from '@/utils/redistribute'
-import { offMonthKind, dueYearMonth, monthPrepositional, monthAccusative } from '@/utils/paymentAttribution'
+import { offMonthKind, dueYearMonth, monthPrepositional } from '@/utils/paymentAttribution'
 import ClientPicker from '@/components/ClientPicker.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
+import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
+import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler
@@ -678,49 +679,18 @@ const nextPayment = computed(() =>
   payments.value.find(p => p.status === 'PENDING' || p.status === 'OVERDUE')
 )
 
-// Reschedule dialog
+// Перенос даты — общий компонент ReschedulePaymentDialog: дату, причину и
+// отправку он держит сам, странице остаётся выбор платежа.
 const rescheduleDialog = ref(false)
 const rescheduleTarget = ref<typeof payments.value[0] | null>(null)
-const rescheduleDate = ref('')
-const rescheduleReason = ref('')
-
-const rescheduleReasonOptions = [
-  'Клиент попросил отсрочку',
-  'Задержка зарплаты клиента',
-  'По договорённости сторон',
-  'Другая причина',
-]
-
-const minRescheduleDate = computed(() => {
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  return tomorrow.toISOString().slice(0, 10)
-})
 
 function openReschedule(p: typeof payments.value[0]) {
   rescheduleTarget.value = p
-  const d = new Date(p.dueDate)
-  d.setDate(d.getDate() + 7)
-  rescheduleDate.value = d.toISOString().slice(0, 10)
-  rescheduleReason.value = ''
   rescheduleDialog.value = true
 }
 
-async function confirmReschedule() {
-  if (!rescheduleTarget.value || !rescheduleDate.value) return
-  try {
-    await paymentsStore.reschedulePayment(
-      rescheduleTarget.value.id,
-      rescheduleTarget.value.dealId,
-      new Date(rescheduleDate.value).toISOString(),
-      rescheduleReason.value || undefined,
-    )
-    toast.success('Платёж перенесён')
-    rescheduleDialog.value = false
-    rescheduleTarget.value = null
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка при переносе платежа')
-  }
+function onRescheduled() {
+  rescheduleTarget.value = null
 }
 
 // Undo a previous reschedule: restores the original dueDate stored in
@@ -832,23 +802,15 @@ async function confirmAddPayment() {
   }
 }
 
-// Mark as paid dialog
+// Отметка оплаты — общий компонент MarkPaidDialog (та же модалка, что на
+// страницах платежей и в превью сделки). Здесь остаётся только выбор платежа и
+// проверка «оплата не по порядку»: она про график сделки, а не про саму отметку.
 const markPaidDialog = ref(false)
 const markPaidTarget = ref<typeof payments.value[0] | null>(null)
-const markPaidProofFile = ref<File | null>(null)
-const markPaidProofPreview = ref('')
-const markPaidUploading = ref(false)
-const proofInputRef = ref<HTMLInputElement | null>(null)
 
 // Proof screenshot enlarge
 const proofEnlargeDialog = ref(false)
 const proofEnlargeUrl = ref('')
-
-const markPaidAmount = ref<number | null>(null)
-// Actual payment date — defaults to today on dialog open. Partner can
-// roll it back to dueDate to skip the late-payment hit on client rating,
-// or set any specific calendar day they actually received the money.
-const markPaidPaidAt = ref('')
 
 // `<input type="date">` wants YYYY-MM-DD in the browser's local TZ — Date
 // values from the API are ISO with time, so we need a thin convertor.
@@ -859,12 +821,6 @@ function toDateInput(d: string | Date): string {
   const dd = String(date.getDate()).padStart(2, '0')
   return `${yyyy}-${mm}-${dd}`
 }
-function formatShortDate(d: string | Date): string {
-  const date = typeof d === 'string' ? new Date(d) : d
-  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
-}
-// Today (local) as a YYYY-MM-DD string. Used as a quick-set preset.
-const todayDateInput = computed(() => toDateInput(new Date()))
 
 const outOfOrderDialog = ref(false)
 const outOfOrderPending = ref<typeof payments.value[0] | null>(null)
@@ -890,168 +846,11 @@ function openMarkPaid(p: typeof payments.value[0]) {
 }
 
 function openMarkPaidImmediate(p: typeof payments.value[0]) {
+  // Сумму, дату, режим перерасчёта и скриншот компонент сбрасывает сам при
+  // каждом открытии — странице достаточно передать платёж.
   markPaidTarget.value = p
-  markPaidAmount.value = Math.round(p.amount)
-  markPaidProofFile.value = null
-  markPaidProofPreview.value = ''
-  // Default to today — partner almost always marks the moment they
-  // physically received the money.
-  markPaidPaidAt.value = todayDateInput.value
-  createTailPayment.value = false
-  // Дефолт перерасчёта — Равномерно (историческое поведение).
-  redistributeMode.value = 'EQUAL'
-  manualSchedule.value = {}
   markPaidDialog.value = true
 }
-
-// Detect "this mark-paid amount will close the deal early" so the partner sees
-// it BEFORE confirming, not after. Triggers when sumAlreadyPaid + entered
-// amount covers the deal balance AND there are still other PENDING/OVERDUE
-// payments (which the backend will auto-flip to CLOSED_EARLY).
-const earlyCloseInfo = computed(() => {
-  const target = markPaidTarget.value
-  const enteredAmount = markPaidAmount.value
-  if (!target || !deal.value || !enteredAmount || enteredAmount <= 0) {
-    return { willClose: false, count: 0, excess: 0 }
-  }
-  const balance = deal.value.totalPrice - (deal.value.downPayment || 0)
-  const sumAlreadyPaid = payments.value
-    .filter(p => p.id !== target.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
-    .reduce((s, p) => s + p.amount, 0)
-  const otherUnpaid = payments.value.filter(
-    p => p.id !== target.id && (p.status === 'PENDING' || p.status === 'OVERDUE'),
-  )
-  const totalAfter = sumAlreadyPaid + enteredAmount
-  return {
-    willClose: totalAfter >= balance && otherUnpaid.length > 0,
-    count: otherUnpaid.length,
-    excess: Math.max(totalAfter - balance, 0),
-  }
-})
-
-// Tail-payment helper: when partner underpays the LAST remaining PENDING/
-// OVERDUE row, the schedule runs out before the debt does. Offer to
-// auto-append a new payment for the leftover so they don't have to dig
-// into «Добавить платёж» every time.
-const tailPaymentInfo = computed(() => {
-  const target = markPaidTarget.value
-  const enteredAmount = markPaidAmount.value
-  if (!target || !deal.value || !enteredAmount || enteredAmount <= 0) {
-    return { applicable: false, deficit: 0, suggestedDate: '' }
-  }
-  // Are there any other unpaid rows that would absorb the deficit via the
-  // backend's redistribute logic? If so, no tail needed.
-  const otherUnpaid = payments.value.filter(
-    p => p.id !== target.id && (p.status === 'PENDING' || p.status === 'OVERDUE'),
-  )
-  if (otherUnpaid.length > 0) {
-    return { applicable: false, deficit: 0, suggestedDate: '' }
-  }
-  const balance = deal.value.totalPrice - (deal.value.downPayment || 0)
-  const sumAlreadyPaid = payments.value
-    .filter(p => p.id !== target.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
-    .reduce((s, p) => s + p.amount, 0)
-  const deficit = Math.round(balance - sumAlreadyPaid - enteredAmount)
-  if (deficit <= 0) return { applicable: false, deficit: 0, suggestedDate: '' }
-
-  // Default tail date = one interval after THIS payment's dueDate (the
-  // last in the schedule by construction here).
-  const anchor = new Date(target.dueDate)
-  const interval = deal.value.paymentInterval || 'MONTHLY'
-  if (interval === 'WEEKLY') anchor.setDate(anchor.getDate() + 7)
-  else if (interval === 'BIWEEKLY') anchor.setDate(anchor.getDate() + 14)
-  else anchor.setMonth(anchor.getMonth() + 1)
-  return { applicable: true, deficit, suggestedDate: toDateInput(anchor) }
-})
-const createTailPayment = ref(false)
-
-// ── Перерасчёт графика: режим + живое превью (зеркало redistribute.util) ────
-const REDIST_MODES: { key: RedistributeMode; label: string; hint: string }[] = [
-  { key: 'EQUAL', label: 'Равномерно', hint: 'Остаток делится поровну между оставшимися платежами' },
-  { key: 'NEXT', label: 'В ближайший', hint: 'Вся разница ложится на ближайший платёж (переплата гасит его каскадом)' },
-  { key: 'LAST', label: 'В последний', hint: 'Разница уходит в последний платёж' },
-  { key: 'MANUAL', label: 'Вручную', hint: 'Задайте суммы сами — их сумма должна равняться остатку' },
-]
-const redistributeMode = ref<RedistributeMode>('EQUAL')
-// Ручные суммы (режим MANUAL): paymentId → рубли.
-const manualSchedule = ref<Record<string, number>>({})
-
-// Открытые строки (PENDING/OVERDUE) кроме целевой, ASC — участники распределения.
-const redistOpenRows = computed(() => {
-  const target = markPaidTarget.value
-  if (!target) return []
-  return payments.value
-    .filter(p => p.id !== target.id && (p.status === 'PENDING' || p.status === 'OVERDUE'))
-    .sort((a, b) => a.number - b.number)
-    .map(p => ({ id: p.id, number: p.number, amount: Math.round(p.amount) }))
-})
-
-// Остаток по договору к распределению после оплаты введённой суммы (== backend computeOutstanding).
-const redistTarget = computed(() => {
-  const target = markPaidTarget.value
-  const entered = markPaidAmount.value
-  if (!target || !deal.value || !entered) return 0
-  const balance = deal.value.totalPrice - (deal.value.downPayment || 0)
-  const sumAlreadyPaid = payments.value
-    .filter(p => p.id !== target.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
-    .reduce((s, p) => s + p.amount, 0)
-  return Math.max(Math.round(balance - sumAlreadyPaid - Math.round(entered)), 0)
-})
-
-// Блок перерасчёта показываем, когда есть что распределять и сумма ≠ плановой.
-const showRedistribute = computed(() => {
-  const target = markPaidTarget.value
-  const entered = markPaidAmount.value
-  if (!target || !entered) return false
-  return redistOpenRows.value.length > 0 && Math.round(entered) !== Math.round(target.amount)
-})
-
-// Живое превью текущего режима.
-const redistPreview = computed<{ rows: Array<{ id: string; amount: number }>; closedIds: string[]; error: string }>(() => {
-  const rows = redistOpenRows.value
-  if (!rows.length) return { rows: [], closedIds: [], error: '' }
-  const mode = redistributeMode.value
-  try {
-    if (mode === 'MANUAL') {
-      const manual = rows.map(r => ({ paymentId: r.id, amount: Math.round(manualSchedule.value[r.id] ?? 0) }))
-      const v = validateManual(rows, redistTarget.value, manual)
-      if (!v.ok) return { rows: [], closedIds: [], error: v.reason }
-      const res = redistribute({ rows, target: redistTarget.value, mode, manual })
-      return { rows: res.rows, closedIds: res.closedIds, error: '' }
-    }
-    const res = redistribute({ rows, target: redistTarget.value, mode })
-    return { rows: res.rows, closedIds: res.closedIds, error: '' }
-  } catch (e: any) {
-    return { rows: [], closedIds: [], error: e?.message || 'Ошибка расчёта' }
-  }
-})
-
-function previewAmount(id: string): number | null {
-  const r = redistPreview.value.rows.find(x => x.id === id)
-  return r ? r.amount : null
-}
-function isPreviewClosed(id: string): boolean {
-  return redistPreview.value.closedIds.includes(id)
-}
-
-// Σ ручного ввода — для контроля «сходится/не сходится» в UI.
-const manualSum = computed(() =>
-  redistOpenRows.value.reduce((s, r) => s + Math.round(manualSchedule.value[r.id] ?? 0), 0),
-)
-
-// При входе в MANUAL заполняем поля из EQUAL-превью — понятная отправная точка.
-watch(redistributeMode, (m) => {
-  if (m === 'MANUAL') {
-    try {
-      const eq = redistribute({ rows: redistOpenRows.value, target: redistTarget.value, mode: 'EQUAL' })
-      const map: Record<string, number> = {}
-      for (const r of eq.rows) map[r.id] = r.amount
-      manualSchedule.value = map
-    } catch {
-      manualSchedule.value = {}
-    }
-  }
-})
 
 // ── «Оплачен не в свой месяц»: доход учтён по факту оплаты ───────────────────
 function paymentOffMonth(p: { status: string; paidAt?: string | null; dueDate: string }): 'early' | 'late' | null {
@@ -1066,25 +865,6 @@ function paymentOffMonthLabel(p: { paidAt?: string | null; dueDate: string }): s
   const dueStr = monthPrepositional(due.year, due.month, paid.getFullYear())
   return `Оплачен в ${paidStr}, а плановый срок — в ${dueStr}. Доход учтён в месяце фактической оплаты.`
 }
-
-// Подсказка в диалоге оплаты: выбранная дата оплаты в другом месяце, чем срок.
-const markPaidOffMonth = computed(() => {
-  const target = markPaidTarget.value
-  if (!target || !markPaidPaidAt.value) return null
-  const due = dueYearMonth(target.dueDate)
-  if (!due) return null
-  const [y, m] = markPaidPaidAt.value.split('-').map(Number)
-  if (!y || !m) return null
-  const paidY = y
-  const paidM = m - 1
-  if (paidY === due.year && paidM === due.month) return null
-  return {
-    kind: paidY * 12 + paidM < due.year * 12 + due.month ? 'early' : 'late',
-    // paidLabel идёт после «за» — винительный, dueLabel после «в» — предложный.
-    paidLabel: monthAccusative(paidY, paidM, due.year),
-    dueLabel: monthPrepositional(due.year, due.month, paidY),
-  }
-})
 
 function dismissOutOfOrder() {
   outOfOrderDialog.value = false
@@ -1165,87 +945,19 @@ const showLeftoverBanner = computed(() => {
   return uncoveredByPlan.value > 0
 })
 
-function onProofFileSelected(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  if (markPaidProofPreview.value) URL.revokeObjectURL(markPaidProofPreview.value)
-  markPaidProofFile.value = file
-  markPaidProofPreview.value = URL.createObjectURL(file)
-  input.value = ''
-}
-
-function removeProofFile() {
-  if (markPaidProofPreview.value) URL.revokeObjectURL(markPaidProofPreview.value)
-  markPaidProofFile.value = null
-  markPaidProofPreview.value = ''
-}
-
 function openProofEnlarge(url: string) {
   proofEnlargeUrl.value = url
   proofEnlargeDialog.value = true
 }
 
-async function confirmMarkPaid() {
-  if (!markPaidTarget.value) return
-  markPaidUploading.value = true
-  try {
-    let proofScreenshot: string | undefined
-    if (markPaidProofFile.value) {
-      proofScreenshot = await api.upload(markPaidProofFile.value, `proofs/${markPaidTarget.value.dealId}`)
-    }
-    const paidAmount = markPaidAmount.value && markPaidAmount.value !== markPaidTarget.value.amount
-      ? markPaidAmount.value : undefined
-    // Capture the tail-payment intent BEFORE markAsPaid — once payment is
-    // marked, payments.value mutates and the computed turns stale.
-    const tail = createTailPayment.value ? { ...tailPaymentInfo.value } : null
-    const dealId = markPaidTarget.value.dealId
-    // Передаём режим перерасчёта только если он реально применяется (сумма ≠
-    // плановой И есть что распределять). Иначе — как раньше (бэк не запустит
-    // applier, EQUAL по умолчанию). MANUAL шлём полный список сумм.
-    const applyRedist = showRedistribute.value && redistOpenRows.value.length > 0
-    const redistributeMode_ = applyRedist ? redistributeMode.value : undefined
-    const remainingSchedule =
-      applyRedist && redistributeMode.value === 'MANUAL'
-        ? redistOpenRows.value.map(r => ({ paymentId: r.id, amount: Math.round(manualSchedule.value[r.id] ?? 0) }))
-        : undefined
-    await paymentsStore.markAsPaid(markPaidTarget.value.id, dealId, {
-      amount: paidAmount,
-      proofScreenshot,
-      // Send midday on the chosen date so timezone shifts don't move the
-      // stored timestamp to the day before/after.
-      paidAt: markPaidPaidAt.value
-        ? new Date(`${markPaidPaidAt.value}T12:00:00`).toISOString()
-        : undefined,
-      redistributeMode: redistributeMode_,
-      remainingSchedule,
-    })
-    if (tail && tail.applicable && tail.deficit > 0) {
-      // Append a follow-up row for the leftover so the partner can keep
-      // tracking the debt. Best-effort: a failure here doesn't undo the
-      // markPaid we just did, so surface it as a separate toast.
-      try {
-        await paymentsStore.addPayment(dealId, {
-          amount: tail.deficit,
-          dueDate: new Date(`${tail.suggestedDate}T12:00:00`).toISOString(),
-          note: 'Остаток после недоплат',
-        })
-      } catch (e: any) {
-        toast.error(e.message || 'Платёж отмечен, но не удалось добавить остаток')
-      }
-    }
-    // Refresh THIS deal (paidPayments/status/remainingAmount may have flipped
-    // — e.g. to COMPLETED on overpayment closure) without reloading the whole
-    // deals list.
-    await dealsStore.fetchDeal(dealId)
-    toast.success('Платёж отмечен как оплаченный')
-    markPaidDialog.value = false
-    markPaidTarget.value = null
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка при отметке оплаты')
-  } finally {
-    markPaidUploading.value = false
-  }
+/**
+ * Платёж отмечен в общей модалке. Сам график стор уже перечитал; здесь
+ * освежаем сделку — оплачено/остаток/статус могли измениться (например,
+ * переплата закрыла её досрочно).
+ */
+async function onMarkPaidDone(dealId: string) {
+  markPaidTarget.value = null
+  await dealsStore.fetchDeal(dealId)
 }
 
 // API reminder via WhatsApp
@@ -2984,61 +2696,14 @@ const timeline = computed(() => {
       </div>
 
       <!-- Reschedule dialog -->
-      <v-dialog v-model="rescheduleDialog" max-width="480" content-class="reschedule-dialog" :fullscreen="isMobile">
-        <v-card rounded="lg" class="pa-6">
-          <button class="dialog-close-sm" @click="rescheduleDialog = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-
-          <div class="text-h6 font-weight-bold mb-1">Перенос платежа</div>
-          <div class="text-caption text-medium-emphasis mb-5">Выберите новую дату и укажите причину</div>
-
-          <div v-if="rescheduleTarget" class="reschedule-info mb-5">
-            <div class="d-flex justify-space-between mb-1">
-              <span class="text-caption text-medium-emphasis">Платёж #{{ rescheduleTarget.number }}</span>
-              <span class="font-weight-bold">{{ formatCurrency(rescheduleTarget.amount) }}</span>
-            </div>
-            <div class="d-flex justify-space-between">
-              <span class="text-caption text-medium-emphasis">Текущая дата</span>
-              <span>{{ formatDate(rescheduleTarget.dueDate) }}</span>
-            </div>
-          </div>
-
-          <div class="mb-4">
-            <label class="field-label">Новая дата</label>
-            <input type="date" v-model="rescheduleDate" :min="minRescheduleDate" class="field-input" />
-          </div>
-
-          <div class="mb-5">
-            <label class="field-label">Причина</label>
-            <div class="d-flex flex-wrap ga-2 mb-3">
-              <button
-                v-for="opt in rescheduleReasonOptions"
-                :key="opt"
-                class="reason-chip"
-                :class="{ active: rescheduleReason === opt }"
-                @click="rescheduleReason = rescheduleReason === opt ? '' : opt"
-              >
-                {{ opt }}
-              </button>
-            </div>
-            <textarea
-              v-if="rescheduleReason === 'Другая причина'"
-              v-model="rescheduleReason"
-              placeholder="Опишите причину..."
-              class="field-input"
-              rows="2"
-            />
-          </div>
-
-          <div class="d-flex ga-3">
-            <button class="btn-secondary flex-grow-1" @click="rescheduleDialog = false">Отмена</button>
-            <button class="btn-primary flex-grow-1" :disabled="!rescheduleDate" @click="confirmReschedule">
-              Перенести
-            </button>
-          </div>
-        </v-card>
-      </v-dialog>
+      <!-- Перенос даты — общий компонент: тот же диалог, что на странице
+           платежей и в превью сделки. -->
+      <ReschedulePaymentDialog
+        v-model="rescheduleDialog"
+        :payment="rescheduleTarget"
+        :fullscreen="isMobile"
+        @rescheduled="onRescheduled"
+      />
 
       <!-- Status change dialog -->
       <v-dialog v-model="statusDialog" max-width="520" :fullscreen="isMobile">
@@ -3117,263 +2782,18 @@ const timeline = computed(() => {
         </v-card>
       </v-dialog>
 
-      <!-- Mark as paid dialog -->
-      <v-dialog v-model="markPaidDialog" max-width="480" :fullscreen="isMobile">
-        <v-card rounded="lg" class="pa-6">
-          <button class="dialog-close-sm" @click="markPaidDialog = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-
-          <div class="text-h6 font-weight-bold mb-1">Отметить оплату</div>
-          <div class="text-caption text-medium-emphasis mb-5">Подтвердите получение платежа</div>
-
-          <div v-if="markPaidTarget" class="reschedule-info mb-5">
-            <div class="d-flex justify-space-between mb-1">
-              <span class="text-caption text-medium-emphasis">Платёж #{{ markPaidTarget.number }}</span>
-              <span class="font-weight-bold">{{ formatCurrency(markPaidTarget.amount) }}</span>
-            </div>
-            <div class="d-flex justify-space-between">
-              <span class="text-caption text-medium-emphasis">Дата</span>
-              <span>{{ formatDate(markPaidTarget.dueDate) }}</span>
-            </div>
-          </div>
-
-          <!-- Amount -->
-          <div class="mb-5">
-            <label class="field-label">Фактическая сумма оплаты</label>
-            <div class="input-with-suffix">
-              <input
-                :value="markPaidAmount || ''"
-                v-maska="CURRENCY_MASK"
-                @maska="(e: any) => markPaidAmount = parseMasked(e)"
-                type="text"
-                inputmode="numeric"
-                class="field-input"
-              />
-              <span class="input-suffix">₽</span>
-            </div>
-            <div v-if="markPaidTarget && markPaidAmount && markPaidAmount !== markPaidTarget.amount" class="text-caption mt-1" :style="{ color: markPaidAmount > markPaidTarget.amount ? '#10b981' : '#f59e0b' }">
-              {{ markPaidAmount > markPaidTarget.amount ? `Переплата ${formatCurrency(markPaidAmount - markPaidTarget.amount)} — оставшиеся платежи будут пересчитаны` : `Недоплата ${formatCurrency(markPaidTarget.amount - markPaidAmount)}` }}
-            </div>
-          </div>
-
-          <!-- Перерасчёт графика: партнёр выбирает КАК распределить остаток по
-               оставшимся платежам, с живым превью. Показываем только когда есть
-               что распределять (сумма ≠ плановой и есть другие открытые строки). -->
-          <div v-if="showRedistribute" class="redist-block mb-5">
-            <div class="redist-head">
-              <v-icon icon="mdi-tune-variant" size="16" />
-              <span>Перерасчёт оставшихся платежей</span>
-            </div>
-
-            <!-- Пресеты режимов -->
-            <div class="redist-modes">
-              <button
-                v-for="m in REDIST_MODES" :key="m.key"
-                type="button"
-                class="redist-mode"
-                :class="{ 'redist-mode--active': redistributeMode === m.key }"
-                @click="redistributeMode = m.key"
-              >{{ m.label }}</button>
-            </div>
-            <div class="redist-hint">{{ REDIST_MODES.find(m => m.key === redistributeMode)?.hint }}</div>
-
-            <!-- Ошибка ручного распределения -->
-            <div v-if="redistributeMode === 'MANUAL' && redistPreview.error" class="redist-error">
-              {{ redistPreview.error }}
-            </div>
-
-            <!-- Превью строк -->
-            <div class="redist-list">
-              <div v-for="row in redistOpenRows" :key="row.id" class="redist-row">
-                <div class="redist-row-no">№{{ row.number }}</div>
-
-                <!-- MANUAL: редактируемое поле -->
-                <template v-if="redistributeMode === 'MANUAL'">
-                  <div class="redist-row-old">{{ formatCurrency(row.amount) }}</div>
-                  <v-icon icon="mdi-arrow-right" size="13" class="redist-arrow" />
-                  <div class="redist-manual-input">
-                    <input
-                      :value="manualSchedule[row.id] ?? 0"
-                      @input="(e: any) => manualSchedule[row.id] = Math.max(0, Math.round(Number(String(e.target.value).replace(/\D/g, '')) || 0))"
-                      type="text"
-                      inputmode="numeric"
-                      class="redist-input"
-                    />
-                    <span class="redist-input-suffix">₽</span>
-                  </div>
-                </template>
-
-                <!-- Пресеты: только просмотр -->
-                <template v-else>
-                  <div class="redist-row-old">{{ formatCurrency(row.amount) }}</div>
-                  <v-icon icon="mdi-arrow-right" size="13" class="redist-arrow" />
-                  <div
-                    class="redist-row-new"
-                    :class="{ 'redist-row-new--closed': isPreviewClosed(row.id) }"
-                  >
-                    <template v-if="isPreviewClosed(row.id)">закрыт</template>
-                    <template v-else>{{ formatCurrency(previewAmount(row.id) ?? 0) }}</template>
-                  </div>
-                </template>
-              </div>
-            </div>
-
-            <!-- Итог: Σ / остаток -->
-            <div class="redist-total" :class="{ 'redist-total--bad': redistributeMode === 'MANUAL' && manualSum !== redistTarget }">
-              <span>{{ redistributeMode === 'MANUAL' ? 'Распределено' : 'Остаток по договору' }}</span>
-              <span>
-                {{ formatCurrency(redistributeMode === 'MANUAL' ? manualSum : redistTarget) }}
-                <template v-if="redistributeMode === 'MANUAL' && manualSum !== redistTarget">
-                  / {{ formatCurrency(redistTarget) }}
-                </template>
-              </span>
-            </div>
-          </div>
-
-          <!-- Actual paid-at date. Defaults to today; partner can roll
-               back to dueDate to skip the late-payment hit on rating, or
-               set whatever real date they received the money. -->
-          <div class="mb-5">
-            <label class="field-label">Фактическая дата оплаты</label>
-            <input
-              v-model="markPaidPaidAt"
-              type="date"
-              class="field-input"
-            />
-            <!-- One-tap presets for the two most common cases. -->
-            <div v-if="markPaidTarget" class="paidat-presets mt-2">
-              <button
-                type="button"
-                class="paidat-preset"
-                :class="{ 'paidat-preset--active': markPaidPaidAt === toDateInput(markPaidTarget.dueDate) }"
-                @click="markPaidPaidAt = toDateInput(markPaidTarget.dueDate)"
-              >
-                <v-icon icon="mdi-calendar-check" size="14" />
-                В срок ({{ formatShortDate(markPaidTarget.dueDate) }})
-              </button>
-              <button
-                type="button"
-                class="paidat-preset"
-                :class="{ 'paidat-preset--active': markPaidPaidAt === todayDateInput }"
-                @click="markPaidPaidAt = todayDateInput"
-              >
-                <v-icon icon="mdi-calendar-today" size="14" />
-                Сегодня
-              </button>
-            </div>
-            <div
-              v-if="markPaidTarget && markPaidPaidAt && new Date(markPaidPaidAt) > new Date(markPaidTarget.dueDate)"
-              class="text-caption mt-1"
-              style="color: #f59e0b;"
-            >
-              Оплата с задержкой — повлияет на рейтинг клиента
-            </div>
-            <!-- Дата оплаты в другом месяце, чем срок → доход учтётся по факту. -->
-            <div v-if="markPaidOffMonth" class="offmonth-hint mt-2">
-              <v-icon icon="mdi-information-outline" size="15" />
-              <span>
-                Доход по этому платежу будет учтён в аналитике за <strong>{{ markPaidOffMonth.paidLabel }}</strong> —
-                в месяце фактической оплаты (плановый срок — в {{ markPaidOffMonth.dueLabel }}).
-              </span>
-            </div>
-          </div>
-
-          <!-- Tail-payment offer: this is the last unpaid row and the
-               entered amount leaves a deficit. One-tap to append a
-               follow-up payment for the leftover. -->
-          <div v-if="tailPaymentInfo.applicable" class="tail-banner mb-5">
-            <label class="tail-banner-row">
-              <input v-model="createTailPayment" type="checkbox" class="tail-banner-cb" />
-              <div class="tail-banner-text">
-                <div class="tail-banner-title">
-                  Создать дополнительный платёж на {{ formatCurrency(tailPaymentInfo.deficit) }}
-                </div>
-                <div class="tail-banner-sub">
-                  Дата: {{ formatShortDate(tailPaymentInfo.suggestedDate) }} · по тому же интервалу
-                </div>
-              </div>
-            </label>
-          </div>
-
-          <!-- Early closure warning: this payment covers the remaining balance -->
-          <div v-if="earlyCloseInfo.willClose" class="early-close-banner mb-5">
-            <v-icon icon="mdi-flag-checkered" color="#0ea5e9" size="20" class="mt-1 flex-shrink-0" />
-            <div>
-              <div class="early-close-banner-title">Сделка будет закрыта досрочно</div>
-              <div class="early-close-banner-text">
-                Эта оплата покрывает остаток. Оставшиеся
-                {{ earlyCloseInfo.count }}
-                {{ earlyCloseInfo.count === 1 ? 'платёж' : earlyCloseInfo.count >= 2 && earlyCloseInfo.count <= 4 ? 'платежа' : 'платежей' }}
-                <template v-if="earlyCloseInfo.excess > 0">
-                  будут закрыты досрочно. Переплата {{ formatCurrency(earlyCloseInfo.excess) }}.
-                </template>
-                <template v-else>
-                  будут закрыты досрочно.
-                </template>
-              </div>
-            </div>
-          </div>
-
-          <!-- Receipt PDF -->
-          <div class="mb-5">
-            <div class="receipt-row">
-              <button class="receipt-btn" @click="markPaidTarget && deal && generateReceipt(deal, markPaidTarget, authStore.user || {})">
-                <v-icon icon="mdi-file-document-outline" size="18" />
-                <div class="receipt-btn-text">
-                  <span class="receipt-btn-title">Квитанция об оплате</span>
-                  <span class="receipt-btn-sub">Скачать PDF</span>
-                </div>
-                <v-icon icon="mdi-download" size="16" class="receipt-btn-arrow" />
-              </button>
-              <button
-                v-if="sections.visible('whatsapp')"
-                class="receipt-wa-btn"
-                :disabled="sendingWhatsApp || !markPaidTarget"
-                title="Отправить квитанцию клиенту в WhatsApp"
-                @click="markPaidTarget && sendReceiptWhatsApp(markPaidTarget)"
-              >
-                <v-icon icon="mdi-whatsapp" size="18" />
-              </button>
-            </div>
-          </div>
-
-          <!-- Proof screenshot upload -->
-          <div class="mb-5">
-            <label class="field-label">Скриншот оплаты (необязательно)</label>
-            <div v-if="markPaidProofPreview" class="proof-preview-wrap">
-              <img :src="markPaidProofPreview" class="proof-preview-img" />
-              <button class="proof-preview-remove" @click="removeProofFile">
-                <v-icon icon="mdi-close" size="14" />
-              </button>
-            </div>
-            <button v-else class="proof-upload-btn" @click="proofInputRef?.click()">
-              <v-icon icon="mdi-camera-plus-outline" size="20" />
-              <span>Прикрепить скриншот</span>
-            </button>
-            <input
-              ref="proofInputRef"
-              type="file"
-              accept="image/*"
-              style="display: none;"
-              @change="onProofFileSelected"
-            />
-          </div>
-
-          <div class="d-flex ga-3">
-            <button class="btn-secondary flex-grow-1" @click="markPaidDialog = false">Отмена</button>
-            <button
-              class="btn-primary flex-grow-1"
-              :disabled="markPaidUploading || (showRedistribute && redistributeMode === 'MANUAL' && !!redistPreview.error)"
-              @click="confirmMarkPaid"
-            >
-              <v-progress-circular v-if="markPaidUploading" indeterminate size="16" width="2" color="white" class="mr-1" />
-              <v-icon v-else icon="mdi-check" size="16" />
-              {{ markPaidUploading ? 'Загрузка...' : 'Подтвердить оплату' }}
-            </button>
-          </div>
-        </v-card>
-      </v-dialog>
+      <!-- Отметка оплаты — общий компонент: та же модалка, что на странице
+           платежей и в превью сделки (сумма, фактическая дата, перерасчёт
+           графика, хвостовой платёж, квитанция, скриншот). График у страницы
+           уже загружен — передаём его, чтобы компонент не запрашивал повторно. -->
+      <MarkPaidDialog
+        v-model="markPaidDialog"
+        :payment="markPaidTarget"
+        :deal="deal"
+        :schedule="payments"
+        :fullscreen="isMobile"
+        @paid="onMarkPaidDone"
+      />
 
       <!-- Add tail payment dialog. Triggered by «Добавить платёж» next to
            the schedule. Defaults to outstanding balance + next interval
@@ -4077,39 +3497,6 @@ const timeline = computed(() => {
   color: rgba(var(--v-theme-on-surface), 0.95);
 }
 
-/* Tail-payment offer banner inside markPaid modal */
-.tail-banner {
-  border: 1px solid rgba(4, 120, 87, 0.25);
-  background: rgba(4, 120, 87, 0.05);
-  border-radius: 10px;
-  padding: 10px 12px;
-}
-.tail-banner-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  cursor: pointer;
-  user-select: none;
-}
-.tail-banner-cb {
-  margin-top: 3px;
-  width: 16px;
-  height: 16px;
-  accent-color: #047857;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-.tail-banner-text { flex: 1; min-width: 0; }
-.tail-banner-title {
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.9);
-}
-.tail-banner-sub {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  margin-top: 1px;
-}
-
 /* «Добавить платёж» button in the schedule header */
 .add-payment-btn {
   display: inline-flex;
@@ -4144,36 +3531,6 @@ const timeline = computed(() => {
   cursor: help;
 }
 .add-payment-info:hover { color: rgba(var(--v-theme-on-surface), 0.7); }
-
-/* Quick-set preset buttons for the actual-paid-at date input */
-.paidat-presets {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.paidat-preset {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border-radius: 7px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  background: transparent;
-  font-size: 12px;
-  font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  cursor: pointer;
-  transition: all 0.12s;
-}
-.paidat-preset:hover {
-  border-color: rgba(var(--v-theme-on-surface), 0.22);
-  color: rgba(var(--v-theme-on-surface), 0.9);
-}
-.paidat-preset--active {
-  background: rgba(4, 120, 87, 0.08);
-  border-color: rgba(4, 120, 87, 0.3);
-  color: #047857;
-}
 
 /* Reminder buttons */
 .reminder-btn {
@@ -4256,11 +3613,6 @@ const timeline = computed(() => {
 .dialog-close-sm:hover {
   background: rgba(var(--v-theme-on-surface), 0.1);
 }
-.reschedule-info {
-  padding: 14px; border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-}
 .field-label {
   display: block; font-size: 13px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.6); margin-bottom: 6px;
@@ -4283,18 +3635,6 @@ const timeline = computed(() => {
   font-size: 14px; font-weight: 600;
   color: rgba(var(--v-theme-on-surface), 0.35);
   pointer-events: none;
-}
-.reason-chip {
-  padding: 6px 14px; border-radius: 8px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  color: rgba(var(--v-theme-on-surface), 0.65);
-  font-size: 13px; cursor: pointer; transition: all 0.15s;
-}
-.reason-chip:hover {
-  background: rgba(var(--v-theme-on-surface), 0.1);
-}
-.reason-chip.active {
-  background: rgba(4, 120, 87, 0.1); color: #047857; font-weight: 500;
 }
 .btn-primary {
   padding: 12px 20px; border-radius: 10px; border: none;
@@ -4414,7 +3754,7 @@ const timeline = computed(() => {
 
 .dark .delete-deal-bar {
   background: rgba(var(--v-theme-on-surface), 0.03);
-  border-color: #2e2e42;
+  border-color: rgb(var(--v-theme-border));
 }
 
 /* ── Deleted strip ── */
@@ -4493,8 +3833,8 @@ const timeline = computed(() => {
 }
 
 .dark .deleted-strip-btn {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 
 @media (max-width: 600px) {
@@ -4741,23 +4081,10 @@ const timeline = computed(() => {
 
 /* Dark mode */
 .dark .status-action-banner {
-  background: #1e1e2e;
+  background: rgb(var(--v-theme-surface));
 }
 .dark .finance-card {
-  background: #1e1e2e; border-color: #2e2e42;
-}
-.dark .field-input {
-  background: #252538;
-  border-color: #2e2e42;
-  color: #e4e4e7;
-}
-.dark .field-input:focus {
-  border-color: #047857; background: #1e1e2e;
-  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
-}
-.dark .reschedule-info {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border));
 }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
 
@@ -4843,75 +4170,6 @@ const timeline = computed(() => {
 .dark .pdf-doc-row { border-color: rgba(255,255,255,0.04); }
 .dark .pdf-wa-btn { border-color: rgba(255,255,255,0.06); }
 .dark .pdf-doc-item:hover { background: rgba(255,255,255,0.02); }
-
-/* Receipt button */
-.receipt-row { display: flex; align-items: stretch; gap: 6px; }
-.receipt-row .receipt-btn { flex: 1; }
-.receipt-wa-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 48px; flex-shrink: 0;
-  padding: 0 10px; border-radius: 12px;
-  border: 1px solid rgba(37, 211, 102, 0.20);
-  background: rgba(37, 211, 102, 0.06);
-  color: #25d366;
-  cursor: pointer; transition: all 0.15s;
-}
-.receipt-wa-btn:hover:not(:disabled) {
-  background: rgba(37, 211, 102, 0.12);
-  border-color: rgba(37, 211, 102, 0.35);
-}
-.receipt-wa-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.receipt-btn {
-  display: flex; align-items: center; gap: 12px;
-  width: 100%; padding: 12px 16px; border-radius: 12px;
-  border: 1px solid rgba(4, 120, 87, 0.15);
-  background: rgba(4, 120, 87, 0.04);
-  cursor: pointer; transition: all 0.15s; text-align: left;
-  color: #047857;
-}
-.receipt-btn:hover {
-  background: rgba(4, 120, 87, 0.08);
-  border-color: rgba(4, 120, 87, 0.25);
-}
-.receipt-btn-text { flex: 1; display: flex; flex-direction: column; }
-.receipt-btn-title { font-size: 13px; font-weight: 600; }
-.receipt-btn-sub { font-size: 11px; color: rgba(4, 120, 87, 0.6); }
-.receipt-btn-arrow { color: rgba(4, 120, 87, 0.4); }
-
-.proof-upload-btn {
-  display: flex; align-items: center; gap: 8px;
-  width: 100%; padding: 14px; border-radius: 10px;
-  border: 2px dashed rgba(var(--v-theme-on-surface), 0.12);
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  color: rgba(var(--v-theme-on-surface), 0.4);
-  font-size: 13px; font-weight: 500;
-  cursor: pointer; transition: all 0.15s;
-  justify-content: center;
-}
-.proof-upload-btn:hover {
-  border-color: rgba(4, 120, 87, 0.3);
-  color: #047857;
-  background: rgba(4, 120, 87, 0.04);
-}
-.proof-preview-wrap {
-  position: relative; display: inline-block;
-}
-.proof-preview-img {
-  max-width: 100%; max-height: 160px; border-radius: 10px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  display: block;
-}
-.proof-preview-remove {
-  position: absolute; top: 6px; right: 6px;
-  width: 24px; height: 24px; border-radius: 6px; border: none;
-  background: rgba(0, 0, 0, 0.6); color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; transition: all 0.15s;
-}
-.proof-preview-remove:hover {
-  background: rgba(239, 68, 68, 0.9);
-}
 
 @media (max-width: 960px) {
   .detail-hero-title { font-size: 22px; }
@@ -5231,112 +4489,6 @@ const timeline = computed(() => {
 .ooo-date { color: rgba(var(--v-theme-on-surface), 0.6); }
 .ooo-amount { font-weight: 600; }
 
-.early-close-banner {
-  display: flex;
-  gap: 10px;
-  padding: 12px 14px;
-  background: rgba(14, 165, 233, 0.08);
-  border: 1px solid rgba(14, 165, 233, 0.25);
-  border-radius: 10px;
-}
-.early-close-banner-title {
-  font-weight: 600;
-  font-size: 13px;
-  color: #0ea5e9;
-  margin-bottom: 2px;
-}
-.early-close-banner-text {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.75);
-  line-height: 1.4;
-}
-
-/* ───── Перерасчёт графика в диалоге оплаты ───── */
-.redist-block {
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  border-radius: 12px;
-  padding: 14px;
-  background: rgba(var(--v-theme-on-surface), 0.02);
-}
-.redist-head {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  margin-bottom: 10px;
-}
-.redist-modes {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
-}
-.redist-mode {
-  padding: 8px 10px; border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  background: transparent;
-  font-size: 12.5px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.65);
-  cursor: pointer; transition: all 0.12s;
-}
-.redist-mode:hover { border-color: rgba(var(--v-theme-on-surface), 0.24); }
-.redist-mode--active {
-  border-color: #047857; color: #047857; font-weight: 600;
-  background: rgba(4, 120, 87, 0.07);
-}
-.redist-hint {
-  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.5);
-  margin: 8px 2px 4px; line-height: 1.4;
-}
-.redist-error {
-  font-size: 12px; color: #ef4444; font-weight: 500;
-  margin: 6px 2px 2px; line-height: 1.4;
-}
-.redist-list {
-  margin-top: 10px; display: flex; flex-direction: column; gap: 2px;
-  max-height: 220px; overflow-y: auto;
-}
-.redist-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 2px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
-}
-.redist-row:last-child { border-bottom: none; }
-.redist-row-no {
-  font-size: 12px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  min-width: 30px;
-}
-.redist-row-old {
-  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.45);
-  text-decoration: line-through; flex: 1; text-align: right;
-}
-.redist-arrow { color: rgba(var(--v-theme-on-surface), 0.3); }
-.redist-row-new {
-  font-size: 13px; font-weight: 600; color: #047857;
-  flex: 1; text-align: right;
-}
-.redist-row-new--closed {
-  color: #94a3b8; font-weight: 500; font-style: italic;
-}
-.redist-manual-input {
-  flex: 1; display: flex; align-items: center; justify-content: flex-end;
-  gap: 3px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.16);
-  border-radius: 7px; padding: 4px 8px;
-  background: rgb(var(--v-theme-surface));
-}
-.redist-input {
-  width: 100%; border: none; outline: none; background: transparent;
-  font-size: 13px; font-weight: 600; text-align: right;
-  color: rgb(var(--v-theme-on-surface));
-}
-.redist-input-suffix { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); }
-.redist-total {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-top: 10px; padding-top: 10px;
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.8);
-}
-.redist-total--bad { color: #ef4444; }
-
 .plan-vs-fact {
   font-size: 11px; font-weight: 500;
   margin-top: 2px; line-height: 1.2;
@@ -5351,13 +4503,6 @@ const timeline = computed(() => {
 }
 .offmonth-chip--early { color: #059669; background: rgba(16, 185, 129, 0.1); }
 .offmonth-chip--late { color: #d97706; background: rgba(245, 158, 11, 0.1); }
-.offmonth-hint {
-  display: flex; align-items: flex-start; gap: 6px;
-  font-size: 12px; line-height: 1.4;
-  color: #2563eb; background: rgba(37, 99, 235, 0.07);
-  border-radius: 8px; padding: 8px 10px;
-}
-.offmonth-hint .v-icon { margin-top: 1px; flex-shrink: 0; }
 
 /* ───── Mobile: schedule cards вместо широкой таблицы ───── */
 .schedule-cards {

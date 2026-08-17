@@ -511,12 +511,12 @@ function openProduct(productId: string) {
 .fab:hover { background: #065f46; transform: scale(1.05); }
 
 /* Dark mode */
-.dark .stat-card { background: #1e1e2e; border-color: #2e2e42; }
-.dark .product-card { background: #1e1e2e; border-color: #2e2e42; }
-.dark .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
-.dark .filter-input::placeholder { color: #71717a; }
+.dark .stat-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
+.dark .product-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
+.dark .filter-input { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92); }
+.dark .filter-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.5); }
 .dark .filter-input:focus {
-  border-color: #047857; background: #1e1e2e;
+  border-color: #047857; background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 .dark .product-card:hover {

@@ -426,7 +426,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   background: rgb(var(--v-theme-surface));
 }
-.dark .cp-root { background: #1a1a26; }
+.dark .cp-root { background: rgb(var(--v-theme-surface-deep)); }
 
 .cp-header {
   padding: 14px 18px;
@@ -471,7 +471,7 @@ onBeforeUnmount(() => {
   background: rgba(var(--v-theme-on-surface), 0.04);
   color: rgba(var(--v-theme-on-surface), 0.92);
 }
-.dark .cp-bubble { background: #2a2a3c; }
+.dark .cp-bubble { background: rgb(var(--v-theme-surface-elevated)); }
 .cp-bubble--mine { background: rgb(var(--v-theme-primary)); color: white; }
 .cp-bubble-text { font-size: 14px; line-height: 1.4; word-break: break-word; white-space: pre-wrap; }
 .cp-bubble-time { margin-top: 3px; font-size: 10px; opacity: 0.65; text-align: right; }
@@ -536,7 +536,7 @@ onBeforeUnmount(() => {
   max-height: 140px;
   min-height: 38px;
 }
-.dark .cp-input { background: #2a2a3c; border-color: #3e3e52; }
+.dark .cp-input { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); }
 .cp-input:focus { border-color: rgb(var(--v-theme-primary)); }
 .cp-input:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -556,7 +556,7 @@ onBeforeUnmount(() => {
   z-index: 50;
 }
 .dark .cp-mention-menu {
-  background: #25253a;
+  background: rgb(var(--v-theme-surface-elevated));
   border-color: rgba(255,255,255,0.08);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }

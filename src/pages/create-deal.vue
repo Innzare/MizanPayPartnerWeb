@@ -2540,7 +2540,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .dark .limit-gate__subtitle { color: #ccc; }
 .dark .limit-gate__hint { color: #888; }
 .dark .limit-gate__btn--primary { background: #fff; color: #1a1a1a; }
-.dark .limit-gate__btn--secondary { background: #2a2a2a; color: #fff; }
+.dark .limit-gate__btn--secondary { background: rgb(var(--v-theme-surface-elevated)); color: #fff; }
 
 /* Wizard two-column layout */
 /* ── Скелет мастера на время подгрузки сделки/черновика ──
@@ -3008,7 +3008,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
 }
 
 .dark .preview-card {
-  background: #1a1f2e;
+  background: rgb(var(--v-theme-surface-deep));
   border-color: rgba(255, 255, 255, 0.08);
 }
 .dark .preview-finance {
@@ -3245,7 +3245,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
   padding: 10px 12px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
   border-radius: 10px;
-  background: #fff;
+  /* Был жёсткий #fff при тематическом цвете текста: в тёмной теме получался
+     белый текст на белой карточке — выбор способа деления прибыли не читался. */
+  background: rgb(var(--v-theme-surface-elevated));
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -3619,27 +3621,27 @@ async function submitDeal(acknowledgedOverdraft = false) {
 
 /* Dark mode */
 .dark .toggle-btn.active {
-  background: #252538; color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated)); color: rgba(var(--v-theme-on-surface), 0.92);
   box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
-.dark .markup-type-toggle { background: #1e1e2e; }
-.dark .field-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .markup-type-toggle { background: rgb(var(--v-theme-surface)); }
+.dark .field-input { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92); }
 .dark .field-input:focus {
-  border-color: #047857; background: #1e1e2e;
+  border-color: #047857; background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
-.dark .filter-input { background: #252538; border-color: #2e2e42; color: #e4e4e7; }
+.dark .filter-input { background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92); }
 .dark .filter-input:focus {
-  border-color: #047857; background: #1e1e2e;
+  border-color: #047857; background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 .dark .preview-card { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); border-color: rgba(4, 120, 87, 0.2); }
 .dark .preview-row--highlight-bg { background: rgba(0,0,0,0.15); }
 .dark .preview-profit-item { background: rgba(0,0,0,0.15); }
 .dark .preview-divider { background: rgba(255,255,255,0.06); }
-.dark .client-card { background: #1e1e2e; }
+.dark .client-card { background: rgb(var(--v-theme-surface)); }
 .dark .client-card.active { background: rgba(4, 120, 87, 0.08); }
-.dark .photo-drop-zone { border-color: #2e2e42; }
+.dark .photo-drop-zone { border-color: rgb(var(--v-theme-border)); }
 
 /* ─── Review Hero ─── */
 .review-hero {
@@ -3783,11 +3785,11 @@ async function submitDeal(acknowledgedOverdraft = false) {
 }
 
 /* Dark overrides for review */
-.dark .stepper-header { background: #1e1e2e; border-color: #2e2e42; }
-.dark .review-hero { background: #1e1e2e; border-color: #2e2e42; }
-.dark .review-hero__finance { border-color: #2e2e42; }
+.dark .stepper-header { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
+.dark .review-hero { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
+.dark .review-hero__finance { border-color: rgb(var(--v-theme-border)); }
 .dark .review-hero__payment { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); }
-.dark .review-client-card { background: #1e1e2e; border-color: #2e2e42; }
+.dark .review-client-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .review-confirm-banner { background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.2); }
 
 /* Create client button */
@@ -4021,9 +4023,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
 }
 
 /* Dark overrides for co-investors */
-.dark .coinvestor-option { background: #1e1e2e; }
+.dark .coinvestor-option { background: rgb(var(--v-theme-surface)); }
 .dark .coinvestor-option.active { background: rgba(4, 120, 87, 0.1); }
-.dark .review-coinvestors { background: #1e1e2e; border-color: #2e2e42; }
+.dark .review-coinvestors { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .review-coinvestor-chip { background: rgba(4, 120, 87, 0.1); border-color: rgba(4, 120, 87, 0.2); }
 
 /* ── Insufficient-capital dialog ── */

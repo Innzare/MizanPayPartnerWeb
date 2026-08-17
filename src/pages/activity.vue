@@ -872,8 +872,8 @@ function navigateToEntity(item: ActivityLog) {
 
 /* Dark mode */
 .dark .tab-btn {
-  background: #1e1e2e;
-  border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
 }
 
 .dark .filter-input {

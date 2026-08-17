@@ -670,22 +670,22 @@ function reset() {
 
 /* Dark mode */
 .dark .field-input {
-  background: #252538; border-color: #2e2e42; color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92);
 }
 .dark .field-input:focus {
-  border-color: #047857; background: #1e1e2e;
+  border-color: #047857; background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 .dark .toggle-btn.active {
-  background: #252538; color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated)); color: rgba(var(--v-theme-on-surface), 0.92);
   box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
-.dark .chip-option { background: #252538; }
+.dark .chip-option { background: rgb(var(--v-theme-surface-elevated)); }
 .dark .chip-option.active {
   background: rgba(4, 120, 87, 0.15); color: #34d399;
 }
 .dark .payment-type-btn {
-  background: #1e1e2e; border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border));
 }
 .dark .payment-type-btn.active {
   background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.25);
@@ -697,7 +697,7 @@ function reset() {
 .dark .result-row--highlight { background: rgba(0,0,0,0.15); }
 .dark .result-profit-item { background: rgba(0,0,0,0.15); }
 .dark .result-divider { background: rgba(255,255,255,0.06); }
-.dark .markup-type-toggle { background: #1e1e2e; }
+.dark .markup-type-toggle { background: rgb(var(--v-theme-surface)); }
 .dark .info-banner {
   background: rgba(59, 130, 246, 0.1);
   border-color: rgba(59, 130, 246, 0.2);

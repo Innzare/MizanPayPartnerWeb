@@ -1116,20 +1116,20 @@ const selectedDealPaidTotal = computed(() =>
 
 /* Dark mode */
 .dark .stat-card {
-  background: #1e1e2e; border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border));
 }
 .dark .client-card {
-  background: #1e1e2e; border-color: #2e2e42;
+  background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border));
 }
 .dark .client-card--expanded {
   border-color: rgba(4, 120, 87, 0.3);
 }
 .dark .filter-input {
-  background: #252538; border-color: #2e2e42; color: #e4e4e7;
+  background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92);
 }
-.dark .filter-input::placeholder { color: #71717a; }
+.dark .filter-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.5); }
 .dark .filter-input:focus {
-  border-color: #047857; background: #1e1e2e;
+  border-color: #047857; background: rgb(var(--v-theme-surface));
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 15%, transparent);
 }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }

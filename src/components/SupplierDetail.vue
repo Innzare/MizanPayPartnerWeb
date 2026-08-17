@@ -327,7 +327,7 @@ onBeforeUnmount(destroyMap)
 .settings-tab { display: flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: 8px; border: none; background: transparent; font-size: 13px; font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.5); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
 .settings-tab:hover { color: rgba(var(--v-theme-on-surface), 0.7); background: rgba(var(--v-theme-on-surface), 0.04); }
 .settings-tab.active { background: #047857; color: #fff; font-weight: 600; box-shadow: 0 2px 6px rgba(4,120,87,0.25); }
-.sd-page.dark .settings-tabs { background: #1a1a2e; border-color: #2e2e42; box-shadow: none; }
+.sd-page.dark .settings-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); box-shadow: none; }
 .sd-tabc { font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 10px; background: rgba(var(--v-theme-on-surface),0.08); }
 .sd-tabc.on { background: rgba(255,255,255,0.25); color: #fff; }
 
