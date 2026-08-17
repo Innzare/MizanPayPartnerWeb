@@ -145,7 +145,11 @@ const handleSubmit = async () => {
 .fp-page {
   min-height: 100vh;
   display: flex;
-  background: #fafdfb;
+  /* Текст на странице уже был на переменных темы, а фон — светлым хардкодом:
+     после выхода из кабинета тема тёмная, и светлый текст пропадал на светлом.
+     Через `.dark` это не лечится — класс ставится скриптом и в этот момент его
+     может не быть; берём цвет прямо из темы. */
+  background: rgb(var(--v-theme-surface));
 }
 
 .fp-container {
@@ -238,7 +242,7 @@ const handleSubmit = async () => {
 }
 .fp-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.25); }
 .fp-input:focus {
-  border-color: #047857;
+  border-color: rgb(var(--v-theme-accent));
   box-shadow: 0 0 0 4px rgba(4, 120, 87, 0.08);
 }
 
@@ -259,13 +263,13 @@ const handleSubmit = async () => {
   color: rgba(var(--v-theme-on-surface), 0.4);
   text-decoration: none; transition: color 0.12s;
 }
-.fp-back-link:hover { color: #047857; }
+.fp-back-link:hover { color: rgb(var(--v-theme-accent)); }
 
 /* Success */
 .fp-success { text-align: center; }
 .fp-success-icon {
   width: 72px; height: 72px; border-radius: 50%; margin: 0 auto 20px;
-  background: rgba(4, 120, 87, 0.1); color: #047857;
+  background: rgba(var(--v-theme-accent), 0.12); color: rgb(var(--v-theme-accent));
   display: flex; align-items: center; justify-content: center;
 }
 .fp-success-title {

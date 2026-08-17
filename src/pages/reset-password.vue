@@ -10,6 +10,10 @@
 import { api } from '@/api/client'
 import logo from '@/assets/images/logo.svg'
 import logoText from '@/assets/images/logo-text.svg'
+import logoTextDark from '@/assets/images/logo-text-dark.svg'
+import { useIsDark } from '@/composables/useIsDark'
+
+const { isDark } = useIsDark()
 
 const route = useRoute()
 const router = useRouter()
@@ -62,7 +66,7 @@ const handleSubmit = async () => {
       <div class="reset-wrapper">
         <div class="d-flex align-center justify-center ga-2 mb-8">
           <v-img :src="logo" width="36" height="36" />
-          <img :src="logoText" alt="MizanPay" style="height: 22px; width: auto;" />
+          <img :src="isDark ? logoTextDark : logoText" alt="MizanPay" style="height: 22px; width: auto;" />
         </div>
 
         <!-- Success state -->
@@ -186,7 +190,7 @@ const handleSubmit = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fafdfb;
+  background: rgb(var(--v-theme-surface));
 }
 
 .reset-panel {
@@ -202,13 +206,13 @@ const handleSubmit = async () => {
 .reset-title {
   font-size: 1.5rem;
   font-weight: 800;
-  color: #0c1a12;
+  color: rgba(var(--v-theme-on-surface), 0.95);
   letter-spacing: -0.02em;
 }
 
 .reset-subtitle {
   font-size: 0.9rem;
-  color: #5f7a6b;
+  color: rgba(var(--v-theme-on-surface), 0.6);
   line-height: 1.5;
 }
 
@@ -216,7 +220,7 @@ const handleSubmit = async () => {
   display: block;
   font-size: 0.8rem;
   font-weight: 600;
-  color: #1a2e23;
+  color: rgba(var(--v-theme-on-surface), 0.8);
   margin-bottom: 6px;
 }
 
@@ -229,7 +233,7 @@ const handleSubmit = async () => {
 
 .back-link {
   font-size: 0.8rem;
-  color: #047857;
+  color: rgb(var(--v-theme-accent));
   text-decoration: none;
   font-weight: 500;
   display: inline-flex;
@@ -239,4 +243,7 @@ const handleSubmit = async () => {
 .back-link:hover {
   text-decoration: underline;
 }
+
+/* Всё выше — на переменных темы; `.dark`-правил намеренно нет (класс ставится
+   скриптом, и полагаться на его наличие для читаемости текста нельзя). */
 </style>

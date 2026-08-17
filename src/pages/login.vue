@@ -10,6 +10,10 @@
 import { useAuthStore } from "@/stores/auth";
 import logo from "@/assets/images/logo.svg";
 import logoText from "@/assets/images/logo-text.svg";
+import logoTextDark from "@/assets/images/logo-text-dark.svg";
+import { useIsDark } from "@/composables/useIsDark";
+
+const { isDark } = useIsDark()
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -106,9 +110,9 @@ const handleLogin = async () => {
         <div class="d-md-none text-center mb-8">
           <div class="d-flex align-center justify-center ga-2">
             <img :src="logo" width="56" height="56" />
-            <img :src="logoText" alt="MizanPay" style="height: 32px; width: auto;" />
+            <img :src="isDark ? logoTextDark : logoText" alt="MizanPay" style="height: 32px; width: auto;" />
           </div>
-          <p class="text-body-2 font-weight-semibold" style="color: #5f7a6b">Панель партнера</p>
+          <p class="text-body-2 font-weight-semibold login-subtitle">Панель партнера</p>
         </div>
 
         <div class="mb-8">
@@ -176,7 +180,7 @@ const handleLogin = async () => {
           </v-btn>
         </form>
 
-        <p class="text-center text-caption mt-10" style="color: #94a3b8">
+        <p class="text-center text-caption mt-10 login-copyright">
           &copy; {{ new Date().getFullYear() }} MizanPay. Все права защищены.
         </p>
       </div>
@@ -310,7 +314,7 @@ const handleLogin = async () => {
   align-items: center;
   justify-content: center;
   padding: 32px;
-  background: #fafdfb;
+  background: rgb(var(--v-theme-surface));
 }
 
 .login-form-wrapper {
@@ -321,20 +325,20 @@ const handleLogin = async () => {
 .login-title {
   font-size: 1.75rem;
   font-weight: 800;
-  color: #0c1a12;
+  color: rgba(var(--v-theme-on-surface), 0.95);
   letter-spacing: -0.02em;
 }
 
 .login-subtitle {
   font-size: 0.9rem;
-  color: #5f7a6b;
+  color: rgba(var(--v-theme-on-surface), 0.6);
 }
 
 .field-label {
   display: block;
   font-size: 0.8rem;
   font-weight: 600;
-  color: #1a2e23;
+  color: rgba(var(--v-theme-on-surface), 0.8);
   margin-bottom: 6px;
 }
 
@@ -347,7 +351,7 @@ const handleLogin = async () => {
 
 .forgot-link {
   font-size: 0.8rem;
-  color: #047857;
+  color: rgb(var(--v-theme-accent));
   text-decoration: none;
   font-weight: 500;
 }
@@ -355,4 +359,12 @@ const handleLogin = async () => {
 .forgot-link:hover {
   text-decoration: underline;
 }
+
+.login-copyright { color: rgba(var(--v-theme-on-surface), 0.4); }
+
+/* Всё выше — на переменных темы, отдельных правил под тёмные темы не нужно.
+   Через `.dark` делать нельзя: класс ставится скриптом, и в момент, когда тема
+   уже тёмная, а класс ещё/уже не проставлен (например, сразу после выхода из
+   кабинета), страница осталась бы светлой со светлым текстом.
+   Левая брендовая панель тёмно-зелёная в любой теме — её не трогаем. */
 </style>

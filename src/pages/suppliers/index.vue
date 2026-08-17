@@ -93,7 +93,10 @@ onMounted(() => {
 .sup-page.dark .settings-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); box-shadow: none; }
 .sup-tabcount {
   font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 10px;
-  background: #fff; color: #047857; line-height: 18px; min-width: 20px; text-align: center;
+  /* В светлой теме те же белый фон и фирменный зелёный, что были; в тёмных —
+     слой темы и светлый изумруд, иначе кружок светится дыркой на вкладке. */
+  background: rgb(var(--v-theme-surface)); color: rgb(var(--v-theme-accent));
+  line-height: 18px; min-width: 20px; text-align: center;
   border: 1px solid rgba(4, 120, 87, 0.2);
 }
 .settings-tab.active .sup-tabcount { border-color: transparent; }
