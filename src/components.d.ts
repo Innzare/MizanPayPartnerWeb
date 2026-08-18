@@ -22,6 +22,7 @@ declare module 'vue' {
     CoInvestorEditDialog: typeof import('./components/CoInvestorEditDialog.vue')['default']
     CoInvestorRemoveDialog: typeof import('./components/CoInvestorRemoveDialog.vue')['default']
     ComboBox: typeof import('./components/ComboBox.vue')['default']
+    ContractImageNode: typeof import('./components/contract/ContractImageNode.vue')['default']
     CreateClientDialog: typeof import('./components/CreateClientDialog.vue')['default']
     DealDraftFloater: typeof import('./components/DealDraftFloater.vue')['default']
     DealsSidebar: typeof import('./components/DealsSidebar.vue')['default']

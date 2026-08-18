@@ -9,7 +9,8 @@ import { Underline } from '@tiptap/extension-underline'
 import { TextAlign } from '@tiptap/extension-text-align'
 import { TextStyle } from '@tiptap/extension-text-style'
 import { Color } from '@tiptap/extension-color'
-import { Image } from '@tiptap/extension-image'
+import { ResizableImage } from '@/utils/tiptap-resizable-image'
+import { prepareImageFile } from '@/utils/imageFile'
 import { Highlight } from '@tiptap/extension-highlight'
 import { Table } from '@tiptap/extension-table'
 import { TableRow } from '@tiptap/extension-table-row'
@@ -48,18 +49,30 @@ function setTextColor(color: string) {
   showColorPicker.value = false
 }
 
+/** Ширина области текста «бумаги» — от неё считаем стартовый размер картинки. */
+function editorContentWidth(): number {
+  const el = document.querySelector('.cb-editor-content') as HTMLElement | null
+  return el?.clientWidth || 640
+}
+
+async function insertImageFile(file: File) {
+  if (!file.type.startsWith('image/')) return
+  try {
+    const prepared = await prepareImageFile(file)
+    // Стартуем с половины ширины страницы: логотип или печать почти никогда не
+    // нужны во всю полосу, а растянуть обратно — одно движение за угол.
+    const width = Math.max(48, Math.min(prepared.width, Math.round(editorContentWidth() * 0.5)))
+    editor.value?.chain().focus().setImage({ src: prepared.src, width: `${width}px` }).run()
+  } catch (error: any) {
+    toast.error(error?.message || 'Не удалось вставить изображение')
+  }
+}
+
 function onImageSelected(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
-  if (!file) return
-  const reader = new FileReader()
-  reader.onload = () => {
-    if (reader.result) {
-      editor.value?.chain().focus().setImage({ src: reader.result as string }).run()
-    }
-  }
-  reader.readAsDataURL(file)
   input.value = ''
+  if (file) insertImageFile(file)
 }
 
 // TipTap editor
@@ -71,7 +84,7 @@ const editor = useEditor({
     Color,
     FontSize,
     Highlight.configure({ multicolor: true }),
-    Image.configure({ inline: true, allowBase64: true }),
+    ResizableImage,
     TextAlign.configure({ types: ['heading', 'paragraph'] }),
     Table.configure({ resizable: true }),
     TableRow,
@@ -84,6 +97,22 @@ const editor = useEditor({
   editorProps: {
     attributes: {
       class: 'cb-editor-content',
+    },
+    // Картинку можно просто вставить из буфера или бросить файлом на страницу.
+    handlePaste: (_view, event) => {
+      const files = Array.from(event.clipboardData?.files || []).filter(f => f.type.startsWith('image/'))
+      if (!files.length) return false
+      event.preventDefault()
+      files.forEach(insertImageFile)
+      return true
+    },
+    handleDrop: (_view, event, _slice, moved) => {
+      if (moved) return false
+      const files = Array.from((event as DragEvent).dataTransfer?.files || []).filter(f => f.type.startsWith('image/'))
+      if (!files.length) return false
+      event.preventDefault()
+      files.forEach(insertImageFile)
+      return true
     },
   },
 })
@@ -113,7 +142,13 @@ async function saveTemplate() {
     })
     toast.success('Шаблон сохранён')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка сохранения')
+    // 413 — шаблон перерос лимит запроса. Практически всегда это картинки:
+    // они лежат внутри HTML как base64, и десяток фотографий даёт мегабайты.
+    if (e?.status === 413) {
+      toast.error('Шаблон слишком тяжёлый — уменьшите количество или размер картинок')
+    } else {
+      toast.error(e.message || 'Ошибка сохранения')
+    }
   } finally { saving.value = false }
 }
 
@@ -299,7 +334,7 @@ onBeforeUnmount(() => { editor.value?.destroy() })
               <button class="cb-tool" :class="{ active: editor.isActive('borderedBlock') }" @click="(editor as any).commands.toggleBorderedBlock()" title="Рамка">
                 <v-icon icon="mdi-card-outline" size="18" />
               </button>
-              <button class="cb-tool" @click="imageInputRef?.click()" title="Изображение">
+              <button class="cb-tool" @click="imageInputRef?.click()" title="Изображение — после вставки кликните по нему, чтобы задать размер и положение">
                 <v-icon icon="mdi-image-plus" size="18" />
               </button>
               <input ref="imageInputRef" type="file" accept="image/*" style="display: none;" @change="onImageSelected" />
@@ -530,8 +565,17 @@ onBeforeUnmount(() => { editor.value?.destroy() })
 .cb-paper :deep(.cb-editor-content div[data-bordered]) {
   border: 1px solid #000; padding: 10px 14px; margin: 8px 0; border-radius: 2px;
 }
+/* Размер, отступы и скругление картинки задаёт её node view (inline-стилями,
+   чтобы то же самое уехало в PDF), поэтому здесь только страховка по ширине. */
 .cb-paper :deep(.cb-editor-content img) {
-  max-width: 100%; height: auto; border-radius: 4px; margin: 4px 0;
+  max-width: 100%;
+}
+/* Картинка с обтеканием — float, и без clearfix «бумага» схлопнется под текст. */
+.cb-paper :deep(.cb-editor-content)::after {
+  content: ''; display: block; clear: both;
+}
+.cb-paper :deep(.cb-editor-content .ProseMirror-selectednode) {
+  outline: none;
 }
 .cb-paper :deep(.cb-editor-content mark) {
   background: #fef08a; padding: 1px 2px; border-radius: 2px;

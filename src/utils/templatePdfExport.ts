@@ -158,13 +158,19 @@ export async function exportTemplatePdf(
     td, th { vertical-align: top; }
     ul, ol { margin: 4px 0; padding-left: 20px; }
     li { margin-bottom: 2px; }
-    img { max-width: 100%; height: auto; }
+    /* Размеры/отступы/оформление картинки приходят inline-стилями из
+       конструктора — здесь только страховка, чтобы ничего не вылезло за поля. */
+    img { max-width: 100%; }
+    /* Картинка с обтеканием — float: без clearfix контейнер схлопнется и
+       html2canvas обрежет её по нижнему краю. */
+    .tpl-root::after { content: ''; display: block; clear: both; }
     div[data-bordered] { border: 1px solid #000; padding: 10px 14px; margin: 8px 0; }
     mark { background: #fef08a; padding: 1px 2px; }
   `
   container.appendChild(style)
 
   const content = document.createElement('div')
+  content.className = 'tpl-root'
   content.innerHTML = finalHtml
   container.appendChild(content)
   document.body.appendChild(container)
