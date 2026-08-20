@@ -1130,7 +1130,14 @@ const step1Valid = computed(() => !!productName.value)
 // No need to gate on the down-payment error any more: the amount is clamped to
 // the total price on input, so it can never reach an invalid state. The error
 // is shown only as informational feedback.
-const step2Valid = computed(() => (purchasePrice.value ?? 0) > 0 && termMonths.value > 0)
+// Потолок графика — зеркало серверного лимита (MAX_PAYMENTS на бэке). Без него
+// опечатка в сроке заводила сделку на тысячи платежей: график растягивался на
+// столетия, а строки платежей плодились в базе.
+const MAX_PAYMENTS = 120
+const termTooLong = computed(() => (termMonths.value ?? 0) > MAX_PAYMENTS)
+const step2Valid = computed(
+  () => (purchasePrice.value ?? 0) > 0 && termMonths.value > 0 && !termTooLong.value,
+)
 const step3Valid = computed(() => !!selectedClientProfileId.value)
 
 function nextStep() { if (step.value < 4) step.value++ }
@@ -1816,8 +1823,19 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   >{{ opt }} мес</button>
                 </div>
                 <div class="input-with-suffix mt-2">
-                  <input v-model.number="termMonths" type="number" class="field-input" placeholder="6" min="1" />
+                  <input
+                    v-model.number="termMonths"
+                    type="number"
+                    class="field-input"
+                    placeholder="6"
+                    min="1"
+                    :max="MAX_PAYMENTS"
+                  />
                   <span class="input-suffix">мес</span>
+                </div>
+                <div v-if="termTooLong" class="term-limit-warn">
+                  <v-icon icon="mdi-alert-circle-outline" size="14" />
+                  Слишком длинный график: не больше {{ MAX_PAYMENTS }} платежей
                 </div>
               </div>
 
@@ -2471,6 +2489,14 @@ async function submitDeal(acknowledgedOverdraft = false) {
 </template>
 
 <style scoped>
+.term-limit-warn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #ef4444;
+}
 /* Партнёр-поставщик в форме сделки */
 .sup-paid-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
 .sup-debt-hint { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; color: #ef4444; }

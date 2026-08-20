@@ -497,10 +497,15 @@ async function confirmMarkPaid() {
       <!-- Фактическая дата оплаты -->
       <div class="mb-5">
         <label class="field-label">Фактическая дата оплаты</label>
-        <input v-model="markPaidPaidAt" type="date" class="field-input" />
+        <!-- max: деньги нельзя получить завтра — будущая дата тут бессмысленна
+             и уводила операцию в журнале выше сегодняшних. -->
+        <input v-model="markPaidPaidAt" type="date" class="field-input" :max="todayDateInput" />
 
         <div v-if="target" class="paidat-presets mt-2">
+          <!-- «В срок» прячем, когда платёж принимают досрочно: его плановая
+               дата ещё не наступила, и оплатить его тем числом невозможно. -->
           <button
+            v-if="toDateInput(target.dueDate) <= todayDateInput"
             type="button"
             class="paidat-preset"
             :class="{ 'paidat-preset--active': markPaidPaidAt === toDateInput(target.dueDate) }"

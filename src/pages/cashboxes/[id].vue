@@ -76,6 +76,10 @@ interface CapitalDeal {
 }
 interface CapitalDetails {
   initialCapital: number
+  // Вложено партнёром сейчас: стартовый капитал кассы + его пополнения −
+  // снятое из капитала. Именно эта величина, а не «сырой» initialCapital,
+  // входит в totalCapital и показывается в составе капитала.
+  investedCapital?: number
   // Phase 2: real CI capital sitting in this cashbox (sum of CI.capital)
   coInvestorCapital: number
   totalCapital: number
@@ -1135,6 +1139,13 @@ async function handleDelete() {
               <div class="wf-panel-title">Состав капитала</div>
               <div class="wf-expand-row">
                 <span>Собственный капитал кассы</span>
+                <span class="wf-expand-val">{{ formatCurrency(capitalDetails.investedCapital ?? capitalDetails.initialCapital) }}</span>
+              </div>
+              <div
+                v-if="(capitalDetails.investedCapital ?? capitalDetails.initialCapital) !== capitalDetails.initialCapital"
+                class="wf-expand-row wf-expand-row--sub"
+              >
+                <span>из них стартовый капитал</span>
                 <span class="wf-expand-val">{{ formatCurrency(capitalDetails.initialCapital) }}</span>
               </div>
               <!-- Phase 2: CI capital is part of the cashbox's total capital.
@@ -2414,6 +2425,11 @@ async function handleDelete() {
   padding: 8px 0;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
   font-size: 13px;
+}
+.wf-expand-row--sub {
+  padding-left: 12px;
+  font-size: 11px;
+  opacity: 0.6;
 }
 .wf-expand-row:last-child { border-bottom: none; }
 .wf-expand-row--sub { padding-left: 16px; opacity: 0.75; font-size: 12px; }
