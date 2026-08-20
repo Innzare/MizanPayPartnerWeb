@@ -100,6 +100,21 @@ interface CapitalDetails {
   manualBalance: number
   availableCapital: number
   /**
+   * Слагаемые доступного капитала — расходные приходят отрицательными, как
+   * лежат в журнале. Сумма всех строк равна availableCapital.
+   */
+  availableBreakdown?: {
+    initialCapital: number
+    coInvestorCashIn: number
+    received: number
+    deployed: number
+    dividendOut: number
+    manualBalance: number
+    capitalTopup: number
+    capitalWithdraw: number
+    journalOther: number
+  }
+  /**
    * Статистика по сделкам кассы. Раньше веб считал её сам, пройдя по всему
    * массиву сделок; теперь сами сделки приезжают постранично, а суммы даёт
    * сервер — иначе они зависели бы от того, сколько строк успело загрузиться.
@@ -153,6 +168,53 @@ interface CashBoxCoInvestor {
 // ─── State ────────────────────────────────────────────────────────────────
 const box = ref<CashBoxSummary | null>(null)
 const capitalDetails = ref<CapitalDetails | null>(null)
+/**
+ * Расклад «Доступного капитала» по слагаемым. Порядок — как деньги движутся:
+ * сначала то, что в кассу завели, потом обороты по сделкам и выплаты.
+ * Нулевые строки прячем, чтобы не забивать панель, но базовые (заведённые
+ * деньги) показываем всегда — иначе расклад читается как обрубленный.
+ */
+const availableRows = computed(() => {
+  const b = capitalDetails.value?.availableBreakdown
+  if (!b) return []
+  const rows = [
+    { key: 'seed', label: 'Стартовый капитал кассы', value: b.initialCapital, base: true, hint: '', always: true },
+    {
+      key: 'ci', label: 'Заведено со-инвесторами', value: b.coInvestorCashIn, base: true,
+      hint: 'Живые деньги, которые со-инвесторы внесли в эту кассу', always: true,
+    },
+    {
+      key: 'topup', label: 'Пополнения капитала', value: b.capitalTopup, base: false,
+      hint: 'Ваши собственные взносы в кассу', always: false,
+    },
+    {
+      key: 'received', label: 'Поступления от клиентов', value: b.received, base: false,
+      hint: 'Оплаченные платежи и первоначальные взносы', always: true,
+    },
+    {
+      key: 'deployed', label: 'Закупки по сделкам', value: b.deployed, base: false,
+      hint: 'Деньги, вложенные в товар', always: true,
+    },
+    {
+      key: 'dividend', label: 'Выплачено со-инвесторам', value: b.dividendOut, base: false,
+      hint: 'Дивиденды, ушедшие из кассы', always: false,
+    },
+    {
+      key: 'withdraw', label: 'Снятия капитала', value: b.capitalWithdraw, base: false,
+      hint: 'Ваши выводы денег из кассы', always: false,
+    },
+    {
+      key: 'manual', label: 'Ручные операции', value: b.manualBalance, base: false,
+      hint: 'Доходы минус расходы, внесённые вручную', always: false,
+    },
+    {
+      key: 'other', label: 'Прочие движения', value: b.journalOther, base: false,
+      hint: 'Записи журнала, не попавшие в строки выше', always: false,
+    },
+  ]
+  return rows.filter(r => r.always || Math.abs(r.value) > 0)
+})
+
 // Сводка собственного капитала кассы (investedCapital / withdrawableProfit /
 // availableCapital). Нужна модалке «Капитал» — пополнить/снять.
 const capitalSummary = ref<CapitalSummary | null>(null)
@@ -164,7 +226,24 @@ const loading = ref(true)
 const showEdit = ref(false)
 
 // Detail panel state (waterfall right column)
-const wfExpanded = ref<string | null>(null)
+// Страница кассы открывается с раскрытым первым разделом: пустая панель
+// справа выглядела как ошибка загрузки, и было неочевидно, что плитки жмутся.
+const wfExpanded = ref<string | null>('capital')
+
+/**
+ * Разделы водопада: название раздела и пояснение к нему. Заголовок панели
+ * справа берётся отсюда, чтобы совпадать с подписью на плитке — иначе не
+ * понять, какой именно раздел сейчас открыт.
+ */
+const WF_SECTIONS: Record<string, { label: string; hint: string }> = {
+  capital: { label: 'Общий капитал', hint: 'Сколько денег вложено в дело' },
+  profit: { label: 'Чистая прибыль', hint: 'Прибыль по сделкам кассы' },
+  deployed: { label: 'В работе', hint: 'Капитал в активных сделках' },
+  manual: { label: 'Ручные операции', hint: 'Доходы и расходы, внесённые вручную' },
+  available: { label: 'Доступный капитал', hint: 'Из чего сложились деньги в кассе' },
+  pendingCI: { label: 'Резерв для инвесторов', hint: 'Начислено со-инвесторам, но ещё не выплачено' },
+}
+const wfSection = computed(() => (wfExpanded.value ? WF_SECTIONS[wfExpanded.value] : null))
 const expandedInProfit = ref<Set<string>>(new Set())
 const expandedInProgress = ref<Set<string>>(new Set())
 const expandedReserveCi = ref<Set<string>>(new Set())
@@ -1064,6 +1143,7 @@ async function handleDelete() {
             >
               <div class="wf-item-value">{{ formatCurrency(capitalDetails.totalCapital) }}</div>
               <div class="wf-item-label">Общий капитал</div>
+                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
             </button>
             <button
               class="wf-item"
@@ -1075,6 +1155,7 @@ async function handleDelete() {
               <div v-if="(capitalDetails.coInvestorProfit ?? 0) > 0" class="wf-item-sub">
                 валовая {{ formatCurrencyShort(capitalDetails.netProfit) }} · инвесторам {{ formatCurrencyShort(capitalDetails.coInvestorProfit!) }}
               </div>
+                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
             </button>
             <button
               class="wf-item"
@@ -1083,6 +1164,7 @@ async function handleDelete() {
             >
               <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.inProgress) }}</div>
               <div class="wf-item-label">В работе · {{ capitalDetails.dealsStats?.activeCount ?? 0 }}</div>
+                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
             </button>
             <button
               v-if="capitalDetails.manualBalance !== 0 || (capitalDetails.manualCount ?? 0) > 0 || manualOperations.length > 0"
@@ -1094,14 +1176,23 @@ async function handleDelete() {
                 {{ capitalDetails.manualBalance > 0 ? '+' : '' }}{{ formatCurrency(capitalDetails.manualBalance) }}
               </div>
               <div class="wf-item-label">Ручные операции · {{ capitalDetails.manualCount ?? manualOperations.length }}</div>
+                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
             </button>
 
-            <div class="wf-item wf-item--result">
+            <button
+              class="wf-item wf-item--result"
+              :class="{ 'wf-item--active': wfExpanded === 'available' }"
+              @click="wfExpanded = wfExpanded === 'available' ? null : 'available'"
+            >
               <div class="wf-item-value wf-item-value--big" :style="{ color: box.color }">
                 {{ formatCurrency(capitalDetails.availableCapital) }}
               </div>
-              <div class="wf-item-label">Доступный капитал</div>
-            </div>
+              <div class="wf-item-label">
+                Доступный капитал
+                <v-icon icon="mdi-information-outline" size="11" class="ml-1" />
+              </div>
+                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
+            </button>
 
             <!-- Phase 2 cash-basis: obligation owed to CIs. Reported as a
                  separate liability, NOT subtracted from availableCapital.
@@ -1130,13 +1221,64 @@ async function handleDelete() {
                   Выплатите дивиденды
                 </span>
               </div>
+                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
             </button>
           </div>
 
           <!-- Right: details panel -->
           <div class="wf-right">
-            <template v-if="wfExpanded === 'capital'">
-              <div class="wf-panel-title">Состав капитала</div>
+            <!-- Заголовок = подпись плитки: видно, какой раздел раскрыт. -->
+            <div v-if="wfSection" class="wf-right-head">
+              <div>
+                <div class="wf-right-title">{{ wfSection.label }}</div>
+                <div class="wf-right-hint">{{ wfSection.hint }}</div>
+              </div>
+              <button
+                v-if="wfExpanded === 'manual'"
+                class="wf-panel-add"
+                @click="openCreateTransaction"
+              >
+                <v-icon icon="mdi-plus" size="14" />
+                Добавить
+              </button>
+            </div>
+            <template v-if="wfExpanded === 'available'">
+              <div v-if="availableRows.length" class="wf-flow">
+                <div
+                  v-for="r in availableRows"
+                  :key="r.key"
+                  class="wf-flow-row"
+                  :class="{ 'wf-flow-row--base': r.base }"
+                >
+                  <div class="wf-flow-main">
+                    <span class="wf-flow-label">{{ r.label }}</span>
+                    <span
+                      class="wf-flow-val"
+                      :class="r.value > 0 ? 'wf-flow-val--in' : r.value < 0 ? 'wf-flow-val--out' : ''"
+                    >
+                      {{ r.value > 0 && !r.base ? '+' : '' }}{{ formatCurrency(r.value) }}
+                    </span>
+                  </div>
+                  <div v-if="r.hint" class="wf-flow-hint">{{ r.hint }}</div>
+                </div>
+
+                <div class="wf-flow-row wf-flow-row--total">
+                  <div class="wf-flow-main">
+                    <span class="wf-flow-label">Доступный капитал</span>
+                    <span class="wf-flow-val" :style="{ color: box.color }">
+                      {{ formatCurrency(capitalDetails.availableCapital) }}
+                    </span>
+                  </div>
+                  <div class="wf-flow-hint">
+                    Реальные деньги кассы на сейчас. Обязательства перед со-инвесторами
+                    сюда не заложены — они показаны отдельной строкой «Резерв для инвесторов».
+                  </div>
+                </div>
+              </div>
+              <div v-else class="wf-expand-empty">Нет данных для разбора</div>
+            </template>
+
+            <template v-else-if="wfExpanded === 'capital'">
               <div class="wf-expand-row">
                 <span>Собственный капитал кассы</span>
                 <span class="wf-expand-val">{{ formatCurrency(capitalDetails.investedCapital ?? capitalDetails.initialCapital) }}</span>
@@ -1192,7 +1334,6 @@ async function handleDelete() {
             </template>
 
             <template v-else-if="wfExpanded === 'profit'">
-              <div class="wf-panel-title">Прибыль по сделкам</div>
               <div v-if="profitDeals.loading && !profitDeals.items.length" class="d-flex justify-center pa-6">
                 <v-progress-circular indeterminate color="primary" size="28" />
               </div>
@@ -1320,7 +1461,6 @@ async function handleDelete() {
             </template>
 
             <template v-else-if="wfExpanded === 'deployed'">
-              <div class="wf-panel-title">Капитал в активных сделках</div>
               <div class="wf-formula">
                 <div class="wf-formula-row">
                   <span>Закупка по активным сделкам</span>
@@ -1407,13 +1547,6 @@ async function handleDelete() {
             </template>
 
             <template v-else-if="wfExpanded === 'manual'">
-              <div class="wf-panel-title">
-                Ручные операции
-                <button class="wf-panel-add" @click="openCreateTransaction">
-                  <v-icon icon="mdi-plus" size="14" />
-                  Добавить
-                </button>
-              </div>
               <div v-if="manualOperations.length === 0" class="wf-expand-empty">
                 Здесь будут ручные доходы и расходы по этой кассе
               </div>
@@ -1443,7 +1576,6 @@ async function handleDelete() {
             </template>
 
             <template v-else-if="wfExpanded === 'pendingCI'">
-              <div class="wf-panel-title">Резерв для инвесторов</div>
               <div class="wf-formula">
                 <div class="wf-formula-row wf-formula-row--total">
                   <span>Итого к выплате</span>
@@ -2372,7 +2504,9 @@ async function handleDelete() {
 .wf-left { display: flex; flex-direction: column; gap: 8px; }
 .wf-item {
   display: block; width: 100%;
-  text-align: left; padding: 12px 14px;
+  /* Шеврон-подсказка стоит абсолютом справа — отсюда relative и запас справа. */
+  position: relative;
+  text-align: left; padding: 12px 30px 12px 14px;
   border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   background: rgba(var(--v-theme-on-surface), 0.02);
   cursor: pointer; transition: all 0.15s;
@@ -2407,6 +2541,37 @@ async function handleDelete() {
   padding: 16px;
   min-height: 220px;
 }
+.wf-item-chevron {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.25;
+  transition: opacity 0.15s, color 0.15s;
+}
+.wf-item:hover .wf-item-chevron { opacity: 0.6; }
+.wf-item--active .wf-item-chevron { opacity: 1; color: #047857; }
+
+.wf-right-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.wf-right-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.wf-right-hint {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 2px;
+}
+
 .wf-panel-title {
   font-size: 13px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.7);
@@ -2434,6 +2599,32 @@ async function handleDelete() {
 .wf-expand-row:last-child { border-bottom: none; }
 .wf-expand-row--sub { padding-left: 16px; opacity: 0.75; font-size: 12px; }
 .wf-expand-val { font-weight: 700; }
+.wf-flow-row {
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+}
+.wf-flow-row--base { background: rgba(var(--v-theme-on-surface), 0.02); }
+.wf-flow-row--total {
+  border-bottom: none;
+  border-top: 2px solid rgba(var(--v-theme-on-surface), 0.12);
+  margin-top: 4px;
+  padding-top: 12px;
+}
+.wf-flow-main {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+}
+.wf-flow-label { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.8); }
+.wf-flow-val { font-weight: 700; font-size: 13px; white-space: nowrap; }
+.wf-flow-val--in { color: #10b981; }
+.wf-flow-val--out { color: #ef4444; }
+.wf-flow-row--total .wf-flow-label { font-weight: 700; }
+.wf-flow-row--total .wf-flow-val { font-size: 17px; font-weight: 800; }
+.wf-flow-hint {
+  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-top: 2px; line-height: 1.4; max-width: 92%;
+}
+.wf-item--result { cursor: pointer; }
+
 .wf-expand-empty {
   padding: 24px; text-align: center;
   font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.4);
@@ -3359,7 +3550,7 @@ async function handleDelete() {
 
   /* Waterfall — отступы и шрифты помельче. */
   .wf-title { font-size: 16px; }
-  .wf-item { padding: 10px 12px; }
+  .wf-item { padding: 10px 28px 10px 12px; }
   .wf-item-value { font-size: 15px; }
   .wf-item-label { font-size: 11px; }
 }
