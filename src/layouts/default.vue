@@ -187,6 +187,7 @@ const routeTitles: Record<string, string> = {
   "/": "Главная",
   "/analytics": "Аналитика и отчёты",
   "/help": "Справка",
+  "/cashboxes": "Кассы",
   "/deals": "Сделки",
   "/clients": "Клиенты",
   "/payments": "Платежи",
@@ -214,6 +215,7 @@ const routeSubtitles: Record<string, string> = {
   "/analytics": "Доход, поступления и прогнозы",
   "/help": "Как работать с MizanPay",
   "/suppliers": "Поставщики, долги, заявки и путевые листы",
+  "/cashboxes": "Ваши кассы",
   "/deals": "Управление сделками",
   "/clients": "Ваши клиенты",
   "/payments": "Все платежи по сделкам",
@@ -234,6 +236,7 @@ const routeSubtitles: Record<string, string> = {
 // Заголовок/подзаголовок бара: приоритет — динамическое переопределение страницы
 // (usePageHeaderStore), затем статические карты по маршруту, затем фолбэки.
 function fallbackTitle(path: string): string {
+  if (path.startsWith("/cashboxes/")) return "Касса";
   if (path.startsWith("/deals/")) return "Детали сделки";
   if (path.startsWith("/clients/")) return "Профиль клиента";
   if (path.startsWith("/suppliers/route-sheets/")) return "Путевой лист";

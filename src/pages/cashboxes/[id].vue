@@ -7,6 +7,7 @@ import ServerPager from '@/components/ServerPager.vue'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
+import { usePageHeaderStore } from '@/stores/pageHeader'
 import { useIsDark } from '@/composables/useIsDark'
 import { formatCurrency, formatCurrencyShort, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import type { CapitalSummary } from '@/types'
@@ -228,6 +229,8 @@ const showEdit = ref(false)
 // Detail panel state (waterfall right column)
 // Страница кассы открывается с раскрытым первым разделом: пустая панель
 // справа выглядела как ошибка загрузки, и было неочевидно, что плитки жмутся.
+const pageHeader = usePageHeaderStore()
+
 const wfExpanded = ref<string | null>('capital')
 
 /**
@@ -355,6 +358,10 @@ watch(() => id.value, () => {
   dealPayments.value = {}
   loadAll()
 })
+// В шапку — имя кассы. Чистим при уходе, иначе оно утечёт на соседний экран.
+watch(box, (b) => { if (b) pageHeader.set(b.name) }, { immediate: true })
+onUnmounted(() => pageHeader.clear())
+
 onMounted(loadAll)
 
 // ─── Helpers (mirror finance.vue) ─────────────────────────────────────────
