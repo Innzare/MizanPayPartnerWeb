@@ -118,7 +118,7 @@ onBeforeUnmount(destroyMap)
 
 <template>
   <div class="at-page sd-page" :class="{ dark: isDark }">
-    <button class="sd-back" @click="router.push('/suppliers')"><v-icon icon="mdi-arrow-left" size="18" /> К партнёрам</button>
+    <button class="back-btn" @click="router.push('/suppliers')"><v-icon icon="mdi-arrow-left" size="18" /> К партнёрам</button>
 
     <div v-if="loading" class="d-flex justify-center pa-12"><v-progress-circular indeterminate color="primary" size="40" /></div>
 
@@ -168,10 +168,10 @@ onBeforeUnmount(destroyMap)
       </div>
 
       <!-- Табы -->
-      <div class="settings-tabs">
-        <button class="settings-tab" :class="{ active: tab === 'ops' }" @click="tab = 'ops'"><v-icon icon="mdi-cash-multiple" size="18" /><span>Операции</span><span v-if="openDebts.length" class="sd-tabc" :class="{ on: tab === 'ops' }">{{ openDebts.length }}</span></button>
-        <button class="settings-tab" :class="{ active: tab === 'deals' }" @click="tab = 'deals'"><v-icon icon="mdi-file-document-outline" size="18" /><span>История договоров</span></button>
-        <button class="settings-tab" :class="{ active: tab === 'payouts' }" @click="tab = 'payouts'"><v-icon icon="mdi-history" size="18" /><span>История выплат</span></button>
+      <div class="page-tabs">
+        <button class="page-tab" :class="{ active: tab === 'ops' }" @click="tab = 'ops'"><v-icon icon="mdi-cash-multiple" size="18" /><span>Операции</span><span v-if="openDebts.length" class="page-tab-count">{{ openDebts.length }}</span></button>
+        <button class="page-tab" :class="{ active: tab === 'deals' }" @click="tab = 'deals'"><v-icon icon="mdi-file-document-outline" size="18" /><span>История договоров</span></button>
+        <button class="page-tab" :class="{ active: tab === 'payouts' }" @click="tab = 'payouts'"><v-icon icon="mdi-history" size="18" /><span>История выплат</span></button>
       </div>
 
       <!-- Операции: открытые долги -->
@@ -280,8 +280,6 @@ onBeforeUnmount(destroyMap)
 
 <style scoped>
 .sd-page { padding-bottom: 72px; }
-.sd-back { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 16px; border: none; background: none; cursor: pointer; font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6); }
-.sd-back:hover { color: rgb(var(--v-theme-primary)); }
 
 .sd-hero { display: flex; align-items: stretch; gap: 20px; padding: 24px; border-radius: 18px; background: linear-gradient(135deg, #047857 0%, #065f46 100%); color: #fff; margin-bottom: 16px; box-shadow: 0 10px 30px rgba(4,120,87,0.22); }
 .sd-hero-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -322,14 +320,6 @@ onBeforeUnmount(destroyMap)
 .sd-stat { padding: 14px 16px; border-radius: 12px; border: 1px solid rgba(var(--v-theme-on-surface), 0.08); background: rgba(var(--v-theme-surface), 1); display: flex; flex-direction: column; gap: 3px; }
 .sd-stat-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; color: rgba(var(--v-theme-on-surface), 0.45); }
 .sd-stat-val { font-size: 18px; font-weight: 800; }
-
-.settings-tabs { display: flex; gap: 4px; margin-bottom: 16px; padding: 4px; border-radius: 12px; background: #fff; border: 1px solid rgba(var(--v-theme-on-surface), 0.08); box-shadow: 0 1px 3px rgba(0,0,0,0.04); overflow-x: auto; }
-.settings-tab { display: flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: 8px; border: none; background: transparent; font-size: 13px; font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.5); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-.settings-tab:hover { color: rgba(var(--v-theme-on-surface), 0.7); background: rgba(var(--v-theme-on-surface), 0.04); }
-.settings-tab.active { background: #047857; color: #fff; font-weight: 600; box-shadow: 0 2px 6px rgba(4,120,87,0.25); }
-.sd-page.dark .settings-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); box-shadow: none; }
-.sd-tabc { font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 10px; background: rgba(var(--v-theme-on-surface),0.08); }
-.sd-tabc.on { background: rgba(255,255,255,0.25); color: #fff; }
 
 .sd-card { border-radius: 12px; border: 1px solid rgba(var(--v-theme-on-surface), 0.08); background: rgba(var(--v-theme-surface), 1); overflow: hidden; }
 .sd-table :deep(th) { font-size: 12px !important; text-transform: uppercase; letter-spacing: 0.03em; color: rgba(var(--v-theme-on-surface), 0.5) !important; }

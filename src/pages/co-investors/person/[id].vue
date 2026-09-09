@@ -186,9 +186,9 @@ async function saveStake() {
 </script>
 
 <template>
-  <div class="pp-page" :class="{ dark: isDark }">
+  <div class="at-page pp-page" :class="{ dark: isDark }">
     <div class="pp-topbar mb-4">
-      <button class="pp-back" @click="router.push('/co-investors')">
+      <button class="back-btn back-btn--inline" @click="router.push('/co-investors')">
         <v-icon icon="mdi-arrow-left" size="18" />
         К списку
       </button>
@@ -489,16 +489,8 @@ async function saveStake() {
 </template>
 
 <style scoped>
-.pp-page { padding: 8px; }
+/* Поля страницы — общие для всего сервиса (.at-page), свои тут были вдвое уже. */
 .pp-topbar { display: flex; align-items: center; }
-.pp-back {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 14px; border-radius: 10px; border: 1px solid #e5e7eb;
-  background: #fff; color: rgba(var(--v-theme-on-surface), 0.7);
-  font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s;
-}
-.pp-back:hover { background: rgba(var(--v-theme-on-surface), 0.04); border-color: #d1d5db; }
-.dark .pp-back { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.8); }
 
 .pp-hero { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .pp-avatar {

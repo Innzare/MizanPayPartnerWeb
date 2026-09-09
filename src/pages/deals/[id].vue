@@ -2,17 +2,20 @@
 import { useDealsStore } from '@/stores/deals'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { usePaymentsStore } from '@/stores/payments'
-import { formatCurrency, formatCurrencyShort, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { useDealProfit } from '@/composables/useDealProfit'
+import DealHistoryTab from '@/components/deals/DealHistoryTab.vue'
+import DealDocsTab from '@/components/deals/DealDocsTab.vue'
+import DealParticipantsTab from '@/components/deals/DealParticipantsTab.vue'
+import DealInvestorsTab from '@/components/deals/DealInvestorsTab.vue'
+import { formatCurrency, formatCurrencyShort, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, pluralizeRu, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { userName, clientProfileName, type Deal, type ClientProfile } from '@/types'
 import { dealGuarantors } from '@/utils/dealGuarantors'
 import { useAuthStore } from '@/stores/auth'
+import ClientLink from '@/components/ClientLink.vue'
+import DealDiscountDialog from '@/components/DealDiscountDialog.vue'
+import DateField from '@/components/DateField.vue'
 import { useRecentDeals } from '@/composables/useRecentDeals'
-import { generateContract } from '@/utils/contractPdf'
-import { generateReceipt } from '@/utils/receiptPdf'
-import { exportTemplatePdf } from '@/utils/templatePdfExport'
-import { generateDealSummary } from '@/utils/dealSummaryPdf'
-import { useSendPdfWhatsApp } from '@/composables/useSendPdfWhatsApp'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -20,9 +23,8 @@ import { useSubscription } from '@/composables/useSubscription'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import { offMonthKind, dueYearMonth, monthPrepositional } from '@/utils/paymentAttribution'
-import ClientPicker from '@/components/ClientPicker.vue'
-import CreateClientDialog from '@/components/CreateClientDialog.vue'
 import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
+import QuickPayDialog from '@/components/QuickPayDialog.vue'
 import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
 import { Line } from 'vue-chartjs'
 import {
@@ -63,11 +65,23 @@ const cashboxesStore = useCashBoxesStore()
 // just appends to a localStorage-backed ref.
 const recentDeals = useRecentDeals(authStore.user?.id ?? null)
 
+/** Раздел «Платежи» закрыт этому сотруднику — блок графика не показываем. */
+const paymentsHidden = ref(false)
+
 onMounted(async () => {
   try {
     await Promise.all([
       dealsStore.fetchDeal(dealId.value),
-      paymentsStore.fetchPaymentsForDeal(dealId.value),
+      // График платежей — отдельный раздел со своим правом. Сотруднику, у
+      // которого он закрыт, показываем сделку без графика, а не ошибку:
+      // ограничение доступа не должно выглядеть как поломка.
+      paymentsStore.fetchPaymentsForDeal(dealId.value).catch((e: any) => {
+        if (e?.code === 'PERMISSION_DENIED') {
+          paymentsHidden.value = true
+          return
+        }
+        throw e
+      }),
       cashboxesStore.items.length === 0 ? cashboxesStore.fetchAll() : Promise.resolve(),
     ])
     if (dealId.value) recentDeals.recordVisit(dealId.value)
@@ -132,8 +146,6 @@ async function handleMoveCashbox() {
 }
 const payments = computed(() => paymentsStore.getPaymentsForDeal(dealId.value))
 
-// Client info from deal's nested client object
-const client = computed(() => deal.value?.client || null)
 
 /**
  * Платёжная дисциплина клиента — с сервера, по всем его сделкам у этого
@@ -141,61 +153,6 @@ const client = computed(() => deal.value?.client || null)
  * только если другая страница успела загрузить весь портфель, и всегда
  * показывала 100% из-за ошибки в том расчёте.
  */
-const clientInfo = ref<{ onTimeRate: number } | null>(null)
-
-watch(
-  () => deal.value?.clientProfileId,
-  async (profileId) => {
-    clientInfo.value = null
-    if (!profileId) return
-    try {
-      const stats = await api.get<{ finance?: { onTimeRate: number } }>(
-        `/client-profiles/${profileId}/stats`,
-      )
-      if (stats?.finance) clientInfo.value = { onTimeRate: stats.finance.onTimeRate }
-    } catch {
-      // Профиль недоступен — блок дисциплины просто не показываем.
-    }
-  },
-  { immediate: true },
-)
-
-// Contract photos
-const contractInputRef = ref<HTMLInputElement | null>(null)
-const contractUploading = ref(false)
-
-async function onContractFilesSelected(event: Event) {
-  const input = event.target as HTMLInputElement
-  if (!input.files?.length || !deal.value) return
-  contractUploading.value = true
-  try {
-    const files = Array.from(input.files).filter(f => f.type.startsWith('image/'))
-    const newUrls = await api.uploadMultiple(files, `contracts/${deal.value.id}`)
-    const existing = deal.value.contractPhotos || []
-    await api.patch(`/deals/${deal.value.id}/contract`, { contractPhotos: [...existing, ...newUrls] })
-    await dealsStore.fetchDeal(dealId.value)
-    toast.success('Фото договора загружены')
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки')
-  } finally {
-    contractUploading.value = false
-    if (contractInputRef.value) contractInputRef.value.value = ''
-  }
-}
-
-async function removeContractPhoto(index: number) {
-  if (!deal.value) return
-  const updated = (deal.value.contractPhotos || []).filter((_: string, i: number) => i !== index)
-  try {
-    await api.patch(`/deals/${deal.value.id}/contract`, { contractPhotos: updated })
-    await dealsStore.fetchDeal(dealId.value)
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления')
-  }
-}
-
-const contractEnlargeUrl = ref('')
-const contractEnlargeDialog = ref(false)
 
 // Delete deal
 const deleting = ref(false)
@@ -219,139 +176,26 @@ async function deleteDeal() {
   }
 }
 
-// ── Guarantors (до 5) ──
-const MAX_GUARANTORS = 5
-const guarantorSaving = ref(false)
-const showCreateGuarantorDialog = ref(false)
-// v-model для пикера добавления нового поручителя (сбрасывается после добавления).
-const guarantorPickerId = ref<string | null>(null)
-
-// Упорядоченный список поручителей сделки (с fallback на legacy-поле).
-const guarantorsList = computed<ClientProfile[]>(() =>
-  deal.value ? dealGuarantors(deal.value) : [],
-)
-const canAddGuarantor = computed(() => guarantorsList.value.length < MAX_GUARANTORS)
-
-// Заменить весь набор поручителей (PATCH). Порядок = порядок в массиве ids.
-async function saveGuarantors(ids: string[], successMsg: string) {
-  if (!deal.value) return
-  guarantorSaving.value = true
-  try {
-    const updated = await dealsStore.updateGuarantors(deal.value.id, ids)
-    deal.value = updated
-    toast.success(successMsg)
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить поручителей')
-  } finally {
-    guarantorSaving.value = false
-  }
-}
-
-async function onGuarantorSelected(profile: ClientProfile | null) {
-  guarantorPickerId.value = null
-  if (!profile || !deal.value) return
-  const current = guarantorsList.value
-  if (current.some((g) => g.id === profile.id)) {
-    toast.error('Этот поручитель уже добавлен')
-    return
-  }
-  if (current.length >= MAX_GUARANTORS) {
-    toast.error(`Можно добавить не больше ${MAX_GUARANTORS} поручителей`)
-    return
-  }
-  await saveGuarantors([...current.map((g) => g.id), profile.id], 'Поручитель добавлен')
-}
-
-async function onGuarantorCreated(profile: ClientProfile) {
-  await onGuarantorSelected(profile)
-}
-
-async function removeGuarantorAt(index: number) {
-  const ids = guarantorsList.value.map((g) => g.id)
-  ids.splice(index, 1)
-  await saveGuarantors(ids, 'Поручитель убран')
-}
-
-// ── Co-Investors (Phase 4: read-only list of THIS deal's participants) ──
-interface CoInvestorInfo {
-  id: string
-  name: string
-  phone: string | null
-  profitPercent: number | null
-  capital: number
-  cashBoxId?: string
-  // Phase 4 per-deal fields (present in the /co-investors/deal/:id response).
-  managementFeePct?: number
-  managementFeePctOverride?: number | null
-  currentCapital?: number
-  profitPercentOverride?: number | null
-  // Fixed % that actually applies to THIS deal (override ?? default). null =
-  // the CI takes a weight-based share.
-  effectivePercent?: number | null
-  // Phase 5: cost-fee — partner takes rate% of purchase, investor gets the rest.
-  costFeeMode?: boolean
-  costFeeDefaultRatePct?: number | null
-  costFeeRatePct?: number | null
-}
-
-interface DealCoInvestorsResponse {
-  cashBoxId: string | null
-  partnerParticipatesByCapital: boolean
-  partnerCapital?: number
-  participants: CoInvestorInfo[]
-  available: CoInvestorInfo[]
-}
-
-// `dealCoInvestors` now holds the CIs of this deal's cashbox — they all
-// participate by virtue of cashbox membership, there's no per-deal link.
-const dealCoInvestors = ref<CoInvestorInfo[]>([])
-// Pool inputs for computing a weight (по вкладу) investor's exact share.
-const dealPartnerParticipates = ref(true)
-const dealPartnerCapital = ref(0)
-const coInvestorLoading = ref(false)
-
-// Cost-fee комиссия партнёра с этой сделки = min(ставка% × закупка, база).
-// База по умолчанию — splitBase (наценка или полная маржа при FULL_MARGIN),
-// чтобы совпадать с бэком, который считает от profitBase.
-function costFeeBaseAmount(): number {
-  return dealProfitBreakdown.value?.splitBase ?? deal.value?.markup ?? 0
-}
-function costFeePartnerFee(ci: CoInvestorInfo, base = costFeeBaseAmount()): number {
-  const d = deal.value
-  if (!d) return 0
-  const rate = ci.costFeeRatePct ?? ci.costFeeDefaultRatePct ?? 0
-  return Math.min(Math.round((rate / 100) * (d.purchasePrice || 0)), base)
-}
-// Cost-fee: сумма инвестору с этой сделки = база − комиссия партнёра.
-function costFeeInvestorAmount(ci: CoInvestorInfo, base = costFeeBaseAmount()): number {
-  return Math.max(0, base - costFeePartnerFee(ci, base))
-}
-// Доля ЛЮБОГО со-инвестора в этой сделке (фикс / по вкладу / cost-fee) —
-// из единой карты, посчитанной в dealProfitBreakdown как в движке.
-function ciDealShare(ci: CoInvestorInfo): number {
-  return dealProfitBreakdown.value?.shares[ci.id] ?? 0
-}
-// Основание доли инвестора в этой сделке (способ деления).
-function ciModeLabel(ci: CoInvestorInfo): string {
-  if (ci.costFeeMode || ci.costFeeRatePct != null) return 'Комиссия от закупки'
-  const eff = ci.effectivePercent ?? ci.profitPercent
-  if (eff != null && eff > 0) return `Фикс ${eff}%${ci.profitPercentOverride != null ? ' (в сделке)' : ''}`
-  const fee = ci.managementFeePctOverride ?? ci.managementFeePct ?? 0
-  return `По вкладу${fee > 0 ? ` · комиссия ${fee}%${ci.managementFeePctOverride != null ? ' (в сделке)' : ''}` : ''}`
-}
-// Числовая формула, откуда взялась сумма инвестора (как в разделе «Чистая
-// прибыль» кассы): «30% от 15К», «≈14% от 15К по вкладу», «15К − 5К (доля партнёра)».
-function ciFormula(ci: CoInvestorInfo): string {
-  const base = dealProfitBreakdown.value?.splitBase ?? 0
-  if (base <= 0) return ''
-  if (ci.costFeeMode || ci.costFeeRatePct != null) {
-    return `${formatCurrencyShort(base)} − ${formatCurrencyShort(costFeePartnerFee(ci, base))} (доля партнёра)`
-  }
-  const eff = ci.effectivePercent ?? ci.profitPercent
-  if (eff != null && eff > 0) return `${eff}% от ${formatCurrencyShort(base)}`
-  const pct = Math.round((ciDealShare(ci) / base) * 100)
-  return `≈${pct}% от ${formatCurrencyShort(base)} по вкладу`
-}
+/**
+ * Прибыль по сделке и доли со-инвесторов — в отдельном модуле.
+ *
+ * Это самая запутанная математика страницы, и она нужна сразу двум вкладкам
+ * («Обзор» и «Со-инвесторы»), поэтому живёт отдельно и переносилась дословно.
+ */
+const profit = useDealProfit(deal, payments, dealId)
+const {
+  dealCoInvestors,
+  dealPartnerParticipates,
+  dealPartnerCapital,
+  loadCoInvestors,
+  paidTotal,
+  totalPaid,
+  dealProfitBreakdown,
+  ciDealShare,
+  ciModeLabel,
+  ciFormula,
+  costFeeInvestorAmount,
+} = profit
 
 // ── Staff assignee ──
 interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
@@ -396,20 +240,12 @@ const supplierDebtRemaining = computed(() => {
   return Math.max(0, d.amount - d.paidAmount)
 })
 
-async function loadCoInvestors() {
-  try {
-    // Phase 4: endpoint returns an object; participants = THIS deal's linked CIs.
-    const res = await api.get<DealCoInvestorsResponse>(`/co-investors/deal/${dealId.value}`)
-    dealCoInvestors.value = Array.isArray(res?.participants) ? res.participants : []
-    dealPartnerParticipates.value = res?.partnerParticipatesByCapital ?? true
-    dealPartnerCapital.value = res?.partnerCapital ?? 0
-  } catch { dealCoInvestors.value = [] }
-}
 
-// Load co-investors on mount
+
+// Load co-investors on mount. Свой шаблон договора больше не грузится здесь —
+// он нужен только вкладке «Документы» и подтягивается при её открытии.
 onMounted(() => {
   if (sections.visible('coInvestors')) loadCoInvestors()
-  loadCustomTemplate()
   if (sections.visible('staff')) loadStaff()
 })
 
@@ -440,11 +276,6 @@ async function permanentDeleteDeal() {
   }
 }
 
-// Financial calculations
-const paidTotal = computed(() =>
-  payments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
-)
-const totalPaid = computed(() => paidTotal.value + (deal.value?.downPayment || 0))
 const progress = computed(() =>
   deal.value && deal.value.numberOfPayments > 0
     ? (deal.value.paidPayments / deal.value.numberOfPayments) * 100 : 0
@@ -481,6 +312,181 @@ const overdueStats = computed(() => {
   }
 })
 
+/**
+ * «Деньги по сделке» — один набор данных на два вида: список и карточки.
+ *
+ * Показатели описаны здесь, а не в шаблоне: иначе при переключении вида
+ * пришлось бы держать две копии одних и тех же строк и следить, чтобы они
+ * не разъезжались. Группы — смысловые: цена, условия, ход оплаты.
+ */
+type MoneyTone = 'plain' | 'good' | 'info' | 'key' | 'alert'
+interface MoneyRow {
+  id: string
+  icon: string
+  tone: MoneyTone
+  title: string
+  sub: string
+  value: string
+  /** Числа, ради которых сюда заходят, и просрочка — выделены. */
+  accent?: 'key' | 'alert'
+}
+
+const moneyGroups = computed<MoneyRow[][]>(() => {
+  const d = deal.value
+  if (!d) return []
+
+  const price: MoneyRow[] = []
+  if (d.wholesalePrice && d.wholesalePrice > 0) {
+    price.push({
+      id: 'wholesale', icon: 'mdi-lock-outline', tone: 'plain',
+      title: 'Оптовая цена', sub: 'видна только вам',
+      value: formatCurrency(d.wholesalePrice),
+    })
+  }
+  price.push(
+    {
+      id: 'purchase', icon: 'mdi-tag-outline', tone: 'plain',
+      title: 'Цена закупа', sub: 'сколько стоил товар вам',
+      value: formatCurrency(d.purchasePrice),
+    },
+    {
+      id: 'markup', icon: 'mdi-trending-up', tone: 'good',
+      title: 'Размер наценки', sub: `${formatPercent(d.markupPercent)} к закупке`,
+      value: formatCurrency(d.markup),
+    },
+    {
+      id: 'total', icon: 'mdi-file-document-outline', tone: 'key',
+      title: 'Цена продажи', sub: 'сумма договора целиком',
+      value: formatCurrency(d.totalPrice), accent: 'key',
+    },
+  )
+
+  const terms: MoneyRow[] = [
+    {
+      id: 'down', icon: 'mdi-cash-fast', tone: 'plain',
+      title: 'Первый взнос', sub: 'внесён при оформлении',
+      value: d.downPayment ? formatCurrency(d.downPayment) : 'без первого взноса',
+    },
+  ]
+  if (currentMonthlyPayment.value > 0) {
+    terms.push({
+      id: 'monthly', icon: 'mdi-calendar-month-outline', tone: 'info',
+      title: 'Размер платежа в месяц', sub: 'по текущему графику',
+      value: formatCurrency(currentMonthlyPayment.value),
+    })
+  }
+  terms.push({
+    id: 'term', icon: 'mdi-timer-sand', tone: 'plain',
+    title: 'Срок', sub: 'платежей по договору',
+    value: `${d.numberOfPayments} ${termLabel.value}`,
+  })
+
+  const progress: MoneyRow[] = [
+    {
+      id: 'paid', icon: 'mdi-check-circle-outline', tone: 'good',
+      title: 'Оплачено', sub: 'со взносом и всеми платежами',
+      value: formatCurrency(totalPaid.value),
+    },
+    {
+      id: 'remaining', icon: 'mdi-wallet-outline', tone: 'key',
+      title: 'Осталось оплатить', sub: 'до закрытия договора',
+      value: formatCurrency(d.remainingAmount), accent: 'key',
+    },
+  ]
+  if (overdueStats.value.count > 0) {
+    progress.push({
+      id: 'overdue', icon: 'mdi-alert-circle-outline', tone: 'alert',
+      title: 'Просрочено',
+      sub: `${overdueStats.value.count} ${pluralizeRu(overdueStats.value.count, 'платёж', 'платежа', 'платежей')} мимо срока`,
+      value: formatCurrency(overdueStats.value.total), accent: 'alert',
+    })
+  }
+
+  return [price, terms, progress]
+})
+
+/** Карточки удобны для беглого взгляда, список — когда читают подряд. */
+const moneyView = ref<'list' | 'cards'>(
+  (localStorage.getItem('dealMoneyView') as 'list' | 'cards' | null) ?? 'list',
+)
+watch(moneyView, v => localStorage.setItem('dealMoneyView', v))
+
+/**
+ * Разделы страницы сделки.
+ *
+ * Вкладка живёт в адресе (?tab=payments): ссылку можно отправить коллеге, а
+ * обновление страницы не выкидывает обратно в «Обзор». Просрочка и действия
+ * по сделке остаются в шапке — прятать их за вкладку нельзя.
+ */
+type DealTab =
+  | 'overview'
+  | 'payments'
+  | 'participants'
+  | 'investors'
+  | 'docs'
+  | 'history'
+
+function normalizeTab(v: unknown): DealTab {
+  if (v === 'payments' || v === 'participants' || v === 'docs' || v === 'history') return v
+  if (v === 'investors' && sections.visible('coInvestors')) return 'investors'
+  return 'overview'
+}
+const tab = ref<DealTab>(normalizeTab(route.query.tab))
+
+watch(tab, (t) => {
+  const q = t === 'overview' ? undefined : t
+  if (route.query.tab !== q) router.replace({ query: { ...route.query, tab: q } })
+})
+
+
+const visibleTabs = computed(() => {
+  const guarantorCount = deal.value ? dealGuarantors(deal.value).length : 0
+  const all: Array<{ key: DealTab; title: string; icon: string; count?: number | string; warn?: boolean; show: boolean }> = [
+    { key: 'overview', title: 'Обзор', icon: 'mdi-view-dashboard-outline', show: true },
+    {
+      key: 'payments',
+      title: 'График платежей',
+      icon: 'mdi-calendar-check-outline',
+      count: payments.value.length || undefined,
+      // Точка-предупреждение: просрочку человек должен заметить, не открывая вкладку.
+      warn: overdueStats.value.count > 0,
+      show: true,
+    },
+    {
+      key: 'participants',
+      title: 'Клиент и поручители',
+      icon: 'mdi-account-multiple-outline',
+      count: 1 + guarantorCount,
+      show: true,
+    },
+    {
+      key: 'investors',
+      title: 'Инвесторы',
+      icon: 'mdi-account-cash-outline',
+      count: dealCoInvestors.value.length || undefined,
+      show: !!deal.value && !deal.value.deletedAt && sections.visible('coInvestors'),
+    },
+    {
+      key: 'docs',
+      title: 'Документы',
+      icon: 'mdi-file-document-outline',
+      count: deal.value?.contractPhotos?.length || undefined,
+      show: true,
+    },
+    { key: 'history', title: 'История', icon: 'mdi-history', show: true },
+  ]
+  return all.filter((t) => t.show)
+})
+// Ссылка могла вести на вкладку, которой у этой сделки нет: например
+// «Со-инвесторы» у сделки в корзине. Тогда возвращаемся в «Обзор», а не
+// показываем пустое место без выбранной вкладки.
+watch(
+  () => visibleTabs.value.map((t) => t.key).join(','),
+  () => {
+    if (!visibleTabs.value.some((t) => t.key === tab.value)) tab.value = 'overview'
+  },
+)
+
 // Days a payment was late by. Positive integer; 0 if on time.
 //   • OVERDUE → today − dueDate (still waiting for client)
 //   • PAID with paidAt > dueDate → paidAt − dueDate (paid late after all)
@@ -507,120 +513,6 @@ function pluralDays(n: number): string {
   return 'дней'
 }
 
-/**
- * Breakdown of partner's profit on this specific deal:
- *
- *   - retailMargin = purchasePrice − wholesalePrice (when wholesalePrice
- *     set; else 0). Always belongs to partner unless FULL_MARGIN mode
- *     is enabled, in which case it goes into the split pool.
- *   - installmentMargin = totalPrice − purchasePrice (= deal.markup).
- *     Always shared with co-investors per their profitPercent.
- *   - splitBase = what's actually divided with CI based on profitSplitBase.
- *   - ciAmount = sum of (splitBase × profitPercent / 100) across all
- *     PER_DEAL CIs linked to this deal. POOL CIs are not included
- *     here — their share comes from a separate flow that depends on
- *     pool weights, which the deal page doesn't have data for.
- *
- * `realizedPartner` scales totalPartner by the fraction of totalPrice
- * actually received so far (paid payments + downPayment). Mirrors the
- * server-side accrual ratio so partner sees a number that matches
- * what they'd see in /finance after every payment is marked paid.
- */
-const dealProfitBreakdown = computed(() => {
-  if (!deal.value) return null
-  const d = deal.value
-  const wholesale = d.wholesalePrice ?? 0
-  const useWholesale = wholesale > 0
-  const retailMargin = useWholesale ? Math.max(0, d.purchasePrice - wholesale) : 0
-  const installmentMargin = d.markup
-  const isFullMargin = d.profitSplitBase === 'FULL_MARGIN' && useWholesale
-
-  // What gets split with PER_DEAL co-investors
-  const splitBase = isFullMargin ? retailMargin + installmentMargin : installmentMargin
-
-  // Sum of percent across PER_DEAL CIs (POOL handled separately, not
-  // displayed in this card — the partner has /co-investors for that).
-  // Cost-fee investors have no percent (both effectivePercent & profitPercent
-  // are null): their share is a fixed amount (наценка − комиссия партнёра),
-  // computed separately and added to the CI pool below.
-  const isCostFee = (ci: CoInvestorInfo) => ci.costFeeMode || ci.costFeeRatePct != null
-  const percentCIs = dealCoInvestors.value.filter((ci) => !isCostFee(ci))
-  const costFeeCIs = dealCoInvestors.value.filter(isCostFee)
-
-  // Per-CI share amount (id → ₽) so both the total and the per-investor cards
-  // read the SAME numbers. Mirrors the engine: fixed % first, then the by-capital
-  // pool splits the remainder (minus each weight CI's management fee).
-  const shares: Record<string, number> = {}
-
-  // 1) Fixed-% CIs take their percent of the split base.
-  const fixedCIs = percentCIs.filter((ci) => (ci.effectivePercent ?? ci.profitPercent ?? 0) > 0)
-  const ciTotalPercent = fixedCIs.reduce((s, ci) => s + (ci.effectivePercent ?? ci.profitPercent ?? 0), 0)
-  const ciPercentAmount = Math.round((splitBase * ciTotalPercent) / 100)
-  for (const ci of fixedCIs) shares[ci.id] = Math.round((splitBase * (ci.effectivePercent ?? ci.profitPercent ?? 0)) / 100)
-
-  // 2) Cost-fee CIs (fixed «наценка − комиссия партнёра» amount).
-  // Pass splitBase explicitly — costFeeBaseAmount() reads dealProfitBreakdown,
-  // which is exactly the computed we're inside (would recurse).
-  const ciCostFeeAmount = costFeeCIs.reduce((s, ci) => {
-    const amt = costFeeInvestorAmount(ci, splitBase)
-    shares[ci.id] = amt
-    return s + amt
-  }, 0)
-
-  // 3) By-capital («по вкладу») CIs split whatever the fixed CIs left, weighted
-  // by their capital vs the pool (Σ their capital + partner's capital if the
-  // partner participates by capital), minus each CI's per-deal management fee.
-  const weightCIs = percentCIs.filter(
-    (ci) => (ci.effectivePercent ?? ci.profitPercent) == null && (ci.currentCapital ?? 0) > 0,
-  )
-  let ciWeightAmount = 0
-  if (weightCIs.length) {
-    const remaining = Math.max(0, splitBase - ciPercentAmount)
-    const pool = weightCIs.reduce((s, ci) => s + (ci.currentCapital ?? 0), 0)
-      + (dealPartnerParticipates.value ? dealPartnerCapital.value : 0)
-    if (remaining > 0 && pool > 0) {
-      for (const ci of weightCIs) {
-        const fee = ci.managementFeePctOverride ?? ci.managementFeePct ?? 0
-        const amt = Math.round(remaining * ((ci.currentCapital ?? 0) / pool) * (1 - fee / 100))
-        shares[ci.id] = amt
-        ciWeightAmount += amt
-      }
-    }
-  }
-
-  const ciAmount = ciPercentAmount + ciCostFeeAmount + ciWeightAmount
-  const hasCiShare = ciAmount > 0
-
-  const partnerFromSplit = splitBase - ciAmount
-  const partnerRetailDirect = isFullMargin ? 0 : retailMargin
-  const totalPartner = partnerRetailDirect + partnerFromSplit
-
-  // Realized fraction — how much of the deal's totalPrice has come in
-  // (downPayment + paid payments). 1.0 = fully completed.
-  const ratio = d.totalPrice > 0 ? totalPaid.value / d.totalPrice : 0
-  const realizedPartner = Math.round(totalPartner * Math.min(1, Math.max(0, ratio)))
-
-  return {
-    useWholesale,
-    isFullMargin,
-    retailMargin,
-    installmentMargin,
-    splitBase,
-    ciTotalPercent,
-    ciAmount,
-    ciPercentAmount,
-    ciCostFeeAmount,
-    ciWeightAmount,
-    shares,
-    hasWeight: weightCIs.length > 0,
-    hasCiShare,
-    partnerRetailDirect,
-    partnerFromSplit,
-    totalPartner,
-    realizedPartner,
-    progressPercent: Math.round(Math.min(1, Math.max(0, ratio)) * 100),
-  }
-})
 
 // Payment timeline chart
 const paymentChartData = computed(() => {
@@ -802,6 +694,27 @@ async function confirmAddPayment() {
   }
 }
 
+/**
+ * Оплата ближайшего платежа — то же окно, что и по кнопке «Оплатить» в списке
+ * сделок: платёж уже выбран, весь график виден сразу, там же досрочное
+ * погашение с прощением остатка.
+ */
+const quickPayDialog = ref(false)
+const quickPayTarget = ref<typeof payments.value[0] | null>(null)
+
+function openQuickPay() {
+  if (!nextPayment.value) return
+  quickPayTarget.value = nextPayment.value
+  quickPayDialog.value = true
+}
+
+async function onQuickPayDone(id: string) {
+  await Promise.all([
+    dealsStore.fetchDeal(id).catch(() => {}),
+    paymentsStore.fetchPaymentsForDeal(id).catch(() => {}),
+  ])
+}
+
 // Отметка оплаты — общий компонент MarkPaidDialog (та же модалка, что на
 // страницах платежей и в превью сделки). Здесь остаётся только выбор платежа и
 // проверка «оплата не по порядку»: она про график сделки, а не про саму отметку.
@@ -961,66 +874,6 @@ async function onMarkPaidDone(dealId: string) {
 }
 
 // API reminder via WhatsApp
-const sendingReminder = ref(false)
-
-// Per-deal reminder settings
-const dealReminderCustom = ref(false)
-const dealReminderEnabled = ref(true)
-const dealReminderDays = ref(3)
-
-async function loadDealReminder() {
-  if (!dealId.value) return
-  try {
-    const data = await api.get<any>(`/whatsapp/deal/${dealId.value}/settings`)
-    if (data?.useCustom) {
-      dealReminderCustom.value = true
-      dealReminderEnabled.value = data.enabled !== false
-      dealReminderDays.value = data.daysBefore || 3
-    }
-  } catch {}
-}
-
-async function toggleDealReminder(useCustom: boolean | null) {
-  if (!useCustom) {
-    await api.patch(`/whatsapp/deal/${dealId.value}/settings`, { useCustom: false })
-    dealReminderCustom.value = false
-  } else {
-    dealReminderCustom.value = true
-    await saveDealReminder()
-  }
-}
-
-async function saveDealReminder() {
-  try {
-    await api.patch(`/whatsapp/deal/${dealId.value}/settings`, {
-      useCustom: true,
-      enabled: dealReminderEnabled.value,
-      daysBefore: dealReminderDays.value,
-    })
-  } catch {}
-}
-
-// Раньше запрос уходил при открытии ЛЮБОЙ сделки, даже когда WhatsApp
-// не подключён и раздел недоступен — лишний трафик и ошибка в консоли.
-onMounted(() => { if (sections.visible('whatsapp')) loadDealReminder() })
-
-async function sendApiReminder() {
-  if (!deal.value) return
-  sendingReminder.value = true
-  try {
-    const result = await api.post<{ sent: boolean; error?: string }>(`/whatsapp/remind/${deal.value.id}`)
-    if (result.sent) {
-      toast.success('Напоминание отправлено в WhatsApp')
-    } else {
-      toast.error(result.error || 'Не удалось отправить')
-    }
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка отправки')
-  } finally {
-    sendingReminder.value = false
-  }
-}
-
 // Status progression for investor — only ACTIVE deals can transition
 const STATUS_ACTIONS: Record<string, { nextStatus: Deal['status']; label: string; icon: string; color: string }> = {
   ACTIVE: { nextStatus: 'COMPLETED', label: 'Завершить сделку', icon: 'mdi-check-decagram', color: '#047857' },
@@ -1029,6 +882,46 @@ const STATUS_ACTIONS: Record<string, { nextStatus: Deal['status']; label: string
 const statusAction = computed(() => deal.value ? STATUS_ACTIONS[deal.value.status] : null)
 const statusDialog = ref(false)
 const statusUpdating = ref(false)
+// ── Пометка по договору ──
+const commentEditing = ref(false)
+const commentDraft = ref('')
+const commentSaving = ref(false)
+
+function startEditComment() {
+  commentDraft.value = deal.value?.comment ?? ''
+  commentEditing.value = true
+}
+
+async function saveComment() {
+  if (!deal.value) return
+  commentSaving.value = true
+  try {
+    await api.patch(`/deals/${deal.value.id}`, { comment: commentDraft.value })
+    await dealsStore.fetchDeal(dealId.value)
+    commentEditing.value = false
+    toast.success(commentDraft.value.trim() ? 'Комментарий сохранён' : 'Комментарий удалён')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось сохранить комментарий')
+  } finally {
+    commentSaving.value = false
+  }
+}
+
+// ── Скидка на остаток договора ──
+// Не путать с прощением при досрочном закрытии: здесь договор продолжает
+// действовать, клиент просто должен меньше.
+const discountDialog = ref(false)
+/** Право то же, что и на прощение: это списание заработка партнёра. */
+const canDiscount = computed(() => authStore.can('payments.forgive'))
+
+/** После скидки перечитываем и сделку, и график: изменились обе стороны. */
+async function onDiscountApplied() {
+  await Promise.all([
+    dealsStore.fetchDeal(dealId.value),
+    paymentsStore.fetchPaymentsForDeal(dealId.value),
+  ])
+}
+
 const closeMode = ref<'paid_early' | 'forgive' | 'force'>('paid_early')
 
 const unpaidCount = computed(() =>
@@ -1036,13 +929,6 @@ const unpaidCount = computed(() =>
 )
 const hasUnpaidPayments = computed(() => unpaidCount.value > 0 || (deal.value?.remainingAmount ?? 0) > 0)
 
-function pluralizeRu(n: number, one: string, few: string, many: string) {
-  const mod10 = n % 10
-  const mod100 = n % 100
-  if (mod10 === 1 && mod100 !== 11) return one
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few
-  return many
-}
 
 function openStatusDialog(preselect?: 'paid_early' | 'forgive' | 'force') {
   closeMode.value = preselect ?? 'paid_early'
@@ -1068,167 +954,12 @@ async function confirmStatusChange() {
 }
 
 
-function downloadContract() {
-  if (!deal.value) return
-  const investor = authStore.user || {} as Partial<import('@/types').User>
-  generateContract(deal.value, payments.value, investor)
-}
-
-function downloadSummary() {
-  if (!deal.value) return
-  const investor = authStore.user || {} as Partial<import('@/types').User>
-  generateDealSummary(deal.value, payments.value, investor)
-}
-
-// ── Send PDFs via WhatsApp ──
-const { sending: sendingWhatsApp, sendPdf } = useSendPdfWhatsApp()
-
-function clientPhoneOnDeal(): string | null {
-  if (!deal.value) return null
-  return (
-    (deal.value.clientProfile as any)?.phone ||
-    deal.value.client?.phone ||
-    deal.value.externalClientPhone ||
-    null
-  )
-}
-
-async function confirmSend(label: string): Promise<boolean> {
-  const phone = clientPhoneOnDeal()
-  if (!phone) {
-    toast.error('У клиента нет телефона — нельзя отправить в WhatsApp')
-    return false
-  }
-  return confirm(`Отправить «${label}» клиенту в WhatsApp на ${phone}?`)
-}
-
-async function sendContractWhatsApp() {
-  if (!deal.value) return
-  if (!(await confirmSend('Договор мурабаха'))) return
-  const investor = authStore.user || {} as Partial<import('@/types').User>
-  const blob = (await generateContract(deal.value, payments.value, investor, { returnBlob: true })) as Blob
-  await sendPdf({
-    blob,
-    fileName: `Договор-${deal.value.dealNumber || deal.value.id.slice(0, 6)}.pdf`,
-    dealId: deal.value.id,
-    caption: `Здравствуйте! Договор по сделке «${deal.value.productName}».`,
-  })
-}
-
-async function sendSummaryWhatsApp() {
-  if (!deal.value) return
-  if (!(await confirmSend('Сводка по сделке'))) return
-  const investor = authStore.user || {} as Partial<import('@/types').User>
-  const blob = (await generateDealSummary(deal.value, payments.value, investor, { returnBlob: true })) as Blob
-  await sendPdf({
-    blob,
-    fileName: `Сводка-${deal.value.dealNumber || deal.value.id.slice(0, 6)}.pdf`,
-    dealId: deal.value.id,
-    caption: `Сводка по сделке «${deal.value.productName}».`,
-  })
-}
-
-async function sendCustomContractWhatsApp() {
-  if (!deal.value || !customTemplate.value) return
-  if (!(await confirmSend('Договор по шаблону'))) return
-  const investor = authStore.user || {} as Partial<import('@/types').User>
-  const blob = (await exportTemplatePdf(
-    customTemplate.value,
-    deal.value,
-    payments.value,
-    investor,
-    customTemplateMargins.value || undefined,
-    { returnBlob: true },
-  )) as Blob
-  await sendPdf({
-    blob,
-    fileName: `Договор-${deal.value.dealNumber || deal.value.id.slice(0, 6)}.pdf`,
-    dealId: deal.value.id,
-    caption: `Здравствуйте! Договор по сделке «${deal.value.productName}».`,
-  })
-}
-
-async function sendReceiptWhatsApp(payment: import('@/types').Payment) {
-  if (!deal.value) return
-  if (!(await confirmSend(`Квитанция #${payment.number}`))) return
-  const investor = authStore.user || {} as Partial<import('@/types').User>
-  const blob = (await generateReceipt(deal.value, payment, investor, { returnBlob: true })) as Blob
-  await sendPdf({
-    blob,
-    fileName: `Квитанция-${deal.value.dealNumber || deal.value.id.slice(0, 6)}-${payment.number}.pdf`,
-    dealId: deal.value.id,
-    caption: `Квитанция о получении платежа #${payment.number} по сделке «${deal.value.productName}».`,
-  })
-}
-
-
-// Custom template contract
-// Change client
-const showChangeClient = ref(false)
-const changingClient = ref(false)
-
-async function onChangeClient(profile: import('@/types').ClientProfile | null) {
-  if (!profile || !deal.value) return
-  changingClient.value = true
-  try {
-    const updated = await dealsStore.updateClient(deal.value.id, profile.id)
-    deal.value = updated
-    showChangeClient.value = false
-    toast.success('Клиент изменён')
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка смены клиента')
-  } finally {
-    changingClient.value = false
-  }
-}
-
-const customTemplate = ref<string | null>(null)
-const customTemplateMargins = ref<{ top: number; bottom: number; left: number; right: number } | null>(null)
-const customTemplateLoading = ref(false)
-
-async function loadCustomTemplate() {
-  try {
-    const data = await api.get<{ template: any }>('/auth/investor/contract-template')
-    if (data.template?.html) {
-      customTemplate.value = data.template.html
-      customTemplateMargins.value = data.template.margins || null
-    }
-  } catch { /* silent */ }
-}
-
-async function downloadCustomContract() {
-  if (!deal.value || !customTemplate.value) return
-  customTemplateLoading.value = true
-  try {
-    const investor = authStore.user || {} as Partial<import('@/types').User>
-    await exportTemplatePdf(customTemplate.value, deal.value, payments.value, investor, customTemplateMargins.value || undefined)
-  } catch (e: any) {
-    toast.error('Ошибка генерации PDF')
-  } finally {
-    customTemplateLoading.value = false
-  }
-}
-
-// Deal timeline events
-const timeline = computed(() => {
-  if (!deal.value) return []
-  const events = [
-    { date: deal.value.createdAt, label: 'Сделка создана', icon: 'mdi-plus-circle', color: '#64748b' },
-  ]
-  payments.value.filter(p => p.status === 'PAID' && p.paidAt).forEach(p => {
-    events.push({ date: p.paidAt!, label: `Платёж #${p.number} — ${formatCurrency(p.amount)}`, icon: 'mdi-check-circle', color: '#047857' })
-  })
-
-  if (deal.value.completedAt) events.push({ date: deal.value.completedAt, label: 'Сделка завершена', icon: 'mdi-flag-checkered', color: '#047857' })
-
-  return events.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-})
 </script>
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
     <!-- Back button -->
-    <button class="back-btn mb-4" @click="router.back()">
+    <button class="back-btn" @click="router.back()">
       <v-icon icon="mdi-arrow-left" size="18" />
       Назад
     </button>
@@ -1309,12 +1040,14 @@ const timeline = computed(() => {
             <span class="detail-hero-status-dot" :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.color }" />
             {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
           </div>
-          <h1 class="detail-hero-title">
-            <span class="detail-hero-num">#{{ deal.dealNumber }}</span>
-            {{ deal.productName }}
-          </h1>
+          <h1 class="detail-hero-title">{{ deal.productName }}</h1>
+          <div class="detail-hero-num">Договор №{{ deal.dealNumber }}</div>
           <div class="detail-hero-meta">
-            <v-icon icon="mdi-account" size="16" /> {{ deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—' }}
+            <v-icon icon="mdi-account" size="16" />
+            <ClientLink
+              :profile-id="deal.clientProfileId"
+              :name="deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—'"
+            />
             <span class="mx-2">·</span>
             Создано {{ formatDate(deal.createdAt) }}
             <span class="mx-2">·</span>
@@ -1329,1037 +1062,282 @@ const timeline = computed(() => {
         </div>
       </div>
 
-      <!-- Status action banner -->
-      <div v-if="statusAction" class="status-action-banner mb-6" :style="{ borderColor: statusAction.color + '40' }">
-        <div class="status-action-info">
-          <v-icon :icon="statusAction.icon" size="22" :color="statusAction.color" />
+      <!-- Шапка: главные цифры договора, прогресс и действия. Раньше это были
+           две карточки подряд — «следующий шаг» с одной кнопкой и отдельный
+           прогресс; вместе они занимали пол-экрана и повторяли друг друга. -->
+      <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
+        <div class="d-flex justify-space-between align-center ga-4 flex-wrap">
           <div>
-            <div class="status-action-title">Следующий шаг</div>
-            <div class="status-action-label">{{ statusAction.label }}</div>
+            <div class="section-title">Прогресс по договору</div>
+            <div class="section-subtitle">
+              {{ deal.paidPayments }} из {{ deal.numberOfPayments }}
+              {{ pluralizeRu(deal.numberOfPayments, 'платежа', 'платежей', 'платежей') }} внесено
+            </div>
+          </div>
+
+          <div class="status-action-buttons">
+            <!-- Отметить оплату — самое частое действие по сделке -->
+            <button
+              v-if="nextPayment && !paymentsHidden"
+              class="status-action-btn status-action-btn--ghost"
+              @click="openQuickPay()"
+            >
+              <v-icon icon="mdi-cash-check" size="16" />
+              Отметить оплату
+            </button>
+            <button
+              v-if="canDiscount && deal.status === 'ACTIVE'"
+              class="status-action-btn status-action-btn--ghost"
+              @click="discountDialog = true"
+            >
+              <v-icon icon="mdi-sale-outline" size="16" />
+              Дать скидку
+            </button>
+            <button
+              v-if="statusAction"
+              class="status-action-btn"
+              :style="{ background: statusAction.color }"
+              @click="openStatusDialog()"
+            >
+              {{ statusAction.label }}
+              <v-icon icon="mdi-arrow-right" size="16" />
+            </button>
           </div>
         </div>
-        <button class="status-action-btn" :style="{ background: statusAction.color }" @click="openStatusDialog">
-          {{ statusAction.label }}
-          <v-icon icon="mdi-arrow-right" size="16" />
+
+        <v-progress-linear :model-value="progress" color="primary" rounded height="10" class="mt-5" />
+
+        <!-- Две короткие подписи по краям полосы: слева сколько внесли, справа
+             сколько ещё ждать. Подробности — в блоке «Деньги по сделке». -->
+        <div class="pg-ends">
+          <span class="pg-end">Оплачено {{ formatCurrency(totalPaid) }}</span>
+          <span class="pg-end">Осталось {{ formatCurrency(deal.remainingAmount) }}</span>
+        </div>
+      </v-card>
+
+      <!-- Разделы сделки. Шапка со статусом, просрочкой и действиями
+           остаётся выше вкладок: прятать просрочку нельзя. -->
+      <div class="page-tabs deal-tabs">
+        <button v-for="t in visibleTabs" :key="t.key" class="page-tab"
+                :class="{ 'page-tab--active': tab === t.key }" @click="tab = t.key">
+          <v-icon :icon="t.icon" size="16" />
+          {{ t.title }}
+          <span v-if="t.count" class="page-tab-count">{{ t.count }}</span>
+          <span v-if="t.warn" class="page-tab-dot" />
         </button>
       </div>
 
-      <v-row>
-        <!-- Left column -->
+      <!-- Обзор -->
+      <v-row v-if="tab === 'overview'">
         <v-col cols="12" lg="8">
-          <!-- Finance cards -->
-          <div class="finance-grid mb-6">
-            <!-- Wholesale price card — shown only if partner enabled it.
-                 Marked partner-only with a small lock icon to make it
-                 clear this number stays internal (never sent to client). -->
-            <div v-if="deal.wholesalePrice && deal.wholesalePrice > 0" class="finance-card finance-card--wholesale">
-              <div class="finance-label">
-                <v-icon icon="mdi-lock-outline" size="11" class="mr-1" />
-                Оптовая цена
-              </div>
-              <div class="finance-value">{{ formatCurrency(deal.wholesalePrice) }}</div>
-              <div class="finance-sub">только для вас</div>
-            </div>
-            <div class="finance-card">
-              <div class="finance-label">Закупочная цена</div>
-              <div class="finance-value">{{ formatCurrency(deal.purchasePrice) }}</div>
-              <div
-                v-if="deal.wholesalePrice && deal.wholesalePrice > 0 && deal.purchasePrice > deal.wholesalePrice"
-                class="finance-sub"
-                style="color: #16a34a;"
-              >
-                +{{ formatCurrency(deal.purchasePrice - deal.wholesalePrice) }} розничная
-              </div>
-            </div>
-            <div class="finance-card">
-              <div class="finance-label">Итоговая цена</div>
-              <div class="finance-value finance-value--lg">{{ formatCurrency(deal.totalPrice) }}</div>
-            </div>
-            <div class="finance-card">
-              <div class="finance-label">Наценка</div>
-              <div class="finance-value" style="color: #047857;">+{{ formatCurrency(deal.markup) }} ({{ formatPercent(deal.markupPercent) }})</div>
-              <div
-                v-if="deal.wholesalePrice && deal.wholesalePrice > 0 && deal.profitSplitBase === 'FULL_MARGIN'"
-                class="finance-sub"
-                style="color: #6366f1;"
-              >
-                делится с со-инвесторами вся прибыль
-              </div>
-              <div
-                v-else-if="deal.wholesalePrice && deal.wholesalePrice > 0"
-                class="finance-sub"
-                style="color: rgba(0, 0, 0, 0.5);"
-              >
-                делится только наценка рассрочки
+          <!-- Деньги по сделке.
+               У каждой строки название и пояснение под ним: пояснение не
+               повторяет заголовок, а отвечает на вопрос «откуда это число».
+               Высота строк одинаковая, поэтому пояснение есть у всех.
+               Зелёным — два числа, ради которых сюда заходят. -->
+          <v-card rounded="lg" elevation="0" border class="pa-0 mb-6 dm-card">
+            <div class="dm-head">
+              <span class="dm-head-title">Деньги по сделке</span>
+              <!-- Вид запоминается: одни читают показатели подряд списком,
+                   другим нужен беглый взгляд по карточкам. -->
+              <div class="dm-switch">
+                <button
+                  class="dm-switch-btn"
+                  :class="{ 'dm-switch-btn--on': moneyView === 'list' }"
+                  title="Списком"
+                  @click="moneyView = 'list'"
+                >
+                  <v-icon icon="mdi-format-list-bulleted" size="17" />
+                </button>
+                <button
+                  class="dm-switch-btn"
+                  :class="{ 'dm-switch-btn--on': moneyView === 'cards' }"
+                  title="Карточками"
+                  @click="moneyView = 'cards'"
+                >
+                  <v-icon icon="mdi-view-grid-outline" size="17" />
+                </button>
               </div>
             </div>
-            <div class="finance-card">
-              <div class="finance-label">Первоначальный взнос</div>
-              <div
-                class="finance-value"
-                :style="deal.downPayment ? 'color: #6366f1;' : 'opacity: 0.5; font-size: 15px; font-weight: 500;'"
-              >
-                {{ deal.downPayment ? formatCurrency(deal.downPayment) : 'Без взноса' }}
-              </div>
-            </div>
-            <!-- Current monthly payment — shows what the client owes next. -->
-            <div v-if="currentMonthlyPayment > 0" class="finance-card">
-              <div class="finance-label">Месячный платёж</div>
-              <div class="finance-value" style="color: #3b82f6;">{{ formatCurrency(currentMonthlyPayment) }}</div>
-              <div v-if="deal.paidPayments > 0" class="finance-sub" style="opacity: 0.55;">
-                после переоценки
-              </div>
-            </div>
-            <!-- Term — original plan length. Uses `numberOfPayments`
-                 (frozen at creation, not shifted by add/delete), so it
-                 always shows what the partner originally committed to. -->
-            <div class="finance-card">
-              <div class="finance-label">Срок</div>
-              <div class="finance-value">{{ deal.numberOfPayments }}</div>
-              <div class="finance-sub">{{ termLabel }}</div>
-            </div>
-            <div class="finance-card">
-              <div class="finance-label">Оплачено</div>
-              <div class="finance-value" style="color: #047857;">{{ formatCurrency(totalPaid) }}</div>
-            </div>
-            <div class="finance-card">
-              <div class="finance-label">Остаток</div>
-              <div class="finance-value" style="color: #f59e0b;">{{ formatCurrency(deal.remainingAmount) }}</div>
-            </div>
-            <!-- Overdue card — visible only when there are overdue payments.
-                 Highlighted in red so it doesn't get lost in the grid. -->
-            <div v-if="overdueStats.count > 0" class="finance-card finance-card--overdue">
-              <div class="finance-label">
-                <v-icon icon="mdi-alert-circle" size="11" class="mr-1" />
-                Просрочено
-              </div>
-              <div class="finance-value" style="color: #ef4444;">{{ formatCurrency(overdueStats.total) }}</div>
-              <div class="finance-sub" style="color: #ef4444;">
-                {{ overdueStats.count }} {{ overdueStats.count === 1 ? 'платёж' : 'платежа' }}
-              </div>
-            </div>
-          </div>
 
-          <!-- Profit breakdown — only when wholesalePrice or CI present -->
+            <template v-if="moneyView === 'list'">
+              <div v-for="(group, gi) in moneyGroups" :key="gi" class="dm-group">
+                <div
+                  v-for="row in group"
+                  :key="row.id"
+                  class="dm-row"
+                  :class="{
+                    'dm-row--key': row.accent === 'key',
+                    'dm-row--alert': row.accent === 'alert',
+                  }"
+                >
+                  <span class="dm-ico" :class="`dm-ico--${row.tone}`">
+                    <v-icon :icon="row.icon" size="16" />
+                  </span>
+                  <span class="dm-key">
+                    <span class="dm-key-title">{{ row.title }}</span>
+                    <span class="dm-key-sub">{{ row.sub }}</span>
+                  </span>
+                  <span class="dm-val" :class="{ 'dm-val--key': row.accent === 'key' }">
+                    {{ row.value }}
+                  </span>
+                </div>
+              </div>
+            </template>
+
+            <!-- Карточки: те же показатели, но сеткой — значение крупно сверху,
+                 пояснение под ним. Группы здесь не нужны: сетка и так режет
+                 список на ряды. -->
+            <div v-else class="dm-cards">
+              <div
+                v-for="row in moneyGroups.flat()"
+                :key="row.id"
+                class="dm-cell"
+                :class="{
+                  'dm-cell--key': row.accent === 'key',
+                  'dm-cell--alert': row.accent === 'alert',
+                }"
+              >
+                <span class="dm-ico" :class="`dm-ico--${row.tone}`">
+                  <v-icon :icon="row.icon" size="16" />
+                </span>
+                <span class="dm-cell-text">
+                  <span class="dm-cell-title">{{ row.title }}</span>
+                  <span class="dm-cell-sub">{{ row.sub }}</span>
+                </span>
+                <span class="dm-cell-val" :class="{ 'dm-cell-val--key': row.accent === 'key' }">
+                  {{ row.value }}
+                </span>
+              </div>
+            </div>
+          </v-card>
+          <!-- Из чего складывается прибыль — сразу под «Деньгами по сделке»:
+               это продолжение того же разговора, отдельная вкладка ради одной
+               карточки только уводила от него. Показываем, когда есть что
+               делить: оптовая цена или инвесторы. -->
           <v-card
             v-if="dealProfitBreakdown && (dealProfitBreakdown.useWholesale || dealCoInvestors.length > 0)"
             rounded="lg"
             elevation="0"
             border
-            class="pa-5 mb-6 profit-card"
+            class="pa-6 mb-6 profit-card"
           >
-            <div class="d-flex align-center mb-4">
-              <v-icon icon="mdi-trending-up" size="20" color="#16a34a" class="mr-2" />
-              <div>
-                <div class="section-title">Ваша прибыль по сделке</div>
-                <div class="section-subtitle">Разбивка с учётом со-инвесторов и оптовой цены</div>
+            <div class="pf-head">
+              <div class="pf-head-title">Прибыль по сделке</div>
+              <div class="pf-head-sub">С учётом инвесторов и оптовой цены</div>
+            </div>
+
+            <!-- Что заработала сделка целиком -->
+            <div class="pf-section">
+              <div class="pf-section-label">Заработано сделкой</div>
+
+              <div v-if="dealProfitBreakdown.useWholesale" class="pf-row">
+                <div class="pf-row-name">
+                  Розничная маржа
+                  <span class="pf-row-formula">
+                    {{ formatCurrency(deal.purchasePrice) }} − {{ formatCurrency(deal.wholesalePrice || 0) }}
+                  </span>
+                </div>
+                <div class="pf-row-value">{{ formatCurrency(dealProfitBreakdown.retailMargin) }}</div>
+              </div>
+
+              <div class="pf-row">
+                <div class="pf-row-name">
+                  Наценка рассрочки
+                  <span class="pf-row-formula">
+                    {{ formatCurrency(deal.totalPrice) }} − {{ formatCurrency(deal.purchasePrice) }}
+                  </span>
+                </div>
+                <div class="pf-row-value">{{ formatCurrency(dealProfitBreakdown.installmentMargin) }}</div>
+              </div>
+
+              <div v-if="dealProfitBreakdown.useWholesale" class="pf-hint">
+                <v-icon
+                  :icon="dealProfitBreakdown.isFullMargin ? 'mdi-account-group' : 'mdi-account'"
+                  size="15"
+                />
+                <span v-if="dealProfitBreakdown.isFullMargin">
+                  Инвесторы получают долю со всей прибыли, включая розничную маржу
+                </span>
+                <span v-else>
+                  Розничная маржа целиком ваша. С инвесторами делится только наценка рассрочки
+                </span>
               </div>
             </div>
 
-            <div class="profit-rows">
-              <!-- Retail margin (only if wholesalePrice set) -->
-              <div v-if="dealProfitBreakdown.useWholesale" class="profit-row">
-                <div class="profit-label">
-                  Розничная маржа
-                  <span class="profit-formula">
-                    ({{ formatCurrency(deal.purchasePrice) }} − {{ formatCurrency(deal.wholesalePrice || 0) }})
-                  </span>
-                </div>
-                <div class="profit-amount">{{ formatCurrency(dealProfitBreakdown.retailMargin) }}</div>
-              </div>
-
-              <!-- Installment margin -->
-              <div class="profit-row">
-                <div class="profit-label">
-                  Наценка рассрочки
-                  <span class="profit-formula">
-                    ({{ formatCurrency(deal.totalPrice) }} − {{ formatCurrency(deal.purchasePrice) }})
-                  </span>
-                </div>
-                <div class="profit-amount">{{ formatCurrency(dealProfitBreakdown.installmentMargin) }}</div>
-              </div>
-
-              <!-- Split mode hint -->
-              <div v-if="dealProfitBreakdown.useWholesale" class="profit-mode-hint">
-                <v-icon
-                  :icon="dealProfitBreakdown.isFullMargin ? 'mdi-account-group' : 'mdi-account'"
-                  size="13"
-                />
-                <span v-if="dealProfitBreakdown.isFullMargin">
-                  Со-инвесторы получают долю с полной прибыли (включая розничную маржу)
-                </span>
-                <span v-else>
-                  Розничная маржа — только вам. С со-инвесторами делится только наценка рассрочки
+            <!-- Доли инвесторов — отдельным блоком: это вычет из заработанного,
+                 и по строкам должно быть сразу видно, кому и сколько уходит. -->
+            <div v-if="dealCoInvestors.length" class="pf-section pf-section--investors">
+              <div class="pf-section-label">
+                Доли инвесторов
+                <span class="pf-section-total">
+                  −{{ formatCurrency(dealProfitBreakdown.ciAmount) }}
                 </span>
               </div>
 
-              <!-- Per-investor share with numeric formulas (как в разделе
-                   «Чистая прибыль» кассы) — для ЛЮБОГО способа деления. -->
-              <div
-                v-for="ci in dealCoInvestors"
-                :key="ci.id"
-                class="profit-row profit-row--negative"
-              >
-                <div class="profit-label">
+              <div v-for="ci in dealCoInvestors" :key="ci.id" class="pf-row">
+                <div class="pf-row-name">
                   {{ ci.name }}
-                  <span class="profit-formula">
+                  <span class="pf-row-formula">
                     {{ ciModeLabel(ci) }}<template v-if="ciFormula(ci)"> · {{ ciFormula(ci) }}</template>
                   </span>
                 </div>
-                <div class="profit-amount">−{{ formatCurrency(ciDealShare(ci)) }}</div>
+                <div class="pf-row-value pf-row-value--minus">−{{ formatCurrency(ciDealShare(ci)) }}</div>
               </div>
 
-              <!-- Cost-fee: инвестор ещё и возвращает свою закупку -->
+              <!-- При комиссионной схеме инвестор забирает ещё и свою закупку -->
               <div
                 v-for="ci in dealCoInvestors.filter((c) => c.costFeeMode || c.costFeeRatePct != null)"
                 :key="'payout-' + ci.id"
-                class="profit-mode-hint"
+                class="pf-hint"
               >
-                <v-icon icon="mdi-cash-refund" size="13" />
+                <v-icon icon="mdi-cash-refund" size="15" />
                 <span>
                   {{ ci.name }} на руки: возврат закупки {{ formatCurrencyShort(deal.purchasePrice) }}
                   + прибыль {{ formatCurrencyShort(ciDealShare(ci)) }}
                   = {{ formatCurrency(deal.purchasePrice + ciDealShare(ci)) }}
                 </span>
               </div>
+            </div>
 
-              <!-- Total partner -->
-              <div class="profit-row profit-row--total">
-                <div class="profit-label">
-                  Ваша прибыль (потенциал)
-                  <span v-if="dealProfitBreakdown.hasCiShare" class="profit-formula">
-                    (вся прибыль {{ formatCurrencyShort(dealProfitBreakdown.splitBase + dealProfitBreakdown.partnerRetailDirect) }} − инвесторам {{ formatCurrencyShort(dealProfitBreakdown.ciAmount) }})
-                  </span>
-                </div>
-                <div class="profit-amount profit-amount--total">
-                  {{ formatCurrency(dealProfitBreakdown.totalPartner) }}
+            <!-- Итог -->
+            <div class="pf-total">
+              <div class="pf-total-main">
+                <div class="pf-total-label">Ваша прибыль по сделке</div>
+                <div class="pf-total-value">{{ formatCurrency(dealProfitBreakdown.totalPartner) }}</div>
+                <div v-if="dealProfitBreakdown.hasCiShare" class="pf-total-formula">
+                  {{ formatCurrency(dealProfitBreakdown.splitBase + dealProfitBreakdown.partnerRetailDirect) }}
+                  заработано − {{ formatCurrency(dealProfitBreakdown.ciAmount) }} инвесторам
                 </div>
               </div>
 
-              <!-- Realized -->
-              <div class="profit-realized">
-                <div class="profit-realized-row">
-                  <span>Получено уже</span>
-                  <strong>{{ formatCurrency(dealProfitBreakdown.realizedPartner) }}</strong>
+              <div class="pf-total-got">
+                <div class="pf-total-label">Уже получено</div>
+                <div class="pf-total-got-value">
+                  {{ formatCurrency(dealProfitBreakdown.realizedPartner) }}
                 </div>
-                <div class="profit-realized-bar">
-                  <div
-                    class="profit-realized-fill"
-                    :style="{ width: dealProfitBreakdown.progressPercent + '%' }"
-                  />
-                </div>
-                <div class="profit-realized-meta">
-                  {{ dealProfitBreakdown.progressPercent }}% от потенциальной прибыли
+                <div class="pf-total-formula">
+                  {{ dealProfitBreakdown.progressPercent }}% от прибыли по сделке
                 </div>
               </div>
+            </div>
+
+            <div class="pf-bar">
+              <div class="pf-bar-fill" :style="{ width: dealProfitBreakdown.progressPercent + '%' }" />
             </div>
           </v-card>
 
-          <!-- Progress -->
-          <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="d-flex justify-space-between align-center mb-3">
-              <div>
-                <div class="section-title">Прогресс</div>
-                <div class="section-subtitle">{{ deal.paidPayments }} из {{ deal.numberOfPayments }} платежей · {{ formatMonths(deal.numberOfPayments) }}</div>
-              </div>
-              <div class="progress-percent">{{ Math.round(progress) }}%</div>
-            </div>
-            <v-progress-linear :model-value="progress" color="primary" rounded height="10" />
-          </v-card>
 
-          <!-- Payment chart -->
-          <v-card v-if="payments.length" rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="d-flex align-center justify-space-between mb-2">
-              <div>
-                <div class="section-title">Динамика остатка</div>
-                <div class="section-subtitle">Изменение остатка по платежам</div>
-              </div>
-              <div class="d-flex align-center ga-3">
-                <div class="d-flex align-center ga-1">
-                  <div style="width: 8px; height: 8px; border-radius: 50%; background: #047857;" />
-                  <span class="section-subtitle">Оплачено</span>
-                </div>
-                <div class="d-flex align-center ga-1">
-                  <div style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b;" />
-                  <span class="section-subtitle">Ожидается</span>
-                </div>
-                <div v-if="overdueStats.count > 0" class="d-flex align-center ga-1">
-                  <div style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444;" />
-                  <span class="section-subtitle">Просрочено</span>
-                </div>
-              </div>
-            </div>
-            <div style="height: 220px;">
-              <Line :data="paymentChartData" :options="chartOptions" />
+          <!-- Раздел платежей закрыт этому сотруднику: говорим об этом прямо,
+               а не оставляем пустое место, будто данных нет. -->
+          <v-card v-if="paymentsHidden" rounded="lg" elevation="0" border class="pa-5 mb-6">
+            <div class="text-body-2 text-medium-emphasis">
+              График платежей скрыт: у вас нет доступа к разделу «Платежи»
             </div>
           </v-card>
 
-          <!-- Payment schedule -->
-          <v-card v-if="payments.length" rounded="lg" elevation="0" border class="mb-6">
-            <div class="pa-5 pb-0 d-flex align-start justify-space-between ga-3 flex-wrap">
-              <div>
-                <div class="section-title">График платежей</div>
-                <div class="section-subtitle mb-4">Полный список по сделке</div>
-              </div>
-              <div v-if="deal && !deal.deletedAt && deal.status !== 'CANCELLED'" class="d-flex align-center ga-2">
-                <button
-                  class="add-payment-btn"
-                  :disabled="!canAddPayment"
-                  :title="canAddPayment ? 'Добавить дополнительный платёж' : ''"
-                  @click="canAddPayment && openAddPayment()"
-                >
-                  <v-icon icon="mdi-plus" size="16" />
-                  Добавить платёж
-                </button>
-                <!-- Hover hint that explains the disabled state. Shown
-                     only when the button is actually disabled so the
-                     partner doesn't see a useless «?» otherwise. -->
-                <v-tooltip v-if="!canAddPayment" location="bottom" max-width="280">
-                  <template #activator="{ props: tprops }">
-                    <v-icon
-                      v-bind="tprops"
-                      icon="mdi-information-outline"
-                      size="18"
-                      class="add-payment-info"
-                    />
-                  </template>
-                  <span>{{ addPaymentDisabledReason }}</span>
-                </v-tooltip>
-              </div>
-            </div>
-
-            <v-table density="default" class="schedule-table schedule-table--desktop">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Дата</th>
-                  <th class="text-end">Сумма</th>
-                  <th class="text-end">Остаток после</th>
-                  <th>Оплачено</th>
-                  <th>Статус</th>
-                  <th class="text-center">Действия</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="p in payments"
-                  :key="p.id"
-                  :class="{ 'row-paid': p.status === 'PAID', 'row-overdue': p.status === 'OVERDUE' }"
-                >
-                  <td class="font-weight-medium">{{ p.number }}</td>
-                  <td>
-                    {{ formatDate(p.dueDate) }}
-                    <div v-if="p.rescheduledFrom" class="rescheduled-hint">
-                      <v-icon icon="mdi-calendar-arrow-right" size="12" />
-                      было {{ formatDate(p.rescheduledFrom) }}
-                    </div>
-                    <!-- Days-late chip — surfaced for any payment that's
-                         late, regardless of whether it's still OVERDUE or
-                         already PAID after the due date. Lets the partner
-                         see the delay history at a glance. -->
-                    <div v-if="daysOverdue(p) > 0" class="overdue-chip">
-                      <v-icon icon="mdi-clock-alert-outline" size="11" />
-                      {{ p.status === 'PAID' ? 'оплачен с задержкой' : 'просрочен' }}
-                      на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
-                    </div>
-                  </td>
-                  <td class="text-end font-weight-bold text-no-wrap">
-                    {{ formatCurrency(p.amount) }}
-                    <!-- План vs факт: показываем плановую сумму, если она была
-                         зафиксирована при оплате и отличается от фактической. -->
-                    <div
-                      v-if="p.scheduledAmount != null && Math.round(p.scheduledAmount) !== Math.round(p.amount)"
-                      class="plan-vs-fact"
-                      :style="{ color: p.amount > p.scheduledAmount ? '#10b981' : '#f59e0b' }"
-                    >
-                      план: {{ formatCurrency(p.scheduledAmount) }}
-                    </div>
-                  </td>
-                  <td class="text-end text-medium-emphasis text-no-wrap">{{ formatCurrency(p.remainingAfter) }}</td>
-                  <td class="text-medium-emphasis">
-                    <div>{{ p.paidAt ? formatDate(p.paidAt) : '—' }}</div>
-                    <!-- Оплачен не в свой месяц → доход учтён по факту оплаты. -->
-                    <div
-                      v-if="paymentOffMonth(p)"
-                      class="offmonth-chip"
-                      :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
-                      :title="paymentOffMonthLabel(p)"
-                    >
-                      <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
-                      {{ paymentOffMonth(p) === 'early' ? 'учтён по факту (досрочно)' : 'учтён по факту (позже срока)' }}
-                    </div>
-                    <div v-if="p.proofScreenshot" class="mt-1">
-                      <img
-                        :src="p.proofScreenshot"
-                        class="proof-thumbnail"
-                        title="Скриншот оплаты"
-                        @click="openProofEnlarge(p.proofScreenshot!)"
-                      />
-                    </div>
-                  </td>
-                  <td>
-                    <div
-                      class="pay-status"
-                      :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
-                    >
-                      {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                    </div>
-                  </td>
-                  <td class="text-center">
-                    <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
-                      <button class="action-btn action-btn--success" title="Отметить оплаченным" @click="openMarkPaid(p)">
-                        <v-icon icon="mdi-check" size="16" />
-                      </button>
-                      <button class="action-btn action-btn--warning" title="Перенести дату" @click="openReschedule(p)">
-                        <v-icon icon="mdi-calendar-clock" size="16" />
-                      </button>
-                      <button
-                        v-if="p.rescheduledFrom"
-                        class="action-btn action-btn--ghost"
-                        :title="`Вернуть исходную дату (${formatDate(p.rescheduledFrom)})`"
-                        :disabled="undoingReschedule === p.id"
-                        @click="confirmUndoReschedule(p)"
-                      >
-                        <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
-                        <v-icon v-else icon="mdi-calendar-refresh" size="16" />
-                      </button>
-                      <button
-                        v-if="canDeleteAnyPayment"
-                        class="action-btn action-btn--danger"
-                        title="Удалить платёж"
-                        :disabled="removingPayment === p.id"
-                        @click="confirmRemovePayment(p)"
-                      >
-                        <v-progress-circular v-if="removingPayment === p.id" indeterminate size="12" width="2" />
-                        <v-icon v-else icon="mdi-trash-can-outline" size="16" />
-                      </button>
-                    </div>
-                    <div v-else-if="p.status === 'PAID'" class="d-flex align-center justify-center">
-                      <button
-                        class="action-btn action-btn--danger"
-                        title="Отменить оплату"
-                        :disabled="unpaidLoading === p.id"
-                        @click="confirmUnmarkPaid(p)"
-                      >
-                        <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
-                        <v-icon v-else icon="mdi-undo" size="16" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </v-table>
-
-            <!-- Mobile card list — same content rearranged for narrow screens. -->
-            <div class="schedule-cards">
-              <div
-                v-for="p in payments"
-                :key="p.id"
-                class="sched-card"
-                :class="{
-                  'sched-card--paid': p.status === 'PAID',
-                  'sched-card--overdue': p.status === 'OVERDUE',
-                  'sched-card--closed': p.status === 'CLOSED_EARLY',
-                }"
-              >
-                <div class="sched-card-head">
-                  <div class="sched-card-num">#{{ p.number }}</div>
-                  <div class="pay-status" :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])">
-                    {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                  </div>
-                </div>
-
-                <div class="sched-card-date">
-                  <div class="sched-card-date-value">{{ formatDate(p.dueDate) }}</div>
-                  <div v-if="p.rescheduledFrom" class="rescheduled-hint">
-                    <v-icon icon="mdi-calendar-arrow-right" size="12" />
-                    было {{ formatDate(p.rescheduledFrom) }}
-                  </div>
-                  <div v-if="daysOverdue(p) > 0" class="overdue-chip">
-                    <v-icon icon="mdi-clock-alert-outline" size="11" />
-                    {{ p.status === 'PAID' ? 'оплачен с задержкой' : 'просрочен' }}
-                    на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
-                  </div>
-                </div>
-
-                <div class="sched-card-amounts">
-                  <div class="sched-card-amount">
-                    <div class="sched-card-amount-label">Сумма</div>
-                    <div class="sched-card-amount-value">{{ formatCurrency(p.amount) }}</div>
-                    <div
-                      v-if="p.scheduledAmount != null && Math.round(p.scheduledAmount) !== Math.round(p.amount)"
-                      class="plan-vs-fact"
-                      :style="{ color: p.amount > p.scheduledAmount ? '#10b981' : '#f59e0b' }"
-                    >
-                      план: {{ formatCurrency(p.scheduledAmount) }}
-                    </div>
-                  </div>
-                  <div class="sched-card-amount">
-                    <div class="sched-card-amount-label">Остаток после</div>
-                    <div class="sched-card-amount-value sched-card-amount-value--muted">
-                      {{ formatCurrency(p.remainingAfter) }}
-                    </div>
-                  </div>
-                </div>
-
-                <div v-if="p.paidAt || p.proofScreenshot" class="sched-card-paid">
-                  <div v-if="p.paidAt" class="sched-card-paid-date">
-                    <v-icon icon="mdi-check-circle-outline" size="14" />
-                    Оплачено {{ formatDate(p.paidAt) }}
-                  </div>
-                  <div
-                    v-if="paymentOffMonth(p)"
-                    class="offmonth-chip"
-                    :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
-                    :title="paymentOffMonthLabel(p)"
-                  >
-                    <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
-                    {{ paymentOffMonth(p) === 'early' ? 'доход учтён по факту (досрочно)' : 'доход учтён по факту (позже срока)' }}
-                  </div>
-                  <img
-                    v-if="p.proofScreenshot"
-                    :src="p.proofScreenshot"
-                    class="proof-thumbnail sched-card-proof"
-                    title="Скриншот оплаты"
-                    @click="openProofEnlarge(p.proofScreenshot!)"
-                  />
-                </div>
-
-                <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="sched-card-actions">
-                  <button class="action-btn action-btn--success" @click="openMarkPaid(p)">
-                    <v-icon icon="mdi-check" size="16" />
-                    Оплачено
-                  </button>
-                  <button class="action-btn action-btn--warning" @click="openReschedule(p)">
-                    <v-icon icon="mdi-calendar-clock" size="16" />
-                    Перенести
-                  </button>
-                  <button
-                    v-if="p.rescheduledFrom"
-                    class="action-btn action-btn--ghost"
-                    :disabled="undoingReschedule === p.id"
-                    @click="confirmUndoReschedule(p)"
-                  >
-                    <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
-                    <v-icon v-else icon="mdi-calendar-refresh" size="16" />
-                    Вернуть
-                  </button>
-                  <button
-                    v-if="canDeleteAnyPayment"
-                    class="action-btn action-btn--danger"
-                    :disabled="removingPayment === p.id"
-                    @click="confirmRemovePayment(p)"
-                  >
-                    <v-progress-circular v-if="removingPayment === p.id" indeterminate size="12" width="2" />
-                    <v-icon v-else icon="mdi-trash-can-outline" size="16" />
-                    Удалить
-                  </button>
-                </div>
-                <div v-else-if="p.status === 'PAID'" class="sched-card-actions">
-                  <button
-                    class="action-btn action-btn--danger"
-                    :disabled="unpaidLoading === p.id"
-                    @click="confirmUnmarkPaid(p)"
-                  >
-                    <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
-                    <v-icon v-else icon="mdi-undo" size="16" />
-                    Отменить оплату
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Outstanding-balance banner. Surfaces when the schedule has
-                 been fully marked off but the deal still has a remaining
-                 amount — common with clients who chronically underpay.
-                 Gives the partner the two reasonable next moves. -->
-            <!-- Schedule-was-extended notice. Surfaces the fact that
-                 the partner added rows on top of the original plan.
-                 Aggregate by design: deletes + re-adds reuse number
-                 slots so we can't safely tag individual rows. -->
-            <div v-if="extraPaymentsCount > 0 && deal" class="extras-banner pa-5">
-              <div class="extras-banner-icon">
-                <v-icon icon="mdi-playlist-plus" size="22" color="#0ea5e9" />
-              </div>
-              <div class="extras-banner-content">
-                <div class="extras-banner-title">
-                  График расширен на {{ extraPaymentsCount }}
-                  {{ pluralizeRu(extraPaymentsCount, 'платёж', 'платежа', 'платежей') }}
-                </div>
-                <div class="extras-banner-text">
-                  Изначально сделка была заключена на
-                  <strong>{{ deal.numberOfPayments }}</strong>
-                  {{ pluralizeRu(deal.numberOfPayments, 'платёж', 'платежа', 'платежей') }},
-                  сейчас в графике
-                  <strong>{{ payments.length }}</strong>
-                  {{ pluralizeRu(payments.length, 'строка', 'строки', 'строк') }}.
-                  {{ extraPaymentsCount }}
-                  {{ pluralizeRu(extraPaymentsCount, 'платёж', 'платежа', 'платежей') }}
-                  добавлен{{ extraPaymentsCount === 1 ? '' : 'о' }} вручную поверх исходного плана.
-                </div>
-              </div>
-            </div>
-
-            <div v-if="showLeftoverBanner && deal" class="leftover-banner pa-5">
-              <div class="leftover-banner-icon">
-                <v-icon icon="mdi-alert-circle-outline" size="22" color="#f59e0b" />
-              </div>
-              <div class="leftover-banner-content">
-                <div class="leftover-banner-title">Не вся сумма оплачена</div>
-                <div class="leftover-banner-text">
-                  В графике не хватает строк на
-                  <strong>{{ formatCurrency(uncoveredByPlan) }}</strong>
-                  — все существующие платежи в сумме меньше стоимости сделки.
-                </div>
-                <div class="leftover-banner-actions">
-                  <button class="leftover-btn leftover-btn--primary" @click="openAddPayment">
-                    <v-icon icon="mdi-plus" size="16" />
-                    Добавить платёж
-                  </button>
-                  <button class="leftover-btn leftover-btn--ghost" @click="openStatusDialog('forgive')">
-                    <v-icon icon="mdi-handshake-outline" size="16" />
-                    Закрыть с прощением долга
-                  </button>
-                </div>
-              </div>
-            </div>
-          </v-card>
         </v-col>
-
-        <!-- Right column -->
         <v-col cols="12" lg="4">
-          <!-- Client profile card -->
-          <v-card v-if="deal.clientProfile" rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="d-flex align-center justify-space-between mb-4">
-              <div class="section-title mb-0">Клиент</div>
-              <button v-if="!deal.deletedAt && !showChangeClient" class="ci-add-btn" style="background: rgba(4,120,87,0.1); color: #047857;" @click="showChangeClient = true">
-                <v-icon icon="mdi-swap-horizontal" size="14" />
-                Сменить
-              </button>
-            </div>
-
-            <!-- Change client picker -->
-            <div v-if="showChangeClient" class="mb-4">
-              <ClientPicker
-                :model-value="null"
-                label="Выберите нового клиента..."
-                @selected="onChangeClient"
-              />
-              <button class="btn-secondary mt-2" style="font-size: 12px; height: 32px; padding: 0 12px;" @click="showChangeClient = false">
-                Отмена
-              </button>
-            </div>
-
-            <router-link :to="`/clients/${deal.clientProfileId}`" class="profile-card-link">
-              <div class="d-flex align-center ga-3 mb-4">
-                <div class="profile-avatar profile-avatar--client">{{ (deal.clientProfile.firstName || '')[0] || '' }}{{ (deal.clientProfile.lastName || '')[0] || '' }}</div>
-                <div class="flex-grow-1">
-                  <div class="font-weight-bold">{{ clientProfileName(deal.clientProfile) }}</div>
-                  <div class="text-caption text-medium-emphasis d-flex align-center ga-2">
-                    <v-icon icon="mdi-phone" size="12" />
-                    {{ formatPhone(deal.clientProfile.phone) }}
-                  </div>
-                </div>
-                <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
-              </div>
-            </router-link>
-
-            <div class="profile-details-list">
-              <template v-if="deal.clientProfile.passportSeries || deal.clientProfile.passportNumber">
-                <div class="profile-detail-row">
-                  <span class="profile-detail-label">Паспорт</span>
-                  <span class="profile-detail-value">{{ deal.clientProfile.passportSeries }} {{ deal.clientProfile.passportNumber }}</span>
-                </div>
-                <div v-if="deal.clientProfile.passportIssuedBy" class="profile-detail-row">
-                  <span class="profile-detail-label">Кем выдан</span>
-                  <span class="profile-detail-value">{{ deal.clientProfile.passportIssuedBy }}</span>
-                </div>
-                <div v-if="deal.clientProfile.passportIssuedAt" class="profile-detail-row">
-                  <span class="profile-detail-label">Дата выдачи</span>
-                  <span class="profile-detail-value">{{ formatDate(deal.clientProfile.passportIssuedAt) }}</span>
-                </div>
-              </template>
-              <div v-else class="profile-detail-hint">
-                <v-icon icon="mdi-information-outline" size="14" />
-                Паспортные данные не заполнены
-              </div>
-
-              <div v-if="deal.clientProfile.birthDate" class="profile-detail-row">
-                <span class="profile-detail-label">Дата рождения</span>
-                <span class="profile-detail-value">{{ formatDate(deal.clientProfile.birthDate) }}</span>
-              </div>
-              <div v-if="deal.clientProfile.registrationAddress" class="profile-detail-row">
-                <span class="profile-detail-label">Адрес регистрации</span>
-                <span class="profile-detail-value">{{ deal.clientProfile.registrationAddress }}</span>
-              </div>
-              <div v-if="deal.clientProfile.residentialAddress" class="profile-detail-row">
-                <span class="profile-detail-label">Адрес проживания</span>
-                <span class="profile-detail-value">{{ deal.clientProfile.residentialAddress }}</span>
-              </div>
-              <div v-if="deal.clientProfile.inn" class="profile-detail-row">
-                <span class="profile-detail-label">ИНН</span>
-                <span class="profile-detail-value">{{ deal.clientProfile.inn }}</span>
-              </div>
-            </div>
-
-            <div v-if="clientInfo" class="mt-4">
-              <div class="client-info-label mb-1">Своевременность платежей</div>
-              <div class="d-flex align-center ga-2">
-                <v-progress-linear
-                  :model-value="clientInfo.onTimeRate"
-                  :color="clientInfo.onTimeRate >= 90 ? 'success' : clientInfo.onTimeRate >= 70 ? 'warning' : 'error'"
-                  rounded height="6" class="flex-grow-1"
-                />
-                <span class="text-caption font-weight-bold">{{ clientInfo.onTimeRate }}%</span>
-              </div>
-            </div>
-
-            <!-- Reminder buttons (PRO+) -->
-            <template v-if="canAccessFeature('whatsapp')">
-              <div v-if="deal.clientProfile.phone && deal.status === 'ACTIVE'" class="d-flex ga-2 mt-4" style="flex-wrap: wrap;">
-                <button class="reminder-btn reminder-btn--api" :disabled="sendingReminder" @click="sendApiReminder">
-                  <v-progress-circular v-if="sendingReminder" indeterminate size="14" width="2" />
-                  <v-icon v-else icon="mdi-whatsapp" size="16" />
-                  {{ sendingReminder ? 'Отправка...' : 'Напомнить в WhatsApp' }}
-                </button>
-              </div>
-
-              <!-- Per-deal reminder settings -->
-              <div class="deal-reminder-settings mt-4">
-                <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="text-caption font-weight-bold" style="opacity: 0.6;">Настройки напоминаний</span>
-                  <v-switch
-                    v-model="dealReminderCustom"
-                    density="compact"
-                    hide-details
-                    color="primary"
-                    :label="dealReminderCustom ? 'Свои настройки' : 'Глобальные'"
-                    style="flex: none;"
-                    @update:model-value="toggleDealReminder"
-                  />
-                </div>
-
-                <div v-if="dealReminderCustom" class="deal-reminder-fields">
-                  <div class="d-flex align-center ga-3 mb-2">
-                    <span class="text-caption">Вкл/выкл</span>
-                    <v-switch v-model="dealReminderEnabled" density="compact" hide-details color="primary" style="flex: none;" @update:model-value="saveDealReminder" />
-                  </div>
-                  <div v-if="dealReminderEnabled" class="d-flex align-center ga-2 flex-wrap">
-                    <span class="text-caption" style="opacity: 0.6;">За</span>
-                    <button
-                      v-for="d in [1,2,3,5,7]" :key="d"
-                      class="deal-day-chip"
-                      :class="{ active: dealReminderDays === d }"
-                      @click="dealReminderDays = d; saveDealReminder()"
-                    >{{ d }} дн</button>
-                    <span class="text-caption" style="opacity: 0.6;">до платежа</span>
-                  </div>
-                </div>
-                <div v-else class="text-caption text-medium-emphasis">
-                  Используются глобальные настройки из раздела WhatsApp
-                </div>
-              </div>
-            </template>
-          </v-card>
-
-          <!-- Fallback: old client card (platform or external) -->
-          <v-card v-else-if="client || deal.clientProfile || deal.externalClientName" rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="section-title mb-4">Клиент</div>
-
-            <!-- Platform client -->
-            <div v-if="client" class="d-flex align-center ga-3 mb-4" style="cursor: pointer;" @click="router.push(deal.clientProfileId ? `/clients/${deal.clientProfileId}` : `/clients/${deal.clientId}`)">
-              <div class="client-avatar">{{ (client.firstName || '')[0] || '' }}{{ (client.lastName || '')[0] || '' }}</div>
-              <div class="flex-grow-1">
-                <div class="font-weight-bold">{{ userName(client) }}</div>
-                <div class="text-caption text-medium-emphasis">{{ client.city || '' }}</div>
-              </div>
-              <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
-            </div>
-
-            <!-- External client -->
-            <div v-else-if="deal.externalClientName" class="d-flex align-center ga-3 mb-4">
-              <div class="client-avatar" style="background: #6366f1;">{{ deal.externalClientName[0] }}</div>
-              <div class="flex-grow-1">
-                <div class="font-weight-bold">{{ deal.externalClientName }}</div>
-                <div class="text-caption text-medium-emphasis d-flex align-center ga-2">
-                  <span v-if="deal.externalClientPhone">{{ deal.externalClientPhone }}</span>
-                  <span class="external-client-badge">Внешний клиент</span>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="client" class="client-info-grid">
-              <div class="client-info-item">
-                <v-icon icon="mdi-star" size="16" color="warning" />
-                <div>
-                  <div class="client-info-label">Рейтинг</div>
-                  <div class="client-info-value">{{ client.rating ?? 0 }}</div>
-                </div>
-              </div>
-              <div class="client-info-item">
-                <v-icon icon="mdi-check-decagram" size="16" color="primary" />
-                <div>
-                  <div class="client-info-label">Завершено</div>
-                  <div class="client-info-value">{{ client.completedDeals ?? 0 }} сделок</div>
-                </div>
-              </div>
-              <div v-if="client.phone" class="client-info-item">
-                <v-icon icon="mdi-phone" size="16" color="info" />
-                <div>
-                  <div class="client-info-label">Телефон</div>
-                  <div class="client-info-value">{{ formatPhone(client.phone) }}</div>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="clientInfo" class="mt-4">
-              <div class="client-info-label mb-1">Своевременность платежей</div>
-              <div class="d-flex align-center ga-2">
-                <v-progress-linear
-                  :model-value="clientInfo.onTimeRate"
-                  :color="clientInfo.onTimeRate >= 90 ? 'success' : clientInfo.onTimeRate >= 70 ? 'warning' : 'error'"
-                  rounded height="6" class="flex-grow-1"
-                />
-                <span class="text-caption font-weight-bold">{{ clientInfo.onTimeRate }}%</span>
-              </div>
-            </div>
-
-            <!-- Reminder buttons (PRO+) -->
-            <template v-if="canAccessFeature('whatsapp')">
-              <div v-if="(client?.phone || deal?.externalClientPhone) && deal?.status === 'ACTIVE'" class="d-flex ga-2 mt-4" style="flex-wrap: wrap;">
-                <button class="reminder-btn reminder-btn--api" :disabled="sendingReminder" @click="sendApiReminder">
-                  <v-progress-circular v-if="sendingReminder" indeterminate size="14" width="2" />
-                  <v-icon v-else icon="mdi-whatsapp" size="16" />
-                  {{ sendingReminder ? 'Отправка...' : 'Напомнить в WhatsApp' }}
-                </button>
-              </div>
-
-              <!-- Per-deal reminder settings -->
-              <div class="deal-reminder-settings mt-4">
-                <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="text-caption font-weight-bold" style="opacity: 0.6;">Настройки напоминаний</span>
-                  <v-switch
-                    v-model="dealReminderCustom"
-                    density="compact"
-                    hide-details
-                    color="primary"
-                    :label="dealReminderCustom ? 'Свои настройки' : 'Глобальные'"
-                    style="flex: none;"
-                    @update:model-value="toggleDealReminder"
-                  />
-                </div>
-
-                <div v-if="dealReminderCustom" class="deal-reminder-fields">
-                  <div class="d-flex align-center ga-3 mb-2">
-                    <span class="text-caption">Вкл/выкл</span>
-                    <v-switch v-model="dealReminderEnabled" density="compact" hide-details color="primary" style="flex: none;" @update:model-value="saveDealReminder" />
-                  </div>
-                  <div v-if="dealReminderEnabled" class="d-flex align-center ga-2 flex-wrap">
-                    <span class="text-caption" style="opacity: 0.6;">За</span>
-                    <button
-                      v-for="d in [1,2,3,5,7]" :key="d"
-                      class="deal-day-chip"
-                      :class="{ active: dealReminderDays === d }"
-                      @click="dealReminderDays = d; saveDealReminder()"
-                    >{{ d }} дн</button>
-                    <span class="text-caption" style="opacity: 0.6;">до платежа</span>
-                  </div>
-                </div>
-                <div v-else class="text-caption text-medium-emphasis">
-                  Используются глобальные настройки из раздела WhatsApp
-                </div>
-              </div>
-            </template>
-          </v-card>
-
-          <!-- Guarantors card (до 5) -->
-          <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="d-flex align-center justify-space-between mb-4">
-              <div class="d-flex align-center ga-2">
-                <v-icon icon="mdi-shield-account" size="18" style="color: #6366f1;" />
-                <div class="section-title">
-                  Поручители
-                  <span v-if="guarantorsList.length" class="text-caption text-medium-emphasis">({{ guarantorsList.length }}/{{ MAX_GUARANTORS }})</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Existing guarantors (по порядку, первый = основной) -->
-            <template v-for="(g, gi) in guarantorsList" :key="g.id">
-              <div class="guarantor-item" :class="{ 'guarantor-item--divided': gi > 0 }">
-                <div class="d-flex align-center justify-space-between mb-2">
-                  <span class="guarantor-item__badge" :class="{ 'guarantor-item__badge--main': gi === 0 }">
-                    {{ gi === 0 ? 'Основной поручитель' : `Поручитель ${gi + 1}` }}
-                  </span>
-                  <v-btn
-                    v-if="!deal.deletedAt"
-                    variant="text"
-                    size="x-small"
-                    color="error"
-                    prepend-icon="mdi-close"
-                    :loading="guarantorSaving"
-                    @click="removeGuarantorAt(gi)"
-                  >
-                    Убрать
-                  </v-btn>
-                </div>
-
-                <router-link :to="`/clients/${g.id}`" class="profile-card-link">
-                  <div class="d-flex align-center ga-3 mb-3">
-                    <div class="profile-avatar profile-avatar--guarantor">{{ (g.firstName || '')[0] || '' }}{{ (g.lastName || '')[0] || '' }}</div>
-                    <div class="flex-grow-1">
-                      <div class="font-weight-bold">{{ clientProfileName(g) }}</div>
-                      <div class="text-caption text-medium-emphasis d-flex align-center ga-2">
-                        <v-icon icon="mdi-phone" size="12" />
-                        {{ formatPhone(g.phone) }}
-                      </div>
-                    </div>
-                    <v-icon icon="mdi-chevron-right" size="18" class="text-medium-emphasis" />
-                  </div>
-                </router-link>
-
-                <div class="profile-details-list">
-                  <template v-if="g.passportSeries || g.passportNumber">
-                    <div class="profile-detail-row">
-                      <span class="profile-detail-label">Паспорт</span>
-                      <span class="profile-detail-value">{{ g.passportSeries }} {{ g.passportNumber }}</span>
-                    </div>
-                    <div v-if="g.passportIssuedBy" class="profile-detail-row">
-                      <span class="profile-detail-label">Кем выдан</span>
-                      <span class="profile-detail-value">{{ g.passportIssuedBy }}</span>
-                    </div>
-                    <div v-if="g.passportIssuedAt" class="profile-detail-row">
-                      <span class="profile-detail-label">Дата выдачи</span>
-                      <span class="profile-detail-value">{{ formatDate(g.passportIssuedAt) }}</span>
-                    </div>
-                  </template>
-                  <div v-else class="profile-detail-hint">
-                    <v-icon icon="mdi-information-outline" size="14" />
-                    Паспортные данные не заполнены
-                  </div>
-                </div>
-              </div>
-            </template>
-
-            <!-- Add guarantor — picker + create (пока не достигнут лимит) -->
-            <template v-if="!deal.deletedAt && canAddGuarantor">
-              <div class="guarantor-picker-wrap" :class="{ 'mt-4': guarantorsList.length }">
-                <ClientPicker
-                  v-model="guarantorPickerId"
-                  :label="guarantorsList.length ? 'Добавить ещё поручителя...' : 'Найти поручителя по телефону или имени...'"
-                  @selected="onGuarantorSelected"
-                />
-              </div>
-              <button class="create-client-btn" type="button" @click="showCreateGuarantorDialog = true">
-                <div class="create-client-btn__icon">
-                  <v-icon icon="mdi-account-plus-outline" size="20" />
-                </div>
-                <div>
-                  <div class="create-client-btn__title">Создать нового клиента</div>
-                  <div class="create-client-btn__sub">Добавить поручителя с паспортными данными</div>
-                </div>
-              </button>
-              <CreateClientDialog v-model="showCreateGuarantorDialog" @created="onGuarantorCreated" />
-            </template>
-
-            <!-- Лимит достигнут -->
-            <div v-else-if="!deal.deletedAt && !canAddGuarantor" class="profile-detail-hint mt-3">
-              <v-icon icon="mdi-information-outline" size="14" />
-              Достигнут лимит: не больше {{ MAX_GUARANTORS }} поручителей
-            </div>
-
-            <!-- Deleted deal, no guarantors -->
-            <div v-else-if="!guarantorsList.length" class="text-body-2 text-medium-emphasis">Не назначен</div>
-          </v-card>
-
-          <!-- Phase 3: Investors of the deal's cashbox. Read-only — the
-               relationship is implicit (every CI of the cashbox shares this
-               deal's profit). To add/remove participants, the partner changes
-               the deal's cashbox or moves the CI to another cashbox. -->
-          <v-card v-if="!deal.deletedAt && sections.visible('coInvestors')" rounded="lg" elevation="0" border class="ci-section mb-6">
-            <div class="ci-header">
-              <div class="ci-header-left">
-                <div class="ci-header-icon">
-                  <v-icon icon="mdi-account-group-outline" size="20" />
-                </div>
-                <div>
-                  <div class="ci-header-title">Инвесторы кассы</div>
-                  <div class="ci-header-sub">
-                    <template v-if="dealCoInvestors.length > 0">
-                      {{ dealCoInvestors.length }} {{ dealCoInvestors.length === 1 ? 'инвестор' : 'инвестора' }}
-                      делит прибыль этой сделки
-                    </template>
-                    <template v-else>В кассе сделки нет инвесторов</template>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Cards -->
-            <div v-if="dealCoInvestors.length > 0" class="ci-cards">
-              <div v-for="ci in dealCoInvestors" :key="ci.id" class="ci-card">
-                <div class="ci-card-top">
-                  <div class="ci-avatar">
-                    {{ ci.name.split(' ').map((w: string) => w[0]).join('').slice(0, 2) }}
-                  </div>
-                  <div class="ci-card-info">
-                    <div class="ci-card-name">{{ ci.name }}</div>
-                    <div v-if="ci.phone" class="ci-card-phone">
-                      <v-icon icon="mdi-phone-outline" size="11" />
-                      {{ ci.phone }}
-                    </div>
-                  </div>
-                </div>
-                <div class="ci-card-stats">
-                  <!-- Cost-fee: партнёр берёт % от закупки, инвестору — остаток наценки -->
-                  <template v-if="ci.costFeeMode || ci.costFeeRatePct != null">
-                    <div class="ci-card-stat">
-                      <span class="ci-card-stat-label">Способ деления</span>
-                      <span class="ci-card-stat-value">Комиссия от закупки</span>
-                    </div>
-                    <div v-if="dealProfitBreakdown && dealProfitBreakdown.splitBase > 0" class="ci-card-stat">
-                      <span class="ci-card-stat-label">Инвестору (база − комиссия)</span>
-                      <span class="ci-card-stat-value ci-card-stat-value--accent">{{ formatCurrency(costFeeInvestorAmount(ci)) }}</span>
-                    </div>
-                  </template>
-                  <template v-else-if="(ci.effectivePercent ?? ci.profitPercent) != null && (ci.effectivePercent ?? ci.profitPercent)! > 0">
-                    <div class="ci-card-stat">
-                      <span class="ci-card-stat-label">Доля прибыли{{ ci.profitPercentOverride != null ? ' (в сделке)' : '' }}</span>
-                      <span class="ci-card-stat-value">{{ ci.effectivePercent ?? ci.profitPercent }}%</span>
-                    </div>
-                    <div v-if="dealProfitBreakdown && dealProfitBreakdown.splitBase > 0" class="ci-card-stat">
-                      <span class="ci-card-stat-label">Сумма</span>
-                      <span class="ci-card-stat-value ci-card-stat-value--accent">
-                        {{ formatCurrency(ciDealShare(ci)) }}
-                      </span>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="ci-card-stat">
-                      <span class="ci-card-stat-label">Способ деления</span>
-                      <span class="ci-card-stat-value">По вкладу{{ (ci.managementFeePctOverride ?? ci.managementFeePct ?? 0) > 0 ? ` · комиссия ${ci.managementFeePctOverride ?? ci.managementFeePct}%${ci.managementFeePctOverride != null ? ' (в сделке)' : ''}` : '' }}</span>
-                    </div>
-                    <div v-if="dealProfitBreakdown && dealProfitBreakdown.splitBase > 0" class="ci-card-stat">
-                      <span class="ci-card-stat-label">Сумма (по вкладу)</span>
-                      <span class="ci-card-stat-value ci-card-stat-value--accent">{{ formatCurrency(ciDealShare(ci)) }}</span>
-                    </div>
-                  </template>
-                </div>
-              </div>
-            </div>
-
-            <!-- Empty state -->
-            <div v-else class="ci-empty">
-              <div class="ci-empty-icon">
-                <v-icon icon="mdi-account-group-outline" size="24" />
-              </div>
-              <div class="ci-empty-text">В кассе сделки нет инвесторов</div>
-              <div class="ci-empty-hint">
-                Добавьте инвестора в кассу сделки на странице «Инвесторы»
-              </div>
-            </div>
-          </v-card>
-
           <!-- Assigned staff (partner-only) -->
           <v-card v-if="authStore.isOwner && sections.visible('staff')" rounded="lg" elevation="0" border class="pa-5 mb-6">
             <div class="d-flex align-center justify-space-between flex-wrap ga-3">
@@ -2457,132 +1435,35 @@ const timeline = computed(() => {
             </div>
           </v-card>
 
-          <!-- Documents: PDF downloads -->
-          <v-card rounded="lg" elevation="0" border class="pdf-docs-card mb-6">
-            <div class="pdf-docs-header">
-              <div class="pdf-docs-header-left">
-                <div class="contract-icon">
-                  <v-icon icon="mdi-file-pdf-box" size="22" color="#3b82f6" />
-                </div>
-                <div>
-                  <div class="font-weight-bold" style="font-size: 14px;">PDF документы</div>
-                  <div class="text-caption text-medium-emphasis">Договоры и отчёты по сделке</div>
-                </div>
-              </div>
-              <router-link to="/contract-builder" class="pdf-docs-builder-link">
-                <v-icon icon="mdi-pencil-ruler" size="14" />
-                Конструктор
-              </router-link>
-            </div>
-
-            <div class="pdf-docs-list">
-              <!-- Contract -->
-              <div class="pdf-doc-row">
-                <button class="pdf-doc-item" :disabled="!canAccessFeature('pdfContract')" @click="canAccessFeature('pdfContract') && downloadContract()">
-                  <v-icon icon="mdi-file-document-outline" size="20" color="#3b82f6" />
-                  <div class="pdf-doc-item-info">
-                    <div class="pdf-doc-item-name">Договор мурабаха</div>
-                    <div class="pdf-doc-item-desc">Полный договор с условиями и графиком</div>
-                  </div>
-                  <v-icon :icon="canAccessFeature('pdfContract') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
-                </button>
-                <button
-                  v-if="canAccessFeature('pdfContract') && sections.visible('whatsapp')"
-                  class="pdf-wa-btn"
-                  :disabled="sendingWhatsApp"
-                  title="Отправить договор клиенту в WhatsApp"
-                  @click="sendContractWhatsApp"
-                >
-                  <v-icon icon="mdi-whatsapp" size="16" />
-                </button>
-              </div>
-
-              <!-- Custom template -->
-              <div v-if="customTemplate" class="pdf-doc-row">
-                <button class="pdf-doc-item" :disabled="customTemplateLoading" @click="downloadCustomContract">
-                  <v-icon icon="mdi-file-cog-outline" size="20" color="#047857" />
-                  <div class="pdf-doc-item-info">
-                    <div class="pdf-doc-item-name">Мой договор</div>
-                    <div class="pdf-doc-item-desc">Из вашего шаблона</div>
-                  </div>
-                  <v-progress-circular v-if="customTemplateLoading" indeterminate size="14" width="2" />
-                  <v-icon v-else icon="mdi-download" size="16" class="pdf-doc-item-action" />
-                </button>
-                <button
-                  v-if="sections.visible('whatsapp')"
-                  class="pdf-wa-btn"
-                  :disabled="sendingWhatsApp || customTemplateLoading"
-                  title="Отправить договор клиенту в WhatsApp"
-                  @click="sendCustomContractWhatsApp"
-                >
-                  <v-icon icon="mdi-whatsapp" size="16" />
-                </button>
-              </div>
-
-              <!-- Summary -->
-              <div class="pdf-doc-row">
-                <button class="pdf-doc-item" :disabled="!canAccessFeature('pdfExport')" @click="canAccessFeature('pdfExport') && downloadSummary()">
-                  <v-icon icon="mdi-file-chart-outline" size="20" color="#8b5cf6" />
-                  <div class="pdf-doc-item-info">
-                    <div class="pdf-doc-item-name">Сводка по сделке</div>
-                    <div class="pdf-doc-item-desc">Детали и график платежей</div>
-                  </div>
-                  <v-icon :icon="canAccessFeature('pdfExport') ? 'mdi-download' : 'mdi-lock-outline'" size="16" class="pdf-doc-item-action" />
-                </button>
-                <button
-                  v-if="canAccessFeature('pdfExport') && sections.visible('whatsapp')"
-                  class="pdf-wa-btn"
-                  :disabled="sendingWhatsApp"
-                  title="Отправить сводку клиенту в WhatsApp"
-                  @click="sendSummaryWhatsApp"
-                >
-                  <v-icon icon="mdi-whatsapp" size="16" />
-                </button>
-              </div>
-            </div>
-          </v-card>
-
-          <!-- Contract photos -->
+          <!-- Пометка по договору: «не звонить этому», «родственник Асвада».
+               Одно свободное поле — заполняется, когда есть что запомнить. -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
-            <div class="d-flex align-center justify-space-between mb-4">
-              <div class="section-title">Документы</div>
-              <button class="btn-sm btn-sm--outline" @click="contractInputRef?.click()" :disabled="contractUploading">
-                <v-icon :icon="contractUploading ? 'mdi-loading' : 'mdi-plus'" size="16" :class="{ 'mdi-spin': contractUploading }" />
-                {{ contractUploading ? 'Загрузка...' : 'Добавить' }}
+            <div class="d-flex align-center justify-space-between mb-3">
+              <div class="section-title mb-0">Комментарий</div>
+              <button v-if="!commentEditing && !deal.deletedAt" class="ci-add-btn" @click="startEditComment">
+                <v-icon :icon="deal.comment ? 'mdi-pencil' : 'mdi-plus'" size="14" />
+                {{ deal.comment ? 'Изменить' : 'Добавить' }}
               </button>
             </div>
-            <input ref="contractInputRef" type="file" accept="image/*" multiple hidden @change="onContractFilesSelected" />
 
-            <div v-if="deal?.contractPhotos?.length" class="contract-photo-grid">
-              <div v-for="(url, i) in deal.contractPhotos" :key="i" class="contract-photo-item">
-                <img
-                  :src="url"
-                  class="contract-photo-img"
-                  @click="contractEnlargeUrl = url; contractEnlargeDialog = true"
-                />
-                <button class="contract-photo-remove" @click="removeContractPhoto(i)">
-                  <v-icon icon="mdi-close" size="14" />
+            <template v-if="commentEditing">
+              <textarea
+                v-model="commentDraft"
+                class="deal-comment-input"
+                rows="3"
+                placeholder="Например: родственник Асвада, не звонить после 20:00"
+              />
+              <div class="d-flex ga-2 mt-2">
+                <button class="btn-secondary flex-grow-1" @click="commentEditing = false">Отмена</button>
+                <button class="btn-primary flex-grow-1" :disabled="commentSaving" @click="saveComment">
+                  <v-progress-circular v-if="commentSaving" indeterminate size="16" width="2" />
+                  <span v-else>Сохранить</span>
                 </button>
               </div>
-            </div>
-
-            <div v-else class="text-center pa-6 text-medium-emphasis text-body-2">
-              <v-icon icon="mdi-file-document-outline" size="32" class="mb-2" style="opacity: 0.3;" />
-              <div>Нет документов</div>
-              <div class="text-caption mt-1" style="opacity: 0.5;">Фото договора, паспортов, справок</div>
-            </div>
+            </template>
+            <div v-else-if="deal.comment" class="deal-comment-text">{{ deal.comment }}</div>
+            <div v-else class="deal-comment-empty">Пометок нет</div>
           </v-card>
-
-          <!-- Contract enlarge dialog -->
-          <v-dialog v-model="contractEnlargeDialog" max-width="800" :fullscreen="isMobile">
-            <v-card rounded="lg">
-              <img :src="contractEnlargeUrl" style="width: 100%; height: auto; display: block;" />
-              <v-card-actions>
-                <v-spacer />
-                <v-btn variant="text" @click="contractEnlargeDialog = false">Закрыть</v-btn>
-              </v-card-actions>
-            </v-card>
-          </v-dialog>
 
           <!-- Deal info card -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
@@ -2604,7 +1485,9 @@ const timeline = computed(() => {
               </div>
               <div class="deal-detail-row">
                 <span class="deal-detail-label">Первый платёж</span>
-                <span class="deal-detail-val">{{ formatDate(deal.firstPaymentDate) }}</span>
+                <!-- У импортированных сделок дата не заполнена: строку не
+                     прячем, чтобы было видно, что поле есть, но пустое. -->
+                <span class="deal-detail-val">{{ deal.firstPaymentDate ? formatDate(deal.firstPaymentDate) : 'не указан' }}</span>
               </div>
               <div v-if="deal.completedAt" class="deal-detail-row">
                 <span class="deal-detail-label">Завершена</span>
@@ -2617,23 +1500,374 @@ const timeline = computed(() => {
             </div>
           </v-card>
 
-          <!-- Timeline -->
-          <v-card rounded="lg" elevation="0" border class="pa-5">
-            <div class="section-title mb-4">История</div>
-
-            <div class="timeline">
-              <div v-for="(event, i) in timeline" :key="i" class="timeline-item">
-                <div class="timeline-dot" :style="{ background: event.color }" />
-                <div class="timeline-line" v-if="i < timeline.length - 1" />
-                <div class="timeline-content">
-                  <div class="timeline-label">{{ event.label }}</div>
-                  <div class="timeline-date">{{ formatDate(event.date) }}</div>
-                </div>
-              </div>
-            </div>
-          </v-card>
         </v-col>
       </v-row>
+
+      <!-- График платежей -->
+      <div v-else-if="tab === 'payments'">
+        <!-- Раздел закрыт этому сотруднику: объясняем прямо здесь, иначе
+             вкладка выглядела бы просто пустой. -->
+        <v-card v-if="paymentsHidden" rounded="lg" elevation="0" border class="pa-5 mb-6">
+          <div class="text-body-2 text-medium-emphasis">
+            График платежей скрыт: у вас нет доступа к разделу «Платежи»
+          </div>
+        </v-card>
+        <!-- Payment schedule -->
+        <v-card v-if="payments.length" rounded="lg" elevation="0" border class="mb-6">
+          <div class="pa-5 pb-0 d-flex align-start justify-space-between ga-3 flex-wrap">
+            <div>
+              <div class="section-title">График платежей</div>
+              <div class="section-subtitle mb-4">Полный список по сделке</div>
+            </div>
+            <div v-if="deal && !deal.deletedAt && deal.status !== 'CANCELLED'" class="d-flex align-center ga-2">
+              <button
+                class="add-payment-btn"
+                :disabled="!canAddPayment"
+                :title="canAddPayment ? 'Добавить дополнительный платёж' : ''"
+                @click="canAddPayment && openAddPayment()"
+              >
+                <v-icon icon="mdi-plus" size="16" />
+                Добавить платёж
+              </button>
+              <!-- Hover hint that explains the disabled state. Shown
+                   only when the button is actually disabled so the
+                   partner doesn't see a useless «?» otherwise. -->
+              <v-tooltip v-if="!canAddPayment" location="bottom" max-width="280">
+                <template #activator="{ props: tprops }">
+                  <v-icon
+                    v-bind="tprops"
+                    icon="mdi-information-outline"
+                    size="18"
+                    class="add-payment-info"
+                  />
+                </template>
+                <span>{{ addPaymentDisabledReason }}</span>
+              </v-tooltip>
+            </div>
+          </div>
+
+          <v-table density="default" class="schedule-table schedule-table--desktop">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Дата</th>
+                <th class="text-end">Сумма</th>
+                <th class="text-end">Остаток после</th>
+                <th>Оплачено</th>
+                <th>Статус</th>
+                <th class="text-center">Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="p in payments"
+                :key="p.id"
+                :class="{ 'row-paid': p.status === 'PAID', 'row-overdue': p.status === 'OVERDUE' }"
+              >
+                <td class="font-weight-medium">{{ p.number }}</td>
+                <td>
+                  {{ formatDate(p.dueDate) }}
+                  <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+                    <v-icon icon="mdi-calendar-arrow-right" size="12" />
+                    было {{ formatDate(p.rescheduledFrom) }}
+                  </div>
+                  <!-- Days-late chip — surfaced for any payment that's
+                       late, regardless of whether it's still OVERDUE or
+                       already PAID after the due date. Lets the partner
+                       see the delay history at a glance. -->
+                  <div v-if="daysOverdue(p) > 0" class="overdue-chip">
+                    <v-icon icon="mdi-clock-alert-outline" size="11" />
+                    {{ p.status === 'PAID' ? 'оплачен с задержкой' : 'просрочен' }}
+                    на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
+                  </div>
+                </td>
+                <td class="text-end font-weight-bold text-no-wrap">
+                  {{ formatCurrency(p.amount) }}
+                  <!-- План vs факт: показываем плановую сумму, если она была
+                       зафиксирована при оплате и отличается от фактической. -->
+                  <div
+                    v-if="p.scheduledAmount != null && Math.round(p.scheduledAmount) !== Math.round(p.amount)"
+                    class="plan-vs-fact"
+                    :style="{ color: p.amount > p.scheduledAmount ? '#10b981' : '#f59e0b' }"
+                  >
+                    план: {{ formatCurrency(p.scheduledAmount) }}
+                  </div>
+                </td>
+                <td class="text-end text-medium-emphasis text-no-wrap">{{ formatCurrency(p.remainingAfter) }}</td>
+                <td class="text-medium-emphasis">
+                  <div>{{ p.paidAt ? formatDate(p.paidAt) : '—' }}</div>
+                  <!-- Оплачен не в свой месяц → доход учтён по факту оплаты. -->
+                  <div
+                    v-if="paymentOffMonth(p)"
+                    class="offmonth-chip"
+                    :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
+                    :title="paymentOffMonthLabel(p)"
+                  >
+                    <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
+                    {{ paymentOffMonth(p) === 'early' ? 'учтён по факту (досрочно)' : 'учтён по факту (позже срока)' }}
+                  </div>
+                  <div v-if="p.proofScreenshot" class="mt-1">
+                    <img
+                      :src="p.proofScreenshot"
+                      class="proof-thumbnail"
+                      title="Скриншот оплаты"
+                      @click="openProofEnlarge(p.proofScreenshot!)"
+                    />
+                  </div>
+                </td>
+                <td>
+                  <div
+                    class="pay-status"
+                    :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
+                  >
+                    {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                  </div>
+                </td>
+                <td class="text-center">
+                  <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
+                    <button class="action-btn action-btn--success" title="Отметить оплаченным" @click="openMarkPaid(p)">
+                      <v-icon icon="mdi-check" size="16" />
+                    </button>
+                    <button class="action-btn action-btn--warning" title="Перенести дату" @click="openReschedule(p)">
+                      <v-icon icon="mdi-calendar-clock" size="16" />
+                    </button>
+                    <button
+                      v-if="p.rescheduledFrom"
+                      class="action-btn action-btn--ghost"
+                      :title="`Вернуть исходную дату (${formatDate(p.rescheduledFrom)})`"
+                      :disabled="undoingReschedule === p.id"
+                      @click="confirmUndoReschedule(p)"
+                    >
+                      <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
+                      <v-icon v-else icon="mdi-calendar-refresh" size="16" />
+                    </button>
+                    <button
+                      v-if="canDeleteAnyPayment"
+                      class="action-btn action-btn--danger"
+                      title="Удалить платёж"
+                      :disabled="removingPayment === p.id"
+                      @click="confirmRemovePayment(p)"
+                    >
+                      <v-progress-circular v-if="removingPayment === p.id" indeterminate size="12" width="2" />
+                      <v-icon v-else icon="mdi-trash-can-outline" size="16" />
+                    </button>
+                  </div>
+                  <div v-else-if="p.status === 'PAID'" class="d-flex align-center justify-center">
+                    <button
+                      class="action-btn action-btn--danger"
+                      title="Отменить оплату"
+                      :disabled="unpaidLoading === p.id"
+                      @click="confirmUnmarkPaid(p)"
+                    >
+                      <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                      <v-icon v-else icon="mdi-undo" size="16" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
+
+          <!-- Mobile card list — same content rearranged for narrow screens. -->
+          <div class="schedule-cards">
+            <div
+              v-for="p in payments"
+              :key="p.id"
+              class="sched-card"
+              :class="{
+                'sched-card--paid': p.status === 'PAID',
+                'sched-card--overdue': p.status === 'OVERDUE',
+                'sched-card--closed': p.status === 'CLOSED_EARLY',
+              }"
+            >
+              <div class="sched-card-head">
+                <div class="sched-card-num">#{{ p.number }}</div>
+                <div class="pay-status" :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])">
+                  {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                </div>
+              </div>
+
+              <div class="sched-card-date">
+                <div class="sched-card-date-value">{{ formatDate(p.dueDate) }}</div>
+                <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+                  <v-icon icon="mdi-calendar-arrow-right" size="12" />
+                  было {{ formatDate(p.rescheduledFrom) }}
+                </div>
+                <div v-if="daysOverdue(p) > 0" class="overdue-chip">
+                  <v-icon icon="mdi-clock-alert-outline" size="11" />
+                  {{ p.status === 'PAID' ? 'оплачен с задержкой' : 'просрочен' }}
+                  на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
+                </div>
+              </div>
+
+              <div class="sched-card-amounts">
+                <div class="sched-card-amount">
+                  <div class="sched-card-amount-label">Сумма</div>
+                  <div class="sched-card-amount-value">{{ formatCurrency(p.amount) }}</div>
+                  <div
+                    v-if="p.scheduledAmount != null && Math.round(p.scheduledAmount) !== Math.round(p.amount)"
+                    class="plan-vs-fact"
+                    :style="{ color: p.amount > p.scheduledAmount ? '#10b981' : '#f59e0b' }"
+                  >
+                    план: {{ formatCurrency(p.scheduledAmount) }}
+                  </div>
+                </div>
+                <div class="sched-card-amount">
+                  <div class="sched-card-amount-label">Остаток после</div>
+                  <div class="sched-card-amount-value sched-card-amount-value--muted">
+                    {{ formatCurrency(p.remainingAfter) }}
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="p.paidAt || p.proofScreenshot" class="sched-card-paid">
+                <div v-if="p.paidAt" class="sched-card-paid-date">
+                  <v-icon icon="mdi-check-circle-outline" size="14" />
+                  Оплачено {{ formatDate(p.paidAt) }}
+                </div>
+                <div
+                  v-if="paymentOffMonth(p)"
+                  class="offmonth-chip"
+                  :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
+                  :title="paymentOffMonthLabel(p)"
+                >
+                  <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
+                  {{ paymentOffMonth(p) === 'early' ? 'доход учтён по факту (досрочно)' : 'доход учтён по факту (позже срока)' }}
+                </div>
+                <img
+                  v-if="p.proofScreenshot"
+                  :src="p.proofScreenshot"
+                  class="proof-thumbnail sched-card-proof"
+                  title="Скриншот оплаты"
+                  @click="openProofEnlarge(p.proofScreenshot!)"
+                />
+              </div>
+
+              <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="sched-card-actions">
+                <button class="action-btn action-btn--success" @click="openMarkPaid(p)">
+                  <v-icon icon="mdi-check" size="16" />
+                  Оплачено
+                </button>
+                <button class="action-btn action-btn--warning" @click="openReschedule(p)">
+                  <v-icon icon="mdi-calendar-clock" size="16" />
+                  Перенести
+                </button>
+                <button
+                  v-if="p.rescheduledFrom"
+                  class="action-btn action-btn--ghost"
+                  :disabled="undoingReschedule === p.id"
+                  @click="confirmUndoReschedule(p)"
+                >
+                  <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
+                  <v-icon v-else icon="mdi-calendar-refresh" size="16" />
+                  Вернуть
+                </button>
+                <button
+                  v-if="canDeleteAnyPayment"
+                  class="action-btn action-btn--danger"
+                  :disabled="removingPayment === p.id"
+                  @click="confirmRemovePayment(p)"
+                >
+                  <v-progress-circular v-if="removingPayment === p.id" indeterminate size="12" width="2" />
+                  <v-icon v-else icon="mdi-trash-can-outline" size="16" />
+                  Удалить
+                </button>
+              </div>
+              <div v-else-if="p.status === 'PAID'" class="sched-card-actions">
+                <button
+                  class="action-btn action-btn--danger"
+                  :disabled="unpaidLoading === p.id"
+                  @click="confirmUnmarkPaid(p)"
+                >
+                  <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                  <v-icon v-else icon="mdi-undo" size="16" />
+                  Отменить оплату
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Outstanding-balance banner. Surfaces when the schedule has
+               been fully marked off but the deal still has a remaining
+               amount — common with clients who chronically underpay.
+               Gives the partner the two reasonable next moves. -->
+          <!-- Schedule-was-extended notice. Surfaces the fact that
+               the partner added rows on top of the original plan.
+               Aggregate by design: deletes + re-adds reuse number
+               slots so we can't safely tag individual rows. -->
+          <div v-if="extraPaymentsCount > 0 && deal" class="extras-banner pa-5">
+            <div class="extras-banner-icon">
+              <v-icon icon="mdi-playlist-plus" size="22" color="#0ea5e9" />
+            </div>
+            <div class="extras-banner-content">
+              <div class="extras-banner-title">
+                График расширен на {{ extraPaymentsCount }}
+                {{ pluralizeRu(extraPaymentsCount, 'платёж', 'платежа', 'платежей') }}
+              </div>
+              <div class="extras-banner-text">
+                Изначально сделка была заключена на
+                <strong>{{ deal.numberOfPayments }}</strong>
+                {{ pluralizeRu(deal.numberOfPayments, 'платёж', 'платежа', 'платежей') }},
+                сейчас в графике
+                <strong>{{ payments.length }}</strong>
+                {{ pluralizeRu(payments.length, 'строка', 'строки', 'строк') }}.
+                {{ extraPaymentsCount }}
+                {{ pluralizeRu(extraPaymentsCount, 'платёж', 'платежа', 'платежей') }}
+                добавлен{{ extraPaymentsCount === 1 ? '' : 'о' }} вручную поверх исходного плана.
+              </div>
+            </div>
+          </div>
+
+          <div v-if="showLeftoverBanner && deal" class="leftover-banner pa-5">
+            <div class="leftover-banner-icon">
+              <v-icon icon="mdi-alert-circle-outline" size="22" color="#f59e0b" />
+            </div>
+            <div class="leftover-banner-content">
+              <div class="leftover-banner-title">Не вся сумма оплачена</div>
+              <div class="leftover-banner-text">
+                В графике не хватает строк на
+                <strong>{{ formatCurrency(uncoveredByPlan) }}</strong>
+                — все существующие платежи в сумме меньше стоимости сделки.
+              </div>
+              <div class="leftover-banner-actions">
+                <button class="leftover-btn leftover-btn--primary" @click="openAddPayment">
+                  <v-icon icon="mdi-plus" size="16" />
+                  Добавить платёж
+                </button>
+                <button class="leftover-btn leftover-btn--ghost" @click="openStatusDialog('forgive')">
+                  <v-icon icon="mdi-handshake-outline" size="16" />
+                  Закрыть с прощением долга
+                </button>
+              </div>
+            </div>
+          </div>
+        </v-card>
+      </div>
+
+      <!-- Участники -->
+      <div v-else-if="tab === 'participants'">
+        <!-- Участники: клиент и поручители -->
+        <DealParticipantsTab :deal="deal" :payments="payments" />
+      </div>
+
+      <!-- Со-инвесторы -->
+      <div v-else-if="tab === 'investors'">
+        <!-- Инвесторы кассы: доли по этой сделке -->
+        <DealInvestorsTab :deal="deal" :profit="profit" />
+      </div>
+
+      <!-- Документы -->
+      <div v-else-if="tab === 'docs'">
+        <!-- Документы: PDF и фото договора -->
+        <DealDocsTab :deal="deal" :payments="payments" />
+      </div>
+
+      <!-- История -->
+      <div v-else>
+        <!-- История: настоящий журнал с сервера, а не три события,
+             собранные в браузере -->
+        <DealHistoryTab :deal-id="dealId" />
+      </div>
 
       <!-- Deleted banner -->
       <div v-if="isDeleted" class="trash-banner">
@@ -2786,6 +2020,15 @@ const timeline = computed(() => {
            платежей и в превью сделки (сумма, фактическая дата, перерасчёт
            графика, хвостовой платёж, квитанция, скриншот). График у страницы
            уже загружен — передаём его, чтобы компонент не запрашивал повторно. -->
+      <!-- То же окно оплаты, что в списке сделок -->
+      <QuickPayDialog
+        v-model="quickPayDialog"
+        :payment="quickPayTarget"
+        :deal="deal ?? null"
+        :fullscreen="isMobile"
+        @paid="onQuickPayDone"
+      />
+
       <MarkPaidDialog
         v-model="markPaidDialog"
         :payment="markPaidTarget"
@@ -2793,6 +2036,15 @@ const timeline = computed(() => {
         :schedule="payments"
         :fullscreen="isMobile"
         @paid="onMarkPaidDone"
+      />
+
+      <!-- Скидка на остаток договора: долг уменьшается, договор действует. -->
+      <DealDiscountDialog
+        v-model="discountDialog"
+        :deal="deal"
+        :schedule="payments"
+        :fullscreen="isMobile"
+        @applied="onDiscountApplied"
       />
 
       <!-- Add tail payment dialog. Triggered by «Добавить платёж» next to
@@ -2825,7 +2077,7 @@ const timeline = computed(() => {
 
           <div class="mb-4">
             <label class="field-label">Дата платежа</label>
-            <input v-model="addPaymentDueDate" type="date" class="field-input" />
+            <DateField v-model="addPaymentDueDate" plain />
           </div>
 
           <div class="mb-5">
@@ -2943,6 +2195,304 @@ const timeline = computed(() => {
 </template>
 
 <style scoped>
+/* Подписи по краям полосы прогресса: процент без сумм мало что говорит,
+   но разворачивать здесь целую сводку незачем — она в «Деньгах по сделке». */
+.pg-ends {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+.pg-end {
+  font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Номер договора — отдельной строкой под названием товара: раньше он стоял
+   перед названием и первым бросался в глаза, хотя ищут сделку по товару. */
+.detail-hero-num {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.65);
+  margin-top: 2px;
+}
+
+.profit-got { text-align: right; }
+.profit-got-label {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.profit-got-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+/* ── Деньги по сделке ───────────────────────────────────────────────────
+   Название крупное и жирное, под ним пояснение «откуда это число» — оно
+   дополняет заголовок, а не повторяет его. Высота строк одинаковая, поэтому
+   пояснение есть у каждой. Зелёным выделены два числа, ради которых сюда
+   заходят: сумма договора и остаток к получению. */
+.dm-card {
+  overflow: hidden;
+}
+.dm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+}
+.dm-head-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.dm-switch {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+.dm-switch-btn {
+  width: 30px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.dm-switch-btn:hover {
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.dm-switch-btn--on {
+  background: rgb(var(--v-theme-surface));
+  color: #047857;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+/* Карточный вид: те же показатели, значение крупно, пояснение снизу.
+   Две в ряд, значение справа — взгляд идёт по правому краю и сравнивает
+   суммы между собой, как в списке. На телефоне колонка одна. */
+.dm-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 4px 20px 20px;
+}
+@media (max-width: 560px) {
+  .dm-cards { grid-template-columns: minmax(0, 1fr); }
+}
+.dm-cell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 12px;
+}
+.dm-cell-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.dm-cell-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-cell-val {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+.dm-cell-val--key {
+  font-size: 20px;
+  font-weight: 800;
+}
+.dm-cell-sub {
+  font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-cell--key {
+  background: rgba(4, 120, 87, 0.05);
+  border-color: rgba(4, 120, 87, 0.2);
+}
+.dm-cell--key .dm-cell-title,
+.dm-cell-val--key {
+  color: #047857;
+}
+.dm-cell--alert {
+  background: rgba(239, 68, 68, 0.05);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.dm-cell--alert .dm-cell-title,
+.dm-cell--alert .dm-cell-val {
+  color: #dc2626;
+}
+.dm-cell--alert .dm-cell-sub {
+  color: rgba(220, 38, 38, 0.7);
+}
+.dm-group {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.dm-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  /* Одна высота у всех строк: с пояснением или без. */
+  height: 64px;
+  padding: 0 20px;
+}
+.dm-row + .dm-row {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.04);
+}
+.dm-ico {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dm-ico--plain {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.dm-ico--good {
+  background: rgba(4, 120, 87, 0.1);
+  color: #047857;
+}
+.dm-ico--info {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+.dm-ico--key {
+  background: rgba(4, 120, 87, 0.12);
+  color: #047857;
+}
+.dm-ico--alert {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+}
+.dm-key {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.dm-key-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-key-sub {
+  font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-val {
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* Сумма договора и остаток — основным цветом сервиса. */
+.dm-row--key {
+  background: rgba(4, 120, 87, 0.04);
+}
+.dm-row--key .dm-key-title {
+  color: #047857;
+}
+.dm-val--key {
+  font-size: 20px;
+  font-weight: 800;
+  color: #047857;
+}
+.dm-row--alert {
+  background: rgba(239, 68, 68, 0.05);
+}
+.dm-row--alert .dm-key-title,
+.dm-row--alert .dm-val {
+  color: #dc2626;
+}
+.dm-row--alert .dm-key-sub {
+  color: rgba(220, 38, 38, 0.7);
+}
+
+/* Кнопки действий в шапке: оплата рядом с завершением сделки. */
+.status-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+/* Специфичность повышена намеренно: базовое правило .status-action-btn идёт
+   ниже по файлу и иначе перекрывает цвет — кнопка становится белой на белом. */
+.status-action-btn.status-action-btn--ghost {
+  background: transparent;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.status-action-btn.status-action-btn--ghost:hover {
+  border-color: rgba(var(--v-theme-primary), 0.4);
+  color: rgb(var(--v-theme-primary));
+  opacity: 1;
+}
+
+/* Полоса разделов сделки: общий стиль вкладок проекта + отступ снизу. */
+.deal-tabs {
+  margin-bottom: 20px;
+}
+
+.deal-comment-input {
+  width: 100%; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  font-size: 14px; outline: none; resize: vertical;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  font-family: inherit;
+}
+.deal-comment-input:focus { border-color: #047857; }
+.deal-comment-text {
+  font-size: 14px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  white-space: pre-wrap;
+}
+.deal-comment-empty {
+  font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
 /* Экран тарифной блокировки сделки */
 .deal-locked-screen {
   max-width: 460px; margin: 40px auto; text-align: center;
@@ -2973,23 +2523,14 @@ const timeline = computed(() => {
 .dl-btn--primary { background: rgb(var(--v-theme-primary)); color: #fff; }
 .dl-btn--primary:hover { opacity: 0.9; }
 
-.back-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 14px; border-radius: 8px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  font-size: 13px; font-weight: 500; cursor: pointer;
-  transition: all 0.15s;
-}
-.back-btn:hover {
-  background: rgba(var(--v-theme-on-surface), 0.1);
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
 
 /* Hero */
 .detail-hero {
   position: relative; border-radius: 16px; overflow: hidden;
   background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+  /* На зелёной подложке ссылка-имя должна быть белой, иначе сливается. */
+  --client-link-color: #fff;
+  --client-link-underline: rgba(255, 255, 255, 0.6);
   display: flex; align-items: stretch;
   min-height: 180px;
   padding: 28px 32px;
@@ -3164,10 +2705,146 @@ const timeline = computed(() => {
 }
 
 /* Profit breakdown card */
+/* ── Прибыль по сделке ──────────────────────────────────────────────────
+   Карточка стоит в «Обзоре» под «Деньгами по сделке» — то есть среди обычных
+   белых карточек, поэтому и сама белая: зелёная подложка тут спорила бы с
+   соседями и тянула внимание на себя. Читается сверху вниз: что заработала
+   сделка → сколько уходит инвесторам → сколько остаётся вам. */
 .profit-card {
-  background: linear-gradient(135deg, rgba(22, 163, 74, 0.04) 0%, rgba(22, 163, 74, 0.02) 100%);
-  border-color: rgba(22, 163, 74, 0.15);
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.87);
 }
+.pf-head-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+.pf-head-sub {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  margin-top: 2px;
+}
+.pf-section {
+  margin-top: 20px;
+}
+/* Доли инвесторов — визуально отдельный блок: это вычет, а не продолжение
+   списка заработанного. */
+.pf-section--investors {
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  border-radius: 12px;
+  padding: 14px 16px 6px;
+  margin-top: 18px;
+}
+.pf-section-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+  margin-bottom: 8px;
+}
+.pf-section-total {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #b45309;
+  white-space: nowrap;
+}
+.pf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+}
+.pf-row + .pf-row {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+.pf-row-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  min-width: 0;
+}
+.pf-row-formula {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 2px;
+}
+.pf-row-value {
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* Вычет — тем же янтарным, что «уходит инвесторам»: цвет здесь означает
+   «эти деньги не ваши», а не «плохо». */
+.pf-row-value--minus {
+  color: #b45309;
+}
+.pf-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  padding: 8px 0 2px;
+}
+/* Итог — две главные цифры блока, поэтому крупные и на отдельной полосе. */
+.pf-total {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.pf-total-got {
+  text-align: right;
+}
+.pf-total-label {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.pf-total-value {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: #047857;
+}
+.pf-total-got-value {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.pf-total-formula {
+  font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  margin-top: 3px;
+}
+.pf-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  overflow: hidden;
+  margin-top: 14px;
+}
+.pf-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #047857);
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+
 .profit-rows {
   display: flex;
   flex-direction: column;
@@ -3291,30 +2968,6 @@ const timeline = computed(() => {
 }
 
 /* Client card */
-.client-avatar {
-  width: 44px; height: 44px; min-width: 44px; border-radius: 12px;
-  background: #3b82f6; color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 15px;
-}
-.external-client-badge {
-  display: inline-flex; padding: 2px 8px; border-radius: 6px;
-  background: rgba(99, 102, 241, 0.1); color: #6366f1;
-  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px;
-}
-.client-info-grid {
-  display: flex; flex-direction: column; gap: 12px;
-}
-.client-info-item {
-  display: flex; align-items: center; gap: 10px;
-}
-.client-info-label {
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.client-info-value {
-  font-size: 14px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
 
 /* Deal details list */
 .deal-detail-list {
@@ -3335,27 +2988,6 @@ const timeline = computed(() => {
 }
 
 /* Timeline */
-.timeline { position: relative; }
-.timeline-item {
-  display: flex; gap: 12px; position: relative;
-  padding-bottom: 20px;
-}
-.timeline-item:last-child { padding-bottom: 0; }
-.timeline-dot {
-  width: 10px; height: 10px; min-width: 10px; border-radius: 50%;
-  margin-top: 4px; z-index: 1;
-}
-.timeline-line {
-  position: absolute; left: 4px; top: 18px; bottom: 0;
-  width: 2px; background: rgba(var(--v-theme-on-surface), 0.08);
-}
-.timeline-label {
-  font-size: 14px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.timeline-date {
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
-}
 
 /* Action buttons */
 .action-btn {
@@ -3533,53 +3165,9 @@ const timeline = computed(() => {
 .add-payment-info:hover { color: rgba(var(--v-theme-on-surface), 0.7); }
 
 /* Reminder buttons */
-.reminder-btn {
-  flex: 1;
-  display: flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 9px; border-radius: 10px;
-  font-size: 13px; font-weight: 600;
-  border: none; cursor: pointer;
-  transition: all 0.15s;
-}
-.reminder-btn--wa {
-  background: rgba(37, 211, 102, 0.08); color: #25D366;
-}
-.reminder-btn--wa:hover {
-  background: rgba(37, 211, 102, 0.15);
-}
-.reminder-btn--tg {
-  background: rgba(34, 158, 217, 0.08); color: #229ED9;
-}
-.reminder-btn--tg:hover {
-  background: rgba(34, 158, 217, 0.15);
-}
 /* Deal reminder settings */
-.deal-reminder-settings {
-  padding-top: 14px;
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-}
-.deal-reminder-fields {
-  display: flex; flex-direction: column; gap: 8px;
-  margin-top: 8px;
-}
-.deal-day-chip {
-  padding: 4px 10px; border-radius: 8px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  font-size: 12px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  cursor: pointer; transition: all 0.15s;
-}
-.deal-day-chip:hover { background: rgba(var(--v-theme-primary), 0.08); color: rgb(var(--v-theme-primary)); }
 .deal-day-chip.active { background: rgba(var(--v-theme-primary), 0.12); color: rgb(var(--v-theme-primary)); }
 
-.reminder-btn--api {
-  background: #25d366 !important;
-  color: #fff !important;
-  border: none;
-  flex: 1;
-}
-.reminder-btn--api:hover { background: #1da851 !important; }
-.reminder-btn--api:disabled { opacity: 0.5; }
 
 /* Rescheduled hint */
 .rescheduled-hint {
@@ -3654,21 +3242,6 @@ const timeline = computed(() => {
 .btn-secondary:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
 
 /* Contract download */
-.contract-icon {
-  width: 40px; height: 40px; border-radius: 10px;
-  background: rgba(59, 130, 246, 0.08);
-  display: flex; align-items: center; justify-content: center;
-}
-.contract-download-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 16px; border-radius: 8px; border: none;
-  background: #3b82f6; color: #fff;
-  font-size: 13px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s;
-}
-.contract-download-btn:hover { background: #2563eb; }
-.contract-download-btn--disabled { opacity: 0.5; cursor: not-allowed; }
-.contract-download-btn--disabled:hover { background: #3b82f6; }
 
 /* Delete deal */
 .delete-deal-bar {
@@ -3968,35 +3541,6 @@ const timeline = computed(() => {
 }
 
 /* Contract photos */
-.contract-photo-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.contract-photo-item { position: relative; width: 100px; height: 100px; }
-.contract-photo-img {
-  width: 100%; height: 100%; object-fit: cover; border-radius: 10px;
-  cursor: pointer; transition: opacity 0.15s;
-}
-.contract-photo-img:hover { opacity: 0.85; }
-.contract-photo-remove {
-  position: absolute; top: -6px; right: -6px;
-  width: 22px; height: 22px; border-radius: 50%; border: none;
-  background: #ef4444; color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; opacity: 0; transition: opacity 0.15s;
-}
-.contract-photo-item:hover .contract-photo-remove { opacity: 1; }
-.btn-sm--outline {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 6px 14px; border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  background: transparent;
-  font-size: 12px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  cursor: pointer; transition: all 0.15s;
-}
-.btn-sm--outline:hover {
-  border-color: rgba(var(--v-theme-primary), 0.3);
-  color: rgb(var(--v-theme-primary));
-}
-.btn-sm--outline:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Status action banner */
 .status-action-banner {
@@ -4100,70 +3644,8 @@ const timeline = computed(() => {
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 /* PDF documents card */
-.pdf-docs-card { padding: 0 !important; overflow: hidden; }
-.pdf-docs-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-}
-.pdf-docs-header-left { display: flex; align-items: center; gap: 12px; }
-.pdf-docs-builder-link {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 12px; border-radius: 7px;
-  font-size: 12px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.4);
-  text-decoration: none; transition: all 0.12s;
-}
-.pdf-docs-builder-link:hover { background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.7); }
-.pdf-docs-list { display: flex; flex-direction: column; }
-.pdf-doc-item {
-  display: flex; align-items: center; gap: 12px;
-  padding: 14px 20px; border: none; background: none;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.04);
-  cursor: pointer; transition: background 0.12s; text-align: left;
-  width: 100%; color: inherit;
-}
-.pdf-doc-item:last-child { border-bottom: none; }
-.pdf-doc-item:hover { background: rgba(var(--v-theme-on-surface), 0.02); }
-.pdf-doc-item:disabled { opacity: 0.4; cursor: not-allowed; }
-.pdf-doc-item:disabled:hover { background: none; }
-.pdf-doc-item-info { flex: 1; min-width: 0; }
-.pdf-doc-item-name {
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.8);
-}
-.pdf-doc-item-desc {
-  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
-  margin-top: 1px;
-}
-.pdf-doc-item-action {
-  color: rgba(var(--v-theme-on-surface), 0.2); flex-shrink: 0;
-  transition: color 0.12s;
-}
-.pdf-doc-item:hover .pdf-doc-item-action { color: rgba(var(--v-theme-on-surface), 0.5); }
 
 /* Row wrapper that pairs the download button with a small WhatsApp action */
-.pdf-doc-row {
-  display: flex; align-items: stretch;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.04);
-}
-.pdf-doc-row:last-child { border-bottom: none; }
-.pdf-doc-row .pdf-doc-item {
-  flex: 1;
-  border-bottom: none; /* parent row handles the line */
-}
-.pdf-wa-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 44px; flex-shrink: 0;
-  border: none; border-left: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-  background: transparent;
-  color: #25d366;
-  cursor: pointer; transition: all 0.15s;
-}
-.pdf-wa-btn:hover {
-  background: rgba(37, 211, 102, 0.08);
-}
-.pdf-wa-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .dark .pdf-docs-header { border-color: rgba(255,255,255,0.06); }
 .dark .pdf-doc-item { border-color: rgba(255,255,255,0.04); }
@@ -4177,37 +3659,14 @@ const timeline = computed(() => {
 }
 
 /* Profile card (client & guarantor) */
-.profile-card-link {
-  text-decoration: none;
-  color: inherit;
-  display: block;
-  border-radius: 12px;
-  transition: background 0.15s;
-  margin: -8px;
-  padding: 8px;
-}
-.profile-card-link:hover {
-  background: rgba(var(--v-theme-on-surface), 0.03);
-}
-.profile-avatar {
-  width: 48px; height: 48px; min-width: 48px; border-radius: 12px;
-  color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 16px; text-transform: uppercase;
-}
-.profile-avatar--client { background: #047857; }
-.profile-avatar--guarantor { background: #6366f1; }
-.profile-avatar--coinvestor { background: #f59e0b; }
 
 /* ─── Co-Investors Section ─── */
-.ci-section { padding: 0 !important; overflow: hidden; }
 
 .ci-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 18px 20px;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
 }
-.ci-header-left { display: flex; align-items: center; gap: 12px; }
 .ci-header-icon {
   width: 40px; height: 40px; min-width: 40px; border-radius: 10px;
   background: rgba(245, 158, 11, 0.1); color: #f59e0b;
@@ -4268,97 +3727,14 @@ const timeline = computed(() => {
   padding: 16px 12px; text-align: center;
   font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45);
 }
-.ci-menu-item-info { flex: 1; min-width: 0; }
-.ci-menu-item-name {
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.8);
-}
-.ci-menu-item-meta {
-  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
-  margin-top: 1px;
-}
-.ci-menu-item-action { color: rgba(245, 158, 11, 0.5); transition: color 0.12s; }
 .ci-menu-item:hover .ci-menu-item-action { color: #f59e0b; }
 
 /* Avatar */
-.ci-avatar {
-  width: 38px; height: 38px; min-width: 38px; border-radius: 10px;
-  background: #f59e0b; color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 700; text-transform: uppercase;
-}
-.ci-avatar--sm { width: 32px; height: 32px; min-width: 32px; border-radius: 8px; font-size: 11px; }
 
 /* Cards */
-.ci-cards {
-  display: flex; flex-direction: column; gap: 0;
-}
-.ci-card {
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
-  transition: background 0.12s;
-}
-.ci-card:last-child { border-bottom: none; }
-.ci-card:hover { background: rgba(var(--v-theme-on-surface), 0.015); }
-.ci-card-top {
-  display: flex; align-items: center; gap: 12px;
-}
-.ci-card-info { flex: 1; min-width: 0; }
-.ci-card-name {
-  font-size: 14px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.ci-card-phone {
-  display: flex; align-items: center; gap: 4px;
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
-  margin-top: 1px;
-}
-.ci-card-remove {
-  width: 30px; height: 30px; border-radius: 8px; border: none;
-  background: rgba(239, 68, 68, 0.06); color: rgba(239, 68, 68, 0.5);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; transition: all 0.15s; flex-shrink: 0;
-}
-.ci-card-remove:hover { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
-.ci-card-remove:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.ci-card-stats {
-  display: flex; gap: 24px;
-  margin-top: 10px; margin-left: 50px;
-}
-.ci-card-stat {
-  display: flex; flex-direction: column; gap: 1px;
-}
-.ci-card-stat-label {
-  font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.03em;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-}
-.ci-card-stat-value {
-  font-size: 14px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.75);
-}
-.ci-card-stat-value--accent { color: #f59e0b; }
 
 /* Empty state */
-.ci-empty {
-  display: flex; flex-direction: column; align-items: center;
-  padding: 28px 20px; text-align: center;
-}
-.ci-empty-icon {
-  width: 48px; height: 48px; border-radius: 14px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
-  color: rgba(var(--v-theme-on-surface), 0.2);
-  display: flex; align-items: center; justify-content: center;
-  margin-bottom: 12px;
-}
-.ci-empty-text {
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-.ci-empty-hint {
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.3);
-  margin-top: 2px;
-}
 
 /* Dark overrides */
 .dark .ci-header { border-color: rgba(255,255,255,0.06); }
@@ -4367,101 +3743,12 @@ const timeline = computed(() => {
 .dark .ci-menu-header { border-color: rgba(255,255,255,0.06); }
 .dark .ci-card-remove { background: rgba(239, 68, 68, 0.1); }
 
-.profile-details-list {
-  display: flex; flex-direction: column; gap: 10px;
-}
-.profile-detail-row {
-  display: flex; justify-content: space-between; align-items: flex-start;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-  gap: 16px;
-}
-.profile-detail-row:last-child { border-bottom: none; padding-bottom: 0; }
-.profile-detail-label {
-  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45);
-  white-space: nowrap; flex-shrink: 0;
-}
-.profile-detail-value {
-  font-size: 14px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  text-align: right;
-}
-.profile-detail-hint {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  padding: 8px 0;
-}
 
 /* Guarantor list items */
-.guarantor-item--divided {
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  padding-top: 14px;
-  margin-top: 14px;
-}
-.guarantor-item__badge {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-.guarantor-item__badge--main {
-  color: #6366f1;
-}
 
 /* Guarantor picker */
-.guarantor-picker-wrap {
-  margin-bottom: 12px;
-}
-.guarantor-picker-wrap :deep(.v-autocomplete) {
-  --v-input-control-height: 44px;
-}
-.guarantor-picker-wrap :deep(.v-field) {
-  border-radius: 10px;
-  font-size: 14px;
-}
 
 /* Create client button */
-.create-client-btn {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  width: 100%;
-  padding: 14px 18px;
-  border-radius: 12px;
-  border: 1px dashed rgba(var(--v-theme-on-surface), 0.15);
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  cursor: pointer;
-  transition: all 0.15s;
-  text-align: left;
-}
-.create-client-btn:hover {
-  background: rgba(var(--v-theme-primary), 0.05);
-  border-color: rgba(var(--v-theme-primary), 0.3);
-  color: rgb(var(--v-theme-primary));
-}
-.create-client-btn__icon {
-  width: 40px; height: 40px; min-width: 40px;
-  border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.15s;
-}
-.create-client-btn:hover .create-client-btn__icon {
-  background: rgba(var(--v-theme-primary), 0.1);
-  color: rgb(var(--v-theme-primary));
-}
-.create-client-btn__title {
-  font-size: 13px;
-  font-weight: 600;
-}
-.create-client-btn__sub {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.4);
-  margin-top: 1px;
-}
 .dark .create-client-btn {
   background: rgba(var(--v-theme-on-surface), 0.03);
   border-color: rgba(var(--v-theme-on-surface), 0.1);

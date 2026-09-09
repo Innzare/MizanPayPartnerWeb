@@ -1,6 +1,19 @@
 <script lang="ts" setup>
 import { useDealsStore } from '@/stores/deals'
+import SelectField from '@/components/SelectField.vue'
+import AccountSelect from '@/components/AccountSelect.vue'
+import { todayIso } from '@/utils/dateInput'
 import { useAuthStore } from '@/stores/auth'
+import {
+  availableTerms,
+  matchRule,
+  minDownPaymentFor,
+  scheduleShape,
+  totalFor,
+  type MarkupBase,
+  type ProgramRounding,
+  type ProgramRule,
+} from '@/utils/programMath'
 import { formatCurrency, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
@@ -10,17 +23,21 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useFolders } from '@/composables/useFolders'
-import { useDealDraft } from '@/composables/useDealDraft'
+import { useDealDraft, type DealDraft } from '@/composables/useDealDraft'
 import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useAccountingStore } from '@/stores/accounting'
 import { useCashBoxesStore } from '@/stores/cashboxes'
+import GuarantorRiskAlert, { type GuarantorBrief } from '@/components/GuarantorRiskAlert.vue'
 import { useSuppliersStore } from '@/stores/suppliers'
 import { useSubscription } from '@/composables/useSubscription'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
-import ClientPicker from '@/components/ClientPicker.vue'
+import DateField from '@/components/DateField.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
 import SupplierFormDialog from '@/components/SupplierFormDialog.vue'
 import SupplierSelect from '@/components/SupplierSelect.vue'
+import ProgramEditDialog from '@/components/ProgramEditDialog.vue'
+import DealPeoplePicker from '@/components/DealPeoplePicker.vue'
 
 const authStore = useAuthStore()
 const suppliersStore = useSuppliersStore()
@@ -181,6 +198,18 @@ function removeContract(index: number) {
 }
 
 // Step 2: Terms
+/**
+ * Счета сделки. Пусто — сервер подставит сам: счёт кассы, потом счёт по
+ * умолчанию для этого вида денег. Спрашиваем не потому, что нужно всегда, а
+ * потому что закупка и первый взнос часто идут через разные счета.
+ */
+const deployAccountId = ref<string | null>(null)
+const downPaymentAccountId = ref<string | null>(null)
+const accountingStore = useAccountingStore()
+const usableAccounts = computed(() =>
+  accountingStore.accounts.filter((a) => !a.disabledAt),
+)
+
 const purchasePrice = ref<number | null>(null)
 const markupType = ref<'percent' | 'fixed'>('percent')
 const markupValue = ref(15)
@@ -195,7 +224,7 @@ const downPaymentPercent = ref<number | null>(null)
 const termMonths = ref(6)
 const paymentType = ref<PaymentType>('EQUAL')
 const paymentInterval = ref('MONTHLY')
-const dealDate = ref(new Date().toISOString().slice(0, 10))
+const dealDate = ref(todayIso())
 const customFirstPayment = ref('')
 
 // Wholesale price (what partner actually paid the supplier) and
@@ -269,7 +298,24 @@ function pickDefaultCashBoxId(): string | null {
 // only invoke it inside async callbacks (`onMounted` callback runs
 // AFTER setup finishes, by which time every const has its value).
 
+/**
+ * Снимок черновика, снятый ДО сетевых запросов монтирования. Читать хранилище
+ * позже опасно: за время загрузки касс его могло не стать.
+ */
+let draftSnapshotOnMount: ReturnType<typeof useDealDraft>['draft']['value'] = null
+
 onMounted(async () => {
+  draftSnapshotOnMount = dealDraft.draft.value
+  // Программы рассрочки: без них форма работает как раньше, поэтому ошибку
+  // загрузки не показываем.
+  void loadPrograms()
+  // Счета — необязательная часть формы: если раздел закрыт правом или счетов
+  // нет, секция просто не появится, а сделка создастся как раньше.
+  if (authStore.can('accounting.view')) accountingStore.fetchAccounts().catch(() => {})
+  // Клиент, переданный из списка клиентов («Новая сделка для этого клиента»).
+  // Черновик важнее: если партнёр не дозаполнил прошлую сделку, не перетираем.
+  const preClient = route.query.clientProfileId as string | undefined
+  if (preClient && !selectedClientProfileId.value) selectedClientProfileId.value = preClient
   // Партнёры-поставщики (только если фича доступна по тарифу).
   if (suppliersEnabled.value) {
     suppliersStore.fetchList({ sort: 'name' }).catch(() => {})
@@ -399,7 +445,7 @@ onMounted(async () => {
   // and the floater keeps offering to resume it, so nothing is lost —
   // the partner just has to opt in.
   const wantsResume = route.query.resume === '1'
-  const stored = dealDraft.draft.value
+  const stored = dealDraft.draft.value ?? draftSnapshotOnMount
   const storedHasContent =
     !!stored &&
     (
@@ -410,7 +456,7 @@ onMounted(async () => {
   // В режиме редактирования черновик не применяем никогда: форма уже заполнена
   // данными сделки, и восстановление затёрло бы их чужим черновиком.
   if (wantsResume && storedHasContent && !editId.value) {
-    applyDraftToForm()
+    await applyDraftToForm(stored)
     wasRestoredOnMount.value = true
     if (selectedCashBoxId.value) await fetchCashBoxCapital(selectedCashBoxId.value)
   } else if (!storedHasContent && dealDraft.hasDraft.value) {
@@ -703,6 +749,190 @@ function switchMarkupType(type: 'percent' | 'fixed') {
 }
 
 // Total price ↔ markup sync.
+/**
+ * Программа рассрочки.
+ *
+ * Выбрал программу — наценка, срок и минимальный взнос приходят из её условий,
+ * и продавцу не нужно считать в уме. Не выбрал — форма работает ровно как
+ * раньше: весь код ниже включается только при выбранной программе.
+ *
+ * Цена подставляется через тот же механизм, что и ручной ввод итоговой цены:
+ * так в сделку уходит точная сумма в рублях, а не пересчитанный процент.
+ */
+interface ProgramItem {
+  id: string
+  name: string
+  description: string | null
+  isDefault: boolean
+  markupBase: MarkupBase
+  paymentInterval: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
+  rounding: ProgramRounding
+  minAmount: number | null
+  maxAmount: number | null
+  strict: boolean
+  archivedAt: string | null
+  validFrom?: string | null
+  validTo?: string | null
+  cashBoxIds?: string[]
+  rules: ProgramRule[]
+}
+
+const programs = ref<ProgramItem[]>([])
+const selectedProgramId = ref<string | null>(null)
+
+const selectedProgram = computed(
+  () => programs.value.find((p) => p.id === selectedProgramId.value) ?? null,
+)
+
+/** Программы, применимые здесь и сейчас: остальные продавцу только мешают. */
+const availablePrograms = computed(() => {
+  const now = Date.now()
+  return programs.value.filter((p) => {
+    if (p.archivedAt) return false
+    if (p.validFrom && now < new Date(p.validFrom).getTime()) return false
+    if (p.validTo && now > new Date(p.validTo).getTime()) return false
+    if (p.cashBoxIds?.length && selectedCashBoxId.value && !p.cashBoxIds.includes(selectedCashBoxId.value)) {
+      return false
+    }
+    return true
+  })
+})
+
+/** Условия под текущую стоимость и срок. */
+const programRule = computed(() => {
+  const p = selectedProgram.value
+  if (!p) return null
+  return matchRule(p.rules, purchasePrice.value || 0, termMonths.value)
+})
+
+/** Сроки, которые программа допускает для этой стоимости. */
+const programTerms = computed(() => {
+  const p = selectedProgram.value
+  if (!p) return []
+  return availableTerms(p.rules, purchasePrice.value || 0)
+})
+
+const programMinDownPayment = computed(() => {
+  const p = selectedProgram.value
+  const rule = programRule.value
+  if (!p || !rule) return 0
+  return minDownPaymentFor(
+    totalFor(purchasePrice.value || 0, rule.markupPercent, p.markupBase),
+    rule.minDownPaymentPercent,
+  )
+})
+
+/**
+ * Цена по программе — та же формула, что на сервере.
+ *
+ * Считается отдельно от полей формы: подстановка через поле «итоговая цена»
+ * сбрасывается собственным наблюдателем за наценкой, и до сервера доезжал
+ * только процент. Для наценки «от цены продажи» это давало расхождение в
+ * десятки рублей на крупных суммах.
+ */
+const programTotalPrice = computed(() => {
+  const p = selectedProgram.value
+  const rule = programRule.value
+  if (!p || !rule) return null
+  const total = totalFor(purchasePrice.value || 0, rule.markupPercent, p.markupBase)
+  return total > 0 ? total : null
+})
+
+/**
+ * Как называть срок: у недельной программы «6 мес» — прямая ложь, там шесть
+ * недель.
+ */
+const termUnitShort = computed(() =>
+  paymentInterval.value === 'WEEKLY' ? 'нед' : paymentInterval.value === 'BIWEEKLY' ? '× 2 нед' : 'мес',
+)
+
+/**
+ * Тариф выбран — наценку и цену задаёт он.
+ *
+ * Раньше поля оставались открытыми у нестрогих тарифов, и это вводило в
+ * заблуждение: партнёр правил процент, видел свою цифру в форме, а на сервер
+ * всё равно уходила цена по тарифу (`programTotalPrice`) — «поменял 20 на 30,
+ * а сделка снова по 20». Тариф на то и тариф: для каждого срока наценка своя,
+ * а нужны свои условия — есть пункт «Без программы».
+ */
+const programLocked = computed(() => !!selectedProgram.value)
+
+/**
+ * Правка тарифа прямо из визарда.
+ *
+ * Партнёр видит применённые условия и хочет их поправить — гонять его в
+ * настройки и обратно, теряя заполненную форму, незачем: открываем то же окно,
+ * что и в разделе «Тарифы», а после сохранения перечитываем список и заново
+ * применяем условия к текущей сделке.
+ */
+const canEditPrograms = computed(() => authStore.can('deals.programs'))
+
+/** «Тариф „Стандарт“», но без «Тариф „Тариф Innzare“». */
+const tariffTitle = computed(() => {
+  const name = selectedProgram.value?.name?.trim() ?? ''
+  if (!name) return 'Тариф'
+  // \b в JS не видит границу после кириллицы — сравниваем со следующим пробелом.
+  return /^тариф(\s|$)/i.test(name) ? name : `Тариф «${name}»`
+})
+const programDialog = ref(false)
+
+async function onProgramSaved() {
+  await loadPrograms()
+  applyProgram()
+}
+
+/** Программа выбрана, но для этой суммы и срока в ней нет условий. */
+const programMismatch = computed(
+  () => !!selectedProgram.value && !programRule.value && (purchasePrice.value || 0) > 0,
+)
+
+async function loadPrograms() {
+  try {
+    programs.value = await api.get<ProgramItem[]>('/installment-programs')
+    // Программу по умолчанию подставляем только в новой сделке: при
+    // редактировании условия договора уже зафиксированы.
+    if (!isEditMode.value && !selectedProgramId.value) {
+      const def = programs.value.find((p) => p.isDefault && !p.archivedAt)
+      if (def) selectedProgramId.value = def.id
+    }
+  } catch {
+    // Программы — удобство, а не обязательное условие: без них форма работает.
+  }
+}
+
+/** Подставляет условия программы в поля цены и срока. */
+function applyProgram() {
+  const p = selectedProgram.value
+  if (!p) return
+  const terms = programTerms.value
+  // Срок вне программы — берём ближайший из допустимых, иначе продавец увидит
+  // «нет условий» и не поймёт, что делать.
+  if (terms.length && !terms.includes(termMonths.value)) {
+    termMonths.value = terms.reduce((a, b) =>
+      Math.abs(b - termMonths.value) < Math.abs(a - termMonths.value) ? b : a,
+    )
+  }
+  // Периодичность платежей — тоже условие программы: у недельной программы
+  // месячный график был бы отклонён сервером без всякой подсказки.
+  if (paymentInterval.value !== p.paymentInterval) paymentInterval.value = p.paymentInterval
+  const rule = programRule.value
+  if (!rule) return
+  const total = totalFor(purchasePrice.value || 0, rule.markupPercent, p.markupBase)
+  if (total > 0) onTotalPriceInput(total)
+}
+
+watch(selectedProgramId, () => applyProgram())
+// Сменили кассу — программа могла перестать действовать. Молча оставлять её
+// выбранной нельзя: сервер потом откажет, а продавец не поймёт почему.
+watch(availablePrograms, (list) => {
+  if (selectedProgramId.value && !list.some((p) => p.id === selectedProgramId.value)) {
+    selectedProgramId.value = null
+  }
+})
+watch([purchasePrice, termMonths], () => {
+  if (selectedProgramId.value) applyProgram()
+})
+
 // `manualTotalPrice` keeps the exact value the partner typed into the totalPrice
 // field — without it, percent rounding would drop kopecks (e.g. 99 250 → 99 246).
 // Cleared automatically as soon as the partner edits any other related field.
@@ -785,7 +1015,60 @@ const downPaymentAmount = computed(() => {
   return raw
 })
 const remainingAmount = computed(() => totalPrice.value - downPaymentAmount.value)
-const monthlyPayment = computed(() => termMonths.value > 0 ? remainingAmount.value / termMonths.value : 0)
+
+/**
+ * Округление платежа у сделки без тарифа.
+ *
+ * У сделки по тарифу округление — часть его условий, и продавец их не
+ * выбирает: показываем как есть.
+ */
+const ROUNDING_LABEL: Record<ProgramRounding, string> = {
+  NONE: 'без округления',
+  TO_100: 'до 100 ₽',
+  TO_500: 'до 500 ₽',
+  TO_1000: 'до 1000 ₽',
+}
+const ROUNDING_OPTIONS = [
+  { value: 'NONE', label: 'не округлять' },
+  { value: 'TO_100', label: 'до 100 ₽' },
+  { value: 'TO_500', label: 'до 500 ₽' },
+  { value: 'TO_1000', label: 'до 1000 ₽' },
+]
+const manualRounding = ref<ProgramRounding>('NONE')
+const effectiveRounding = computed<ProgramRounding>(
+  () => selectedProgram.value?.rounding ?? manualRounding.value,
+)
+
+/**
+ * Платёж по графику — тот же расчёт, что будет у созданной сделки.
+ *
+ * Раньше здесь стояло простое деление долга на срок, и при тарифе с
+ * округлением форма показывала одно («10 125 ₽»), а график получался другой
+ * («10 100 ₽», последний 10 400 ₽). Округление живёт в тарифе, поэтому и
+ * считать надо его же формулой.
+ */
+const paymentShape = computed(() =>
+  scheduleShape(remainingAmount.value, termMonths.value, effectiveRounding.value),
+)
+const monthlyPayment = computed(() =>
+  termMonths.value > 0 ? (paymentShape.value.regular || paymentShape.value.last) : 0,
+)
+/** Последний платёж забирает расхождение от округления — показываем, если он другой. */
+const lastPayment = computed(() => paymentShape.value.last)
+/**
+ * Показываем последний платёж, только когда он действительно другой.
+ *
+ * Без округления в конце обычно оседают копейки от деления (13 888 и 13 896) —
+ * писать об этом значит шуметь. А вот округление сдвигает туда сотни и тысячи,
+ * и умолчать об этом нельзя.
+ */
+const lastPaymentDiffers = computed(() => {
+  const { regular, last } = paymentShape.value
+  if (termMonths.value <= 1 || regular <= 0) return false
+  const diff = Math.abs(last - regular)
+  if (diff < 1) return false
+  return effectiveRounding.value !== 'NONE' || diff >= regular * 0.01
+})
 
 // When the total price changes (markup/purchase edits), drop the manual ₽
 // override so the amount re-derives from the percent, clear the stale over-limit
@@ -870,6 +1153,24 @@ const downPaymentError = computed(() => {
   return ''
 })
 
+/**
+ * Первый платёж не дальше 50 дней от даты договора.
+ *
+ * Защита от опечатки: вместо сентября случайно указывают следующий год, и
+ * договор молча уходит из графика поступлений. В календаре такие дни просто
+ * недоступны — то же правило проверяет сервер.
+ */
+const MAX_FIRST_PAYMENT_DAYS = 50
+const firstPaymentMax = computed(() => {
+  const d = new Date(dealDate.value)
+  if (Number.isNaN(d.getTime())) return null
+  d.setDate(d.getDate() + MAX_FIRST_PAYMENT_DAYS)
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+})
+
 const firstPaymentDate = computed(() => {
   if (customFirstPayment.value) {
     return new Date(customFirstPayment.value).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -881,42 +1182,109 @@ const firstPaymentDate = computed(() => {
   return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
 })
 
+/**
+ * График платежей для превью — ровно тот, что получится у сделки.
+ *
+ * Даты считаются так же, как на сервере (`generatePaymentSchedule`): первый
+ * платёж от указанной даты, дальше шаг интервала. Суммы — из `scheduleShape`,
+ * поэтому округление тарифа видно заранее, вместе с последним платежом.
+ */
+const previewSchedule = computed(() => {
+  const n = termMonths.value
+  const amount = remainingAmount.value
+  if (!(n > 0) || !(amount > 0)) return []
+
+  const start = customFirstPayment.value
+    ? new Date(customFirstPayment.value)
+    : (() => {
+        const d = new Date(dealDate.value)
+        if (paymentInterval.value === 'WEEKLY') d.setDate(d.getDate() + 7)
+        else if (paymentInterval.value === 'BIWEEKLY') d.setDate(d.getDate() + 14)
+        else d.setMonth(d.getMonth() + 1)
+        return d
+      })()
+  if (Number.isNaN(start.getTime())) return []
+
+  const shape = paymentShape.value
+  const rows: Array<{ n: number; date: string; amount: number }> = []
+  for (let i = 0; i < n; i++) {
+    const due = new Date(start)
+    if (paymentInterval.value === 'WEEKLY') due.setDate(due.getDate() + 7 * i)
+    else if (paymentInterval.value === 'BIWEEKLY') due.setDate(due.getDate() + 14 * i)
+    else due.setMonth(due.getMonth() + i)
+    rows.push({
+      n: i + 1,
+      date: due.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short', year: '2-digit' }),
+      amount: i < n - 1 ? shape.regular : shape.last,
+    })
+  }
+  return rows
+})
+
+/** Длинный график не разворачиваем целиком: начало, конец и «ещё N». */
+const previewScheduleShown = computed(() => {
+  const rows = previewSchedule.value
+  if (rows.length <= 8) return { head: rows, tail: [] as typeof rows, hidden: 0 }
+  return { head: rows.slice(0, 5), tail: rows.slice(-2), hidden: rows.length - 7 }
+})
+
+/**
+ * Что показать в графике превью.
+ *
+ * В боковой колонке место дорогое — длинный график сворачивается до начала и
+ * конца. На «Обзоре» превью занимает всю ширину и это последняя проверка перед
+ * созданием: там показываем весь график целиком, а высоту держит прокрутка.
+ */
+const previewPlanRows = computed(() =>
+  step.value === 4
+    ? { head: previewSchedule.value, tail: [] as typeof previewSchedule.value, hidden: 0 }
+    : previewScheduleShown.value,
+)
+
 // Step 3: Client
 const selectedClientProfileId = ref<string | null>(null)
 
-// Selected client profile (resolved by ClientPicker)
+// Выбранный клиент сделки — приходит из блока выбора людей.
 const selectedClientProfile = ref<ClientProfile | null>(null)
 
 // Поручители — до 5, порядок = порядок добавления (первый = основной).
 const MAX_GUARANTORS = 5
 const selectedGuarantors = ref<ClientProfile[]>([])
-// v-model для пикера добавления нового поручителя (сбрасывается после добавления).
-const guarantorPickerId = ref<string | null>(null)
-// Меняем ключ после каждого добавления → пикер пересоздаётся пустым.
-const guarantorPickerKey = ref(0)
-
-const canAddGuarantor = computed(() => selectedGuarantors.value.length < MAX_GUARANTORS)
+const peoplePickerRef = ref<InstanceType<typeof DealPeoplePicker> | null>(null)
 const selectedGuarantorIds = computed(() => selectedGuarantors.value.map((g) => g.id))
-
-function addGuarantor(profile: ClientProfile | null) {
-  // Пересоздаём пикер (пустой) — сброса v-model недостаточно, автокомплит
-  // оставляет введённый текст.
-  guarantorPickerId.value = null
-  guarantorPickerKey.value++
-  if (!profile) return
-  if (selectedGuarantors.value.some((g) => g.id === profile.id)) {
-    toast.error('Этот поручитель уже добавлен')
-    return
-  }
-  if (!canAddGuarantor.value) {
-    toast.error(`Можно добавить не больше ${MAX_GUARANTORS} поручителей`)
-    return
-  }
-  selectedGuarantors.value.push(profile)
-}
-
 function removeGuarantorAt(index: number) {
   selectedGuarantors.value.splice(index, 1)
+}
+
+/**
+ * Список поручителей пришёл целиком из блока выбора.
+ *
+ * Риск-сводку запрашиваем только для новых: у остальных она уже загружена, а
+ * повторный запрос на каждый клик по списку ничего не добавляет.
+ */
+function onGuarantorsChanged(next: ClientProfile[]) {
+  const known = new Set(selectedGuarantors.value.map((g) => g.id))
+  selectedGuarantors.value = next
+  for (const g of next) if (!known.has(g.id)) void loadGuarantorRisk(g.id)
+}
+
+// ─── Риск-сводка по поручителю ──────────────────────────────────────
+// Показываем в момент выбора: после подписания договора узнать, что человек
+// уже отвечает за несколько чужих рассрочек, поздно. Ошибку запроса глотаем —
+// проверка не должна мешать заводить сделку.
+const guarantorRisk = ref<Record<string, GuarantorBrief>>({})
+const guarantorRiskLoading = ref<Record<string, boolean>>({})
+
+async function loadGuarantorRisk(profileId: string) {
+  if (guarantorRisk.value[profileId] || guarantorRiskLoading.value[profileId]) return
+  guarantorRiskLoading.value[profileId] = true
+  try {
+    guarantorRisk.value[profileId] = await api.get<GuarantorBrief>(`/guarantors/brief/${profileId}`)
+  } catch {
+    // молча: без сводки форма работает как раньше
+  } finally {
+    guarantorRiskLoading.value[profileId] = false
+  }
 }
 
 // ─── Draft persistence ──────────────────────────────────────────────
@@ -937,8 +1305,8 @@ let isRestoringDraft = false
 // no real draft.
 const wasRestoredOnMount = ref(false)
 
-function applyDraftToForm() {
-  const d = dealDraft.draft.value
+async function applyDraftToForm(source?: DealDraft | null) {
+  const d = source ?? dealDraft.draft.value
   if (!d) return
   isRestoringDraft = true
   try {
@@ -973,7 +1341,20 @@ function applyDraftToForm() {
     }
     selectedFolderId.value = d.selectedFolderId
     selectedCashBoxId.value = d.selectedCashBoxId
+    selectedSupplierId.value = d.selectedSupplierId ?? null
+    if (d.paidToSupplier !== undefined) paidToSupplier.value = d.paidToSupplier
     step.value = d.step
+
+    // Эти значения нельзя ставить сразу: наблюдатели за ценой и кассой
+    // отрабатывают следом и обнуляют ручные правки — цена, введённая руками,
+    // возвращалась расчётной, а состав участников подменялся на «все из кассы».
+    await nextTick()
+    manualTotalPrice.value = d.manualTotalPrice
+    if (d.manualDownPayment !== undefined) manualDownPayment.value = d.manualDownPayment
+    if (d.dealParticipants?.length) {
+      dealParticipants.value = d.dealParticipants.map((p) => ({ ...p })) as any
+      participantsDirty.value = true
+    }
   } finally {
     setTimeout(() => { isRestoringDraft = false }, 0)
   }
@@ -982,22 +1363,35 @@ function applyDraftToForm() {
 function scheduleDraftSave() {
   if (isEditMode.value) return
   if (isRestoringDraft) return
+  // Страница ещё грузится — форма пуста не потому, что её очистили, а потому
+  // что до восстановления черновика дело не дошло. Раньше именно здесь он и
+  // терялся: подстановка кассы по умолчанию запускала автосохранение, оно
+  // через полсекунды видело пустые поля и СТИРАЛО черновик из хранилища —
+  // а восстановление, ждавшее ответа сервера по кассе, приходило уже к пустоте.
+  if (prefillLoading.value) return
   if (draftSaveTimer) clearTimeout(draftSaveTimer)
   draftSaveTimer = setTimeout(() => {
+    // Та же защита в самом таймере: он мог быть запланирован до того, как
+    // начался разбор адреса страницы.
+    if (isRestoringDraft || prefillLoading.value) return
     // Don't persist a draft that's effectively empty. On first mount
     // we auto-fill selectedCashBoxId with the partner's default
     // cashbox; the watcher used to treat that as "form was edited"
     // and saved a 1-field draft, which then surfaced the restore
     // banner on every subsequent visit even though the partner never
-    // typed anything. If the partner had real draft content earlier
-    // and is now clearing the form, we drop the storage row too.
+    // typed anything.
     const hasRealContent =
       productName.value.trim().length > 0 ||
       (purchasePrice.value ?? 0) > 0 ||
       !!selectedClientProfileId.value
     if (!hasRealContent) {
-      if (dealDraft.hasDraft.value) dealDraft.clear()
-      wasRestoredOnMount.value = false
+      // Стираем сохранённый черновик, только если партнёр очистил ИМЕННО его —
+      // то есть форма была им наполнена. Просто зайти в мастер «Создать сделку»
+      // с пустой формой не должно уничтожать отложенную работу.
+      if (wasRestoredOnMount.value && dealDraft.hasDraft.value) {
+        dealDraft.clear()
+        wasRestoredOnMount.value = false
+      }
       return
     }
     dealDraft.save({
@@ -1026,6 +1420,10 @@ function scheduleDraftSave() {
       selectedGuarantors: selectedGuarantors.value,
       selectedFolderId: selectedFolderId.value,
       selectedCashBoxId: selectedCashBoxId.value,
+      manualDownPayment: manualDownPayment.value,
+      selectedSupplierId: selectedSupplierId.value,
+      paidToSupplier: paidToSupplier.value,
+      dealParticipants: dealParticipants.value.map((p: DealParticipantRow) => ({ ...p })),
     })
   }, 500)
 }
@@ -1054,7 +1452,7 @@ function resetDraftAndForm() {
   termMonths.value = 6
   paymentType.value = 'EQUAL' as PaymentType
   paymentInterval.value = 'MONTHLY'
-  dealDate.value = new Date().toISOString().slice(0, 10)
+  dealDate.value = todayIso()
   customFirstPayment.value = ''
   useWholesalePrice.value = false
   wholesalePrice.value = null
@@ -1062,7 +1460,6 @@ function resetDraftAndForm() {
   selectedClientProfileId.value = null
   selectedClientProfile.value = null
   selectedGuarantors.value = []
-  guarantorPickerId.value = null
   selectedFolderId.value = null
   selectedCashBoxId.value = pickDefaultCashBoxId()
   step.value = 1
@@ -1085,13 +1482,15 @@ watch(
     selectedClientProfileId,
     selectedClientProfile, selectedGuarantors,
     selectedFolderId, selectedCashBoxId,
+    // Ручной взнос, поставщик и состав участников тоже надо запоминать —
+    // без них восстановленный черновик отличался бы от того, что видел партнёр.
+    manualDownPayment, selectedSupplierId, paidToSupplier, dealParticipants,
     step,
   ],
   scheduleDraftSave,
   { deep: true },
 )
 
-const clientPickerRef = ref<InstanceType<typeof ClientPicker> | null>(null)
 
 function onClientSelected(profile: ClientProfile | null) {
   selectedClientProfile.value = profile
@@ -1105,7 +1504,11 @@ function openCreateDialog() {
 }
 
 function onClientCreated(profile: ClientProfile) {
-  clientPickerRef.value?.selectProfile(profile)
+  // Нового клиента сразу видно первым в списке и он выбран: иначе партнёр
+  // заводит человека и не понимает, куда тот делся.
+  peoplePickerRef.value?.prepend(profile)
+  selectedClientProfileId.value = profile.id
+  selectedClientProfile.value = profile
 }
 
 // Preview helpers
@@ -1186,7 +1589,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
       if (wholesaleChanged || splitBaseChanged) {
         const ok = window.confirm(
           'Изменение оптовой цены или режима распределения прибыли пересчитает ' +
-          'ранее начисленную долю со-инвесторов по этой сделке.\n\n' +
+          'ранее начисленную долю инвесторов по этой сделке.\n\n' +
           'Если по сделке уже были оплаченные платежи, суммы у CI могут ' +
           'измениться (увеличиться или уменьшиться).\n\n' +
           'Продолжить?',
@@ -1216,7 +1619,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
         // Явная цена в рублях — источник истины. Без неё сервер пересчитывал
         // цену из процента, и у сделок с процентом «от цены продажи» долг
         // клиента молча уменьшался при каждом сохранении.
-        totalPrice: totalPrice.value,
+        totalPrice: programTotalPrice.value ?? totalPrice.value,
         // 0 — валидное значение (убрать первоначальный взнос), поэтому ?? , не ||
         downPayment: downPaymentAmount.value ?? undefined,
         numberOfPayments: termMonths.value,
@@ -1290,11 +1693,20 @@ async function submitDeal(acknowledgedOverdraft = false) {
       contractPhotos: contractUrls.length ? contractUrls : undefined,
       purchasePrice: purchasePrice.value || 0,
       markupPercent: markupPercent.value,
-      // Send explicit totalPrice when partner typed it manually — backend
-      // prefers it over markupPercent to preserve the exact rubles.
-      totalPrice: manualTotalPrice.value !== null ? manualTotalPrice.value : undefined,
+      // Точная цена в рублях. У программы она считается по её же формуле:
+      // передавать вместо неё процент нельзя — сервер восстановил бы цену из
+      // округлённого процента и получил другую сумму, а строгая программа
+      // отклонила бы корректно оформленную сделку.
+      totalPrice: programTotalPrice.value ?? (manualTotalPrice.value !== null ? manualTotalPrice.value : undefined),
       downPayment: downPaymentAmount.value || undefined,
       numberOfPayments: termMonths.value,
+      // Программа: сервер подставит и проверит условия, а в сделке останется
+      // снимок — им потом объясняется, откуда взялась эта цена.
+      ...(selectedProgramId.value
+        ? { programId: selectedProgramId.value }
+        : manualRounding.value !== 'NONE'
+          ? { rounding: manualRounding.value }
+          : {}),
       paymentInterval: paymentInterval.value,
       paymentType: paymentType.value,
       dealDate: dealDate.value,
@@ -1307,6 +1719,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
       wholesalePrice: useWholesalePrice.value ? (wholesalePrice.value || undefined) : undefined,
       profitSplitBase: useWholesalePrice.value ? profitSplitBase.value : undefined,
       cashBoxId: selectedCashBoxId.value || undefined,
+      // Счета движений. Пусто — сервер определит сам.
+      deployAccountId: deployAccountId.value || undefined,
+      downPaymentAccountId: downPaymentAccountId.value || undefined,
       // Партнёр-поставщик + оплачен ли он. paidToSupplier=false создаёт долг.
       supplierId: selectedSupplierId.value || undefined,
       paidToSupplier: selectedSupplierId.value ? paidToSupplier.value : undefined,
@@ -1448,10 +1863,6 @@ async function submitDeal(acknowledgedOverdraft = false) {
           </div>
         </div>
 
-        <div class="wz-actions">
-          <div class="wz-bar wz-bar--btn" />
-          <div class="wz-bar wz-bar--btn" />
-        </div>
       </div>
 
       <aside class="wizard-preview">
@@ -1466,7 +1877,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
       </aside>
     </div>
 
-    <div v-else class="wizard-layout">
+    <div v-else class="wizard-layout" :class="{ 'wizard-layout--review': step === 4 }">
     <div class="wizard-main">
 
     <!-- Step 1: Product -->
@@ -1521,13 +1932,37 @@ async function submitDeal(acknowledgedOverdraft = false) {
 
           <div class="form-field">
             <label class="field-label">Город <span class="required">*</span></label>
-            <select v-model="city" class="field-input field-select">
-              <option value="" disabled>Выберите город</option>
-              <option v-for="c in CITIES" :key="c" :value="c">{{ c }}</option>
-            </select>
+            <SelectField
+              :model-value="city || null"
+              :options="CITIES.map((c) => ({ value: c, label: c }))"
+              placeholder="Выберите город"
+              @update:model-value="city = $event ?? ''"
+            />
           </div>
 
           <!-- Photos -->
+        <!-- Партнёр-поставщик: это про товар — у кого он выкуплен, а не про
+             условия рассрочки, поэтому спрашиваем здесь, на первом шаге. -->
+            <div v-if="suppliersEnabled" class="form-field full-width">
+              <label class="field-label">Партнёр-поставщик</label>
+              <SupplierSelect
+                v-model="selectedSupplierId"
+                :items="supplierItems"
+                placeholder="У кого выкупили товар (необязательно)"
+                @create-new="supplierFormOpen = true"
+              />
+
+              <div v-if="selectedSupplierId" class="sup-paid-row">
+                <label class="wholesale-checkbox-label">
+                  <input type="checkbox" :checked="paidToSupplier" @change="paidToSupplier = !paidToSupplier" />
+                  <span>Оплачено поставщику</span>
+                </label>
+                <span v-if="!paidToSupplier" class="sup-debt-hint">
+                  <v-icon icon="mdi-cash-minus" size="14" /> Долг поставщику: {{ formatCurrency(supplierDebtAmount) }}
+                </span>
+              </div>
+            </div>
+
           <div class="form-field full-width">
             <label class="field-label">Фото товара <span class="text-medium-emphasis">({{ photoFiles.length }}/8)</span></label>
             <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onPhotoSelect" />
@@ -1584,9 +2019,30 @@ async function submitDeal(acknowledgedOverdraft = false) {
           <div class="step-title">Условия мурабахи</div>
           <div class="step-subtitle">Настройте финансовые параметры сделки</div>
         </div>
+
+        <!-- Тариф выбирается здесь, в заголовке: он задаёт всё остальное на
+             шаге, и место ему рядом с названием шага, а не в середине полей. -->
+        <div v-if="availablePrograms.length && !isEditMode" class="step-tariff">
+          <label class="step-tariff-label">Ваши тарифы</label>
+          <SelectField
+            v-model="selectedProgramId"
+            :options="availablePrograms.map((p) => ({
+              value: p.id,
+              label: p.name,
+              hint: p.strict ? 'строгий' : undefined,
+            }))"
+            empty-label="Без тарифа — условия вручную"
+          />
+        </div>
       </div>
 
+          <!-- Закупка: за сколько купили товар. Отдельным блоком — как касса,
+               счета и участники ниже: каждый смысловой кусок своей карточкой. -->
           <v-card rounded="lg" elevation="0" border class="pa-5">
+            <div class="section-header-sm">
+              <v-icon icon="mdi-tag-outline" size="18" />
+              <span>Закупка</span>
+            </div>
             <div class="form-grid">
               <div class="form-field full-width">
                 <label class="field-label">Закупочная цена <span class="required">*</span></label>
@@ -1604,27 +2060,6 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   <template v-else>
                     Доступно в кассе: {{ formatCurrency(cashBoxCapital.availableCapital) }}
                   </template>
-                </div>
-              </div>
-
-              <!-- Партнёр-поставщик + долг (только если фича доступна по тарифу) -->
-              <div v-if="suppliersEnabled" class="form-field full-width">
-                <label class="field-label">Партнёр-поставщик</label>
-                <SupplierSelect
-                  v-model="selectedSupplierId"
-                  :items="supplierItems"
-                  placeholder="У кого выкупили товар (необязательно)"
-                  @create-new="supplierFormOpen = true"
-                />
-
-                <div v-if="selectedSupplierId" class="sup-paid-row">
-                  <label class="wholesale-checkbox-label">
-                    <input type="checkbox" :checked="paidToSupplier" @change="paidToSupplier = !paidToSupplier" />
-                    <span>Оплачено поставщику</span>
-                  </label>
-                  <span v-if="!paidToSupplier" class="sup-debt-hint">
-                    <v-icon icon="mdi-cash-minus" size="14" /> Долг поставщику: {{ formatCurrency(supplierDebtAmount) }}
-                  </span>
                 </div>
               </div>
 
@@ -1668,7 +2103,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
 
                   <!-- Profit split mode toggle -->
                   <div class="wholesale-split-block mt-3">
-                    <div class="wholesale-split-title">Как делить прибыль с со-инвесторами</div>
+                    <div class="wholesale-split-title">Как делить прибыль с инвесторами</div>
                     <div class="wholesale-split-options">
                       <button
                         type="button"
@@ -1678,7 +2113,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                       >
                         <div class="split-option-title">Только наценку рассрочки</div>
                         <div class="split-option-desc">
-                          Розничная маржа — полностью вам. Со-инвестор получает долю
+                          Розничная маржа — полностью вам. Инвестор получает долю
                           только от наценки за рассрочку.
                         </div>
                       </button>
@@ -1690,7 +2125,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                       >
                         <div class="split-option-title">Всю прибыль</div>
                         <div class="split-option-desc">
-                          Со-инвестор получает долю и от розничной маржи, и от наценки
+                          Инвестор получает долю и от розничной маржи, и от наценки
                           за рассрочку.
                         </div>
                       </button>
@@ -1698,8 +2133,85 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   </div>
                 </div>
               </div>
+            </div>
+          </v-card>
 
-              <div class="form-field full-width">
+          <!-- Условия рассрочки. С тарифом карточка окрашивается в мягкий
+               зелёный: видно, что цифры пришли из собственного тарифа. -->
+          <v-card
+            rounded="lg"
+            elevation="0"
+            border
+            class="pa-5 mt-4 terms-card"
+            :class="{ 'terms-card--tariff': !!selectedProgram }"
+          >
+            <div class="terms-card-head">
+              <div class="terms-card-title">
+                <!-- Имя тарифа партнёр часто уже начинает со слова «тариф» —
+                     второй раз его не повторяем. -->
+                <template v-if="selectedProgram">{{ tariffTitle }}</template>
+                <template v-else>Условия рассрочки</template>
+              </div>
+              <button
+                v-if="selectedProgram && canEditPrograms"
+                class="terms-edit-btn"
+                type="button"
+                @click="programDialog = true"
+              >
+                <v-icon icon="mdi-pencil-outline" size="14" />
+                Изменить тариф
+              </button>
+            </div>
+            <div class="form-grid">
+
+
+                <div v-if="programMismatch" class="field-hint-styled program-hint program-hint--warn">
+                  <v-icon icon="mdi-alert-outline" size="14" />
+                  <span v-if="programTerms.length">
+                    Для этой суммы в тарифе есть сроки: {{ programTerms.join(', ') }}
+                  </span>
+                  <span v-else>
+                    Для этой суммы в тарифе нет условий — выберите другой или снимите
+                  </span>
+                </div>
+                <div v-else-if="programRule" class="tariff-note">
+                  <v-icon icon="mdi-check-circle-outline" size="14" />
+                  <span>
+                    Наценка <b>{{ programRule.markupPercent }}%</b>
+                    {{ selectedProgram?.markupBase === 'OF_COST' ? 'от закупки' : 'от цены продажи' }}
+                    — по тарифу для {{ termMonths }} {{ termUnitShort }}
+                    <template v-if="programMinDownPayment">
+                      · минимальный взнос {{ formatCurrency(programMinDownPayment) }}
+                    </template>
+                    <template v-if="selectedProgram?.rounding !== 'NONE'">
+                      · платёж округляется {{ ROUNDING_LABEL[selectedProgram!.rounding] }}
+                    </template>
+                    <!-- Наценку задаёт тариф: у каждого срока своя. Без этой
+                         строки партнёр правит процент и не понимает, почему
+                         сделка всё равно уходит по тарифной цене. -->
+                    <br />
+                    Чтобы задать свои условия, выберите «Без тарифа».
+                  </span>
+                </div>
+
+
+                <!-- Что получилось по тарифу: наценка в рублях и цена договора.
+                     Полей ввода здесь нет — их задаёт тариф. -->
+                <div v-if="programRule && (purchasePrice || 0) > 0" class="program-result">
+                  <div class="program-result-row">
+                    <span>Наценка</span>
+                    <span class="program-result-value">+{{ formatCurrency(markup) }}</span>
+                  </div>
+                  <div class="program-result-row program-result-row--total">
+                    <span>Цена договора</span>
+                    <span class="program-result-value">{{ formatCurrency(totalPrice) }}</span>
+                  </div>
+                </div>
+
+              <!-- Тариф выбран — наценку задаёт он, и поле здесь только мешает:
+                   заблокированный серый блок выглядел поломкой. Что подставлено,
+                   написано под селектом тарифа. -->
+              <div v-if="!programLocked" class="form-field full-width">
                 <div class="field-label-row">
                   <label class="field-label">Наценка</label>
                   <div class="markup-type-toggle">
@@ -1720,7 +2232,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 </div>
               </div>
 
-              <div v-if="markupType === 'fixed'" class="form-field full-width">
+              <div v-if="markupType === 'fixed' && !programLocked" class="form-field full-width">
                 <label class="field-label">Итоговая цена</label>
                 <div class="input-with-suffix">
                   <input
@@ -1817,12 +2329,14 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <label class="field-label">Срок рассрочки</label>
                 <div class="chip-group">
                   <button
-                    v-for="opt in termOptions" :key="opt"
+                    v-for="opt in (programTerms.length ? programTerms : termOptions)" :key="opt"
                     class="chip-option" :class="{ active: termMonths === opt }"
                     @click="termMonths = opt"
-                  >{{ opt }} мес</button>
+                  >{{ opt }} {{ termUnitShort }}</button>
                 </div>
-                <div class="input-with-suffix mt-2">
+                <!-- Свой срок — только при ручном оформлении: у тарифа сроки
+                     перечислены заранее, и произвольный он всё равно не примет. -->
+                <div v-if="!selectedProgram" class="input-with-suffix mt-2">
                   <input
                     v-model.number="termMonths"
                     type="number"
@@ -1839,16 +2353,45 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 </div>
               </div>
 
-              <!-- Payment type fixed: EQUAL -->
+              <!-- Округление платежа: у сделки по тарифу это его условие,
+                   поэтому выбор показываем только при ручном оформлении. -->
+              <div v-if="!selectedProgram" class="form-field full-width">
+                <label class="field-label">Округлять платёж</label>
+                <SelectField
+                  :model-value="manualRounding"
+                  :options="ROUNDING_OPTIONS"
+                  @update:model-value="manualRounding = ($event as ProgramRounding) ?? 'NONE'"
+                />
+                <div v-if="manualRounding !== 'NONE'" class="field-hint-styled">
+                  <v-icon icon="mdi-information-outline" size="14" />
+                  Платёж станет ровным, разница уйдёт в последний
+                </div>
+              </div>
 
+              <!-- Payment type fixed: EQUAL -->
+            </div>
+          </v-card>
+
+          <!-- Даты: когда заключили и когда первый платёж. -->
+          <v-card rounded="lg" elevation="0" border class="pa-5 mt-4">
+            <div class="section-header-sm">
+              <v-icon icon="mdi-calendar-outline" size="18" />
+              <span>Даты</span>
+            </div>
+            <div class="form-grid">
               <div class="form-field full-width">
                 <label class="field-label">Дата заключения сделки</label>
-                <input v-model="dealDate" type="date" class="field-input" />
+                <DateField v-model="dealDate" plain />
               </div>
 
               <div class="form-field full-width">
                 <label class="field-label">Дата первого платежа <span class="text-medium-emphasis">(необязательно)</span></label>
-                <input v-model="customFirstPayment" type="date" class="field-input" :placeholder="firstPaymentDate" />
+                <DateField
+                  v-model="customFirstPayment"
+                  :placeholder="firstPaymentDate"
+                  :max="firstPaymentMax"
+                  plain
+                />
                 <div class="first-payment-hint">
                   <div class="first-payment-hint__icon">
                     <v-icon icon="mdi-calendar-clock" size="14" />
@@ -1892,6 +2435,56 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <span>{{ b.name }}</span>
                 <span v-if="b.lockedAt" class="folder-chip-tag">только просмотр</span>
               </button>
+            </div>
+          </v-card>
+
+          <!-- Счета сделки: с какого счёта ушли деньги на закупку и на какой
+               пришёл первый взнос. Речь о движении денег в кассе, а не о
+               расчётах с поставщиком: «откуда платим поставщику» сбивало с
+               толку — партнёру всё равно, чем он рассчитался, ему важно, какой
+               счёт уменьшился. Секции нет, пока счета не заведены. -->
+          <!-- overflow-visible: карточка Vuetify по умолчанию обрезает
+               содержимое ради скругления, и выпадающий список счёта уходил
+               под её границу. -->
+          <v-card
+            v-if="usableAccounts.length > 0"
+            rounded="lg"
+            elevation="0"
+            border
+            class="pa-5 mt-4 deal-accounts-card"
+          >
+            <div class="section-header-sm">
+              <v-icon icon="mdi-bank-outline" size="18" />
+              <span>Счета сделки</span>
+              <span class="text-caption text-medium-emphasis ml-1">— какие счёта затронет эта сделка</span>
+            </div>
+
+            <div class="deal-accounts">
+              <div class="deal-account-field">
+                <label class="deal-account-label">С какого счёта ушли деньги на закупку</label>
+                <AccountSelect
+                  v-model="deployAccountId"
+                  :items="usableAccounts"
+                  empty-label="Определить автоматически"
+                />
+              </div>
+
+              <div v-if="(downPaymentAmount || 0) > 0" class="deal-account-field">
+                <label class="deal-account-label">На какой счёт пришёл первый взнос</label>
+                <AccountSelect
+                  v-model="downPaymentAccountId"
+                  :items="usableAccounts"
+                  empty-label="Определить автоматически"
+                />
+              </div>
+            </div>
+
+            <div class="deal-accounts-hint">
+              «Автоматически» — счёт этой кассы или счёт по умолчанию. Если подходящего
+              нет, деньги встанут в «не разнесено» и их можно будет разнести позже.
+              <br />
+              Платежи по графику сюда не привязаны: счёт выбирается при приёме каждого
+              платежа, по умолчанию — счёт этой кассы.
             </div>
           </v-card>
 
@@ -1989,7 +2582,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
               </div>
             </div>
             <div class="participants-hint">
-              По умолчанию прибыль делят все со-инвесторы кассы. Уберите лишних или задайте отдельный процент для этой сделки.
+              По умолчанию прибыль делят все инвесторы кассы. Уберите лишних или задайте отдельный процент для этой сделки.
               Инвестор в режиме «комиссия от закупки» задаёт ставку % от закупки и должен быть единственным участником.
             </div>
           </v-card>
@@ -2044,81 +2637,41 @@ async function submitDeal(acknowledgedOverdraft = false) {
         </div>
       </div>
 
-      <!-- Client -->
+      <!-- Клиент и поручители — одним блоком: сверху табы, ниже список
+           клиентов с поиском. Раньше здесь стояли два пустых поля поиска, и
+           партнёры не понимали, как вообще выбрать человека. -->
       <v-card rounded="lg" elevation="0" border class="pa-5 mb-4">
-        <div class="text-subtitle-2 font-weight-bold mb-3">
-          <v-icon icon="mdi-account-outline" size="18" class="mr-1" />
-          Клиент <span class="text-error">*</span>
-        </div>
-        <ClientPicker
-          ref="clientPickerRef"
-          v-model="selectedClientProfileId"
-          label="Поиск клиента по телефону или имени..."
-          @selected="onClientSelected"
+        <DealPeoplePicker
+          ref="peoplePickerRef"
+          :client-id="selectedClientProfileId"
+          :client="selectedClientProfile"
+          :guarantors="selectedGuarantors"
+          :max-guarantors="MAX_GUARANTORS"
+          @update:client-id="selectedClientProfileId = $event"
+          @update:client="onClientSelected"
+          @update:guarantors="onGuarantorsChanged"
+          @create="openCreateDialog"
         />
       </v-card>
 
-      <!-- Guarantors (до 5) -->
-      <v-card rounded="lg" elevation="0" border class="pa-5 mb-4">
-        <div class="text-subtitle-2 font-weight-bold mb-1">
-          <v-icon icon="mdi-shield-account-outline" size="18" class="mr-1" />
-          Поручители <span class="text-caption text-medium-emphasis font-weight-regular">(необязательно, до {{ MAX_GUARANTORS }})</span>
-        </div>
-        <div class="text-caption text-medium-emphasis mb-3">
-          Добавьте до {{ MAX_GUARANTORS }} поручителей. Первый в списке — основной.
-        </div>
-
-        <!-- Список выбранных поручителей -->
-        <div v-if="selectedGuarantors.length" class="guarantor-chips mb-3">
-          <div
-            v-for="(g, idx) in selectedGuarantors"
-            :key="g.id"
-            class="guarantor-chip"
-          >
-            <div class="guarantor-chip__avatar">{{ g.firstName?.[0] }}{{ g.lastName?.[0] }}</div>
-            <div class="guarantor-chip__info">
-              <div class="guarantor-chip__name">
-                {{ getClientDisplayName(g) }}
-                <span v-if="idx === 0" class="guarantor-chip__badge">основной</span>
-              </div>
-              <div v-if="g.phone" class="guarantor-chip__phone">{{ g.phone }}</div>
-            </div>
-            <button class="guarantor-chip__remove" type="button" @click="removeGuarantorAt(idx)">
-              <v-icon icon="mdi-close" size="16" />
-            </button>
-          </div>
-        </div>
-
-        <!-- Пикер добавления нового поручителя. :key форсит пересоздание после
-             каждого добавления — Vuetify-автокомплит иначе оставляет текст. -->
-        <ClientPicker
-          v-if="canAddGuarantor"
-          :key="guarantorPickerKey"
-          v-model="guarantorPickerId"
-          label="Добавить поручителя — поиск по телефону или имени..."
-          @selected="addGuarantor"
-        />
-        <div v-else class="guarantor-limit-hint">
-          <v-icon icon="mdi-information-outline" size="14" />
-          Достигнут лимит: не больше {{ MAX_GUARANTORS }} поручителей
-        </div>
-      </v-card>
-
-      <!-- Create new client button -->
-      <button class="create-client-btn" type="button" @click="openCreateDialog">
-        <v-icon icon="mdi-account-plus-outline" size="20" />
-        <div>
-          <div class="create-client-btn__title">Создать нового клиента</div>
-          <div class="create-client-btn__sub">Если клиента нет в базе — добавьте его с паспортными данными</div>
-        </div>
-      </button>
+      <!-- Риск-сводка по каждому поручителю: сколько чужих рассрочек он уже
+           тянет. После подписания узнавать об этом поздно. -->
+      <GuarantorRiskAlert
+        v-for="g in selectedGuarantors"
+        :key="`risk-${g.id}`"
+        :brief="guarantorRisk[g.id] ?? null"
+        :loading="guarantorRiskLoading[g.id]"
+      />
 
       <!-- Create client dialog -->
       <CreateClientDialog v-model="showCreateDialog" @created="onClientCreated" />
     </div>
 
     <!-- Step 4: Review -->
-    <div v-if="step === 4" class="step-content">
+    <!-- Слева тот же расклад, что и в превью справа: два одинаковых блока на
+         одном экране только удваивают чтение. Оставляем превью — оно и есть
+         сводка сделки, — а здесь только заголовок шага. -->
+    <div v-if="step === 4" class="step-content step-content--review">
       <div class="step-title-row">
         <div class="step-icon-wrap" style="background: rgba(4, 120, 87, 0.1); color: #047857;">
           <v-icon icon="mdi-check-decagram" size="22" />
@@ -2128,334 +2681,261 @@ async function submitDeal(acknowledgedOverdraft = false) {
           <div class="step-subtitle">Проверьте данные перед созданием</div>
         </div>
       </div>
-
-      <!-- Hero card — main deal summary -->
-      <div class="review-hero">
-        <div class="review-hero__header">
-          <div class="review-hero__product">
-            <div class="review-hero__product-icon">
-              <v-icon icon="mdi-package-variant-closed" size="24" />
-            </div>
-            <div>
-              <div class="review-hero__product-name">{{ productName }}</div>
-              <div class="review-hero__product-meta">
-                {{ new Date(dealDate).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }) }}
-                <span v-if="photoFiles.length"> · {{ photoFiles.length }} фото</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Photo strip -->
-        <div v-if="photoPreviewUrls.length" class="review-hero__photos">
-          <img v-for="(url, i) in photoPreviewUrls.slice(0, 4)" :key="i" :src="url" class="review-hero__photo" />
-          <div v-if="photoPreviewUrls.length > 4" class="review-hero__photo-more">
-            +{{ photoPreviewUrls.length - 4 }}
-          </div>
-        </div>
-
-        <!-- Financial breakdown -->
-        <div class="review-hero__finance">
-          <div class="review-hero__finance-row">
-            <span>Закупочная цена</span>
-            <span>{{ formatCurrency(purchasePrice || 0) }}</span>
-          </div>
-          <div class="review-hero__finance-row review-hero__finance-row--accent">
-            <span>Наценка {{ markupPercent }}%</span>
-            <span>+{{ formatCurrency(markup) }}</span>
-          </div>
-          <div v-if="downPaymentAmount > 0" class="review-hero__finance-row">
-            <span>Первоначальный взнос</span>
-            <span>-{{ formatCurrency(downPaymentAmount) }}</span>
-          </div>
-          <div class="review-hero__finance-divider" />
-          <div class="review-hero__finance-row review-hero__finance-row--total">
-            <span>Итоговая цена</span>
-            <span>{{ formatCurrency(totalPrice) }}</span>
-          </div>
-        </div>
-
-        <!-- Big payment highlight -->
-        <div class="review-hero__payment">
-          <div class="review-hero__payment-amount">~{{ formatCurrency(monthlyPayment) }}</div>
-          <div class="review-hero__payment-label">
-            ежемесячный платёж · {{ termMonths }} мес · равные платежи
-          </div>
-          <div class="review-hero__payment-date">
-            <v-icon icon="mdi-calendar-clock" size="14" />
-            Первый платёж: {{ firstPaymentDate }}
-          </div>
-        </div>
-      </div>
-
-      <!-- Client card -->
-      <div v-if="selectedClientProfile" class="review-client-card">
-        <div class="review-client-card__icon">
-          <div class="review-client-card__avatar" style="background: #047857;">
-            {{ selectedClientProfile.firstName?.[0] }}{{ selectedClientProfile.lastName?.[0] }}
-          </div>
-        </div>
-        <div class="review-client-card__info">
-          <div class="review-client-card__name">{{ selectedClientProfile.lastName }} {{ selectedClientProfile.firstName }} {{ selectedClientProfile.patronymic || '' }}</div>
-          <div class="review-client-card__meta">
-            <v-icon icon="mdi-phone" size="12" /> {{ selectedClientProfile.phone }}
-            <span v-if="selectedClientProfile.passportSeries" class="review-client-card__badge review-client-card__badge--platform">Паспорт заполнен</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Guarantor cards (все поручители) -->
-      <div
-        v-for="(g, idx) in selectedGuarantors"
-        :key="g.id"
-        class="review-client-card mt-3"
-      >
-        <div class="review-client-card__icon">
-          <div class="review-client-card__avatar" style="background: #6366f1;">
-            {{ g.firstName?.[0] }}{{ g.lastName?.[0] }}
-          </div>
-        </div>
-        <div class="review-client-card__info">
-          <div class="review-client-card__name">{{ g.lastName }} {{ g.firstName }} {{ g.patronymic || '' }}</div>
-          <div class="review-client-card__meta">
-            <v-icon icon="mdi-shield-account-outline" size="12" />
-            {{ idx === 0 ? 'Поручитель (основной)' : 'Поручитель' }} · {{ g.phone }}
-          </div>
-        </div>
-      </div>
-
-      <!-- Phase 3: investors of the deal's cashbox (all participate). -->
-      <div v-if="participatingList.length > 0" class="review-coinvestors">
-        <div class="review-coinvestors__title">
-          <v-icon icon="mdi-account-group-outline" size="16" />
-          Участники прибыли ({{ participatingList.length }})
-        </div>
-        <div class="review-coinvestors__list">
-          <div v-for="ci in participatingList" :key="ci.id" class="review-coinvestor-chip">
-            <div class="review-coinvestor-chip__avatar">{{ ci.name[0] }}</div>
-            <div class="review-coinvestor-chip__info">
-              <span class="review-coinvestor-chip__name">{{ ci.name }}</span>
-              <span class="review-coinvestor-chip__share">
-                <template v-if="ci.costFeeMode">
-                  комиссия {{ ci.costFeeRate ?? 0 }}% от закупки
-                </template>
-                <template v-else-if="ci.effectivePercent != null">
-                  {{ ci.effectivePercent }}% · {{ formatCurrency(Math.round(profitSplitBaseAmount * ci.effectivePercent / 100)) }}
-                </template>
-                <template v-else>по вкладу<template v-if="(ci.effectiveMgmtFee ?? 0) > 0"> · комиссия {{ ci.effectiveMgmtFee }}%</template></template>
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Folder -->
-      <div v-if="selectedFolder" class="review-coinvestors">
-        <div class="review-coinvestors__title">
-          <v-icon icon="mdi-folder-outline" size="16" />
-          Папка
-        </div>
-        <div class="folder-list">
-          <div
-            class="folder-chip active"
-            :style="{
-              borderColor: selectedFolder.color || '#6366f1',
-              background: `${selectedFolder.color || '#6366f1'}14`,
-              color: selectedFolder.color || '#6366f1',
-            }"
-          >
-            <v-icon :icon="selectedFolder.icon || 'mdi-folder'" size="16" />
-            <span>{{ selectedFolder.name }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Confirm banner -->
-      <div class="review-confirm-banner">
-        <v-icon icon="mdi-shield-check-outline" size="20" />
-        <div>
-          <div class="review-confirm-banner__title">Всё готово к созданию</div>
-          <div class="review-confirm-banner__text">
-            После создания будет сформирован график из {{ termMonths }} платежей.
-            Вы сможете отслеживать оплаты и отправлять напоминания клиенту.
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Actions -->
-    <div class="step-actions">
-      <button v-if="step > 1" class="btn-secondary" @click="prevStep">
-        <v-icon icon="mdi-arrow-left" size="18" />
-        Назад
-      </button>
-      <div v-else />
-      <button v-if="step < 4" class="btn-primary" :disabled="!canProceed()" @click="nextStep">
-        Далее
-        <v-icon icon="mdi-arrow-right" size="18" />
-      </button>
-      <button v-else class="btn-primary btn-primary--success" :disabled="submitting" @click="submitDeal()">
-        <v-progress-circular v-if="submitting" indeterminate size="16" width="2" color="white" class="mr-1" />
-        <v-icon v-else icon="mdi-check" size="18" />
-        {{ submitting ? (isEditMode ? 'Сохранение...' : 'Создание...') : (isEditMode ? 'Сохранить изменения' : 'Создать сделку') }}
-      </button>
     </div>
 
     </div><!-- /wizard-main -->
 
     <!-- Live preview -->
     <aside class="wizard-preview">
-      <div class="preview-card">
+      <!-- Превью — те же секции в обоих режимах: узкой колонкой на шагах
+           формы и раскладкой в три колонки на «Обзоре», где ширина позволяет
+           не растягивать сводку на два экрана вниз. -->
+      <div class="preview-card" :class="{ 'preview-card--wide': step === 4 }">
         <div class="preview-header">
           <v-icon icon="mdi-file-document-check-outline" size="18" />
           <span>Превью сделки</span>
         </div>
 
-        <!-- Product hero -->
-        <div class="preview-product">
-          <div v-if="photoPreviewUrls.length" class="preview-product-photo">
-            <img :src="photoPreviewUrls[0]" alt="" />
-          </div>
-          <div v-else class="preview-product-photo preview-product-photo--empty">
-            <v-icon :icon="categoryOption?.icon || 'mdi-package-variant-closed'" size="32" color="#d1d5db" />
-          </div>
-          <div class="preview-product-info">
-            <div class="preview-product-name" :class="{ 'preview-product-name--empty': !productName }">
-              {{ productName || 'Название товара' }}
+        <div class="preview-body">
+          <!-- ── Товар: что продаём, когда и чем это отзовётся в кассе ── -->
+          <section class="pv-col pv-col--subject">
+            <div class="pv-col-title">
+              <v-icon icon="mdi-package-variant-closed" size="13" />
+              Товар и сроки
             </div>
-            <div class="preview-product-meta">
-              <span v-if="categoryOption">
-                <v-icon :icon="categoryOption.icon" size="12" />
-                {{ categoryOption.label }}
-              </span>
-              <span v-if="city">
-                <v-icon icon="mdi-map-marker-outline" size="12" />
-                {{ city }}
-              </span>
+
+            <div class="preview-product">
+              <div v-if="photoPreviewUrls.length" class="preview-product-photo">
+                <img :src="photoPreviewUrls[0]" alt="" />
+              </div>
+              <div v-else class="preview-product-photo preview-product-photo--empty">
+                <v-icon :icon="categoryOption?.icon || 'mdi-package-variant-closed'" size="32" color="#d1d5db" />
+              </div>
+              <div class="preview-product-info">
+                <div class="preview-product-name" :class="{ 'preview-product-name--empty': !productName }">
+                  {{ productName || 'Название товара' }}
+                </div>
+                <div class="preview-product-meta">
+                  <span v-if="categoryOption">
+                    <v-icon :icon="categoryOption.icon" size="12" />
+                    {{ categoryOption.label }}
+                  </span>
+                  <span v-if="city">
+                    <v-icon icon="mdi-map-marker-outline" size="12" />
+                    {{ city }}
+                  </span>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
 
-        <!-- Financial breakdown -->
-        <div class="preview-finance">
-          <div class="preview-row">
-            <span class="preview-row-label">Закупочная цена</span>
-            <span class="preview-row-value">{{ formatCurrency(purchasePrice || 0) }}</span>
-          </div>
-          <div class="preview-row">
-            <span class="preview-row-label">Наценка</span>
-            <span class="preview-row-value preview-row-value--accent">
-              +{{ formatCurrency(markup) }}
-              <small v-if="markupPercent">({{ markupPercent.toFixed(1) }}%)</small>
-            </span>
-          </div>
-          <div class="preview-divider" />
-          <div class="preview-row preview-row--total">
-            <span class="preview-row-label">Итоговая цена</span>
-            <span class="preview-row-value">{{ formatCurrency(totalPrice) }}</span>
-          </div>
-        </div>
-
-        <!-- Down payment -->
-        <div v-if="downPaymentAmount > 0" class="preview-finance preview-finance--secondary">
-          <div class="preview-row">
-            <span class="preview-row-label">Первоначальный взнос</span>
-            <span class="preview-row-value preview-row-value--down">−{{ formatCurrency(downPaymentAmount) }}</span>
-          </div>
-          <div class="preview-row preview-row--remaining">
-            <span class="preview-row-label">Остаток к выплате</span>
-            <span class="preview-row-value">{{ formatCurrency(remainingAmount) }}</span>
-          </div>
-        </div>
-
-        <!-- Schedule highlight -->
-        <div v-if="monthlyPayment > 0 && termMonths > 0" class="preview-schedule">
-          <div class="preview-schedule-top">Ежемесячный платёж</div>
-          <div class="preview-schedule-value">~{{ formatCurrency(Math.round(monthlyPayment)) }}</div>
-          <div class="preview-schedule-label">× {{ termMonths }} {{ termMonths === 1 ? 'месяц' : termMonths < 5 ? 'месяца' : 'месяцев' }} · равные платежи</div>
-        </div>
-
-        <!-- Profit / ROI -->
-        <div v-if="markup > 0" class="preview-metrics">
-          <div class="preview-metric">
-            <div class="preview-metric-label">Прибыль</div>
-            <div class="preview-metric-value preview-metric-value--green">{{ formatCurrency(markup) }}</div>
-          </div>
-          <div class="preview-metric">
-            <div class="preview-metric-label">ROI</div>
-            <div class="preview-metric-value">{{ (purchasePrice || 0) > 0 ? ((markup / (purchasePrice || 1)) * 100).toFixed(1) : '0' }}%</div>
-          </div>
-        </div>
-
-        <!-- Capital after deal -->
-        <div v-if="cashBoxCapital && (purchasePrice || 0) > 0" class="preview-capital">
-          <v-icon icon="mdi-wallet-outline" size="14" />
-          <span class="preview-capital-label">Капитал кассы после сделки</span>
-          <span class="preview-capital-value" :class="{ 'preview-capital-value--negative': capitalAfterDeal < 0 }">{{ formatCurrency(capitalAfterDeal) }}</span>
-        </div>
-
-        <!-- Dates -->
-        <div class="preview-dates">
-          <div class="preview-date">
-            <v-icon icon="mdi-calendar-start-outline" size="14" />
-            <span class="preview-date-label">Дата сделки</span>
-            <span class="preview-date-value">{{ formatDateRU(dealDate) || '—' }}</span>
-          </div>
-          <div class="preview-date">
-            <v-icon icon="mdi-calendar-arrow-right" size="14" />
-            <span class="preview-date-label">Первый платёж</span>
-            <span class="preview-date-value">{{ firstPaymentDate }}</span>
-          </div>
-        </div>
-
-        <!-- Client -->
-        <div v-if="selectedClientProfile" class="preview-client">
-          <div class="preview-section-label">
-            <v-icon icon="mdi-account-outline" size="14" />
-            Клиент
-          </div>
-          <div class="preview-client-name">{{ getClientDisplayName(selectedClientProfile) }}</div>
-          <div v-if="selectedClientProfile.phone" class="preview-client-phone">{{ selectedClientProfile.phone }}</div>
-        </div>
-
-        <!-- Guarantors -->
-        <div v-if="selectedGuarantors.length" class="preview-client">
-          <div class="preview-section-label">
-            <v-icon icon="mdi-account-supervisor-outline" size="14" />
-            Поручители ({{ selectedGuarantors.length }})
-          </div>
-          <div v-for="(g, idx) in selectedGuarantors" :key="g.id" class="preview-guarantor-item">
-            <div class="preview-client-name">
-              {{ getClientDisplayName(g) }}
-              <span v-if="idx === 0" class="preview-guarantor-main">· основной</span>
+            <div class="preview-dates">
+              <div class="preview-date">
+                <v-icon icon="mdi-calendar-start-outline" size="14" />
+                <span class="preview-date-label">Дата сделки</span>
+                <span class="preview-date-value">{{ formatDateRU(dealDate) || '—' }}</span>
+              </div>
+              <div class="preview-date">
+                <v-icon icon="mdi-calendar-arrow-right" size="14" />
+                <span class="preview-date-label">Первый платёж</span>
+                <span class="preview-date-value">{{ firstPaymentDate }}</span>
+              </div>
             </div>
-            <div v-if="g.phone" class="preview-client-phone">{{ g.phone }}</div>
-          </div>
-        </div>
 
-        <!-- Phase 4: co-investors sharing THIS deal's profit. -->
-        <div v-if="participatingList.length" class="preview-coinvestors">
-          <div class="preview-section-label">
-            <v-icon icon="mdi-account-group-outline" size="14" />
-            Участники прибыли ({{ participatingList.length }})
-          </div>
-          <div class="preview-coinvestor-list">
-            <div v-for="ci in participatingList" :key="ci.id" class="preview-coinvestor">
-              <span class="preview-coinvestor-name">{{ ci.name }}</span>
-              <span class="preview-coinvestor-share">
-                <template v-if="ci.costFeeMode">комиссия {{ ci.costFeeRate ?? 0 }}%</template>
-                <template v-else-if="ci.effectivePercent != null">
-                  {{ ci.effectivePercent }}%
-                </template>
-                <template v-else>по вкладу<template v-if="(ci.effectiveMgmtFee ?? 0) > 0"> · комиссия {{ ci.effectiveMgmtFee }}%</template></template>
-              </span>
+            <div v-if="cashBoxCapital && (purchasePrice || 0) > 0" class="preview-capital">
+              <v-icon icon="mdi-wallet-outline" size="14" />
+              <span class="preview-capital-label">Капитал кассы после сделки</span>
+              <span class="preview-capital-value" :class="{ 'preview-capital-value--negative': capitalAfterDeal < 0 }">{{ formatCurrency(capitalAfterDeal) }}</span>
             </div>
-          </div>
+          </section>
+
+          <!-- ── Стоимость: из чего складывается цена ── -->
+          <section class="pv-col pv-col--money">
+            <div class="pv-col-title">
+              <v-icon icon="mdi-cash-multiple" size="13" />
+              Стоимость
+            </div>
+
+            <div class="preview-finance">
+              <div class="preview-row">
+                <span class="preview-row-label">Закупочная цена</span>
+                <span class="preview-row-value">{{ formatCurrency(purchasePrice || 0) }}</span>
+              </div>
+              <div class="preview-row">
+                <span class="preview-row-label">Наценка</span>
+                <span class="preview-row-value preview-row-value--accent">
+                  +{{ formatCurrency(markup) }}
+                  <small v-if="markupPercent">({{ markupPercent.toFixed(1) }}%)</small>
+                </span>
+              </div>
+              <div class="preview-divider" />
+              <div class="preview-row preview-row--total">
+                <span class="preview-row-label">Итоговая цена</span>
+                <span class="preview-row-value">{{ formatCurrency(totalPrice) }}</span>
+              </div>
+            </div>
+
+            <div v-if="downPaymentAmount > 0" class="preview-finance preview-finance--secondary">
+              <div class="preview-row">
+                <span class="preview-row-label">Первоначальный взнос</span>
+                <span class="preview-row-value preview-row-value--down">−{{ formatCurrency(downPaymentAmount) }}</span>
+              </div>
+              <div class="preview-row preview-row--remaining">
+                <span class="preview-row-label">Остаток к выплате</span>
+                <span class="preview-row-value">{{ formatCurrency(remainingAmount) }}</span>
+              </div>
+            </div>
+
+          </section>
+
+          <!-- ── Платёж: что клиент платит каждый месяц и сколько это даёт ── -->
+          <section class="pv-col pv-col--payment">
+            <div class="pv-col-title">
+              <v-icon icon="mdi-calendar-check-outline" size="13" />
+              Платёж и прибыль
+            </div>
+
+            <div v-if="monthlyPayment > 0 && termMonths > 0" class="preview-schedule">
+              <div class="preview-schedule-top">Ежемесячный платёж</div>
+              <div class="preview-schedule-value">{{ formatCurrency(monthlyPayment) }}</div>
+              <div class="preview-schedule-label">
+                × {{ termMonths }} {{ termMonths === 1 ? 'месяц' : termMonths < 5 ? 'месяца' : 'месяцев' }} · равные платежи
+                <template v-if="lastPaymentDiffers"> · последний {{ formatCurrency(lastPayment) }}</template>
+              </div>
+            </div>
+
+            <!-- Прибыль по сделке. ROI отсюда убран: процент к закупке ничего
+                 не добавляет к решению, а место занимал. -->
+            <div v-if="markup > 0" class="preview-metrics preview-metrics--single">
+              <div class="preview-metric">
+                <div class="preview-metric-label">Прибыль</div>
+                <div class="preview-metric-value preview-metric-value--green">{{ formatCurrency(markup) }}</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ── График: тот же, что будет в созданной сделке. Партнёр видит
+               даты и суммы до сохранения, а не после. ── -->
+          <section v-if="previewSchedule.length" class="pv-col pv-col--plan">
+            <div class="pv-col-title">
+              <v-icon icon="mdi-calendar-month-outline" size="13" />
+              График платежей
+              <span class="pv-col-count">{{ previewSchedule.length }}</span>
+            </div>
+
+            <div class="preview-plan">
+              <div class="preview-plan-head">
+                <span>График платежей</span>
+                <span class="preview-plan-count">{{ previewSchedule.length }}</span>
+              </div>
+              <div class="preview-plan-list">
+                <div v-for="row in previewPlanRows.head" :key="row.n" class="preview-plan-row">
+                  <span class="preview-plan-num">{{ row.n }}</span>
+                  <span class="preview-plan-date">{{ row.date }}</span>
+                  <span class="preview-plan-sum">{{ formatCurrency(row.amount) }}</span>
+                </div>
+                <div v-if="previewPlanRows.hidden" class="preview-plan-more">
+                  ещё {{ previewPlanRows.hidden }}
+                </div>
+                <div v-for="row in previewPlanRows.tail" :key="`t-${row.n}`" class="preview-plan-row">
+                  <span class="preview-plan-num">{{ row.n }}</span>
+                  <span class="preview-plan-date">{{ row.date }}</span>
+                  <span class="preview-plan-sum">{{ formatCurrency(row.amount) }}</span>
+                </div>
+              </div>
+              <div v-if="step === 4 && previewSchedule.length > 8" class="preview-plan-scroll">
+                <v-icon icon="mdi-gesture-swipe-vertical" size="13" />
+                Прокрутите — всего {{ previewSchedule.length }} платежей
+              </div>
+              <div v-if="lastPaymentDiffers" class="preview-plan-note">
+                Последний платёж другой: округление сдвигает разницу в конец графика.
+              </div>
+            </div>
+          </section>
+
+          <!-- ── Люди: клиент, поручители и те, кто делит прибыль ── -->
+          <section
+            v-if="selectedClientProfile || selectedGuarantors.length || participatingList.length"
+            class="pv-col pv-col--people"
+          >
+            <div class="pv-col-title">
+              <v-icon icon="mdi-account-multiple-outline" size="13" />
+              Участники
+            </div>
+
+            <div class="pv-people">
+              <div v-if="selectedClientProfile" class="preview-client">
+                <div class="preview-section-label">
+                  <v-icon icon="mdi-account-outline" size="14" />
+                  Клиент
+                </div>
+                <div class="preview-client-name">{{ getClientDisplayName(selectedClientProfile) }}</div>
+                <div v-if="selectedClientProfile.phone" class="preview-client-phone">{{ selectedClientProfile.phone }}</div>
+              </div>
+
+              <div v-if="selectedGuarantors.length" class="preview-client">
+                <div class="preview-section-label">
+                  <v-icon icon="mdi-account-supervisor-outline" size="14" />
+                  Поручители ({{ selectedGuarantors.length }})
+                </div>
+                <div v-for="(g, idx) in selectedGuarantors" :key="g.id" class="preview-guarantor-item">
+                  <div class="preview-client-name">
+                    {{ getClientDisplayName(g) }}
+                    <span v-if="idx === 0" class="preview-guarantor-main">· основной</span>
+                  </div>
+                  <div v-if="g.phone" class="preview-client-phone">{{ g.phone }}</div>
+                </div>
+              </div>
+
+              <!-- Phase 4: co-investors sharing THIS deal's profit. -->
+              <div v-if="participatingList.length" class="preview-coinvestors">
+                <div class="preview-section-label">
+                  <v-icon icon="mdi-account-group-outline" size="14" />
+                  Участники прибыли ({{ participatingList.length }})
+                </div>
+                <div class="preview-coinvestor-list">
+                  <div v-for="ci in participatingList" :key="ci.id" class="preview-coinvestor">
+                    <span class="preview-coinvestor-name">{{ ci.name }}</span>
+                    <span class="preview-coinvestor-share">
+                      <template v-if="ci.costFeeMode">комиссия {{ ci.costFeeRate ?? 0 }}%</template>
+                      <template v-else-if="ci.effectivePercent != null">
+                        {{ ci.effectivePercent }}%
+                      </template>
+                      <template v-else>по вкладу<template v-if="(ci.effectiveMgmtFee ?? 0) > 0"> · комиссия {{ ci.effectiveMgmtFee }}%</template></template>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </aside>
 
     </div><!-- /wizard-layout -->
+
+    <!-- Кнопки шага — липкой панелью внизу экрана: на длинных шагах (условия,
+         выбор клиента, обзор) «Далее» иначе оказывается за пределами экрана, и
+         до неё приходится доматывать. Панель — последний элемент страницы,
+         поэтому она не перекрывает контент, а придерживается низа окна. -->
+    <div class="wizard-footer">
+      <div class="wizard-footer__inner">
+        <button v-if="step > 1" class="btn-secondary" @click="prevStep">
+          <v-icon icon="mdi-arrow-left" size="18" />
+          Назад
+        </button>
+        <div v-else />
+        <div class="wizard-footer__step">Шаг {{ step }} из 4 · {{ steps[step - 1]?.title }}</div>
+        <button v-if="step < 4" class="btn-primary" :disabled="!canProceed()" @click="nextStep">
+          Далее
+          <v-icon icon="mdi-arrow-right" size="18" />
+        </button>
+        <button v-else class="btn-primary btn-primary--success" :disabled="submitting" @click="submitDeal()">
+          <v-progress-circular v-if="submitting" indeterminate size="16" width="2" color="white" class="mr-1" />
+          <v-icon v-else icon="mdi-check" size="18" />
+          {{ submitting ? (isEditMode ? 'Сохранение...' : 'Создание...') : (isEditMode ? 'Сохранить изменения' : 'Создать сделку') }}
+        </button>
+      </div>
+    </div>
     </template>
 
     <!-- Insufficient-capital warning. Cashbox is allowed to go negative;
@@ -2485,10 +2965,159 @@ async function submitDeal(acknowledgedOverdraft = false) {
 
     <!-- Быстрое создание партнёра-поставщика из формы сделки -->
     <SupplierFormDialog v-model="supplierFormOpen" @saved="onSupplierCreated" />
+
+    <!-- Тариф правится прямо отсюда: то же окно, что в настройках. -->
+    <ProgramEditDialog
+      v-model="programDialog"
+      :program="selectedProgram"
+      :existing-count="programs.length"
+      @saved="onProgramSaved"
+    />
   </div>
 </template>
 
 <style scoped>
+/* Программа рассрочки: подсказка под селектом и блокировка полей у строгой. */
+.program-hint { margin-top: 6px; }
+.program-hint--warn { color: #b45309; }
+.program-locked { position: relative; }
+.program-locked::after {
+  content: '';
+  position: absolute; inset: 0; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  cursor: not-allowed;
+}
+
+/* ── Выбор клиента и поручителей ── */
+.picker-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 4px;
+}
+.picker-add-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 32px; padding: 0 12px; border-radius: 9px;
+  border: 1px solid rgba(4, 120, 87, 0.3);
+  background: rgb(var(--v-theme-surface));
+  font-size: 12.5px; font-weight: 600; color: #047857; cursor: pointer;
+}
+.picker-add-btn:hover { background: rgba(4, 120, 87, 0.08); }
+.picker-hint {
+  font-size: 12.5px; line-height: 1.45; margin-bottom: 10px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+/* ── Условия рассрочки: своя карточка ── */
+.terms-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.terms-card-title { font-size: 15px; font-weight: 700; }
+/* Тариф — фирменный зелёный, как его же карточка в настройках: партнёр видит
+   тот самый тариф, который сам завёл, а не «ещё одну секцию формы». */
+.terms-card--tariff {
+  background: linear-gradient(135deg, #047857 0%, #065f46 55%, #064e3b 100%);
+  border-color: transparent !important;
+  color: #fff;
+}
+.terms-card--tariff .terms-card-title { color: #fff; }
+.terms-card--tariff .field-label,
+.terms-card--tariff .field-hint-styled { color: rgba(255, 255, 255, 0.7); }
+
+/* Пояснение и сводка — на полупрозрачной подложке поверх зелёного. */
+.terms-card--tariff .tariff-note {
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.9);
+}
+.terms-card--tariff .tariff-note b { color: #fff; }
+.terms-card--tariff .program-result { background: rgba(0, 0, 0, 0.16); }
+.terms-card--tariff .program-result-row { color: rgba(255, 255, 255, 0.72); }
+.terms-card--tariff .program-result-row--total {
+  color: #fff; border-top-color: rgba(255, 255, 255, 0.18);
+}
+
+/* Быстрый выбор срока: невыбранные — прозрачные, выбранный — белый. */
+.terms-card--tariff .chip-option {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+}
+.terms-card--tariff .chip-option:hover { background: rgba(255, 255, 255, 0.2); }
+.terms-card--tariff .chip-option.active { background: #fff; color: #047857; border-color: #fff; }
+
+/* Переключатель «% / ₽» у взноса на зелёном. */
+.terms-card--tariff .markup-type-toggle { background: rgba(255, 255, 255, 0.14); }
+.terms-card--tariff .toggle-btn { color: rgba(255, 255, 255, 0.7); }
+.terms-card--tariff .toggle-btn.active { background: #fff; color: #047857; }
+
+.terms-edit-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 30px; padding: 0 11px; border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 12.5px; font-weight: 600; color: #fff; cursor: pointer;
+}
+.terms-edit-btn:hover { background: rgba(255, 255, 255, 0.26); }
+
+/* Селект тарифа в шапке шага. */
+.step-tariff { margin-left: auto; min-width: 240px; }
+.step-tariff-label {
+  display: block; font-size: 11.5px; font-weight: 600; margin-bottom: 4px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+@media (max-width: 760px) {
+  .step-tariff { margin-left: 0; width: 100%; }
+}
+
+/* Пояснение внутри карточки тарифа: в тон карточке, а не синей плашкой. */
+.tariff-note {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 9px 11px; border-radius: 10px;
+  background: rgba(4, 120, 87, 0.07);
+  font-size: 12.5px; line-height: 1.45;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.tariff-note--muted { background: rgba(var(--v-theme-on-surface), 0.04); }
+.tariff-note b { color: #047857; }
+
+/* Что подставил тариф: цифры вместо заблокированных полей ввода. */
+.program-result {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.program-result-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 4px 0; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.program-result-row--total {
+  margin-top: 4px; padding-top: 8px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  font-size: 14px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.program-result-value { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+/* ── Счета сделки ── */
+.deal-accounts-card { overflow: visible; }
+.deal-accounts { display: flex; gap: 12px; flex-wrap: wrap; }
+.deal-account-field { flex: 1; min-width: 240px; }
+.deal-account-label {
+  display: block; font-size: 12.5px; margin-bottom: 6px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.deal-account-select {
+  width: 100%; padding: 10px 14px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  font-size: 14px; outline: none;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.deal-account-select:focus { border-color: #047857; }
+.deal-accounts-hint {
+  font-size: 11.5px; line-height: 1.45; margin-top: 10px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
 .term-limit-warn {
   display: flex;
   align-items: center;
@@ -2595,7 +3224,6 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .wz-row { display: flex; gap: 14px; }
 .wz-field--half { flex: 1; min-width: 0; }
 
-.wz-actions { display: flex; justify-content: space-between; margin-top: 20px; }
 
 .wz-preview-row { display: flex; justify-content: space-between; gap: 12px; }
 
@@ -2609,7 +3237,6 @@ async function submitDeal(acknowledgedOverdraft = false) {
 }
 .wz-bar--icon { width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0; }
 .wz-bar--input { height: 46px; border-radius: 10px; }
-.wz-bar--btn { width: 130px; height: 42px; border-radius: 10px; }
 .wz-bar--photo { height: 120px; border-radius: 12px; }
 
 @keyframes wz-pulse {
@@ -2636,10 +3263,142 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .wizard-main {
   min-width: 0;
 }
+/* Превью держится у верха экрана, но не длиннее самого экрана: иначе низ
+   сводки уходил бы и под шапку, и под липкую панель кнопок — без шанса его
+   увидеть. Что не влезло — прокручивается внутри колонки. */
 .wizard-preview {
   position: sticky;
   top: 16px;
   align-self: start;
+  max-height: calc(100vh - 108px);
+  overflow-y: auto;
+}
+.wizard-preview .preview-card { position: static; }
+
+/* Обзор: расклад сделки один — превью. Оно занимает всю ширину и раскладывает
+   секции по колонкам: то же содержимое, но лист не уходит на два экрана вниз. */
+/* Двойной класс — чтобы раскладку «Обзора» не перебивали медиазапросы ниже:
+   у них та же специфичность, но они идут позже по файлу. */
+.wizard-layout.wizard-layout--review {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+/* Сводка читается как документ: одна колонка по центру, чуть шире формы.
+   Заголовок шага при этом остаётся у левого края — как на остальных шагах и
+   страницах, иначе он повисает посреди пустоты. */
+.wizard-layout--review .wizard-main { width: 100%; }
+.wizard-layout--review .wizard-preview {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+}
+.wizard-layout--review .wizard-preview {
+  position: static;
+  order: 0;
+  max-height: none;
+  overflow: visible;
+}
+
+/* ── Секции превью ──────────────────────────────────────────────────────
+   Одна и та же разметка работает в двух режимах: узкой колонкой рядом с формой
+   (секции идут стопкой, заголовки не нужны — блоки и так различимы) и широким
+   листом на «Обзоре», где секции становятся отдельными карточками с подписями. */
+.preview-body { display: flex; flex-direction: column; gap: 20px; }
+.pv-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.pv-col-title { display: none; }
+.pv-col .preview-plan { margin-top: 0; }
+.pv-people { display: flex; flex-direction: column; gap: 16px; }
+
+/* Режим «Обзора»: белый лист, секции идут сверху вниз отдельными карточками —
+   каждая со своей подписью, чтобы сводка читалась по разделам. */
+/* Двойной класс: ниже по файлу есть ещё одно правило .preview-card с зелёным
+   градиентом — с одинаковой специфичностью оно бы перебило белый лист. */
+.preview-card.preview-card--wide {
+  position: static;
+  padding: 20px 22px;
+  background: #fff;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.dark .preview-card.preview-card--wide {
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
+}
+.preview-card--wide .preview-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.preview-card--wide .pv-col {
+  gap: 12px;
+  padding: 14px 16px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  background: rgb(var(--v-theme-surface));
+}
+.preview-card--wide .pv-col-title {
+  display: flex; align-items: center; gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.pv-col-count {
+  margin-left: auto;
+  padding: 1px 7px; border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  font-size: 11px; letter-spacing: 0;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+/* Внутри карточки-секции вложенные подложки лишние: фон уже даёт секция. */
+.preview-card--wide .preview-finance { background: transparent; padding: 0; gap: 8px; }
+.preview-card--wide .preview-finance--secondary {
+  padding: 10px 12px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.14);
+}
+.preview-card--wide .preview-plan {
+  margin: 0; padding: 0; border: none; background: transparent;
+}
+.preview-card--wide .preview-plan-head { display: none; }
+.preview-card--wide .preview-metric { background: transparent; padding: 0; text-align: left; }
+.preview-card--wide .preview-metrics {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  padding-top: 10px;
+}
+
+/* Компактнее по высоте: фото меньше, «платёж месяца» — строкой, а не плакатом. */
+.preview-card--wide .preview-product-photo { width: 60px; height: 60px; border-radius: 10px; }
+.preview-card--wide .preview-product-name { font-size: 15px; margin-bottom: 6px; }
+.preview-card--wide .preview-schedule { padding: 12px 14px; text-align: left; }
+.preview-card--wide .preview-schedule-value { font-size: 24px; }
+.preview-card--wide .preview-schedule-label { font-size: 12px; margin-top: 4px; }
+.preview-card--wide .preview-row--total .preview-row-value { font-size: 16px; }
+
+/* График целиком, но с прокруткой: 24 платежа не должны растягивать лист. */
+.preview-card--wide .preview-plan-list {
+  max-height: 268px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.preview-plan-scroll {
+  display: flex; align-items: center; gap: 5px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+/* Люди — последней строкой во всю ширину: их блоки короткие и в колонку
+   складываться не должны. */
+.preview-card--wide .pv-people {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px 18px;
+}
+
+@media (max-width: 699px) {
+  .preview-card--wide .pv-people { grid-template-columns: minmax(0, 1fr); }
+  .preview-card--wide .preview-plan-list { max-height: none; }
 }
 
 @media (max-width: 1439px) {
@@ -2655,6 +3414,8 @@ async function submitDeal(acknowledgedOverdraft = false) {
   .wizard-preview {
     position: static;
     order: -1;
+    max-height: none;
+    overflow: visible;
   }
 }
 
@@ -2792,6 +3553,52 @@ async function submitDeal(acknowledgedOverdraft = false) {
   margin: 2px 0;
 }
 
+/* ── График платежей в превью ── */
+.preview-plan {
+  margin-top: 14px; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.preview-plan-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.preview-plan-count {
+  padding: 1px 7px; border-radius: 8px; font-size: 11px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.preview-plan-row {
+  display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center;
+  padding: 6px 0; font-size: 13px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+  font-variant-numeric: tabular-nums;
+}
+.preview-plan-row:last-child { border-bottom: none; }
+.preview-plan-num {
+  font-size: 11px; font-weight: 700; text-align: center;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
+.preview-plan-date { color: rgba(var(--v-theme-on-surface), 0.6); }
+.preview-plan-sum { font-weight: 700; }
+.preview-plan-more {
+  padding: 5px 0 5px 30px; font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.preview-plan-note {
+  margin-top: 8px; font-size: 11.5px; line-height: 1.4;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+/* ── Округление платежа в шаге «Условия» ── */
+.rounding-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.rounding-row .field-label { margin: 0; }
+.rounding-select { width: 180px; }
+.rounding-hint { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45); }
+
 .preview-schedule {
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: #fff;
@@ -2821,6 +3628,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
 }
 
 /* Profit / ROI metrics */
+.preview-metrics--single { grid-template-columns: minmax(0, 1fr); }
 .preview-metrics {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -3308,11 +4116,13 @@ async function submitDeal(acknowledgedOverdraft = false) {
   font-size: 12px; font-weight: 500;
 }
 .required { color: #ef4444; }
+/* Поля белые, как в остальных формах: серая заливка читалась как
+   «поле заблокировано». */
 .field-input {
   width: 100%; height: 44px; padding: 0 14px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 10px; font-size: 14px; color: inherit;
-  background: rgba(var(--v-theme-on-surface), 0.03);
+  background: rgb(var(--v-theme-surface));
   outline: none; transition: all 0.15s;
 }
 .field-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.3); }
@@ -3427,8 +4237,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip-option {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 8px 16px; border-radius: 20px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
+  padding: 8px 16px; border-radius: 20px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgb(var(--v-theme-surface));
   font-size: 13px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.6);
   cursor: pointer; transition: all 0.15s;
@@ -3526,7 +4337,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
   width: 100%; height: 42px; padding: 0 16px 0 38px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
   border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
+  background: #fff;
   font-size: 14px; color: inherit;
   outline: none; transition: all 0.15s;
 }
@@ -3607,11 +4418,42 @@ async function submitDeal(acknowledgedOverdraft = false) {
   border: 1px solid rgba(59, 130, 246, 0.12);
 }
 
-/* Actions */
-.step-actions {
-  display: flex; justify-content: space-between; align-items: center;
-  padding-top: 8px;
+/* Actions — липкая панель шага внизу окна.
+   Отрицательные поля растягивают её на всю ширину страницы (у .at-page свои
+   боковые отступы), а внутренний контейнер возвращает контент на место. */
+/* Страница тянется на всю высоту окна, а панель прижата к её низу: иначе на
+   коротком содержимом (скелет загрузки, пустой шаг) она всплывала бы посреди
+   экрана. Sticky держит её на месте, когда содержимое длиннее экрана. */
+.at-page {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - var(--lyt-header-h, 72px));
 }
+.wizard-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  margin: auto -32px -24px;
+  padding: 12px 32px calc(12px + env(safe-area-inset-bottom, 0px));
+  flex: none;
+  background: rgb(var(--v-theme-surface));
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 -6px 18px rgba(15, 23, 42, 0.05);
+}
+.wizard-footer__inner {
+  display: flex; align-items: center; gap: 16px;
+}
+/* Подпись между кнопками: на липкой панели она заменяет шапку степпера,
+   которая на длинных шагах уезжает вверх. */
+.wizard-footer__step {
+  flex: 1;
+  text-align: center;
+  font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.wizard-footer__inner > .btn-primary,
+.wizard-footer__inner > .btn-secondary { flex: none; }
+.wizard-footer__inner > div:not(.wizard-footer__step) { flex: none; width: 0; }
 .btn-primary {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   height: 44px; padding: 0 24px; border-radius: 10px; border: none;
@@ -3622,27 +4464,35 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .btn-primary:hover { background: #065f46; }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-primary--success { background: #047857; }
+/* Белая, как поля формы: прозрачная кнопка на светлом фоне читалась как
+   неактивная. */
 .btn-secondary {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   height: 44px; padding: 0 24px; border-radius: 10px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  background: transparent; color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.7);
   font-size: 14px; font-weight: 500;
   cursor: pointer; transition: all 0.15s;
 }
 .btn-secondary:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
 
-/* Mobile: кнопки шага равной ширины 50/50, чуть компактнее. */
-@media (max-width: 599px) {
-  .step-actions {
-    gap: 8px;
+/* Mobile: кнопки шага равной ширины 50/50, подпись шага не помещается. */
+@media (max-width: 767px) {
+  .wizard-footer {
+    margin: auto -16px -16px;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
   }
-  .step-actions .btn-primary,
-  .step-actions .btn-secondary {
+}
+@media (max-width: 599px) {
+  .wizard-footer__inner { gap: 8px; }
+  .wizard-footer__step { display: none; }
+  .wizard-footer__inner > .btn-primary,
+  .wizard-footer__inner > .btn-secondary {
     flex: 1 1 50%;
     padding: 0 12px;
     font-size: 13px;
   }
+  .wizard-footer__inner > div:not(.wizard-footer__step) { flex: 1 1 50%; width: auto; }
 }
 
 /* Dark mode */
@@ -3793,22 +4643,10 @@ async function submitDeal(acknowledgedOverdraft = false) {
   background: rgba(4, 120, 87, 0.1); color: #047857;
 }
 
-/* Confirm banner */
-.review-confirm-banner {
-  display: flex; align-items: flex-start; gap: 12px;
-  padding: 16px 18px; border-radius: 14px;
-  background: #fff;
-  border: 1px solid rgba(4, 120, 87, 0.15);
-  color: #047857;
-}
-.review-confirm-banner__title {
-  font-size: 14px; font-weight: 700;
-}
-.review-confirm-banner__text {
-  font-size: 12px; line-height: 1.5;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  margin-top: 2px;
-}
+/* Шапка «Обзора»: только заголовок шага — подтверждение ничего не решало и
+   отодвигало сводку вниз. */
+.step-content--review { margin-bottom: 14px; }
+.step-content--review .step-title-row { margin-bottom: 0; }
 
 /* Dark overrides for review */
 .dark .stepper-header { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
@@ -3816,7 +4654,6 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .dark .review-hero__finance { border-color: rgb(var(--v-theme-border)); }
 .dark .review-hero__payment { background: linear-gradient(135deg, rgba(4, 120, 87, 0.1) 0%, rgba(4, 120, 87, 0.04) 100%); }
 .dark .review-client-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
-.dark .review-confirm-banner { background: rgba(4, 120, 87, 0.08); border-color: rgba(4, 120, 87, 0.2); }
 
 /* Create client button */
 .create-client-btn {

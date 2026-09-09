@@ -14,15 +14,18 @@
  */
 import { computed, ref, watch } from 'vue'
 import { usePaymentsStore } from '@/stores/payments'
+import DateField from '@/components/DateField.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { useSections } from '@/composables/useSections'
 import { useSendPdfWhatsApp } from '@/composables/useSendPdfWhatsApp'
 import { formatCurrency, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { generateReceipt } from '@/utils/receiptPdf'
+import { useReceiptTemplate } from '@/composables/useReceiptTemplate'
 import { api } from '@/api/client'
-import { redistribute, validateManual, type RedistributeMode } from '@/utils/redistribute'
-import { dueYearMonth, monthPrepositional, monthAccusative } from '@/utils/paymentAttribution'
+import { type RedistributeMode } from '@/utils/redistribute'
+import * as money from '@/utils/paymentMath'
+import { useOperationDate } from '@/composables/useOperationDate'
 import type { Deal, Payment, User } from '@/types'
 
 const props = withDefaults(
@@ -47,8 +50,25 @@ const emit = defineEmits<{
 
 const paymentsStore = usePaymentsStore()
 const authStore = useAuthStore()
+const receiptTemplate = useReceiptTemplate()
+
+/**
+ * Печать квитанции по бланку партнёра.
+ *
+ * Обёртка, потому что бланк приходит с сервера: в разметке нельзя ждать
+ * загрузку, а печатать стандартный вид, когда партнёр настроил свой, — значит
+ * показывать клиенту не то.
+ */
+async function printReceipt() {
+  if (!props.deal || !target.value) return
+  generateReceipt(props.deal, target.value, authStore.user || {}, {
+    template: await receiptTemplate.getTemplate(),
+  })
+}
 const toast = useToast()
 const sections = useSections()
+// Те же границы даты, что и в окне быстрой оплаты, — правило одно на сервис.
+const opDate = useOperationDate()
 const { sendPdf, sending: sendingWhatsApp } = useSendPdfWhatsApp()
 
 /** Телефон клиента сделки: профиль → пользователь → внешний клиент. */
@@ -73,9 +93,15 @@ const open = computed({
   set: (v: boolean) => emit('update:modelValue', v),
 })
 
-/** График: переданный или из стора (страница платежей полный набор не грузит). */
+/**
+ * График: переданный или из стора (страница платежей полный набор не грузит).
+ *
+ * Пустой массив считаем «не передан»: он приходил от страницы, где окно
+ * предпросмотра не открывалось, и расчёты по нему выходили дикие — сервис
+ * предлагал добавить платёж почти на весь остаток сделки.
+ */
 const schedule = computed<Payment[]>(() => {
-  if (props.schedule) return props.schedule
+  if (props.schedule?.length) return props.schedule
   return props.payment ? paymentsStore.getPaymentsForDeal(props.payment.dealId) : []
 })
 const scheduleLoading = ref(false)
@@ -91,15 +117,7 @@ const markPaidAmount = ref<number | null>(null)
 /** Фактическая дата оплаты. По умолчанию — сегодня. */
 const markPaidPaidAt = ref('')
 
-// `<input type="date">` ждёт YYYY-MM-DD в местном поясе, а из API приходит ISO
-// со временем — отсюда тонкий конвертер.
-function toDateInput(d: string | Date): string {
-  const date = typeof d === 'string' ? new Date(d) : d
-  const yyyy = date.getFullYear()
-  const mm = String(date.getMonth() + 1).padStart(2, '0')
-  const dd = String(date.getDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
+const toDateInput = money.toDateInput
 function formatShortDate(d: string | Date): string {
   const date = typeof d === 'string' ? new Date(d) : d
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
@@ -121,7 +139,7 @@ watch(
     manualSchedule.value = {}
 
     // График нужен для расчётов: если его нет — грузим.
-    if (!props.schedule && !schedule.value.length) {
+    if (!props.schedule?.length && !schedule.value.length) {
       scheduleLoading.value = true
       try {
         await paymentsStore.fetchPaymentsForDeal(props.payment.dealId)
@@ -136,56 +154,17 @@ watch(
  * Оплата этой суммой закроет сделку досрочно — партнёр должен увидеть это ДО
  * подтверждения, а не после.
  */
-const earlyCloseInfo = computed(() => {
-  const t = target.value
-  const enteredAmount = markPaidAmount.value
-  if (!t || !props.deal || !enteredAmount || enteredAmount <= 0) {
-    return { willClose: false, count: 0, excess: 0 }
-  }
-  const balance = props.deal.totalPrice - (props.deal.downPayment || 0)
-  const sumAlreadyPaid = schedule.value
-    .filter((p) => p.id !== t.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
-    .reduce((s, p) => s + p.amount, 0)
-  const otherUnpaid = schedule.value.filter(
-    (p) => p.id !== t.id && (p.status === 'PENDING' || p.status === 'OVERDUE'),
-  )
-  const totalAfter = sumAlreadyPaid + enteredAmount
-  return {
-    willClose: totalAfter >= balance && otherUnpaid.length > 0,
-    count: otherUnpaid.length,
-    excess: Math.max(totalAfter - balance, 0),
-  }
-})
+const earlyCloseInfo = computed(() =>
+  money.earlyCloseInfo(props.deal, schedule.value, target.value, markPaidAmount.value),
+)
 
 /**
  * Недоплата по ПОСЛЕДНЕЙ открытой строке: график кончается раньше долга.
  * Предлагаем дописать платёж на остаток, чтобы не лезть в «Добавить платёж».
  */
-const tailPaymentInfo = computed(() => {
-  const t = target.value
-  const enteredAmount = markPaidAmount.value
-  if (!t || !props.deal || !enteredAmount || enteredAmount <= 0) {
-    return { applicable: false, deficit: 0, suggestedDate: '' }
-  }
-  const otherUnpaid = schedule.value.filter(
-    (p) => p.id !== t.id && (p.status === 'PENDING' || p.status === 'OVERDUE'),
-  )
-  if (otherUnpaid.length > 0) return { applicable: false, deficit: 0, suggestedDate: '' }
-
-  const balance = props.deal.totalPrice - (props.deal.downPayment || 0)
-  const sumAlreadyPaid = schedule.value
-    .filter((p) => p.id !== t.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
-    .reduce((s, p) => s + p.amount, 0)
-  const deficit = Math.round(balance - sumAlreadyPaid - enteredAmount)
-  if (deficit <= 0) return { applicable: false, deficit: 0, suggestedDate: '' }
-
-  const anchor = new Date(t.dueDate)
-  const interval = props.deal.paymentInterval || 'MONTHLY'
-  if (interval === 'WEEKLY') anchor.setDate(anchor.getDate() + 7)
-  else if (interval === 'BIWEEKLY') anchor.setDate(anchor.getDate() + 14)
-  else anchor.setMonth(anchor.getMonth() + 1)
-  return { applicable: true, deficit, suggestedDate: toDateInput(anchor) }
-})
+const tailPaymentInfo = computed(() =>
+  money.tailPaymentInfo(props.deal, schedule.value, target.value, markPaidAmount.value),
+)
 const createTailPayment = ref(false)
 
 // ── Перерасчёт графика: режим + живое превью (зеркало redistribute.util) ────
@@ -199,26 +178,14 @@ const redistributeMode = ref<RedistributeMode>('EQUAL')
 const manualSchedule = ref<Record<string, number>>({})
 
 /** Открытые строки кроме целевой, по возрастанию — участники распределения. */
-const redistOpenRows = computed(() => {
-  const t = target.value
-  if (!t) return []
-  return schedule.value
-    .filter((p) => p.id !== t.id && (p.status === 'PENDING' || p.status === 'OVERDUE'))
-    .sort((a, b) => a.number - b.number)
-    .map((p) => ({ id: p.id, number: p.number, amount: Math.round(p.amount) }))
-})
+const redistOpenRows = computed(() => money.openRows(schedule.value, target.value?.id))
 
 /** Остаток по договору после оплаты введённой суммы (== computeOutstanding на сервере). */
-const redistTarget = computed(() => {
-  const t = target.value
-  const entered = markPaidAmount.value
-  if (!t || !props.deal || !entered) return 0
-  const balance = props.deal.totalPrice - (props.deal.downPayment || 0)
-  const sumAlreadyPaid = schedule.value
-    .filter((p) => p.id !== t.id && (p.status === 'PAID' || p.status === 'CLOSED_EARLY'))
-    .reduce((s, p) => s + p.amount, 0)
-  return Math.max(Math.round(balance - sumAlreadyPaid - Math.round(entered)), 0)
-})
+const redistTarget = computed(() =>
+  props.deal && target.value
+    ? money.outstandingAfter(props.deal, schedule.value, target.value.id, markPaidAmount.value ?? 0)
+    : 0,
+)
 
 /** Блок перерасчёта — когда есть что распределять и сумма ≠ плановой. */
 const showRedistribute = computed(() => {
@@ -228,24 +195,9 @@ const showRedistribute = computed(() => {
   return redistOpenRows.value.length > 0 && Math.round(entered) !== Math.round(t.amount)
 })
 
-const redistPreview = computed<{ rows: Array<{ id: string; amount: number }>; closedIds: string[]; error: string }>(() => {
-  const rows = redistOpenRows.value
-  if (!rows.length) return { rows: [], closedIds: [], error: '' }
-  const mode = redistributeMode.value
-  try {
-    if (mode === 'MANUAL') {
-      const manual = rows.map((r) => ({ paymentId: r.id, amount: Math.round(manualSchedule.value[r.id] ?? 0) }))
-      const v = validateManual(rows, redistTarget.value, manual)
-      if (!v.ok) return { rows: [], closedIds: [], error: v.reason }
-      const res = redistribute({ rows, target: redistTarget.value, mode, manual })
-      return { rows: res.rows, closedIds: res.closedIds, error: '' }
-    }
-    const res = redistribute({ rows, target: redistTarget.value, mode })
-    return { rows: res.rows, closedIds: res.closedIds, error: '' }
-  } catch (e: any) {
-    return { rows: [], closedIds: [], error: e?.message || 'Ошибка расчёта' }
-  }
-})
+const redistPreview = computed(() =>
+  money.redistPreview(redistOpenRows.value, redistTarget.value, redistributeMode.value, manualSchedule.value),
+)
 
 function previewAmount(id: string): number | null {
   const r = redistPreview.value.rows.find((x) => x.id === id)
@@ -262,36 +214,11 @@ const manualSum = computed(() =>
 
 // При входе в «Вручную» заполняем поля из равномерного превью — понятная точка отсчёта.
 watch(redistributeMode, (m) => {
-  if (m === 'MANUAL') {
-    try {
-      const eq = redistribute({ rows: redistOpenRows.value, target: redistTarget.value, mode: 'EQUAL' })
-      const map: Record<string, number> = {}
-      for (const r of eq.rows) map[r.id] = r.amount
-      manualSchedule.value = map
-    } catch {
-      manualSchedule.value = {}
-    }
-  }
+  if (m === 'MANUAL') manualSchedule.value = money.equalSplitMap(redistOpenRows.value, redistTarget.value)
 })
 
 /** Выбранная дата оплаты в другом месяце, чем срок → доход учтётся по факту. */
-const markPaidOffMonth = computed(() => {
-  const t = target.value
-  if (!t || !markPaidPaidAt.value) return null
-  const due = dueYearMonth(t.dueDate)
-  if (!due) return null
-  const [y, m] = markPaidPaidAt.value.split('-').map(Number)
-  if (!y || !m) return null
-  const paidY = y
-  const paidM = m - 1
-  if (paidY === due.year && paidM === due.month) return null
-  return {
-    kind: paidY * 12 + paidM < due.year * 12 + due.month ? 'early' : 'late',
-    // paidLabel идёт после «за» — винительный, dueLabel после «в» — предложный.
-    paidLabel: monthAccusative(paidY, paidM, due.year),
-    dueLabel: monthPrepositional(due.year, due.month, paidY),
-  }
-})
+const markPaidOffMonth = computed(() => money.offMonthInfo(target.value, markPaidPaidAt.value))
 
 function onProofFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
@@ -313,7 +240,7 @@ async function sendReceiptWhatsApp(payment: Payment) {
   if (!props.deal) return
   if (!(await confirmSend(`Квитанция #${payment.number}`))) return
   const investor = (authStore.user || {}) as Partial<User>
-  const blob = (await generateReceipt(props.deal, payment, investor, { returnBlob: true })) as Blob
+  const blob = (await generateReceipt(props.deal, payment, investor, { returnBlob: true, template: await receiptTemplate.getTemplate() })) as Blob
   await sendPdf({
     blob,
     fileName: `Квитанция-${props.deal.dealNumber || props.deal.id.slice(0, 6)}-${payment.number}.pdf`,
@@ -325,38 +252,31 @@ async function sendReceiptWhatsApp(payment: Payment) {
 async function confirmMarkPaid() {
   const t = target.value
   if (!t) return
+  const ask = opDate.confirmMessage(markPaidPaidAt.value)
+  if (ask && !confirm(ask)) return
   markPaidUploading.value = true
   try {
     let proofScreenshot: string | undefined
     if (markPaidProofFile.value) {
       proofScreenshot = await api.upload(markPaidProofFile.value, `proofs/${t.dealId}`)
     }
-    const paidAmount =
-      markPaidAmount.value && markPaidAmount.value !== t.amount ? markPaidAmount.value : undefined
     // Намерение по хвостовому платежу фиксируем ДО markAsPaid: после отметки
     // график меняется, и вычисляемое значение устаревает.
     const tail = createTailPayment.value ? { ...tailPaymentInfo.value } : null
     const dealId = t.dealId
-    // Режим перерасчёта шлём только если он реально применяется (сумма ≠
-    // плановой и есть что распределять). «Вручную» — полным списком сумм.
-    const applyRedist = showRedistribute.value && redistOpenRows.value.length > 0
-    const redistributeMode_ = applyRedist ? redistributeMode.value : undefined
-    const remainingSchedule =
-      applyRedist && redistributeMode.value === 'MANUAL'
-        ? redistOpenRows.value.map((r) => ({ paymentId: r.id, amount: Math.round(manualSchedule.value[r.id] ?? 0) }))
-        : undefined
-
-    await paymentsStore.markAsPaid(t.id, dealId, {
-      amount: paidAmount,
+    const payload = money.buildMarkPaidPayload({
+      target: t,
+      entered: markPaidAmount.value,
+      paidAtYmd: markPaidPaidAt.value,
       proofScreenshot,
-      // Полдень выбранной даты: сдвиг часового пояса не должен перенести
-      // сохранённую отметку на соседний день.
-      paidAt: markPaidPaidAt.value
-        ? new Date(`${markPaidPaidAt.value}T12:00:00`).toISOString()
-        : undefined,
-      redistributeMode: redistributeMode_,
-      remainingSchedule,
+      mode: redistributeMode.value,
+      manualMap: manualSchedule.value,
+      rows: redistOpenRows.value,
+      applyRedistribute: showRedistribute.value,
     })
+    const paidAmount = payload.amount
+
+    await paymentsStore.markAsPaid(t.id, dealId, payload)
 
     if (tail && tail.applicable && tail.deficit > 0) {
       // Дописываем строку на остаток. Сбой здесь не отменяет уже сделанную
@@ -372,7 +292,33 @@ async function confirmMarkPaid() {
       }
     }
 
-    toast.success('Платёж отмечен как оплаченный')
+    // Ошибиться строкой легко, особенно когда отмечаешь полсотни платежей
+    // подряд. Даём несколько секунд на отмену прямо в уведомлении — снятие
+    // отметки откатывает и журнал, и доли со-инвесторов, и остаток.
+    //
+    // Если при отметке добавился хвостовой платёж, кнопку не показываем:
+    // снятие отметки его не удалит, и откат вышел бы неполным.
+    const canUndo = authStore.can('payments.unmarkPaid') && !(tail && tail.applicable && tail.deficit > 0)
+    if (canUndo) {
+      const paidId = props.payment!.id
+      toast.showWithAction(
+        `Платёж на ${formatCurrency(paidAmount ?? t.amount)} отмечен`,
+        {
+          label: 'Отменить',
+          handler: async () => {
+            try {
+              await paymentsStore.unmarkPaid(paidId, dealId)
+              toast.success('Отметка снята')
+              emit('paid', dealId)
+            } catch (e: any) {
+              toast.error(e?.message || 'Не удалось снять отметку')
+            }
+          },
+        },
+      )
+    } else {
+      toast.success('Платёж отмечен как оплаченный')
+    }
     open.value = false
     emit('paid', dealId)
   } catch (e: any) {
@@ -499,13 +445,13 @@ async function confirmMarkPaid() {
         <label class="field-label">Фактическая дата оплаты</label>
         <!-- max: деньги нельзя получить завтра — будущая дата тут бессмысленна
              и уводила операцию в журнале выше сегодняшних. -->
-        <input v-model="markPaidPaidAt" type="date" class="field-input" :max="todayDateInput" />
+        <DateField v-model="markPaidPaidAt" :min="opDate.minDate.value" :max="todayDateInput" plain />
 
         <div v-if="target" class="paidat-presets mt-2">
           <!-- «В срок» прячем, когда платёж принимают досрочно: его плановая
                дата ещё не наступила, и оплатить его тем числом невозможно. -->
           <button
-            v-if="toDateInput(target.dueDate) <= todayDateInput"
+            v-if="toDateInput(target.dueDate) <= todayDateInput && (!opDate.minDate.value || toDateInput(target.dueDate) >= opDate.minDate.value)"
             type="button"
             class="paidat-preset"
             :class="{ 'paidat-preset--active': markPaidPaidAt === toDateInput(target.dueDate) }"
@@ -582,7 +528,7 @@ async function confirmMarkPaid() {
         <div class="receipt-row">
           <button
             class="receipt-btn"
-            @click="target && deal && generateReceipt(deal, target, authStore.user || {})"
+            @click="target && deal && printReceipt()"
           >
             <v-icon icon="mdi-file-document-outline" size="18" />
             <div class="receipt-btn-text">

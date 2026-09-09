@@ -186,6 +186,52 @@
       <div class="empty-title">Нет активных черновиков</div>
       <div class="empty-desc">Загрузите файл выше — здесь появится черновик для проверки</div>
     </v-card>
+
+    <!-- Загрузки: каждая партия отдельно, чтобы неудачную можно было отменить
+         целиком, а не искать её сделки по одной. -->
+    <template v-if="batches.length">
+      <div class="section-head mb-4 mt-8">
+        <h2 class="section-title">Загрузки</h2>
+        <span class="section-count">{{ batches.length }}</span>
+      </div>
+
+      <v-card rounded="lg" elevation="0" border class="batch-card">
+        <div v-for="b in batches" :key="b.id" class="batch-row">
+          <div class="batch-main">
+            <div class="batch-name">
+              {{ b.fileName || 'Загрузка из файла' }}
+              <span v-if="b.rolledBackAt" class="batch-badge">откачена</span>
+            </div>
+            <div class="batch-meta">
+              {{ formatDate(b.createdAt) }}
+              <span class="batch-dot">·</span>
+              создано {{ b.createdCount }}
+              <template v-if="b.updatedCount">
+                <span class="batch-dot">·</span> обновлено {{ b.updatedCount }}
+              </template>
+              <template v-if="b.discountTotal">
+                <span class="batch-dot">·</span> скидок на {{ formatCurrency(b.discountTotal) }}
+              </template>
+            </div>
+            <div v-if="b.rolledBackAt" class="batch-meta">
+              В корзину отправлено {{ b.rolledBackCount }}
+              {{ pluralize(b.rolledBackCount || 0, 'сделка', 'сделки', 'сделок') }} —
+              их можно вернуть из корзины
+            </div>
+          </div>
+          <button
+            v-if="!b.rolledBackAt && b.aliveCount > 0"
+            class="batch-rollback"
+            :disabled="rollingBack === b.id"
+            @click="onRollback(b)"
+          >
+            <v-progress-circular v-if="rollingBack === b.id" indeterminate size="13" width="2" />
+            <v-icon v-else icon="mdi-undo-variant" size="15" />
+            Откатить ({{ b.aliveCount }})
+          </button>
+        </div>
+      </v-card>
+    </template>
   </div>
 </template>
 
@@ -196,6 +242,7 @@ import { api } from '@/api/client'
 import { useImportDraft, type DraftStats } from '@/composables/useImportDraft'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
+import { formatCurrency, formatDate } from '@/utils/formatters'
 
 const router = useRouter()
 const { analyze } = useImportDraft()
@@ -218,6 +265,64 @@ const uploadError = ref('')
 const isDragging = ref(false)
 const drafts = ref<DraftListItem[]>([])
 const loadingDrafts = ref(false)
+
+/** Одна загрузка файла: её сделки можно откатить целиком. */
+interface ImportBatchItem {
+  id: string
+  fileName: string | null
+  createdAt: string
+  createdCount: number
+  updatedCount: number
+  discountTotal: number
+  rolledBackAt: string | null
+  rolledBackCount: number | null
+  /** Сколько сделок партии в работе сейчас — столько и уйдёт в корзину. */
+  aliveCount: number
+}
+const batches = ref<ImportBatchItem[]>([])
+const rollingBack = ref<string | null>(null)
+
+function pluralize(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return one
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few
+  return many
+}
+
+async function loadBatches() {
+  try {
+    batches.value = await api.get<ImportBatchItem[]>('/import/batches')
+  } catch {
+    batches.value = []
+  }
+}
+
+/**
+ * Откат загрузки. Спрашиваем подтверждение: действие массовое, хоть и
+ * обратимое — сделки уходят в корзину, а не удаляются насовсем.
+ */
+async function onRollback(batch: ImportBatchItem) {
+  const count = `${batch.aliveCount} ${pluralize(batch.aliveCount, 'сделку', 'сделки', 'сделок')}`
+  // Про обновлённые говорим прямо: откат их не вернёт, прежних данных нигде
+  // нет. Иначе партнёр решит, что отменил загрузку целиком.
+  const updatedNote = batch.updatedCount
+    ? `\n\nВнимание: ${batch.updatedCount} ${pluralize(batch.updatedCount, 'сделка', 'сделки', 'сделок')} эта загрузка обновила — их данные откат не вернёт.`
+    : ''
+  if (!confirm(`Откатить загрузку «${batch.fileName || 'без имени'}»?\n\n${count} переместится в корзину — оттуда их можно вернуть.${updatedNote}`)) {
+    return
+  }
+  rollingBack.value = batch.id
+  try {
+    const res = await api.post<{ removed: number }>(`/import/batches/${batch.id}/rollback`, {})
+    showToast(`Откачено: ${res.removed} ${pluralize(res.removed, 'сделка', 'сделки', 'сделок')} — в корзине`, 'success')
+    await loadBatches()
+  } catch (e: any) {
+    showToast(e?.message || 'Не удалось откатить загрузку', 'error')
+  } finally {
+    rollingBack.value = null
+  }
+}
 
 function pickFile() {
   fileInputRef.value?.click()
@@ -289,10 +394,46 @@ function formatRelative(iso: string): string {
 
 onMounted(() => {
   void loadDrafts()
+  void loadBatches()
 })
 </script>
 
 <style scoped>
+/* Список загрузок: каждая партия — строка с итогами и кнопкой отката. */
+.batch-card { overflow: hidden; }
+.batch-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+.batch-row:last-child { border-bottom: none; }
+.batch-main { flex: 1; min-width: 0; }
+.batch-name {
+  font-size: 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 8px;
+}
+.batch-badge {
+  font-size: 11px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.batch-meta {
+  font-size: 12.5px; margin-top: 3px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.batch-dot { opacity: 0.45; margin: 0 2px; }
+.batch-rollback {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 9px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: transparent; color: #dc2626;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  white-space: nowrap; transition: background 0.15s;
+}
+.batch-rollback:hover:not(:disabled) { background: rgba(239, 68, 68, 0.08); }
+.batch-rollback:disabled { opacity: 0.6; cursor: not-allowed; }
+
 /* ─── Page header ─── */
 .page-head {
   display: flex; align-items: center; gap: 14px;

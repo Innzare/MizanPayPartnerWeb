@@ -2,7 +2,7 @@ import type { HelpChapter } from '@/types/help'
 
 export const chCoInvestors: HelpChapter = {
   id: 'coinvestors',
-  title: 'Со-инвесторы',
+  title: 'Инвесторы',
   icon: 'mdi-account-group-outline',
   summary: 'Работа на общие деньги и деление прибыли',
   requiredFeature: 'coInvestors',
@@ -15,7 +15,7 @@ export const chCoInvestors: HelpChapter = {
         {
           kind: 'p',
           text:
-            'Со-инвестор — человек, который дал вам деньги на закупку товара и получает за это часть прибыли.',
+            'Инвестор — человек, который дал вам деньги на закупку товара и получает за это часть прибыли.',
         },
         {
           kind: 'p',

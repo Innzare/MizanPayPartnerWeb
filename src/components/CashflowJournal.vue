@@ -93,7 +93,12 @@
         <span class="cfj-summary-label">Итого</span>
         <span class="cfj-summary-value">{{ formatCurrencyShort(totals.net) }}</span>
       </div>
-      <span class="cfj-summary-count">{{ total }} операций</span>
+      <!-- Суммы считаются по показанным записям: журнал листается страницами,
+           и молча выдавать их за итог всего периода нельзя. -->
+      <span class="cfj-summary-count">
+        {{ entries.length }} из {{ total }} операций
+        <span v-if="entries.length < total" class="cfj-summary-hint">· суммы по показанным</span>
+      </span>
     </div>
 
     <!-- Loading -->
@@ -164,18 +169,28 @@
         </button>
       </div>
 
-      <!-- Load more -->
-      <button
-        v-if="entries.length < total"
-        class="cfj-load-more"
-        :disabled="loading"
-        @click="loadMore"
-      >
-        <v-progress-circular v-if="loading" indeterminate size="14" width="2" />
-        <v-icon v-else icon="mdi-chevron-down" size="16" />
-        {{ loading ? 'Загрузка...' : `Показать ещё (осталось ${total - entries.length})` }}
-      </button>
     </div>
+
+    <!-- Пагинация как в остальных разделах: страницы с прыжком по номеру,
+         размер порции и, по желанию, подгрузка при прокрутке. Кнопка
+         «Показать ещё» до нужного места в длинном журнале не доводила. -->
+    <div v-if="autoLoad.enabled.value" ref="autoLoadSentinel" class="cfj-sentinel" />
+    <ServerPager
+      v-if="total > 0"
+      :page="page"
+      :total="total"
+      :per-page="perPage"
+      :busy="loading"
+      :per-page-options="PER_PAGE_OPTIONS"
+      :auto-load="autoLoad.enabled.value"
+      :loaded="entries.length"
+      :has-more="hasMore"
+      :paused="autoLoad.paused.value"
+      @update:page="page = $event"
+      @update:per-page="perPage = $event"
+      @update:auto-load="autoLoad.enabled.value = $event"
+      @load-more="autoLoad.loadMoreManually()"
+    />
   </div>
 </template>
 
@@ -188,6 +203,8 @@ import { useToast } from '@/composables/useToast'
 import { useDealLock } from '@/composables/useDealLock'
 import { useSections } from '@/composables/useSections'
 import { formatCurrency, formatCurrencyShort } from '@/utils/formatters'
+import ServerPager from '@/components/ServerPager.vue'
+import { useAutoLoad } from '@/composables/useAutoLoad'
 
 const router = useRouter()
 const { isDealLocked } = useDealLock()
@@ -241,9 +258,28 @@ const TYPE_META: Record<CashFlowEntryType, { label: string; icon: string; bg: st
   CAPITAL_OUT:        { label: 'Капитал −',     icon: 'mdi-bank-minus',      bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
   PROFIT_ACCRUED:     { label: 'Доля прибыли',  icon: 'mdi-percent',         bg: 'rgba(124, 58, 237, 0.10)', fg: '#7c3aed' },
   DIVIDEND_PAID:      { label: 'Получил выплату', icon: 'mdi-account-cash',  bg: 'rgba(4, 120, 87, 0.10)',   fg: '#047857' },
+  // Возвратные деньги — раздел «Временные операции».
+  LOAN_IN:            { label: 'Взяли в долг',  icon: 'mdi-hand-coin-outline', bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
+  LOAN_REPAY_OUT:     { label: 'Вернули долг',  icon: 'mdi-cash-refund',     bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
+  LENT_OUT:           { label: 'Дали в долг',   icon: 'mdi-hand-extended-outline', bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
+  LENT_REPAY_IN:      { label: 'Нам вернули',   icon: 'mdi-cash-refund',     bg: 'rgba(4, 120, 87, 0.10)',   fg: '#047857' },
+}
+
+/**
+ * Оформление строки журнала.
+ *
+ * Неизвестный тип не должен ронять раздел: на бэкенде появляется новый вид
+ * записи, фронт про него ещё не знает — и вместо журнала партнёр видел
+ * бесконечный лоадер. Лучше показать запись нейтрально, чем не показать ничего.
+ */
+const UNKNOWN_TYPE = {
+  label: 'Операция',
+  icon: 'mdi-swap-horizontal',
+  bg: 'rgba(var(--v-theme-on-surface), 0.06)',
+  fg: 'rgba(var(--v-theme-on-surface), 0.6)',
 }
 function typeStyle(t: CashFlowEntryType) {
-  return TYPE_META[t]
+  return TYPE_META[t] ?? UNKNOWN_TYPE
 }
 
 // User-facing list of type filter chips (only the ones that appear in partner's journal)
@@ -308,10 +344,10 @@ function onSearchInput() {
   searchTimer = setTimeout(() => reload(), 300)
 }
 
-// ─── Reload on filter change ───────────────────────────────────────────
-const PAGE_SIZE = 50
-
-watch([activeTypes, periodKey], () => reload(), { deep: true })
+// ─── Постраничная загрузка ─────────────────────────────────────────────
+const PER_PAGE_OPTIONS = [25, 50, 100, 200]
+const page = ref(1)
+const perPage = ref(50)
 
 function currentFilters() {
   return {
@@ -322,16 +358,52 @@ function currentFilters() {
   }
 }
 
-async function reload() {
-  await fetchJournal({ ...currentFilters(), limit: PAGE_SIZE, offset: 0 }, 'replace')
-}
-
-async function loadMore() {
+/**
+ * `append` — режим подгрузки при прокрутке: порция становится продолжением
+ * списка. В обычном режиме страница показывается целиком со своего смещения.
+ */
+async function load(append = false) {
   await fetchJournal(
-    { ...currentFilters(), limit: PAGE_SIZE, offset: entries.value.length },
-    'append',
+    {
+      ...currentFilters(),
+      limit: perPage.value,
+      offset: append ? entries.value.length : (page.value - 1) * perPage.value,
+    },
+    append ? 'append' : 'replace',
   )
 }
+
+/** Смена фильтра возвращает к началу: на пятой странице прежней выборки делать нечего. */
+async function reload() {
+  autoLoad.reset()
+  if (page.value !== 1) page.value = 1
+  else await load()
+}
+
+watch([activeTypes, periodKey], () => reload(), { deep: true })
+watch([page, perPage], () => load())
+
+const hasMore = computed(() => entries.value.length < total.value)
+
+// Тот же механизм, что в «Сделках» и «Должниках»: долистали до конца — следующая
+// порция приходит сама. Настройка своя у раздела и живёт между заходами.
+const autoLoad = useAutoLoad({
+  storageKey: 'cashflow-journal:auto-load',
+  hasMore,
+  busy: loading,
+  loaded: computed(() => entries.value.length),
+  loadMore: () => load(true),
+})
+const autoLoadSentinel = autoLoad.sentinel
+
+watch(
+  () => autoLoad.enabled.value,
+  () => {
+    autoLoad.reset()
+    if (page.value !== 1) page.value = 1
+    else void load()
+  },
+)
 
 // ─── Computed display data ─────────────────────────────────────────────
 const hasFilteredEntries = computed(() => entries.value.length > 0)
@@ -382,6 +454,11 @@ onMounted(() => reload())
 
 <style scoped>
 .cfj { display: flex; flex-direction: column; gap: 14px; }
+
+/* Метка конца списка для подгрузки при прокрутке: попала в поле зрения —
+   грузим следующую порцию. Высота нужна, иначе метка не «видна» наблюдателю. */
+.cfj-sentinel { height: 1px; }
+.cfj-summary-hint { color: rgba(var(--v-theme-on-surface), 0.35); }
 
 /* Header */
 .cfj-toolbar {
@@ -580,23 +657,4 @@ onMounted(() => reload())
 }
 .cfj-row-cancel--busy { opacity: 0.6; cursor: default; }
 
-/* Load more */
-.cfj-load-more {
-  display: inline-flex; align-items: center; justify-content: center;
-  gap: 6px;
-  margin: 14px auto 0;
-  padding: 8px 14px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
-  background: rgb(var(--v-theme-surface));
-  font-size: 12px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  cursor: pointer; transition: all 0.15s;
-  font-family: inherit;
-}
-.cfj-load-more:hover:not(:disabled) {
-  border-color: rgba(var(--v-theme-primary), 0.30);
-  color: rgb(var(--v-theme-primary));
-}
-.cfj-load-more:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>

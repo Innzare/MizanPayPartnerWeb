@@ -328,7 +328,7 @@ function openProduct(productId: string) {
 .filter-input {
   width: 100%; height: 40px; padding: 0 16px 0 38px;
   border: 1px solid #e4e4e7; border-radius: 10px;
-  background: #f4f4f5; font-size: 14px; color: inherit;
+  background: #fff; font-size: 14px; color: inherit;
   outline: none; transition: all 0.15s ease;
 }
 .filter-input::placeholder { color: #9ca3af; }

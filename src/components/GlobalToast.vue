@@ -1,7 +1,24 @@
 <script lang="ts" setup>
 import { useToast } from '@/composables/useToast'
 
+import { ref } from 'vue'
+import type { Toast } from '@/composables/useToast'
+
 const { toasts, remove } = useToast()
+
+/** Уведомления, у которых действие уже запущено, — второй раз не отправляем. */
+const busy = ref(new Set<number>())
+
+async function runAction(toast: Toast) {
+  if (!toast.action || busy.value.has(toast.id)) return
+  busy.value.add(toast.id)
+  try {
+    await toast.action.handler()
+  } finally {
+    busy.value.delete(toast.id)
+    remove(toast.id)
+  }
+}
 
 const iconMap: Record<string, string> = {
   success: 'mdi-check-circle-outline',
@@ -30,6 +47,17 @@ const colorMap: Record<string, string> = {
         >
           <v-icon :icon="iconMap[toast.type]" size="20" :color="colorMap[toast.type]" />
           <span class="gt-message">{{ toast.message }}</span>
+          <!-- Кнопка действия — например «Отменить» сразу после отметки
+               оплаты. Гасим её после нажатия, чтобы двойной клик не отправил
+               отмену дважды. -->
+          <button
+            v-if="toast.action"
+            class="gt-action"
+            :disabled="busy.has(toast.id)"
+            @click="runAction(toast)"
+          >
+            {{ toast.action.label }}
+          </button>
           <button class="gt-close" @click="remove(toast.id)">
             <v-icon icon="mdi-close" size="14" />
           </button>
@@ -76,6 +104,20 @@ const colorMap: Record<string, string> = {
 }
 
 
+.gt-action {
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--gt-color);
+  background: transparent;
+  color: var(--gt-color);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.gt-action:hover:not(:disabled) { background: color-mix(in srgb, var(--gt-color) 12%, transparent); }
+.gt-action:disabled { opacity: 0.5; cursor: default; }
 .gt-close {
   width: 24px;
   height: 24px;

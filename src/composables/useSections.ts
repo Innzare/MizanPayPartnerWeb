@@ -22,7 +22,14 @@ import type { PlanFeatures } from '@/types'
  *   2. тариф не даёт   → элемент виден, но с короной и переходом в тарифы;
  *   3. права сотрудника → поверх первых двух, как и раньше.
  */
-export type SectionKey = keyof PlanFeatures | 'help'
+/**
+ * Раздел, который можно скрыть.
+ *
+ * Почти все ключи совпадают с возможностями тарифа, но части «Бухгалтерии»
+ * своей строки в тарифе не имеют: они входят в общий финансовый блок, а
+ * скрываются по отдельности.
+ */
+export type SectionKey = keyof PlanFeatures | 'help' | 'paymentPoints' | 'pettyExpenses'
 
 /** Разделы, которые владелец может скрыть. Зеркало HIDEABLE_SECTIONS на сервере. */
 export const HIDEABLE_SECTIONS: {
@@ -40,7 +47,7 @@ export const HIDEABLE_SECTIONS: {
   },
   {
     key: 'coInvestors',
-    label: 'Со-инвесторы',
+    label: 'Инвесторы',
     effect: 'Раздел, блок «Участники прибыли» в сделке и доля инвесторов в отчётах.',
     icon: 'mdi-account-group-outline',
   },
@@ -81,6 +88,19 @@ export const HIDEABLE_SECTIONS: {
     icon: 'mdi-file-upload-outline',
   },
   {
+    key: 'paymentPoints',
+    label: 'Пункты приёма',
+    effect:
+      'Вкладка в «Бухгалтерии» с магазинами, где клиенты платят наличными, и рейсы инкассации.',
+    icon: 'mdi-storefront-outline',
+  },
+  {
+    key: 'pettyExpenses',
+    label: 'Мелкие операции',
+    effect: 'Блок текущих расходов и денег, которым ещё не назначили место.',
+    icon: 'mdi-cash-multiple',
+  },
+  {
     key: 'help',
     label: 'Справка',
     effect: 'Раздел с обучением по работе в MizanPay.',
@@ -108,6 +128,11 @@ export function useSections() {
   function visible(key: SectionKey): boolean {
     if (isHidden(key)) return false
     if (key === 'help') return true
+    // Части «Бухгалтерии» своей строки в тарифе не имеют — они входят в общий
+    // финансовый блок и открываются вместе с ним.
+    if (key === 'paymentPoints' || key === 'pettyExpenses') {
+      return subscription.canAccess('finance')
+    }
     return subscription.canAccess(key as keyof PlanFeatures)
   }
 

@@ -6,7 +6,6 @@ import logoText from "@/assets/images/logo-text.svg";
 import logoTextDark from "@/assets/images/logo-text-dark.svg";
 import { useAuthStore } from "@/stores/auth";
 import { usePageHeaderStore } from "@/stores/pageHeader";
-import { useNotificationsStore } from "@/stores/notifications";
 import { useSubscription } from "@/composables/useSubscription";
 import { useSections } from '@/composables/useSections';
 import { useThemeMode } from '@/composables/useThemeMode';
@@ -15,7 +14,13 @@ import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
 import QuickActionsDialog from "@/components/QuickActionsDialog.vue";
 import GlobalSearchDialog from "@/components/GlobalSearchDialog.vue";
+import DigestPanel from "@/components/DigestPanel.vue";
+import { api } from "@/api/client";
 import SubscriptionStatusBanner from "@/components/SubscriptionStatusBanner.vue";
+import EnvBanner from "@/components/EnvBanner.vue";
+
+/** Тестовый контур: над шапкой появляется полоса, и шапка встаёт под неё. */
+const isStagingEnv = (import.meta.env.VITE_APP_ENV || "production").trim() !== "production";
 import DealDraftFloater from "@/components/DealDraftFloater.vue";
 import DealsSidebar from "@/components/DealsSidebar.vue";
 import type { PlanFeatures } from "@/types";
@@ -23,7 +28,6 @@ import { minPlanLabelForFeature } from "@/types";
 
 const authStore = useAuthStore();
 const pageHeader = usePageHeaderStore();
-const notificationsStore = useNotificationsStore();
 const subscription = useSubscription();
 const sections = useSections();
 const chats = useChats();
@@ -35,6 +39,33 @@ const quickActionsMenu = ref(false);
 const showCreateClientDialog = ref(false);
 const showQuickActions = ref(false);
 const showGlobalSearch = ref(false);
+
+/**
+ * Сводка «что происходило».
+ *
+ * В бейдже — только то, из-за чего стоит открыть: новые просрочки, нарушенные
+ * обещания, заявки. Общее число событий перестают замечать через неделю.
+ */
+const showDigest = ref(false);
+const digestAttention = ref(0);
+// Точка на кнопке: за период что-то происходило, даже если ничего не горит.
+const digestActivity = ref(false);
+// Сотруднику без доступа к сделкам сводку и открыть нечем: сервер ответит
+// отказом, а кнопка в шапке обещала бы раздел, которого у него нет.
+const canSeeDigest = computed(() => authStore.can('deals.view'));
+
+async function loadDigestBadge() {
+  if (!canSeeDigest.value) return;
+  try {
+    // Только цифра для бейджа: считать всю сводку ради неё — шестнадцать
+    // запросов при каждом входе на любую страницу.
+    const res = await api.getSilent<{ attention: number; activity: boolean }>('/digest/attention?days=7');
+    digestAttention.value = res?.attention ?? 0;
+    digestActivity.value = !!res?.activity;
+  } catch {
+    // Бейдж — подсказка, а не функция: не загрузился, значит его просто нет.
+  }
+}
 // Quick-access deal sidebar — opens via the burger button on the right
 // side of the header; the component decides what to render based on
 // the current `open` value.
@@ -82,7 +113,7 @@ onMounted(() => {
   // public route (e.g. /investor/:token). Anonymous user, partner endpoints
   // would 401 noisily.
   if (route.path.startsWith('/investor/')) return
-  notificationsStore.fetchNotifications()
+  void loadDigestBadge()
   chats.refreshUnreadCount()
   const chatPoll = window.setInterval(() => chats.refreshUnreadCount(), 60_000)
   onUnmounted(() => window.clearInterval(chatPoll))
@@ -141,17 +172,24 @@ const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?:
   { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
   { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
   { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
-  { path: "/debtors", title: "Должники", icon: "mdi-account-alert-outline", requiredFeature: "debtors" },
-  { path: "/suppliers", title: "Партнёры", icon: "mdi-handshake-outline", requiredFeature: "suppliers" },
+  // Рассылки идут сразу за платежами: обзвон должников начинается там же, где
+  // видно, кто не заплатил.
   { path: "/broadcasts", title: "Чаты и рассылки", icon: "mdi-whatsapp", requiredFeature: "whatsapp" },
+  { path: "/debtors", title: "Должники", icon: "mdi-account-alert-outline", requiredFeature: "debtors" },
+  // Поручители — рядом с должниками: оба раздела про риск невозврата.
+  { path: "/suppliers", title: "Партнёры", icon: "mdi-handshake-outline", requiredFeature: "suppliers" },
   { path: "/messages", title: "Сообщения", icon: "mdi-message-text-outline", staffOnly: true },
-  { path: "/co-investors", title: "Со-инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
+  { path: "/co-investors", title: "Инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
+  // Сотрудники — рядом с инвесторами: оба раздела про людей и их доступ.
+  { path: "/staff", title: "Сотрудники", icon: "mdi-account-key", ownerOnly: true, requiredFeature: "staff" },
+  { path: "/accounting", title: "Бухгалтерия", icon: "mdi-bank-outline", requiredFeature: "finance" },
+  // Инкассация — рядом с бухгалтерией: это её продолжение «в поле».
   { path: "/cashboxes", title: "Кассы", icon: "mdi-wallet-outline", requiredFeature: "finance" },
   { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account", requiredFeature: "registry" },
-  { path: "/staff", title: "Сотрудники", icon: "mdi-account-key", ownerOnly: true, requiredFeature: "staff" },
 ];
 
 const allSecondaryNavRoutes = [
+  { path: "/backups", title: "Резервные копии", icon: "mdi-content-save-outline" },
   { path: "/help", title: "Справка", icon: "mdi-help-circle-outline" },
   { path: "/settings", title: "Настройки", icon: "mdi-cog" },
 ];
@@ -185,9 +223,18 @@ const secondaryNavRoutes = computed(() =>
 // Route titles for header
 const routeTitles: Record<string, string> = {
   "/": "Главная",
+  "/backups": "Резервные копии",
   "/analytics": "Аналитика и отчёты",
   "/help": "Справка",
   "/cashboxes": "Кассы",
+  "/accounting": "Бухгалтерия",
+  "/collections": "Инкассация",
+  "/guarantors": "Поручители",
+  "/accounting/balance": "Бухгалтерия",
+  "/accounting/points": "Бухгалтерия",
+  "/accounting/history": "Бухгалтерия",
+  "/accounting/reports": "Бухгалтерия",
+  "/accounting/audit": "Бухгалтерия",
   "/deals": "Сделки",
   "/clients": "Клиенты",
   "/payments": "Платежи",
@@ -197,16 +244,21 @@ const routeTitles: Record<string, string> = {
   "/products": "Каталог",
   "/requests": "Заявки",
   "/calculator": "Калькулятор",
-  "/notifications": "Уведомления",
   "/zakat": "Закят",
   "/settings": "Настройки",
   "/create-deal": "Новая сделка",
   "/import": "Импорт продаж",
   "/create-product": "Новый товар",
-  "/co-investors": "Со-инвесторы",
+  "/co-investors": "Инвесторы",
   "/registry": "Реестр клиентов",
   "/staff": "Сотрудники",
   "/activity": "История действий",
+  "/contract-builder": "Конструктор документов",
+  "/receipt-template": "Бланк квитанции",
+  "/point": "Пункт приёма",
+  "/point/cash": "Касса пункта",
+  "/point/handover": "Сдача выручки",
+  "/point/history": "История пункта",
   "/messages": "Сообщения",
 };
 
@@ -216,17 +268,24 @@ const routeSubtitles: Record<string, string> = {
   "/help": "Как работать с MizanPay",
   "/suppliers": "Поставщики, долги, заявки и путевые листы",
   "/cashboxes": "Ваши кассы",
+  "/accounting": "Баланс, отчёты и аудит",
+  "/collections": "Сбор наличных из пунктов приёма",
+  "/guarantors": "Кто и за сколько уже поручился",
+  "/accounting/balance": "Сколько у вас денег и где они лежат",
+  "/accounting/points": "Сколько лежит в пунктах приёма и давно ли забирали",
+  "/accounting/history": "Все движения денег по всем счетам",
+  "/accounting/reports": "Движение денег и взаиморасчёты",
+  "/accounting/audit": "Проверка учёта и критичные операции",
   "/deals": "Управление сделками",
   "/clients": "Ваши клиенты",
   "/payments": "Все платежи по сделкам",
   "/broadcasts": "Переписка с клиентами и напоминания по WhatsApp",
   "/products": "Ваш каталог товаров",
   "/requests": "Заявки от клиентов",
-  "/notifications": "Все уведомления",
   "/zakat": "Расчёт и учёт ежегодной милостыни",
   "/calculator": "Расчёт условий рассрочки",
   "/settings": "Профиль и настройки",
-  "/co-investors": "Управление капиталом партнёров",
+  "/co-investors": "Управление капиталом инвесторов",
   "/registry": "Проверяйте платёжеспособность клиентов",
   "/staff": "Управление доступами сотрудников",
   "/activity": "Журнал всех действий в личном кабинете",
@@ -235,13 +294,34 @@ const routeSubtitles: Record<string, string> = {
 
 // Заголовок/подзаголовок бара: приоритет — динамическое переопределение страницы
 // (usePageHeaderStore), затем статические карты по маршруту, затем фолбэки.
+/**
+ * Заголовок для страниц-карточек, у которых свой адрес с идентификатором.
+ *
+ * Страница сама может выставить точное имя («Карта Сбер») через хранилище
+ * заголовка; здесь — осмысленная подпись до того, как данные загрузились.
+ * Раньше в этих случаях в шапке стояло слово «Страница».
+ */
 function fallbackTitle(path: string): string {
   if (path.startsWith("/cashboxes/")) return "Касса";
   if (path.startsWith("/deals/")) return "Детали сделки";
   if (path.startsWith("/clients/")) return "Профиль клиента";
   if (path.startsWith("/suppliers/route-sheets/")) return "Путевой лист";
   if (path.startsWith("/suppliers/")) return "Партнёр";
-  return "Страница";
+  if (path.startsWith("/accounting/points/")) return "Пункт приёма";
+  if (path.startsWith("/accounting/accounts/")) return "Счёт";
+  if (path.startsWith("/collections/")) return "Рейс инкассации";
+  if (path.startsWith("/co-investors/person/")) return "Инвестор";
+  if (path.startsWith("/co-investors/")) return "Вложение инвестора";
+  if (path.startsWith("/products/")) return "Товар";
+  if (path.startsWith("/import/drafts/")) return "Разбор импорта";
+  if (path.startsWith("/staff/")) return "Сотрудник";
+
+  // Ничего не подошло — берём название ближайшего известного раздела: даже
+  // «Бухгалтерия» полезнее, чем слово «Страница».
+  const parent = Object.keys(routeTitles)
+    .filter((r) => r !== "/" && path.startsWith(r + "/"))
+    .sort((a, b) => b.length - a.length)[0];
+  return parent ? routeTitles[parent]! : "MizanPay";
 }
 function fallbackSubtitle(path: string): string {
   if (path.startsWith("/deals/")) return "Подробная информация";
@@ -297,8 +377,8 @@ const confirmLogout = async () => {
         :mobile-breakpoint="0"
         :temporary="isMobile"
       >
-        <!-- Logo -->
-        <div class="lyt-sidebar-logo">
+        <!-- Логотип ведёт на главную: привычный жест, которого здесь не хватало. -->
+        <router-link to="/" class="lyt-sidebar-logo" title="На главную">
           <div
             :style="{
               display: 'flex',
@@ -314,25 +394,16 @@ const confirmLogout = async () => {
             />
             <div class="lyt-sidebar-brand">
               <img :src="isDark ? logoTextDark : logoText" alt="MizanPay" class="lyt-sidebar-logo-text" />
-              <span class="lyt-sidebar-brand-label">Partner</span>
             </div>
           </div>
-        </div>
+        </router-link>
 
-        <!-- Collapse toggle -->
-        <button class="lyt-collapse-btn" @click="collapsed = !collapsed">
-          <div :style="{ display: 'flex', gap: collapsed ? '0' : '12px' }">
-            <v-icon
-              :icon="collapsed ? 'mdi-chevron-right' : 'mdi-chevron-left'"
-              size="18"
-            />
-            <span class="lyt-nav-text">Свернуть</span>
-          </div>
-        </button>
-
+        <!-- Прокручиваются только пункты меню: логотип и профиль остаются на
+             месте. Отступы живут внутри, а не на прокручиваемом блоке —
+             иначе на низких экранах края обрезаются полосой прокрутки. -->
+        <div class="lyt-nav-scroll">
         <!-- Main nav -->
         <div class="lyt-nav-section">
-          <p class="lyt-nav-label">Основное</p>
           <nav class="lyt-nav">
             <v-tooltip
               v-for="item in mainNavRoutes"
@@ -353,8 +424,18 @@ const confirmLogout = async () => {
                   v-bind="tip"
                   @click="item.locked && $router.push({ path: '/settings', query: { tab: 'subscription' } })"
                 >
+                  <!-- Развёрнутый пункт тянется на всю ширину — иначе бейдж
+                       непрочитанных не прижмётся к правому краю. Свёрнутому
+                       ширина не нужна: без неё иконка встаёт ровно по центру,
+                       как в нижних пунктах меню. -->
                   <div
-                    :style="{ display: 'flex', gap: collapsed ? '0' : '12px', alignItems: 'center', width: '100%' }"
+                    :style="{
+                      display: 'flex',
+                      gap: collapsed ? '0' : '12px',
+                      alignItems: 'center',
+                      justifyContent: collapsed ? 'center' : 'flex-start',
+                      width: collapsed ? 'auto' : '100%',
+                    }"
                   >
                     <v-icon :icon="item.icon" size="20" />
                     <span class="lyt-nav-text">{{ item.title }}</span>
@@ -402,8 +483,10 @@ const confirmLogout = async () => {
           </nav>
         </div>
 
-        <div class="lyt-sidebar-spacer" />
-
+        </div>
+        <!-- Нижний блок закреплён: тема и профиль всегда на виду. Отделён
+             линией — иначе при прокрутке пункты меню упирались прямо в него. -->
+        <div class="lyt-sidebar-footer">
         <!-- Выбор темы: светлая / тёмная / ночная. Раскрывается вверх — кнопка
              стоит внизу сайдбара, вниз списку места нет. -->
         <v-menu location="top" offset="8" :close-on-content-click="true">
@@ -436,14 +519,23 @@ const confirmLogout = async () => {
           </div>
         </v-menu>
 
-        <!-- User card in sidebar -->
+        <!-- Карточка профиля. В свёрнутом меню от неё остаётся только аватар:
+             рамка вокруг одного кружка выглядит лишней коробкой. -->
         <div class="lyt-sidebar-user">
           <div :style="{ display: 'flex', gap: collapsed ? '0' : '12px' }">
-            <v-tooltip text="Профиль" location="end" :disabled="!collapsed">
+            <!-- Сотрудник открывает отсюда свою страницу с показателями:
+                 раздел «Сотрудники» ему закрыт, а собственная работа — нет. -->
+            <v-tooltip
+              :text="authStore.isStaff ? 'Мои показатели' : 'Профиль'"
+              location="end"
+              :disabled="!collapsed"
+            >
               <template #activator="{ props: tip }">
                 <div
                   class="lyt-sidebar-user-avatar"
+                  :class="{ 'lyt-sidebar-user-avatar--link': authStore.isStaff }"
                   v-bind="collapsed ? tip : {}"
+                  @click="authStore.isStaff && router.push(`/staff/${authStore.user?.staffId}`)"
                 >
                   {{ userInitials }}
                 </div>
@@ -475,11 +567,28 @@ const confirmLogout = async () => {
             </v-tooltip>
           </div>
         </div>
+        </div>
       </v-navigation-drawer>
+
+      <!-- Кнопка сворачивания. Живёт вне панели, потому что в свёрнутом виде
+           должна наполовину выступать за её край, а панель прячет всё, что за
+           границу выходит. Позиция считается от ширины панели, поэтому
+           переезжает вместе с ней одним движением. -->
+      <button
+        v-if="!isMobile && drawer"
+        class="lyt-collapse-fab"
+        :class="{ 'lyt-collapse-fab--out': collapsed }"
+        :style="{ left: (collapsed ? sidebarWidth - 14 : sidebarWidth - 44) + 'px' }"
+        :title="collapsed ? 'Развернуть меню' : 'Свернуть меню'"
+        @click="collapsed = !collapsed"
+      >
+        <v-icon :icon="collapsed ? 'mdi-chevron-right' : 'mdi-chevron-left'" size="17" />
+      </button>
 
       <!-- Main content -->
       <v-main>
-        <div class="lyt-content">
+        <div class="lyt-content" :class="{ 'lyt-content--staging': isStagingEnv }">
+          <EnvBanner />
           <!-- Header -->
           <header class="lyt-header">
             <div class="lyt-header-left">
@@ -542,11 +651,32 @@ const confirmLogout = async () => {
                 <v-icon icon="mdi-moon-waning-crescent" size="20" />
               </router-link>
 
-              <!-- Notifications (owner-only) -->
-              <router-link v-if="authStore.isOwner" to="/notifications" class="lyt-header-icon-btn" title="Уведомления">
-                <v-icon icon="mdi-bell-outline" size="20" />
-                <span v-if="notificationsStore.unreadCount" class="lyt-header-badge">{{ notificationsStore.unreadCount }}</span>
-              </router-link>
+              <!-- Сводка «что происходило»: открыта всем, кто работает со
+                   сделками. Показывает только то, что человеку и так доступно —
+                   ограничения применяются на сервере. -->
+              <v-menu
+                v-if="canSeeDigest"
+                v-model="showDigest"
+                :close-on-content-click="false"
+                location="bottom end"
+                offset="8"
+              >
+                <template #activator="{ props: digestProps }">
+                  <!-- С подписью, а не одной иконкой: по значку «график» никто
+                       не догадается, что внутри дела на сегодня. -->
+                  <button class="lyt-header-events-btn" title="События" v-bind="digestProps">
+                    <v-icon icon="mdi-lightning-bolt-outline" size="18" />
+                    <span v-if="!isMobile" class="lyt-header-events-label">События</span>
+                    <!-- Число — когда есть срочное; точка — когда просто были
+                         события: иначе кнопка молчит о том, что день не пустой. -->
+                    <span v-if="digestAttention" class="lyt-header-badge">{{ digestAttention > 99 ? '99+' : digestAttention }}</span>
+                    <span v-else-if="digestActivity" class="lyt-header-dot" />
+                  </button>
+                </template>
+                <!-- Панель уже посчитала это число: пусть кнопка не остаётся
+                     с утренним значением до перезагрузки страницы. -->
+                <DigestPanel v-model="showDigest" @attention="digestAttention = $event" />
+              </v-menu>
 
               <!--
                 Create dropdown.
@@ -669,34 +799,75 @@ const confirmLogout = async () => {
 </template>
 
 <style lang="scss">
+:root {
+  /* Одна высота на две шапки: логотип в сайдбаре и шапка контента стоят
+     рядом, и любое расхождение сразу видно по линии разделителя. */
+  --lyt-header-h: 72px;
+}
 .lyt-sidebar {
   .v-navigation-drawer__content {
     display: flex !important;
     flex-direction: column !important;
   }
 }
+.lyt-theme-option:last-child { margin-bottom: 0; }
 </style>
 
 <style scoped lang="scss">
 /* ===== SIDEBAR ===== */
+/* Отступы не на самом сайдбаре, а внутри его частей: иначе прокручиваемый
+   список пунктов упирался бы в них и на низких экранах обрезался по краям. */
 .lyt-sidebar {
   background: #fff !important;
   border-right: 1px solid #f0f0f0 !important;
   display: flex;
   flex-direction: column;
-  padding: 20px 16px;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
   overflow: hidden;
 }
-
-.lyt-sidebar--collapsed {
-  padding: 20px 10px;
+/* Логотип стоит над прокруткой и делит с пунктами меню одни поля (16px),
+   а разделитель под ним тянется на всю ширину панели. */
+.lyt-sidebar-logo {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: var(--lyt-header-h);
+  padding: 0 16px;
+  border-bottom: 1px solid #f0f0f0;
+  text-decoration: none;
+  color: inherit;
+}
+/* Прокручиваются только пункты меню. */
+.lyt-nav-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Верхний и нижний воздух — собственный padding списка: на margin соседей
+     он зависел бы от того, что стоит рядом, и пропадал бы при прокрутке. */
+  padding: 16px;
+  /* Тонкая полоса, чтобы она не съедала ширину пунктов. */
+  scrollbar-width: thin;
+}
+.lyt-nav-scroll::-webkit-scrollbar { width: 6px; }
+.lyt-nav-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+  border-radius: 3px;
+}
+.lyt-sidebar-footer {
+  flex-shrink: 0;
+  padding: 12px 16px 20px;
+  border-top: 1px solid #f0f0f0;
 }
 
 .lyt-sidebar--collapsed .lyt-sidebar-logo {
-  padding: 0 0 24px;
+  padding: 0 10px;
   justify-content: center;
 }
+.lyt-sidebar--collapsed .lyt-nav-scroll { padding: 16px 10px; }
+.lyt-sidebar--collapsed .lyt-sidebar-footer { padding: 12px 10px 20px; }
+
 
 .lyt-sidebar--collapsed .lyt-sidebar-brand {
   width: 0;
@@ -724,19 +895,28 @@ const confirmLogout = async () => {
   white-space: nowrap;
 }
 
-.lyt-sidebar--collapsed .lyt-sidebar-user {
+.lyt-sidebar--collapsed .lyt-theme-btn {
   justify-content: center;
-  margin: 8px;
   padding: 8px;
 }
-.lyt-sidebar--collapsed .lyt-sidebar-user > div { width: auto; }
 
-.lyt-sidebar--collapsed .lyt-sidebar-user-info {
-  width: 0;
-  opacity: 0;
-  overflow: hidden;
+/* Свёрнутое меню: от карточки профиля остаётся один аватар — фон и рамку
+   убираем, иначе кружок сидит в пустой коробке. */
+.lyt-sidebar--collapsed .lyt-sidebar-user {
+  justify-content: center;
+  margin: 8px 0 4px;
+  padding: 0;
+  background: none;
+  border-color: transparent;
 }
 
+.lyt-sidebar--collapsed .lyt-sidebar-user:hover {
+  background: none;
+}
+
+.lyt-sidebar--collapsed .lyt-sidebar-user > div { width: auto; }
+
+.lyt-sidebar--collapsed .lyt-sidebar-user-info,
 .lyt-sidebar--collapsed .lyt-sidebar-logout {
   position: absolute;
   width: 0;
@@ -744,21 +924,6 @@ const confirmLogout = async () => {
   overflow: hidden;
 }
 
-.lyt-sidebar--collapsed .lyt-collapse-btn,
-.lyt-sidebar--collapsed .lyt-theme-btn {
-  justify-content: center;
-  padding: 8px;
-}
-
-.lyt-sidebar-logo {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 12px 22px;
-  border-bottom: 1px solid #f0f0f0;
-  margin-bottom: 16px;
-  min-height: 36px;
-}
 
 .lyt-sidebar-logo-img {
   flex-shrink: 0;
@@ -780,23 +945,8 @@ const confirmLogout = async () => {
   width: auto;
 }
 
-.lyt-sidebar-brand-label {
-  font-size: 9px;
-  font-weight: 700;
-  color: #047857;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  position: absolute;
-  bottom: -18px;
-  right: -36px;
-  background: color-mix(in srgb, #047857 10%, #fff);
-  border: 1px solid color-mix(in srgb, #047857 25%, transparent);
-  border-radius: 6px;
-  padding: 1px 8px;
-}
-
-.lyt-nav-section {
-  margin-bottom: 24px;
+.lyt-nav-section + .lyt-nav-section {
+  margin-top: 24px;
 }
 
 .lyt-nav-label {
@@ -906,7 +1056,6 @@ const confirmLogout = async () => {
   color: #9ca3af;
   cursor: pointer;
   transition: all 0.15s ease;
-  margin-bottom: 2px;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -942,6 +1091,8 @@ const confirmLogout = async () => {
   color: rgba(var(--v-theme-on-surface), 0.45);
 }
 .lyt-theme-option {
+  /* Просвет между пунктами: слипшиеся строки читаются одним блоком. */
+  margin-bottom: 2px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -987,28 +1138,38 @@ const confirmLogout = async () => {
   color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
-.lyt-collapse-btn {
+.lyt-collapse-fab {
+  position: fixed;
+  /* Ровно по центру шапки — той же, что у контента. */
+  top: calc((var(--lyt-header-h) - 28px) / 2);
+  z-index: 1010;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-radius: 10px;
-  width: 100%;
-  border: none;
-  background: none;
-  font-size: 13px;
-  font-weight: 500;
+  justify-content: center;
+  border-radius: 9px;
+  border: 1px solid #ececec;
+  background: #fff;
   color: #9ca3af;
   cursor: pointer;
-  transition: all 0.15s ease;
-  margin-bottom: 16px;
-  white-space: nowrap;
-  overflow: hidden;
+  transition:
+    left 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.lyt-collapse-btn:hover {
-  background: #f3f4f6;
-  color: #6b7280;
+.lyt-collapse-fab:hover {
+  background: #f9f4f0;
+  color: #047857;
+}
+
+/* Свёрнутая панель: кнопка наполовину снаружи — так видно, что она про
+   границу меню, а не про его содержимое. */
+.lyt-collapse-fab--out {
+  border-radius: 50%;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
 }
 
 .lyt-sidebar-user {
@@ -1124,6 +1285,10 @@ const confirmLogout = async () => {
   background: #f9f4f0;
 }
 
+/* Полоса тестового контура липнет к верху, поэтому шапка встаёт под неё —
+   иначе они наезжают друг на друга. */
+.lyt-content--staging .lyt-header { top: 26px; }
+
 /* ===== HEADER ===== */
 .lyt-header {
   position: sticky;
@@ -1132,7 +1297,8 @@ const confirmLogout = async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 32px;
+  height: var(--lyt-header-h);
+  padding: 0 32px;
   background: #fff;
   border-bottom: 1px solid #f0f0f0;
 }
@@ -1266,6 +1432,54 @@ const confirmLogout = async () => {
   right: -5px;
   color: #e8b931;
   filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.9));
+}
+
+/* Кнопка событий: тот же вид, что у круглых кнопок шапки, но с подписью —
+   единственная в ряду, ради которой стоит занять место текстом. */
+.lyt-header-events-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid #f0f0f0;
+  background: #fff;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lyt-header-events-btn:hover {
+  background: #f9f4f0;
+  color: #1a1a2e;
+  border-color: #e5e7eb;
+}
+
+.lyt-header-events-label { font-size: 13px; font-weight: 600; white-space: nowrap; }
+
+.dark .lyt-header-events-btn {
+  background: rgb(var(--v-theme-surface-elevated));
+  border-color: rgb(var(--v-theme-border));
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+
+.dark .lyt-header-events-btn:hover {
+  background: rgb(var(--v-theme-border));
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  border-color: rgb(var(--v-theme-border));
+}
+
+.lyt-header-dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #047857;
+  border: 2px solid rgb(var(--v-theme-surface));
 }
 
 .lyt-header-badge {
@@ -1570,14 +1784,9 @@ const confirmLogout = async () => {
   border-right-color: rgb(var(--v-theme-border)) !important;
 }
 
-.dark .lyt-sidebar-logo {
-  border-bottom-color: rgb(var(--v-theme-border));
-}
-
-.dark .lyt-sidebar-brand-label {
-  color: #34d399;
-  background: color-mix(in srgb, #059669 12%, rgb(var(--v-theme-surface)));
-  border-color: color-mix(in srgb, #059669 25%, transparent);
+.dark .lyt-sidebar-logo,
+.dark .lyt-sidebar-footer {
+  border-color: rgb(var(--v-theme-border));
 }
 
 .dark .lyt-sidebar-brand-name {
@@ -1617,12 +1826,19 @@ const confirmLogout = async () => {
 }
 
 .dark .lyt-theme-btn,
-.dark .lyt-collapse-btn {
+/* Тёмная тема: кнопка садится на слой панели, а не светится белым пятном. */
+.dark .lyt-collapse-fab {
+  background: rgb(var(--v-theme-surface));
+  border-color: rgb(var(--v-theme-border));
   color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
-.dark .lyt-theme-btn:hover,
-.dark .lyt-collapse-btn:hover {
+.dark .lyt-collapse-fab:hover {
+  background: rgb(var(--v-theme-surface-elevated));
+  color: rgba(var(--v-theme-on-surface), 0.8);
+}
+
+.dark .lyt-theme-btn:hover {
   background: rgb(var(--v-theme-surface-elevated));
   color: rgba(var(--v-theme-on-surface), 0.65);
 }
@@ -1632,6 +1848,12 @@ const confirmLogout = async () => {
   border-color: rgba(255, 255, 255, 0.08);
 }
 .dark .lyt-sidebar-user:hover { background: rgba(255, 255, 255, 0.07); }
+/* Свёрнутое меню темы не касается: коробки нет ни в светлой, ни в тёмной. */
+.dark .lyt-sidebar--collapsed .lyt-sidebar-user,
+.dark .lyt-sidebar--collapsed .lyt-sidebar-user:hover {
+  background: none;
+  border-color: transparent;
+}
 
 .dark .lyt-sidebar-user-name {
   color: rgba(var(--v-theme-on-surface), 0.92);
@@ -1826,6 +2048,8 @@ const confirmLogout = async () => {
 /* ===== MOBILE ===== */
 @media (max-width: 767px) {
   .lyt-header {
+    height: auto;
+    min-height: 56px;
     padding: 10px 12px;
     gap: 8px;
   }

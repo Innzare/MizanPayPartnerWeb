@@ -19,8 +19,18 @@ declare module 'vue-router/auto-routes' {
    */
   export interface RouteNamedMap {
     '/': RouteRecordInfo<'/', '/', Record<never, never>, Record<never, never>>,
+    '/accounting/': RouteRecordInfo<'/accounting/', '/accounting', Record<never, never>, Record<never, never>>,
+    '/accounting/accounts/[id]': RouteRecordInfo<'/accounting/accounts/[id]', '/accounting/accounts/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/accounting/audit': RouteRecordInfo<'/accounting/audit', '/accounting/audit', Record<never, never>, Record<never, never>>,
+    '/accounting/balance': RouteRecordInfo<'/accounting/balance', '/accounting/balance', Record<never, never>, Record<never, never>>,
+    '/accounting/history': RouteRecordInfo<'/accounting/history', '/accounting/history', Record<never, never>, Record<never, never>>,
+    '/accounting/points/': RouteRecordInfo<'/accounting/points/', '/accounting/points', Record<never, never>, Record<never, never>>,
+    '/accounting/points/[id]': RouteRecordInfo<'/accounting/points/[id]', '/accounting/points/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/accounting/reports': RouteRecordInfo<'/accounting/reports', '/accounting/reports', Record<never, never>, Record<never, never>>,
+    '/accounting/temporary': RouteRecordInfo<'/accounting/temporary', '/accounting/temporary', Record<never, never>, Record<never, never>>,
     '/activity': RouteRecordInfo<'/activity', '/activity', Record<never, never>, Record<never, never>>,
     '/analytics': RouteRecordInfo<'/analytics', '/analytics', Record<never, never>, Record<never, never>>,
+    '/backups': RouteRecordInfo<'/backups', '/backups', Record<never, never>, Record<never, never>>,
     '/broadcasts': RouteRecordInfo<'/broadcasts', '/broadcasts', Record<never, never>, Record<never, never>>,
     '/calculator': RouteRecordInfo<'/calculator', '/calculator', Record<never, never>, Record<never, never>>,
     '/cashboxes/': RouteRecordInfo<'/cashboxes/', '/cashboxes', Record<never, never>, Record<never, never>>,
@@ -32,6 +42,8 @@ declare module 'vue-router/auto-routes' {
     '/co-investors/': RouteRecordInfo<'/co-investors/', '/co-investors', Record<never, never>, Record<never, never>>,
     '/co-investors/[id]': RouteRecordInfo<'/co-investors/[id]', '/co-investors/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/co-investors/person/[id]': RouteRecordInfo<'/co-investors/person/[id]', '/co-investors/person/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/collections/': RouteRecordInfo<'/collections/', '/collections', Record<never, never>, Record<never, never>>,
+    '/collections/[id]': RouteRecordInfo<'/collections/[id]', '/collections/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/contract-builder': RouteRecordInfo<'/contract-builder', '/contract-builder', Record<never, never>, Record<never, never>>,
     '/create-deal': RouteRecordInfo<'/create-deal', '/create-deal', Record<never, never>, Record<never, never>>,
     '/create-product': RouteRecordInfo<'/create-product', '/create-product', Record<never, never>, Record<never, never>>,
@@ -40,22 +52,29 @@ declare module 'vue-router/auto-routes' {
     '/deals/[id]': RouteRecordInfo<'/deals/[id]', '/deals/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/debtors': RouteRecordInfo<'/debtors', '/debtors', Record<never, never>, Record<never, never>>,
     '/forgot-password': RouteRecordInfo<'/forgot-password', '/forgot-password', Record<never, never>, Record<never, never>>,
+    '/guarantors': RouteRecordInfo<'/guarantors', '/guarantors', Record<never, never>, Record<never, never>>,
     '/help': RouteRecordInfo<'/help', '/help', Record<never, never>, Record<never, never>>,
     '/import/': RouteRecordInfo<'/import/', '/import', Record<never, never>, Record<never, never>>,
     '/import/drafts/[id]': RouteRecordInfo<'/import/drafts/[id]', '/import/drafts/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/investor/[token]': RouteRecordInfo<'/investor/[token]', '/investor/:token', { token: ParamValue<true> }, { token: ParamValue<false> }>,
     '/login': RouteRecordInfo<'/login', '/login', Record<never, never>, Record<never, never>>,
     '/messages': RouteRecordInfo<'/messages', '/messages', Record<never, never>, Record<never, never>>,
-    '/notifications': RouteRecordInfo<'/notifications', '/notifications', Record<never, never>, Record<never, never>>,
     '/payments': RouteRecordInfo<'/payments', '/payments', Record<never, never>, Record<never, never>>,
+    '/point/': RouteRecordInfo<'/point/', '/point', Record<never, never>, Record<never, never>>,
+    '/point/cash': RouteRecordInfo<'/point/cash', '/point/cash', Record<never, never>, Record<never, never>>,
+    '/point/handover': RouteRecordInfo<'/point/handover', '/point/handover', Record<never, never>, Record<never, never>>,
+    '/point/history': RouteRecordInfo<'/point/history', '/point/history', Record<never, never>, Record<never, never>>,
     '/products': RouteRecordInfo<'/products', '/products', Record<never, never>, Record<never, never>, '/products/' | '/products/[id]'>,
     '/products/': RouteRecordInfo<'/products/', '/products', Record<never, never>, Record<never, never>>,
     '/products/[id]': RouteRecordInfo<'/products/[id]', '/products/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
+    '/receipt-template': RouteRecordInfo<'/receipt-template', '/receipt-template', Record<never, never>, Record<never, never>>,
     '/registry': RouteRecordInfo<'/registry', '/registry', Record<never, never>, Record<never, never>>,
     '/requests': RouteRecordInfo<'/requests', '/requests', Record<never, never>, Record<never, never>>,
     '/reset-password': RouteRecordInfo<'/reset-password', '/reset-password', Record<never, never>, Record<never, never>>,
     '/settings': RouteRecordInfo<'/settings', '/settings', Record<never, never>, Record<never, never>>,
-    '/staff': RouteRecordInfo<'/staff', '/staff', Record<never, never>, Record<never, never>>,
+    '/staff': RouteRecordInfo<'/staff', '/staff', Record<never, never>, Record<never, never>, '/staff/' | '/staff/[id]'>,
+    '/staff/': RouteRecordInfo<'/staff/', '/staff', Record<never, never>, Record<never, never>>,
+    '/staff/[id]': RouteRecordInfo<'/staff/[id]', '/staff/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/suppliers': RouteRecordInfo<'/suppliers', '/suppliers', Record<never, never>, Record<never, never>, '/suppliers/' | '/suppliers/[id]' | '/suppliers/route-sheets/[id]'>,
     '/suppliers/': RouteRecordInfo<'/suppliers/', '/suppliers', Record<never, never>, Record<never, never>>,
     '/suppliers/[id]': RouteRecordInfo<'/suppliers/[id]', '/suppliers/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
@@ -78,12 +97,52 @@ declare module 'vue-router/auto-routes' {
       routes: '/'
       views: never
     }
+    'src/pages/accounting/index.vue': {
+      routes: '/accounting/'
+      views: never
+    }
+    'src/pages/accounting/accounts/[id].vue': {
+      routes: '/accounting/accounts/[id]'
+      views: never
+    }
+    'src/pages/accounting/audit.vue': {
+      routes: '/accounting/audit'
+      views: never
+    }
+    'src/pages/accounting/balance.vue': {
+      routes: '/accounting/balance'
+      views: never
+    }
+    'src/pages/accounting/history.vue': {
+      routes: '/accounting/history'
+      views: never
+    }
+    'src/pages/accounting/points/index.vue': {
+      routes: '/accounting/points/'
+      views: never
+    }
+    'src/pages/accounting/points/[id].vue': {
+      routes: '/accounting/points/[id]'
+      views: never
+    }
+    'src/pages/accounting/reports.vue': {
+      routes: '/accounting/reports'
+      views: never
+    }
+    'src/pages/accounting/temporary.vue': {
+      routes: '/accounting/temporary'
+      views: never
+    }
     'src/pages/activity.vue': {
       routes: '/activity'
       views: never
     }
     'src/pages/analytics.vue': {
       routes: '/analytics'
+      views: never
+    }
+    'src/pages/backups.vue': {
+      routes: '/backups'
       views: never
     }
     'src/pages/broadcasts.vue': {
@@ -130,6 +189,14 @@ declare module 'vue-router/auto-routes' {
       routes: '/co-investors/person/[id]'
       views: never
     }
+    'src/pages/collections/index.vue': {
+      routes: '/collections/'
+      views: never
+    }
+    'src/pages/collections/[id].vue': {
+      routes: '/collections/[id]'
+      views: never
+    }
     'src/pages/contract-builder.vue': {
       routes: '/contract-builder'
       views: never
@@ -162,6 +229,10 @@ declare module 'vue-router/auto-routes' {
       routes: '/forgot-password'
       views: never
     }
+    'src/pages/guarantors.vue': {
+      routes: '/guarantors'
+      views: never
+    }
     'src/pages/help.vue': {
       routes: '/help'
       views: never
@@ -186,12 +257,24 @@ declare module 'vue-router/auto-routes' {
       routes: '/messages'
       views: never
     }
-    'src/pages/notifications.vue': {
-      routes: '/notifications'
-      views: never
-    }
     'src/pages/payments.vue': {
       routes: '/payments'
+      views: never
+    }
+    'src/pages/point/index.vue': {
+      routes: '/point/'
+      views: never
+    }
+    'src/pages/point/cash.vue': {
+      routes: '/point/cash'
+      views: never
+    }
+    'src/pages/point/handover.vue': {
+      routes: '/point/handover'
+      views: never
+    }
+    'src/pages/point/history.vue': {
+      routes: '/point/history'
       views: never
     }
     'src/pages/products.vue': {
@@ -204,6 +287,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/products/[id].vue': {
       routes: '/products/[id]'
+      views: never
+    }
+    'src/pages/receipt-template.vue': {
+      routes: '/receipt-template'
       views: never
     }
     'src/pages/registry.vue': {
@@ -223,7 +310,15 @@ declare module 'vue-router/auto-routes' {
       views: never
     }
     'src/pages/staff.vue': {
-      routes: '/staff'
+      routes: '/staff' | '/staff/' | '/staff/[id]'
+      views: 'default'
+    }
+    'src/pages/staff/index.vue': {
+      routes: '/staff/'
+      views: never
+    }
+    'src/pages/staff/[id].vue': {
+      routes: '/staff/[id]'
       views: never
     }
     'src/pages/suppliers.vue': {

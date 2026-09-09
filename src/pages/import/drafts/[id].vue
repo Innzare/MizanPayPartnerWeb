@@ -67,6 +67,54 @@
         </div>
       </div>
 
+      <!-- Скидки в файле. Показываем до импорта: из-за них часть договоров
+           закроется сразу, и партнёр должен видеть, сколько именно, прежде
+           чем соглашаться. -->
+      <div v-if="discounts && discounts.rows > 0" class="discount-banner mb-4">
+        <div class="discount-banner-icon">
+          <v-icon icon="mdi-sale" size="20" />
+        </div>
+        <div class="discount-banner-body">
+          <div class="discount-banner-title">
+            В файле есть скидки — {{ discounts.rows }}
+            {{ pluralize(discounts.rows, 'строка', 'строки', 'строк') }}
+            на {{ formatCurrency(discounts.totalAmount) }}
+          </div>
+          <div class="discount-banner-sub">
+            Скидка не меняет сумму договора — она уменьшает долг клиента и ваш доход.
+            Договор закроется, только если оплаченное вместе со скидкой покрывает весь долг.
+          </div>
+          <div class="discount-figures">
+            <div class="discount-figure">
+              <span class="discount-figure-value">{{ discounts.willClose }}</span>
+              <span class="discount-figure-label">закроется сразу</span>
+            </div>
+            <div class="discount-figure">
+              <span class="discount-figure-value">{{ discounts.stayActive }}</span>
+              <span class="discount-figure-label">останется активными</span>
+            </div>
+            <div class="discount-figure">
+              <span class="discount-figure-value">{{ formatCurrency(discounts.totalAmount) }}</span>
+              <span class="discount-figure-label">общая сумма скидок</span>
+            </div>
+          </div>
+          <div v-if="discounts.overIncome > 0" class="discount-warn">
+            <v-icon icon="mdi-alert-outline" size="15" />
+            <span>
+              У {{ discounts.overIncome }}
+              {{ pluralize(discounts.overIncome, 'строки', 'строк', 'строк') }}
+              скидка больше дохода по договору — она будет уменьшена до дохода
+              (всего срезано {{ formatCurrency(discounts.overIncomeAmount) }}).
+              Прощать можно только заработок: уйти в минус по закупке нельзя.
+            </span>
+          </div>
+          <div v-if="coInvestorWarning" class="discount-warn">
+            <v-icon icon="mdi-account-group-outline" size="15" />
+            <span>{{ coInvestorWarning }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Единицы измерения: в файле подозрительно дешёвые сделки.
            Показываем ДО ошибок — если суммы не в тех единицах, разбирать
            отдельные строки бессмысленно. -->
@@ -166,6 +214,13 @@
           </button>
         </div>
 
+        <!-- Обновление перезаписывает сделку данными файла, включая график.
+             Партнёр должен понимать это до нажатия «Импортировать». -->
+        <div v-if="draft.stats.byAction.update > 0" class="action-summary-note">
+          <v-icon icon="mdi-information-outline" size="14" />
+          Обновление заменит данные существующих сделок тем, что в файле —
+          включая график платежей
+        </div>
         <v-spacer />
 
         <!-- Bulk: folder -->
@@ -509,6 +564,29 @@ const cashBoxLabel = computed(() => {
 
 // ── Единицы измерения файла ──
 const scaleReport = computed(() => draft.value?.stats?.unitScale)
+/** Сводка по скидкам из файла — считается сервером вместе с остальной статистикой. */
+const discounts = computed(() => draft.value?.stats?.discounts)
+
+/**
+ * Скидка уменьшает доход по сделке, а значит и долю со-инвесторов кассы.
+ * Партнёр должен узнать об этом до импорта, а не от самих со-инвесторов.
+ */
+const coInvestorWarning = computed(() => {
+  const ci = discounts.value?.coInvestor
+  if (!ci || ci.deals === 0) return ''
+  const deals = `${ci.deals} ${pluralize(ci.deals, 'сделка', 'сделки', 'сделок')}`
+  const base = `${deals} со скидкой попадёт в кассы с инвесторами`
+  if (ci.shareLoss > 0) {
+    const tail = ci.byCapital
+      ? ' Часть участников делит прибыль по вложенному капиталу — их доля здесь не учтена.'
+      : ''
+    return (
+      `${base} — их доля уменьшится примерно на ${formatCurrency(ci.shareLoss)}.` +
+      ` Это оценка: точная сумма зависит от условий участия и будет видна при начислении.${tail}`
+    )
+  }
+  return `${base}. Участники делят прибыль по вложенному капиталу, поэтому размер их потери заранее не посчитать.`
+})
 
 /**
  * Подтверждение действительно ровно на те подозрительные строки (номер +
@@ -909,6 +987,16 @@ const columnDefs = computed<(ColDef | ColGroupDef)[]>(() => {
       valueFormatter: (p: any) => moneyFmt(p.value),
     },
     {
+      // Скидку показываем рядом со взносом: обе цифры уменьшают то, что
+      // клиент реально заплатит, и партнёр сверяет их с бумажным договором.
+      headerName: 'Скидка',
+      field: 'discount',
+      width: 110,
+      type: 'numericColumn',
+      valueParser: numberParser,
+      valueFormatter: (p: any) => (p.value ? moneyFmt(p.value) : ''),
+    },
+    {
       headerName: 'Срок',
       field: 'numberOfPayments',
       width: 80,
@@ -1191,6 +1279,37 @@ watch(() => route.params.id, (id) => {
 </script>
 
 <style scoped>
+/* Скидки в файле — синий, а не жёлтый: это не проблема, а важная информация. */
+.discount-banner {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 16px 18px; border-radius: 12px;
+  background: rgba(59, 130, 246, 0.07);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+}
+.discount-banner-icon {
+  width: 38px; height: 38px; min-width: 38px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(59, 130, 246, 0.14); color: #2563eb;
+}
+.discount-banner-body { flex: 1; min-width: 0; }
+.discount-banner-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.discount-banner-sub {
+  font-size: 13px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.discount-figures { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 12px; }
+.discount-figure { display: flex; flex-direction: column; gap: 2px; }
+.discount-figure-value { font-size: 18px; font-weight: 800; }
+.discount-figure-label { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.discount-warn {
+  display: flex; align-items: flex-start; gap: 7px;
+  margin-top: 12px; padding: 9px 11px; border-radius: 9px;
+  background: rgba(245, 158, 11, 0.10);
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  font-size: 12.5px; line-height: 1.45;
+}
+
 /* Stats grid — matches payments.vue */
 .stats-row {
   display: grid;
@@ -1666,6 +1785,13 @@ watch(() => route.params.id, (id) => {
 
 .action-summary {
   display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+}
+.action-summary-note {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 14px; padding: 5px 10px; border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  font-size: 12px;
 }
 .action-summary-item {
   display: inline-flex; align-items: center; gap: 6px;

@@ -14,9 +14,15 @@ import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import ClientLink from '@/components/ClientLink.vue'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
+import { useAutoLoad } from '@/composables/useAutoLoad'
+import { usePaymentsFilters } from '@/composables/usePaymentsFilters'
+import PaymentsFilterPanel from '@/components/PaymentsFilterPanel.vue'
+import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useSuppliersStore } from '@/stores/suppliers'
 import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
 import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
 
@@ -38,21 +44,38 @@ const subscription = useSubscription()
 const paymentsStore = usePaymentsStore()
 const dealsStore = useDealsStore()
 const { folders, fetchFolders } = useFolders()
-const filterFolder = ref<string | null>(null)
+/**
+ * Касса, ответственный и папка живут в общем наборе фильтров: они ничем не
+ * отличаются от прочих условий выборки, и в общем наборе попадают в счётчик,
+ * плашки, «сбросить всё» и сохранённые наборы. Здесь — короткие ссылки на них,
+ * чтобы остальной код страницы не менялся.
+ */
+const filterFolder = computed({
+  get: () => filters.state.value.folderId || null,
+  set: (v: string | null) => { filters.state.value.folderId = v ?? '' },
+})
 const cashBoxesStore = useCashBoxesStore()
 const { items: cashBoxes } = storeToRefs(cashBoxesStore)
 cashBoxesStore.fetchAll()
-const filterCashBoxId = ref<string | null>(null)
+const filterCashBoxId = computed({
+  get: () => filters.state.value.cashBoxId || null,
+  set: (v: string | null) => { filters.state.value.cashBoxId = v ?? '' },
+})
 const filterCashBoxObj = computed(() =>
   filterCashBoxId.value ? cashBoxes.value.find((b) => b.id === filterCashBoxId.value) ?? null : null,
 )
 
 // Staff assignee filter (partner-only)
 const authStore = useAuthStore()
+/** Подсказку про адрес показываем только тем, кто по нему реально ищет. */
+const canSearchAddress = computed(() => authStore.can('clients.view'))
 const sections = useSections()
 interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
 const staffList = ref<StaffOption[]>([])
-const filterStaff = ref<string | null>(null)
+const filterStaff = computed({
+  get: () => filters.state.value.staffId || null,
+  set: (v: string | null) => { filters.state.value.staffId = v ?? '' },
+})
 const filterStaffObj = computed(() =>
   filterStaff.value ? staffList.value.find((s) => s.id === filterStaff.value) ?? null : null,
 )
@@ -286,7 +309,7 @@ const calendarDays = computed((): CalendarDay[] => {
  * число месяца может собрать сотни платежей — отсюда лимит и догрузка.
  */
 const DAY_PAGE_SIZE = 200
-type DayPayment = Payment & { _dealName: string; _clientName: string }
+type DayPayment = Payment & { _dealName: string; _clientName: string; _clientProfileId: string | null }
 const dayPayments = ref<DayPayment[]>([])
 const dayPaymentsTotal = ref(0)
 const dayPaymentsLoading = ref(false)
@@ -303,6 +326,7 @@ function decorateDayPayment(p: Payment): DayPayment {
     ...p,
     _dealName: getDealName(p),
     _clientName: getClientName(p),
+    _clientProfileId: deal?.clientProfileId ?? null,
   }
 }
 
@@ -536,11 +560,49 @@ watch(search, (v) => {
  */
 const monthBasis = computed<'due' | 'paid'>(() => (tab.value === 3 ? 'paid' : 'due'))
 
+// ── Расширенные фильтры ──
+// Панель та же, что в сделках: привыкли фильтровать там — здесь всё работает
+// одинаково. Состав условий свой: два периода (срок и факт оплаты).
+const filtersOpen = ref(false)
+const suppliersStore = useSuppliersStore()
+const { coInvestors } = useCoInvestors()
+const selectedClientLabel = ref('')
+
+const filters = usePaymentsFilters({
+  labels: () => ({
+    suppliers: Object.fromEntries(
+      (Array.isArray(suppliersStore.rows) ? suppliersStore.rows : []).map((s: any) => [s.id, s.name]),
+    ),
+    coInvestors: Object.fromEntries(
+      (Array.isArray(coInvestors.value) ? coInvestors.value : []).map((c: any) => [c.id, c.name]),
+    ),
+    client: selectedClientLabel.value,
+    cashBoxes: Object.fromEntries(cashBoxes.value.map((b: any) => [b.id, b.name])),
+    staff: Object.fromEntries(
+      staffList.value.map((p: any) => [p.id, `${p.firstName} ${p.lastName}`.trim()]),
+    ),
+    folders: Object.fromEntries(folders.value.map((f: any) => [f.id, f.name])),
+  }),
+})
+
+watch(
+  () => filters.state.value.clientKey,
+  async (key) => {
+    if (!key.startsWith('cp:')) { selectedClientLabel.value = ''; return }
+    try {
+      const p = await api.get<any>(`/client-profiles/${key.slice(3)}`)
+      selectedClientLabel.value = [p.lastName, p.firstName].filter(Boolean).join(' ') || 'клиент'
+    } catch {
+      selectedClientLabel.value = 'клиент'
+    }
+  },
+)
+
 const serverFilters = computed(() => ({
-  folderId: filterFolder.value,
-  cashBoxId: filterCashBoxId.value,
-  assignedStaffId: filterStaff.value,
   q: debouncedSearch.value,
+  // Касса, ответственный и папка приходят сюда же, внутри `extra`: они часть
+  // общего набора фильтров.
+  extra: filters.query.value,
 }))
 
 /** Параметры счётчиков и календаря — фильтры без вкладки, страницы и сортировки. */
@@ -575,6 +637,8 @@ function initFromQuery() {
   tab.value = t >= 0 && t <= 4 ? t : 0
   perPage.value = PER_PAGE_OPTIONS.includes(int(q.per, 50)) ? int(q.per, 50) : 50
   page.value = int(q.page, 1)
+  // Фильтры панели тоже живут в адресе — выборкой можно поделиться ссылкой.
+  filters.fromQuery(q as Record<string, unknown>)
 
   const qs = str(q.q)
   if (qs) {
@@ -599,9 +663,11 @@ function initFromQuery() {
   }
   if (str(q.dir)) sortAsc.value = str(q.dir) === 'asc'
 
-  filterFolder.value = str(q.folder)
-  filterCashBoxId.value = str(q.box)
-  filterStaff.value = str(q.staff)
+  // Ссылки, сохранённые до переноса этих фильтров в общий набор, приходят со
+  // старыми короткими именами — принимаем и их.
+  if (!filterFolder.value && str(q.folder)) filterFolder.value = str(q.folder)
+  if (!filterCashBoxId.value && str(q.box)) filterCashBoxId.value = str(q.box)
+  if (!filterStaff.value && str(q.staff)) filterStaff.value = str(q.staff)
   if (str(q.view) === 'calendar') viewMode.value = 'calendar'
 }
 
@@ -629,10 +695,8 @@ watch(
     if (!sortAsc.value) q.dir = 'desc'
     if (filterMonth.value === null) q.month = 'all'
     else if (filterMonth.value !== currentMonthStr) q.month = filterMonth.value
-    if (filterFolder.value) q.folder = filterFolder.value
-    if (filterCashBoxId.value) q.box = filterCashBoxId.value
-    if (filterStaff.value) q.staff = filterStaff.value
     if (viewMode.value === 'calendar') q.view = 'calendar'
+    Object.assign(q, filters.toQuery())
     // replace, а не push: перебор фильтров не должен забивать историю браузера.
     router.replace({ query: q }).catch(() => {})
   },
@@ -761,8 +825,110 @@ function rowNumber(idx: number): number {
   return (page.value - 1) * perPage.value + idx + 1
 }
 
+/**
+ * Список с разделителями по датам.
+ *
+ * Платежи одного дня идут подряд, и без границы между днями таблица читается
+ * как сплошная лента: чтобы понять, что нужно собрать сегодня, приходится
+ * сверять даты построчно. Разделитель отвечает на это сразу — какой день и
+ * сколько денег по нему ждём.
+ *
+ * Только при сортировке по дате: в списке, отсортированном по сумме или
+ * клиенту, даты идут вперемешку, и заголовки дней превратились бы в шум.
+ */
+type PaymentRow =
+  | { kind: 'day'; key: string; label: string; count: number; amount: number; overdue: boolean }
+  | { kind: 'payment'; key: string; payment: Payment; idx: number }
+
+const groupedByDay = computed(() => sortField.value === 'dueDate')
+
+const paymentRows = computed<PaymentRow[]>(() => {
+  const list = displayedPayments.value
+  if (!groupedByDay.value) {
+    return list.map((p, idx) => ({ kind: 'payment', key: p.id, payment: p, idx }))
+  }
+
+  const out: PaymentRow[] = []
+  let currentKey = ''
+  list.forEach((p, idx) => {
+    const key = String(p.dueDate).slice(0, 10)
+    if (key !== currentKey) {
+      currentKey = key
+      // Итоги дня считаем сразу по всей странице: подряд идущие платежи этой
+      // же даты — то, что партнёр и ждёт увидеть одной суммой.
+      const sameDay = list.filter((x) => String(x.dueDate).slice(0, 10) === key)
+      out.push({
+        kind: 'day',
+        key: `day-${key}`,
+        label: dayLabel(p.dueDate),
+        count: sameDay.length,
+        amount: sameDay.reduce((sum, x) => sum + (x.amount ?? 0), 0),
+        // День целиком в прошлом и что-то не оплачено — повод для звонков.
+        overdue: sameDay.some((x) => x.status === 'OVERDUE'),
+      })
+    }
+    out.push({ kind: 'payment', key: p.id, payment: p, idx })
+  })
+  return out
+})
+
+/** «Сегодня», «Завтра», «1 августа» — год добавляем, только если он не текущий. */
+function dayLabel(value: string | Date): string {
+  const d = new Date(value)
+  const today = new Date()
+  const key = (x: Date) =>
+    `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+  const tomorrow = new Date(today.getTime() + 86_400_000)
+  const yesterday = new Date(today.getTime() - 86_400_000)
+
+  if (key(d) === key(today)) return 'Сегодня'
+  if (key(d) === key(tomorrow)) return 'Завтра'
+  if (key(d) === key(yesterday)) return 'Вчера'
+
+  return d.toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    ...(d.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}),
+  })
+}
+
 /** Идёт запрос списка — строки гаснут, элементы управления блокируются. */
 const listBusy = computed(() => paymentsStore.listLoading)
+
+// ── Автоподгрузка ────────────────────────────────────────────────────
+const loadedCount = computed(() => displayedPayments.value.length)
+const hasMore = computed(() => loadedCount.value < totalRows.value)
+
+async function loadNextChunk() {
+  if (!hasMore.value || listBusy.value) return
+  await paymentsStore.fetchPaymentsPage(
+    { ...serverParams.value, offset: loadedCount.value },
+    true,
+  )
+}
+
+const autoLoad = useAutoLoad({
+  storageKey: 'payments:auto-load',
+  hasMore,
+  busy: listBusy,
+  // По числу строк считается порог, после которого подгрузка просит
+  // подтверждения: он зависит от длины списка, а не от размера порции.
+  loaded: loadedCount,
+  loadMore: loadNextChunk,
+})
+/** Метка конца списка — её отслеживает автоподгрузка. */
+const autoLoadSentinel = autoLoad.sentinel
+
+// Переключение режима возвращает к началу выборки: иначе «показано N» врало бы
+// про уже пролистанные страницы.
+watch(
+  () => autoLoad.enabled.value,
+  () => {
+    autoLoad.reset()
+    if (page.value !== 1) page.value = 1
+    else paymentsStore.fetchPaymentsPage(serverParams.value)
+  },
+)
 /** Идёт запрос счётчиков — KPI показывают скелетон вместо старых цифр. */
 const statsBusy = computed(() => paymentsStore.facetsLoading)
 
@@ -945,124 +1111,40 @@ async function onRescheduled() {
         <v-icon icon="mdi-whatsapp" size="18" />
         Напомнить всем
       </button>
+
+      <!-- Поиск наверху: в нижней панели фильтров ему доставалось 280px, и
+           подсказка не помещалась целиком. Здесь строка тянется по свободному
+           месту. -->
+      <div class="filter-input-wrap payments-search">
+        <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
+        <input
+          v-model="search"
+          type="text"
+          :placeholder="`Поиск по сделке, клиенту${canSearchAddress ? ', адресу' : ''}...`"
+          class="filter-input"
+        />
+      </div>
+
       <v-spacer />
       <!-- Filter group (cashbox + staff + folder).
            Display: contents — на десктопе обёртка прозрачна, ничего не
            ломает. На мобиле получает flex: 100% и переезжает на следующую
            строку (см. CSS). -->
       <div class="toolbar-filters">
-      <!-- Cashbox filter -->
-      <v-menu v-if="cashBoxes.length > 1" :close-on-content-click="true">
-        <template #activator="{ props: cp }">
-          <button v-bind="cp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterCashBoxId }">
-            <v-icon icon="mdi-wallet-outline" size="15" />
-            <template v-if="filterCashBoxObj">
-              {{ filterCashBoxObj.name }}
-            </template>
-            <template v-else>Касса</template>
-            <v-icon icon="mdi-chevron-down" size="13" style="opacity: 0.4;" />
-          </button>
-        </template>
-        <v-card rounded="lg" elevation="4" class="pf-folder-menu">
-          <div class="pf-folder-header">
-            <span>Кассы</span>
-          </div>
-          <div class="pf-folder-body">
-            <button class="pf-folder-item" :class="{ 'pf-folder-item--active': !filterCashBoxId }" @click="filterCashBoxId = null">
-              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
-              <span class="pf-folder-item-name">Все платежи</span>
-            </button>
-            <div class="pf-folder-divider" />
-            <button
-              v-for="b in cashBoxes"
-              :key="b.id"
-              class="pf-folder-item"
-              :class="{ 'pf-folder-item--active': filterCashBoxId === b.id }"
-              @click="filterCashBoxId = filterCashBoxId === b.id ? null : b.id"
-            >
-              <v-icon icon="mdi-wallet-outline" size="14" :style="{ color: b.color }" />
-              <span class="pf-folder-item-name">{{ b.name }}</span>
-              <span v-if="b.isDefault" class="pf-folder-item-meta">осн.</span>
-            </button>
-          </div>
-        </v-card>
-      </v-menu>
+      <!-- Расширенные фильтры: периоды, статусы, суммы, участники. -->
+      <button
+        class="pf-folder-btn"
+        :class="{ 'pf-folder-btn--active': filters.hasAny.value }"
+        @click="filtersOpen = true"
+      >
+        <v-icon icon="mdi-filter-variant" size="15" />
+        Фильтры
+        <span v-if="filters.activeCount.value" class="pf-filter-count">{{ filters.activeCount.value }}</span>
+      </button>
 
-      <!-- Staff assignee filter -->
-      <v-menu v-if="authStore.isOwner && sections.visible('staff') && staffList.length > 0" :close-on-content-click="true">
-        <template #activator="{ props: sp }">
-          <button v-bind="sp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterStaff }">
-            <v-icon icon="mdi-account-tie-outline" size="15" />
-            <template v-if="filterStaffObj">
-              {{ filterStaffObj.firstName }} {{ filterStaffObj.lastName }}
-            </template>
-            <template v-else>Сотрудник</template>
-            <v-icon icon="mdi-chevron-down" size="13" style="opacity: 0.4;" />
-          </button>
-        </template>
-        <v-card rounded="lg" elevation="4" class="pf-folder-menu">
-          <div class="pf-folder-header">
-            <span>Ответственные</span>
-          </div>
-          <div class="pf-folder-body">
-            <button class="pf-folder-item" :class="{ 'pf-folder-item--active': !filterStaff }" @click="filterStaff = null">
-              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
-              <span class="pf-folder-item-name">Все платежи</span>
-            </button>
-            <div class="pf-folder-divider" />
-            <button
-              v-for="s in staffList"
-              :key="s.id"
-              class="pf-folder-item"
-              :class="{ 'pf-folder-item--active': filterStaff === s.id }"
-              @click="filterStaff = filterStaff === s.id ? null : s.id"
-            >
-              <v-icon icon="mdi-account-outline" size="14" style="color: rgba(var(--v-theme-on-surface), 0.45);" />
-              <span class="pf-folder-item-name">{{ s.firstName }} {{ s.lastName }}</span>
-            </button>
-          </div>
-        </v-card>
-      </v-menu>
-
-      <!-- Folder filter -->
-      <v-menu :close-on-content-click="false">
-        <template #activator="{ props: fp }">
-          <button v-bind="fp" class="pf-folder-btn" :class="{ 'pf-folder-btn--active': filterFolder }">
-            <v-icon icon="mdi-folder-outline" size="15" />
-            <template v-if="filterFolder">
-              <span class="pf-folder-dot" :style="{ background: folders.find(f => f.id === filterFolder)?.color || '#6366f1' }" />
-              {{ folders.find(f => f.id === filterFolder)?.name || 'Папка' }}
-            </template>
-            <template v-else>Папки</template>
-            <v-icon icon="mdi-chevron-down" size="13" style="opacity: 0.4;" />
-          </button>
-        </template>
-        <v-card rounded="lg" elevation="4" class="pf-folder-menu">
-          <div class="pf-folder-header">
-            <span>Папки</span>
-          </div>
-          <div class="pf-folder-body">
-            <button class="pf-folder-item" :class="{ 'pf-folder-item--active': !filterFolder }" @click="filterFolder = null">
-              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
-              <span class="pf-folder-item-name">Все платежи</span>
-            </button>
-            <div v-if="folders.length" class="pf-folder-divider" />
-            <button
-              v-for="f in folders" :key="f.id"
-              class="pf-folder-item" :class="{ 'pf-folder-item--active': filterFolder === f.id }"
-              @click="filterFolder = filterFolder === f.id ? null : f.id"
-            >
-              <span class="pf-folder-dot" :style="{ background: f.color }" />
-              <span class="pf-folder-item-name">{{ f.name }}</span>
-            </button>
-            <div class="pf-folder-divider" />
-            <router-link to="/deals" class="pf-folder-hint">
-              <v-icon icon="mdi-folder-cog-outline" size="13" />
-              Управление папками
-            </router-link>
-          </div>
-        </v-card>
-      </v-menu>
+      <!-- Касса, ответственный и папка переехали в панель фильтров: это такие
+           же условия выборки, как остальные, и держать их отдельными кнопками
+           значило разложить фильтры по двум местам. -->
       </div><!-- /toolbar-filters -->
       <div class="view-toggle">
         <button class="view-toggle-btn" :class="{ active: viewMode === 'table' }" @click="viewMode = 'table'">
@@ -1332,7 +1414,7 @@ async function onRescheduled() {
                   </td>
                   <td>
                     <div class="client-name">
-                      {{ p._clientName }}
+                      <ClientLink :profile-id="p._clientProfileId" :name="p._clientName" />
                     </div>
                     <div v-if="getClientPhone(p)" class="client-phone">{{ getClientPhone(p) }}</div>
                   </td>
@@ -1402,6 +1484,22 @@ async function onRescheduled() {
       </v-dialog>
       </div>
     </template>
+
+    <!-- Плашки включённых фильтров: невидимый фильтр превращается в
+         «платёж пропал», поэтому каждое условие видно и снимается отдельно. -->
+    <div v-if="filters.chips.value.length" class="active-filters">
+      <button
+        v-for="chip in filters.chips.value"
+        :key="chip.key"
+        type="button"
+        class="af-chip"
+        @click="chip.clear()"
+      >
+        <span>{{ chip.label }}</span>
+        <v-icon icon="mdi-close" size="13" />
+      </button>
+      <button type="button" class="af-clear" @click="filters.reset()">Сбросить всё</button>
+    </div>
 
     <!-- TABLE VIEW -->
     <v-card v-if="viewMode === 'table'" rounded="lg" elevation="0" border class="payments-card">
@@ -1475,15 +1573,6 @@ async function onRescheduled() {
             </v-card>
           </v-menu>
 
-          <div class="filter-input-wrap" style="max-width: 280px; min-width: 160px;">
-            <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-            <input
-              v-model="search"
-              type="text"
-              placeholder="Поиск по сделке или клиенту..."
-              class="filter-input"
-            />
-          </div>
         </div>
 
         <!-- Month filter notice -->
@@ -1534,67 +1623,82 @@ async function onRescheduled() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(p, idx) in displayedPayments" :key="p.id" class="clickable-row" :class="{ 'deal-locked-dim': isPaymentLocked(p) }" @click="openDealFromPayment(p)">
-              <td class="td-index">{{ rowNumber(idx) }}</td>
+            <template v-for="row in paymentRows" :key="row.key">
+              <!-- Граница дня: дальше идут платежи одной даты, и сразу видно,
+                   сколько их и на какую сумму. -->
+              <tr v-if="row.kind === 'day'" class="pl-day-row">
+                <td :colspan="8">
+                  <div class="pl-day" :class="{ 'pl-day--overdue': row.overdue }">
+                    <span class="pl-day-label">{{ row.label }}</span>
+                    <span class="pl-day-meta">
+                      {{ row.count }} {{ row.count === 1 ? 'платёж' : row.count < 5 ? 'платежа' : 'платежей' }}
+                      · {{ formatCurrency(row.amount) }}
+                    </span>
+                  </div>
+                </td>
+              </tr>
+
+              <tr v-else class="clickable-row" :class="{ 'deal-locked-dim': isPaymentLocked(row.payment) }" @click="openDealFromPayment(row.payment)">
+              <td class="td-index">{{ rowNumber(row.idx) }}</td>
               <td>
-                <span class="font-weight-medium">{{ getDealName(p) }}</span>
-                <span v-if="isPaymentLocked(p)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span>
+                <span class="font-weight-medium">{{ getDealName(row.payment) }}</span>
+                <span v-if="isPaymentLocked(row.payment)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span>
               </td>
               <td>
                 <div class="client-name">
-                  {{ getClientName(p) }}
+                  <ClientLink :profile-id="getDealForPayment(row.payment)?.clientProfileId" :name="getClientName(row.payment)" />
                 </div>
-                <div v-if="getClientPhone(p)" class="client-phone">{{ getClientPhone(p) }}</div>
+                <div v-if="getClientPhone(row.payment)" class="client-phone">{{ getClientPhone(row.payment) }}</div>
               </td>
               <td class="text-right text-no-wrap">
-                <span class="font-weight-bold">{{ formatCurrency(p.amount) }}</span>
-                <span class="payment-of-total">{{ p.number }} из {{ getDealForPayment(p)?.numberOfPayments || '?' }}</span>
+                <span class="font-weight-bold">{{ formatCurrency(row.payment.amount) }}</span>
+                <span class="payment-of-total">{{ row.payment.number }} из {{ getDealForPayment(row.payment)?.numberOfPayments || '?' }}</span>
               </td>
               <td>
                 <div>
-                  <span>{{ formatDateShort(p.dueDate) }}</span>
-                  <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+                  <span>{{ formatDateShort(row.payment.dueDate) }}</span>
+                  <div v-if="row.payment.rescheduledFrom" class="rescheduled-hint">
                     <v-icon icon="mdi-calendar-arrow-right" size="12" />
-                    <span>с {{ formatDateShort(p.rescheduledFrom) }}</span>
+                    <span>с {{ formatDateShort(row.payment.rescheduledFrom) }}</span>
                   </div>
                   <!-- «Оплачен не в свой месяц»: платёж за другой месяц, но
                        оплачен раньше/позже → доход учтён по факту оплаты. -->
                   <div
-                    v-if="paidOffMonth(p)"
+                    v-if="paidOffMonth(row.payment)"
                     class="offmonth-chip"
-                    :class="paidOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
-                    :title="offMonthLabel(p)"
+                    :class="paidOffMonth(row.payment) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
+                    :title="offMonthLabel(row.payment)"
                   >
-                    <v-icon :icon="paidOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
-                    <span>{{ paidOffMonth(p) === 'early' ? 'оплачен досрочно' : 'оплачен позже срока' }}</span>
+                    <v-icon :icon="paidOffMonth(row.payment) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
+                    <span>{{ paidOffMonth(row.payment) === 'early' ? 'оплачен досрочно' : 'оплачен позже срока' }}</span>
                   </div>
                 </div>
               </td>
               <td>
-                <span :class="{ 'text-error font-weight-medium': p.status === 'OVERDUE' || (p.status === 'PENDING' && new Date(p.dueDate) < new Date()) }">
-                  {{ p.status === 'PAID' ? '—' : daysUntil(p.dueDate) }}
+                <span :class="{ 'text-error font-weight-medium': row.payment.status === 'OVERDUE' || (row.payment.status === 'PENDING' && new Date(row.payment.dueDate) < new Date()) }">
+                  {{ row.payment.status === 'PAID' ? '—' : daysUntil(row.payment.dueDate) }}
                 </span>
               </td>
               <td>
                 <div
                   class="payment-status-chip"
-                  :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
+                  :style="statusStyle(PAYMENT_STATUS_CONFIG[row.payment.status])"
                 >
-                  {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
+                  {{ PAYMENT_STATUS_CONFIG[row.payment.status]?.label }}
                 </div>
               </td>
               <td class="text-center">
-                <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
+                <div v-if="row.payment.status === 'PENDING' || row.payment.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
                   <v-tooltip text="Отметить оплаченным" location="top">
                     <template #activator="{ props }">
-                      <button v-bind="props" class="action-btn action-btn--success" @click="handleMarkPaid($event, p)">
+                      <button v-bind="props" class="action-btn action-btn--success" @click="handleMarkPaid($event, row.payment)">
                         <v-icon icon="mdi-check" size="16" />
                       </button>
                     </template>
                   </v-tooltip>
                   <v-tooltip text="Перенести дату" location="top">
                     <template #activator="{ props }">
-                      <button v-bind="props" class="action-btn action-btn--warning" @click="openReschedule($event, p)">
+                      <button v-bind="props" class="action-btn action-btn--warning" @click="openReschedule($event, row.payment)">
                         <v-icon icon="mdi-calendar-arrow-right" size="16" />
                       </button>
                     </template>
@@ -1603,8 +1707,8 @@ async function onRescheduled() {
                 <div v-else class="d-flex align-center justify-center">
                   <v-tooltip text="Отменить оплату" location="top">
                     <template #activator="{ props }">
-                      <button v-bind="props" class="action-btn action-btn--danger" :disabled="unpaidLoading === p.id" @click="handleUnmarkPaid($event, p)">
-                        <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                      <button v-bind="props" class="action-btn action-btn--danger" :disabled="unpaidLoading === row.payment.id" @click="handleUnmarkPaid($event, row.payment)">
+                        <v-progress-circular v-if="unpaidLoading === row.payment.id" indeterminate size="12" width="2" />
                         <v-icon v-else icon="mdi-undo" size="16" />
                       </button>
                     </template>
@@ -1612,6 +1716,7 @@ async function onRescheduled() {
                 </div>
               </td>
             </tr>
+            </template>
           </tbody>
         </v-table>
 
@@ -1638,7 +1743,7 @@ async function onRescheduled() {
               <span v-if="isPaymentLocked(p)" class="deal-locked-chip"><v-icon icon="mdi-lock-outline" />Недоступно</span>
             </div>
             <div class="pay-card-client">
-              <span>{{ getClientName(p) }}</span>
+              <ClientLink :profile-id="getDealForPayment(p)?.clientProfileId" :name="getClientName(p)" />
             </div>
             <div v-if="getClientPhone(p)" class="pay-card-phone">{{ getClientPhone(p) }}</div>
 
@@ -1713,14 +1818,23 @@ async function onRescheduled() {
         </div>
 
         <!-- Пагинация серверного списка — общий компонент разделов. -->
+        <!-- Метка конца списка для автоподгрузки. -->
+        <div v-if="autoLoad.enabled.value" ref="autoLoadSentinel" class="auto-load-sentinel" />
+
         <ServerPager
           :page="page"
           :total="totalRows"
           :per-page="perPage"
           :busy="listBusy"
           :per-page-options="PER_PAGE_OPTIONS"
+          :auto-load="autoLoad.enabled.value"
+          :loaded="loadedCount"
+          :has-more="hasMore"
+          :paused="autoLoad.paused.value"
           @update:page="page = $event"
           @update:per-page="perPage = $event"
+          @update:auto-load="autoLoad.enabled.value = $event"
+          @load-more="autoLoad.loadMoreManually()"
         />
       </div>
     </v-card>
@@ -1868,9 +1982,54 @@ async function onRescheduled() {
 
     <!-- WhatsApp bulk reminders dialog (preview + per-row selection) -->
   </div>
+
+    <!-- Панель расширенных фильтров -->
+    <PaymentsFilterPanel
+      v-model="filtersOpen"
+      :state="filters.state.value"
+      :active-count="filters.activeCount.value"
+      :presets="filters.saved.value"
+      :cash-boxes="cashBoxes"
+      :staff="authStore.isOwner && sections.visible('staff') ? staffList : []"
+      :folders="folders"
+      @preset="filters.applyPreset($event.key, $event.field)"
+      @reset="filters.reset()"
+      @save-preset="filters.savePreset($event)"
+      @apply-preset="filters.applyPresetSaved($event)"
+      @remove-preset="filters.removePreset($event)"
+    />
+
 </template>
 
 <style scoped>
+/* Плашки включённых фильтров над списком. */
+.active-filters {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.af-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 8px 5px 11px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.07);
+  color: rgb(var(--v-theme-primary));
+  font-size: 12.5px; font-weight: 500; cursor: pointer;
+}
+.af-chip:hover { background: rgba(var(--v-theme-primary), 0.14); }
+.af-clear {
+  font-size: 12.5px; padding: 5px 8px; border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.5); cursor: pointer;
+}
+.af-clear:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+.pf-filter-count {
+  font-size: 11px; font-weight: 700; line-height: 1;
+  padding: 2px 6px; border-radius: 10px;
+  background: rgb(var(--v-theme-primary)); color: #fff;
+}
+
+/* Невидимый якорь автоподгрузки в конце списка. */
+.auto-load-sentinel { height: 1px; }
+
 /* Stats row */
 .stats-row {
   display: grid;
@@ -1921,6 +2080,14 @@ async function onRescheduled() {
 
 /* Filter inputs */
 .filter-input-wrap { position: relative; flex: 1; }
+/* Поиск в верхней панели: занимает свободное место между кнопкой рассылки и
+   фильтрами, но не растягивается на весь экран. Минимум подобран под самую
+   длинную подсказку («…клиенту, адресу…»). */
+.payments-search { flex: 1 1 320px; min-width: 260px; max-width: 460px; }
+@media (max-width: 700px) {
+  /* На узком экране панель переносится по строкам — поиск занимает свою целиком. */
+  .payments-search { flex: 1 1 100%; max-width: none; }
+}
 .filter-input-icon {
   position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
   color: #9ca3af; pointer-events: none;
@@ -1928,7 +2095,7 @@ async function onRescheduled() {
 .filter-input {
   width: 100%; height: 40px; padding: 0 16px 0 38px;
   border: 1px solid #e4e4e7; border-radius: 10px;
-  background: #f4f4f5; font-size: 14px; color: inherit;
+  background: #fff; font-size: 14px; color: inherit;
   outline: none; transition: all 0.15s ease;
 }
 .filter-input::placeholder { color: #9ca3af; }
@@ -1979,6 +2146,34 @@ async function onRescheduled() {
 .sort-icon.active {
   opacity: 1; color: rgb(var(--v-theme-primary));
 }
+
+/* Граница дня в таблице: строка-заголовок, а не отдельный блок над таблицей —
+   иначе при прокрутке колонки уезжают от своих значений. */
+.pl-day-row td {
+  padding: 0 !important;
+  background: transparent !important;
+  border-bottom: none !important;
+}
+.pl-day-row:hover td { background: transparent !important; }
+.pl-day {
+  display: flex; align-items: center; gap: 10px;
+  margin: 6px 0 2px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.pl-day-label {
+  font-size: 12.5px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.pl-day-meta {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  font-variant-numeric: tabular-nums;
+}
+/* День с непогашенной просрочкой видно, не читая статусы построчно. */
+.pl-day--overdue { background: rgba(239, 68, 68, 0.07); }
+.pl-day--overdue .pl-day-label { color: #dc2626; }
 
 .clickable-row {
   cursor: pointer;

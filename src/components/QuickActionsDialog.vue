@@ -6,12 +6,10 @@
     :fullscreen="isMobile"
   >
     <v-card rounded="lg" class="quick-actions-card pa-6">
-      <button class="dialog-close-sm" @click="emit('update:modelValue', false)">
-        <v-icon icon="mdi-close" size="18" />
-      </button>
-
-      <!-- Mode toggle -->
-      <div class="mode-toggle mb-5">
+      <!-- Переключатель и закрытие — в одной строке одинаковой высоты: кнопка
+           «висела» в углу и не выравнивалась с табами. -->
+      <div class="qa-topbar mb-5">
+      <div class="mode-toggle">
         <button
           class="mode-toggle-btn"
           :class="{ active: mode === 'sale' }"
@@ -27,6 +25,11 @@
         >
           <v-icon icon="mdi-cash-check" size="16" />
           Принять платёж
+        </button>
+      </div>
+
+        <button class="dialog-close-sm" @click="emit('update:modelValue', false)">
+          <v-icon icon="mdi-close" size="18" />
         </button>
       </div>
 
@@ -362,7 +365,7 @@
                 </div>
                 <div class="flex-grow-1">
                   <label class="field-label">Дата оплаты</label>
-                  <input v-model="payForm.date" type="date" class="field-input" />
+                  <DateField v-model="payForm.date" plain />
                 </div>
               </div>
 
@@ -419,6 +422,8 @@
 import { computed, reactive, ref, watch, nextTick, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { todayIso } from '@/utils/dateInput'
+import DateField from '@/components/DateField.vue'
 import { useDealsStore } from '@/stores/deals'
 import { useToast } from '@/composables/useToast'
 import { useDealLock } from '@/composables/useDealLock'
@@ -709,7 +714,7 @@ function toggleExpanded(id: string) {
   expandedId.value = id
   if (r?.nextPayment) {
     payForm.amount = String(r.nextPayment.amount)
-    payForm.date = new Date().toISOString().slice(0, 10)
+    payForm.date = todayIso()
   }
 }
 
@@ -733,9 +738,10 @@ async function onMarkPaid(r: QuickSearchResult) {
 
 <style scoped>
 /* ─── Dialog close button ─────────────────────────────── */
+/* Кнопка закрытия стоит в строке с переключателем и тянется по его высоте. */
 .dialog-close-sm {
-  position: absolute; top: 16px; right: 16px;
-  width: 32px; height: 32px; border-radius: 8px; border: none;
+  width: 44px; align-self: stretch;
+  border-radius: 10px; border: none;
   background: rgba(var(--v-theme-on-surface), 0.05);
   color: rgba(var(--v-theme-on-surface), 0.5);
   display: flex; align-items: center; justify-content: center;
@@ -802,13 +808,18 @@ async function onMarkPaid(r: QuickSearchResult) {
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ─── Mode toggle ────────────────────────────────────── */
+.qa-topbar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
 .mode-toggle {
+  flex: 1;
   display: flex;
   background: rgba(var(--v-theme-on-surface), 0.05);
   border-radius: 10px;
   padding: 3px;
   gap: 2px;
-  margin-right: 44px; /* leave room for close button */
 }
 .mode-toggle-btn {
   flex: 1;

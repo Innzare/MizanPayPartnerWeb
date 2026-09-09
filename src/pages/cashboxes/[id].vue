@@ -1,20 +1,29 @@
 <script lang="ts" setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useSections } from '@/composables/useSections'
+import { todayIso } from '@/utils/dateInput'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
+import DateField from '@/components/DateField.vue'
+import { useOperationDate } from '@/composables/useOperationDate'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
+import { useAccountingStore } from '@/stores/accounting'
+import BankLogo from '@/components/BankLogo.vue'
+import type { AnalyticsSummary, AnalyticsMonthlyRow } from '@/types/analytics'
 import { useToast } from '@/composables/useToast'
 import { usePageHeaderStore } from '@/stores/pageHeader'
 import { useIsDark } from '@/composables/useIsDark'
-import { formatCurrency, formatCurrencyShort, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDate, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import type { CapitalSummary } from '@/types'
 import CashflowJournal from '@/components/CashflowJournal.vue'
+import AllocateUnallocatedDialog from '@/components/AllocateUnallocatedDialog.vue'
 import CashBoxEditDialog from '@/components/CashBoxEditDialog.vue'
 
 const route = useRoute()
+// Границы даты денежной операции — те же, что при отметке оплаты.
+const opDate = useOperationDate()
 const sections = useSections()
 const router = useRouter()
 const toast = useToast()
@@ -167,6 +176,235 @@ interface CashBoxCoInvestor {
 }
 
 // ─── State ────────────────────────────────────────────────────────────────
+/**
+ * Счета этой кассы — «где лежат её деньги».
+ *
+ * Касса отвечает на вопрос «чьи деньги», счёт — «где они». Раздел
+ * «Бухгалтерия» ведёт счета, а здесь показываем срез по одной кассе, чтобы за
+ * ответом не приходилось уходить в другой раздел.
+ */
+const accounting = useAccountingStore()
+
+const boxAccounts = computed(() =>
+  accounting.accounts.filter((a) => !a.disabledAt && a.cashBoxId === id.value),
+)
+
+/**
+ * Верхняя секция — два ответа об одних и тех же деньгах.
+ *
+ * «Капитал» отвечает, сколько денег у кассы и из чего они сложились; «Где
+ * лежат деньги» — в каком сейфе и на какой карте. Раньше второй ответ висел
+ * отдельной плашкой под первым: он читался как довесок, а по смыслу это
+ * равноправная половина.
+ */
+const topTab = ref<'capital' | 'where' | 'plan'>('capital')
+
+/** Сколько денег кассы ещё не разложено по её счетам. */
+const unallocated = ref(0)
+const showAllocate = ref(false)
+
+async function refreshUnallocated() {
+  try {
+    unallocated.value = Math.round((await accounting.fetchCashBoxFree(id.value)).unallocated)
+  } catch {
+    unallocated.value = 0
+  }
+}
+
+const onAccounts = computed(() =>
+  boxAccounts.value.reduce((sum, a) => sum + (a.balance ?? 0), 0),
+)
+
+/**
+ * Счета кассы по видам денег.
+ *
+ * Наличные, карты и магазины-партнёры — разные деньги, и складывать их
+ * взглядом в один список нельзя: у сейфа и карты разные риски и разный способ
+ * добраться до денег. Тот же порядок и те же названия, что в «Бухгалтерии», —
+ * человек ходит между разделами и не должен пересобирать картину заново.
+ */
+const WHERE_GROUPS: Array<{ type: string; title: string; hint: string; icon: string }> = [
+  { type: 'CASH', title: 'Наличные', hint: 'Сейф, деньги на руках', icon: 'mdi-cash' },
+  { type: 'BANK_CARD', title: 'Банки', hint: 'Карты и счета', icon: 'mdi-credit-card-outline' },
+  { type: 'PAYMENT_POINT', title: 'Пункты приёма', hint: 'Магазины, принимающие оплату', icon: 'mdi-store-outline' },
+]
+
+const accountGroups = computed(() =>
+  WHERE_GROUPS.map((g) => {
+    const items = boxAccounts.value.filter((a) => a.type === g.type)
+    return { ...g, items, sum: items.reduce((s2, a) => s2 + (a.balance ?? 0), 0) }
+  }).filter((g) => g.items.length > 0),
+)
+
+/** Все деньги кассы: то, что лежит на счетах, плюс то, что ещё не разложено. */
+const boxMoney = computed(() => onAccounts.value + Math.max(unallocated.value, 0))
+
+/** Доля счёта в деньгах кассы — полосой, чтобы не считать проценты в уме. */
+function shareOfBox(amount: number | null): number {
+  const total = boxMoney.value
+  if (!total || !amount || amount <= 0) return 0
+  return Math.round((amount / total) * 100)
+}
+
+const allocatedPct = computed(() => {
+  const total = boxMoney.value
+  if (!total) return 0
+  return Math.max(0, Math.min(100, Math.round((onAccounts.value / total) * 100)))
+})
+
+/**
+ * Вкладка «Аналитика»: что происходит с вложенными деньгами.
+ *
+ * Начальный капитал сам по себе ничего не говорит: партнёр завёл миллион — и
+ * дальше цифра просто стоит. Здесь она становится точкой отсчёта: сколько из
+ * вложенного сейчас в товаре, сколько уже отбито прибылью, когда по текущему
+ * графику платежей вложенное вернётся полностью и что придёт сверху.
+ *
+ * Считает всё сервер — теми же формулами, что «Аналитика» и «Отчёты»
+ * (`/analytics/summary`, `/analytics/monthly` с фильтром по кассе). Своей
+ * арифметики здесь нет намеренно: разойдись она с отчётами хоть на рубль,
+ * доверия не будет ни к одной из цифр.
+ */
+/** Роль без права на аналитику вкладку не увидит — там нечего показывать. */
+const canSeePlan = computed(() => auth.can('analytics.view'))
+
+const planSummary = ref<AnalyticsSummary | null>(null)
+const planMonths = ref<AnalyticsMonthlyRow[]>([])
+const planLoading = ref(false)
+/** 403 — тариф без аналитики или роль без права. Это не ошибка, а закрытый раздел. */
+const planDenied = ref(false)
+
+const PLAN_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow'
+/** Горизонт прогноза: три года — дальше графики платежей обычно не уходят. */
+const PLAN_HORIZON_MONTHS = 36
+
+function planDay(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+async function loadPlan() {
+  if (planLoading.value || planSummary.value) return
+  planLoading.value = true
+  try {
+    const now = new Date()
+    const from = planDay(new Date(now.getFullYear(), now.getMonth(), 1))
+    // Последний день месяца через «нулевое» число следующего.
+    const to = planDay(new Date(now.getFullYear(), now.getMonth() + PLAN_HORIZON_MONTHS + 1, 0))
+    const base = { tz: PLAN_TZ, cashBoxId: id.value }
+    const [sum, months] = await Promise.all([
+      api.get<AnalyticsSummary>(`/analytics/summary?${new URLSearchParams(base)}`),
+      api.get<AnalyticsMonthlyRow[]>(`/analytics/monthly?${new URLSearchParams({ ...base, from, to })}`),
+    ])
+    planSummary.value = sum
+    planMonths.value = months
+  } catch (e: any) {
+    if (e?.status === 403) planDenied.value = true
+    else console.error('Не удалось загрузить аналитику кассы:', e)
+  } finally {
+    planLoading.value = false
+  }
+}
+
+watch(topTab, (t) => { if (t === 'plan') void loadPlan() })
+
+/** Чистый доход партнёра, ожидаемый в месяце: валовый минус доля со-инвесторов. */
+function planMonthProfit(r: AnalyticsMonthlyRow): number {
+  return Math.max(0, Math.round((r.expectedGross || 0) - (r.ciExpected || 0)))
+}
+
+/** Заработано чистыми за всё время по сделкам этой кассы. */
+const planEarned = computed(() => Math.round(planSummary.value?.deals.earnedNet ?? 0))
+/** Сколько ещё принесут текущие сделки — тоже чистыми партнёру. */
+const planProfitLeft = computed(() => Math.round(planSummary.value?.deals.profitLeft ?? 0))
+const planInvested = computed(() => Math.round(investedCapital.value))
+
+/** Какую часть вложенного уже вернула прибыль. */
+const planPaybackPct = computed(() => {
+  const inv = planInvested.value
+  if (inv <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((planEarned.value / inv) * 100)))
+})
+
+/**
+ * Месяц, в котором накопленная прибыль перекроет вложенное.
+ *
+ * Идём от уже заработанного и прибавляем ожидаемый доход месяц за месяцем —
+ * ровно так это и происходит в жизни. `null` значит «на горизонте прогноза
+ * не окупится»: текущих сделок для этого не хватает.
+ */
+const planPaybackMonth = computed<string | null>(() => {
+  const inv = planInvested.value
+  if (inv <= 0 || planEarned.value >= inv) return null
+  let acc = planEarned.value
+  for (const r of planMonths.value) {
+    acc += planMonthProfit(r)
+    if (acc >= inv) return r.month
+  }
+  return null
+})
+
+const planPaidBack = computed(() => planInvested.value > 0 && planEarned.value >= planInvested.value)
+
+/** Ближайший год — то, что показываем столбиками. */
+const planChart = computed(() => {
+  const rows = planMonths.value.slice(0, 12)
+  return rows.map((r) => {
+    const total = Math.round(r.pendingAmount || 0)
+    const profit = Math.min(planMonthProfit(r), total)
+    return { month: r.month, total, profit, principal: Math.max(0, total - profit) }
+  })
+})
+const planChartMax = computed(() => Math.max(1, ...planChart.value.map((m) => m.total)))
+
+/** Всё, что ждём по текущим сделкам, и наш доход в этих деньгах. */
+const planExpectedTotal = computed(() =>
+  planMonths.value.reduce((s, r) => s + Math.round(r.pendingAmount || 0), 0),
+)
+/** Месяц последнего планового платежа — когда текущие сделки закончатся. */
+const planLastMonth = computed<string | null>(() => {
+  for (let i = planMonths.value.length - 1; i >= 0; i--) {
+    if ((planMonths.value[i]!.pendingAmount || 0) > 0) return planMonths.value[i]!.month
+  }
+  return null
+})
+
+const planOverdue = computed(() => ({
+  sum: Math.round(planSummary.value?.payments.overdueSum ?? 0),
+  count: planSummary.value?.payments.overdueCount ?? 0,
+}))
+
+/** Доля вложенного, которая сейчас в товаре, — остальное лежит свободным. */
+const planInWorkPct = computed(() => {
+  const base = capitalDetails.value?.inProgress ?? 0
+  const total = base + Math.max(availableCap.value, 0)
+  if (total <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((base / total) * 100)))
+})
+
+/** «2027-03» → «март 2027» — месяц называют словом, а не номером. */
+const PLAN_MONTH_NAMES = [
+  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
+]
+function planMonthName(m: string): string {
+  const [y, mo] = m.split('-')
+  return `${PLAN_MONTH_NAMES[Number(mo) - 1] ?? m} ${y}`
+}
+/** Короткая подпись столбика: «мар», а январь подписываем годом. */
+function planMonthShort(m: string): string {
+  const [y, mo] = m.split('-')
+  const short = (PLAN_MONTH_NAMES[Number(mo) - 1] ?? '').slice(0, 3)
+  return mo === '01' ? `${short} ${y!.slice(2)}` : short
+}
+
+const accountsCountLabel = computed(() => {
+  const n = boxAccounts.value.length
+  const last = n % 10
+  const teen = n % 100 >= 11 && n % 100 <= 14
+  const word = !teen && last === 1 ? 'счёт' : !teen && last >= 2 && last <= 4 ? 'счёта' : 'счетов'
+  return `${n} ${word} этой кассы`
+})
+
 const box = ref<CashBoxSummary | null>(null)
 const capitalDetails = ref<CapitalDetails | null>(null)
 /**
@@ -181,8 +419,8 @@ const availableRows = computed(() => {
   const rows = [
     { key: 'seed', label: 'Стартовый капитал кассы', value: b.initialCapital, base: true, hint: '', always: true },
     {
-      key: 'ci', label: 'Заведено со-инвесторами', value: b.coInvestorCashIn, base: true,
-      hint: 'Живые деньги, которые со-инвесторы внесли в эту кассу', always: true,
+      key: 'ci', label: 'Заведено инвесторами', value: b.coInvestorCashIn, base: true,
+      hint: 'Живые деньги, которые инвесторы внесли в эту кассу', always: true,
     },
     {
       key: 'topup', label: 'Пополнения капитала', value: b.capitalTopup, base: false,
@@ -197,7 +435,7 @@ const availableRows = computed(() => {
       hint: 'Деньги, вложенные в товар', always: true,
     },
     {
-      key: 'dividend', label: 'Выплачено со-инвесторам', value: b.dividendOut, base: false,
+      key: 'dividend', label: 'Выплачено инвесторам', value: b.dividendOut, base: false,
       hint: 'Дивиденды, ушедшие из кассы', always: false,
     },
     {
@@ -244,7 +482,7 @@ const WF_SECTIONS: Record<string, { label: string; hint: string }> = {
   deployed: { label: 'В работе', hint: 'Капитал в активных сделках' },
   manual: { label: 'Ручные операции', hint: 'Доходы и расходы, внесённые вручную' },
   available: { label: 'Доступный капитал', hint: 'Из чего сложились деньги в кассе' },
-  pendingCI: { label: 'Резерв для инвесторов', hint: 'Начислено со-инвесторам, но ещё не выплачено' },
+  pendingCI: { label: 'Резерв для инвесторов', hint: 'Начислено инвесторам, но ещё не выплачено' },
 }
 const wfSection = computed(() => (wfExpanded.value ? WF_SECTIONS[wfExpanded.value] : null))
 const expandedInProfit = ref<Set<string>>(new Set())
@@ -268,6 +506,9 @@ async function loadAll() {
       store.items.length === 0 ? store.fetchAll() : Promise.resolve(),
       // Финансовые данные грузим только при наличии права — иначе 403.
       canSeeCapital.value ? loadDetails() : Promise.resolve(),
+      // Счета нужны для вкладки «где лежат деньги»; сбой не должен ронять кассу.
+      canSeeCapital.value ? accounting.fetchAccounts().catch(() => {}) : Promise.resolve(),
+      canSeeCapital.value ? refreshUnallocated() : Promise.resolve(),
       canSeeCapital.value ? loadCategories() : Promise.resolve(),
       canSeeCapital.value ? loadCashBoxCoInvestors() : Promise.resolve(),
       canSeeCapital.value ? loadCapitalSummary() : Promise.resolve(),
@@ -582,7 +823,7 @@ const txForm = ref({
   amount: 0,
   description: '',
   categoryId: '',
-  date: new Date().toISOString().slice(0, 10),
+  date: todayIso(),
 })
 const txSaving = ref(false)
 const txDeleteDialog = ref(false)
@@ -603,7 +844,7 @@ function openCreateTransaction() {
     amount: 0,
     description: '',
     categoryId: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: todayIso(),
   }
   showTxDialog.value = true
 }
@@ -616,7 +857,7 @@ function openEditTransaction(op: CapitalOperation) {
     amount: op.amount,
     description: op.description || '',
     categoryId: op.category?.id || '',
-    date: op.date ? op.date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+    date: op.date ? op.date.slice(0, 10) : todayIso(),
   }
   showTxDialog.value = true
 }
@@ -775,7 +1016,7 @@ const OP_PERIODS = [
 const OP_KIND_CHIPS: { key: OpKind; label: string; color: string }[] = [
   { key: 'INCOME', label: 'Поступления', color: '#10b981' },
   { key: 'EXPENSE', label: 'Закупки', color: '#ef4444' },
-  { key: 'PAYOUT', label: 'Со-инвесторам', color: '#f59e0b' },
+  { key: 'PAYOUT', label: 'Инвесторам', color: '#f59e0b' },
   { key: 'MANUAL', label: 'Ручные', color: '#3b82f6' },
 ]
 
@@ -1062,8 +1303,8 @@ async function handleDelete() {
 
     <template v-else>
       <!-- Back link -->
-      <button class="cb-back" @click="router.push('/cashboxes')">
-        <v-icon icon="mdi-arrow-left" size="16" />
+      <button class="back-btn" @click="router.push('/cashboxes')">
+        <v-icon icon="mdi-arrow-left" size="18" />
         Все кассы
       </button>
 
@@ -1137,8 +1378,318 @@ async function handleDelete() {
       <!-- ============================ -->
       <div v-if="capitalDetails" class="wf mb-6">
         <div class="wf-title-row">
-          <div class="wf-title">Капитал кассы</div>
+          <!-- Две половины одного ответа: сколько денег и где они лежат. -->
+          <div class="fn-tabs">
+            <button
+              class="fn-tab"
+              :class="{ 'fn-tab--active': topTab === 'capital' }"
+              @click="topTab = 'capital'"
+            >
+              Капитал кассы
+            </button>
+            <button
+              class="fn-tab"
+              :class="{ 'fn-tab--active': topTab === 'where' }"
+              @click="topTab = 'where'"
+            >
+              Где лежат деньги
+              <span v-if="unallocated > 0" class="cb-tab-dot" title="Есть неразнесённые деньги" />
+            </button>
+            <button
+              v-if="canSeePlan"
+              class="fn-tab"
+              :class="{ 'fn-tab--active': topTab === 'plan' }"
+              @click="topTab = 'plan'"
+            >
+              Аналитика
+            </button>
+          </div>
         </div>
+
+        <template v-if="topTab === 'where'">
+          <!-- Одна сумма и то, как она поделена: сначала «сколько денег»,
+               потом «где они». Две отдельные цифры рядом читались как два
+               независимых показателя. -->
+          <div class="cb-where-top">
+            <div class="cb-where-total">
+              <div class="cb-where-total-label">Деньги кассы</div>
+              <div class="cb-where-total-value">{{ formatCurrency(boxMoney) }}</div>
+              <div class="cb-where-total-note">{{ accountsCountLabel }}</div>
+            </div>
+            <div class="cb-where-actions">
+              <button
+                v-if="unallocated > 0 && canSeeCapital"
+                class="cb-where-btn cb-where-btn--main"
+                @click="showAllocate = true"
+              >
+                <v-icon icon="mdi-arrow-decision-outline" size="16" />
+                Разнести по счетам
+              </button>
+              <button class="cb-where-btn" @click="router.push('/accounting/balance')">
+                <v-icon icon="mdi-plus" size="16" />
+                Новый счёт
+              </button>
+            </div>
+          </div>
+
+          <div class="cb-where-split">
+            <!-- Полоса и две карточки под ней — один и тот же ответ двумя
+                 способами: сначала пропорция глазом, потом точные суммы. -->
+            <div class="cb-where-bar">
+              <div class="cb-where-bar-fill" :style="{ width: allocatedPct + '%' }" />
+            </div>
+
+            <div class="cb-where-cards">
+              <div class="cb-where-card cb-where-card--ok">
+                <div class="cb-where-card-ico">
+                  <v-icon icon="mdi-check-decagram-outline" size="18" />
+                </div>
+                <div class="cb-where-card-body">
+                  <div class="cb-where-card-label">Разнесено по счетам</div>
+                  <div class="cb-where-card-value">{{ formatCurrency(onAccounts) }}</div>
+                </div>
+                <div class="cb-where-card-pct">{{ allocatedPct }}%</div>
+              </div>
+
+              <div
+                class="cb-where-card"
+                :class="unallocated > 0 ? 'cb-where-card--warn' : 'cb-where-card--calm'"
+              >
+                <div class="cb-where-card-ico">
+                  <v-icon :icon="unallocated > 0 ? 'mdi-help-circle-outline' : 'mdi-check-circle-outline'" size="18" />
+                </div>
+                <div class="cb-where-card-body">
+                  <div class="cb-where-card-label">Не разнесено</div>
+                  <div v-if="unallocated > 0" class="cb-where-card-value">{{ formatCurrency(unallocated) }}</div>
+                  <div v-else class="cb-where-card-value cb-where-card-value--calm">Всё на счетах</div>
+                </div>
+                <div class="cb-where-card-pct">{{ Math.max(100 - allocatedPct, 0) }}%</div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="boxAccounts.length" class="cb-where-list">
+            <div v-for="g in accountGroups" :key="g.type" class="cb-where-group">
+              <!-- Смысловая граница: наличные, банки и пункты приёма — разные
+                   деньги, и складывать их взглядом в одну кучу нельзя. -->
+              <div class="cb-where-grouprow">
+                <v-icon :icon="g.icon" size="14" />
+                <span class="cb-where-grouptitle">{{ g.title }}</span>
+                <span class="cb-where-groupcount">{{ g.items.length }}</span>
+                <span class="cb-where-grouphint">{{ g.hint }}</span>
+                <span class="cb-where-groupsum">{{ formatCurrency(g.sum) }}</span>
+              </div>
+
+              <div
+                v-for="a in g.items"
+                :key="a.id"
+                class="cb-where-row"
+                @click="router.push(`/accounting/accounts/${a.id}`)"
+              >
+                <BankLogo :bank-name="a.bank?.name" :color="a.bank?.color || a.color" :fallback="a.code" :size="32" />
+                <div class="cb-where-body">
+                  <div class="cb-where-name">
+                    {{ a.name }}
+                    <span class="cb-where-code">{{ a.code }}</span>
+                  </div>
+                  <!-- Что за счёт: банк узнают по названию, остальные — по виду
+                       денег. Банковский счёт без указанного банка так и пишем,
+                       иначе карта подписывалась «Наличные». -->
+                  <div class="cb-where-meta">
+                    <template v-if="a.bank">{{ a.bank.name }}</template>
+                    <template v-else-if="a.type === 'BANK_CARD'">Банковский счёт</template>
+                    <template v-else-if="a.type === 'PAYMENT_POINT'">Пункт приёма</template>
+                    <template v-else>Наличные</template>
+                    <template v-if="a.transferPhone"> · {{ formatPhone(a.transferPhone) }}</template>
+                  </div>
+                </div>
+                <div class="cb-where-num">
+                  <div class="cb-where-sum">{{ a.balance !== null ? formatCurrency(a.balance) : '—' }}</div>
+                  <div v-if="shareOfBox(a.balance)" class="cb-where-share">
+                    <span class="cb-where-share-bar">
+                      <span class="cb-where-share-fill" :style="{ width: shareOfBox(a.balance) + '%' }" />
+                    </span>
+                    {{ shareOfBox(a.balance) }}%
+                  </div>
+                </div>
+                <v-icon icon="mdi-chevron-right" size="18" class="cb-where-go" />
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="cb-where-empty">
+            <v-icon icon="mdi-wallet-outline" size="26" />
+            <div class="cb-where-empty-title">У этой кассы нет счетов</div>
+            <div class="cb-where-empty-text">
+              Заведите счёт в «Бухгалтерии» и укажите там эту кассу — тогда будет видно,
+              в каком сейфе и на какой карте лежат её деньги.
+            </div>
+          </div>
+        </template>
+
+        <!-- ─────────── Аналитика вложенного ─────────── -->
+        <template v-else-if="topTab === 'plan'">
+          <div v-if="planDenied" class="cb-where-empty">
+            <v-icon icon="mdi-lock-outline" size="26" />
+            <div class="cb-where-empty-title">Аналитика недоступна</div>
+            <div class="cb-where-empty-text">
+              Раздел закрыт тарифом или правами роли — цифры о судьбе вложенных денег
+              берутся оттуда же, откуда «Аналитика» и «Отчёты».
+            </div>
+          </div>
+
+          <div v-else-if="planLoading && !planSummary" class="cb-plan-loading">
+            <v-progress-circular indeterminate size="26" width="3" color="#047857" />
+          </div>
+
+          <template v-else-if="planSummary">
+            <!-- Точка отсчёта: сколько своих денег партнёр держит в этой кассе. -->
+            <div class="cb-plan-top">
+              <div>
+                <div class="cb-plan-top-label">Вложено в эту кассу</div>
+                <div class="cb-plan-top-value">{{ formatCurrency(planInvested) }}</div>
+                <div class="cb-plan-top-note">начальный капитал плюс пополнения, минус снятое из вложенного</div>
+              </div>
+              <button class="cb-where-btn" @click="router.push('/analytics')">
+                <v-icon icon="mdi-chart-line" size="16" />
+                Полная аналитика
+              </button>
+            </div>
+
+            <!-- Где эти деньги прямо сейчас. -->
+            <div class="cb-plan-cards">
+              <div class="cb-plan-card">
+                <div class="cb-plan-card-label">В товаре</div>
+                <div class="cb-plan-card-value">{{ formatCurrency(capitalDetails.inProgress) }}</div>
+                <div class="cb-plan-card-note">закуплено клиентам, вернётся платежами</div>
+              </div>
+              <div class="cb-plan-card">
+                <div class="cb-plan-card-label">Свободно в кассе</div>
+                <div class="cb-plan-card-value">{{ formatCurrency(availableCap) }}</div>
+                <div class="cb-plan-card-note">можно пустить в новые сделки</div>
+              </div>
+              <div class="cb-plan-card cb-plan-card--profit">
+                <div class="cb-plan-card-label">Заработано</div>
+                <div class="cb-plan-card-value">{{ formatCurrency(planEarned) }}</div>
+                <div class="cb-plan-card-note">
+                  <template v-if="(capitalDetails.coInvestorProfit ?? 0) > 0">чистыми, за вычетом доли со-инвесторов</template>
+                  <template v-else>чистая прибыль по сделкам этой кассы</template>
+                </div>
+              </div>
+            </div>
+
+            <div class="cb-plan-workbar">
+              <div class="cb-plan-workbar-fill" :style="{ width: planInWorkPct + '%' }" />
+            </div>
+            <div class="cb-plan-worklegend">
+              <span><span class="cb-plan-dot cb-plan-dot--work" /> В товаре {{ planInWorkPct }}%</span>
+              <span><span class="cb-plan-dot cb-plan-dot--free" /> Свободно {{ 100 - planInWorkPct }}%</span>
+            </div>
+
+            <!-- Главный вопрос: когда вложенное вернётся прибылью. -->
+            <div class="cb-plan-block">
+              <div class="cb-plan-block-head">
+                <span class="cb-plan-block-title">Окупаемость вложенного</span>
+                <span class="cb-plan-block-pct">{{ planPaybackPct }}%</span>
+              </div>
+              <div class="cb-plan-pay">
+                <div class="cb-plan-pay-fill" :style="{ width: planPaybackPct + '%' }" />
+              </div>
+              <div class="cb-plan-pay-row">
+                <span>Заработано {{ formatCurrency(planEarned) }}</span>
+                <span>Вложено {{ formatCurrency(planInvested) }}</span>
+              </div>
+
+              <div v-if="planInvested <= 0" class="cb-plan-verdict">
+                <v-icon icon="mdi-information-outline" size="17" />
+                <span>Капитал кассы не указан — сравнивать не с чем. Укажите его в настройках кассы или внесите деньги операцией «Капитал».</span>
+              </div>
+              <div v-else-if="planPaidBack" class="cb-plan-verdict cb-plan-verdict--ok">
+                <v-icon icon="mdi-check-decagram-outline" size="17" />
+                <span>
+                  Вложенное окупилось: прибыль превысила вложенные деньги
+                  на {{ formatCurrency(planEarned - planInvested) }}. Всё, что придёт дальше, — доход сверх вложенного.
+                </span>
+              </div>
+              <div v-else-if="planPaybackMonth" class="cb-plan-verdict cb-plan-verdict--wait">
+                <v-icon icon="mdi-calendar-clock" size="17" />
+                <span>
+                  Осталось заработать {{ formatCurrency(planInvested - planEarned) }}.
+                  Если платежи придут по графику, вложенное окупится к <b>{{ planMonthName(planPaybackMonth) }}</b>,
+                  и дальше пойдёт чистый доход.
+                </span>
+              </div>
+              <div v-else class="cb-plan-verdict cb-plan-verdict--warn">
+                <v-icon icon="mdi-alert-circle-outline" size="17" />
+                <span>
+                  Текущих сделок не хватает, чтобы окупить вложенное: до конца всех графиков
+                  ожидается {{ formatCurrency(planProfitLeft) }} дохода, а не хватает
+                  {{ formatCurrency(planInvested - planEarned) }}. Окупаемость придёт с новыми сделками.
+                </span>
+              </div>
+            </div>
+
+            <!-- Что придёт дальше: помесячно, с делением на возврат и доход. -->
+            <div class="cb-plan-block">
+              <div class="cb-plan-block-head">
+                <span class="cb-plan-block-title">Что придёт дальше</span>
+                <span class="cb-plan-block-sub">ближайший год, по графику платежей</span>
+              </div>
+
+              <div v-if="planChart.some((m) => m.total > 0)" class="cb-plan-chart">
+                <div v-for="m in planChart" :key="m.month" class="cb-plan-col">
+                  <div class="cb-plan-bar" :title="`${planMonthName(m.month)}: ${formatCurrency(m.total)}`">
+                    <div
+                      class="cb-plan-bar-profit"
+                      :style="{ height: (m.profit / planChartMax) * 100 + '%' }"
+                    />
+                    <div
+                      class="cb-plan-bar-principal"
+                      :style="{ height: (m.principal / planChartMax) * 100 + '%' }"
+                    />
+                  </div>
+                  <div class="cb-plan-col-label">{{ planMonthShort(m.month) }}</div>
+                </div>
+              </div>
+              <div v-else class="cb-plan-nochart">По текущим сделкам платежей в ближайший год не запланировано</div>
+
+              <div class="cb-plan-legend">
+                <span><span class="cb-plan-dot cb-plan-dot--principal" /> Возврат вложенного</span>
+                <span><span class="cb-plan-dot cb-plan-dot--profit" /> Ваш доход</span>
+              </div>
+
+              <div class="cb-plan-facts">
+                <div class="cb-plan-fact">
+                  <div class="cb-plan-fact-value">{{ formatCurrency(planExpectedTotal) }}</div>
+                  <div class="cb-plan-fact-label">придёт до конца текущих сделок</div>
+                </div>
+                <div class="cb-plan-fact">
+                  <div class="cb-plan-fact-value cb-plan-fact-value--profit">{{ formatCurrency(planProfitLeft) }}</div>
+                  <div class="cb-plan-fact-label">из них ваш доход</div>
+                </div>
+                <div class="cb-plan-fact">
+                  <div class="cb-plan-fact-value">
+                    {{ planLastMonth ? planMonthName(planLastMonth) : '—' }}
+                  </div>
+                  <div class="cb-plan-fact-label">последний платёж текущих сделок</div>
+                </div>
+              </div>
+
+              <!-- Просроченное в прогноз не двигаем: это деньги, которых ждут,
+                   но срок уже прошёл — иначе окупаемость выглядела бы ближе. -->
+              <div v-if="planOverdue.sum > 0" class="cb-plan-overdue">
+                <v-icon icon="mdi-clock-alert-outline" size="17" />
+                <span>
+                  Просрочено {{ formatCurrency(planOverdue.sum) }} по {{ planOverdue.count }}
+                  {{ planOverdue.count === 1 ? 'платежу' : 'платежам' }} — в прогноз выше эти деньги не включены.
+                </span>
+                <button class="cb-plan-overdue-btn" @click="router.push('/debtors')">Должники</button>
+              </div>
+            </div>
+          </template>
+        </template>
+
+        <template v-else>
 
         <div class="wf-split">
           <!-- Left: vertical list -->
@@ -1277,7 +1828,7 @@ async function handleDelete() {
                     </span>
                   </div>
                   <div class="wf-flow-hint">
-                    Реальные деньги кассы на сейчас. Обязательства перед со-инвесторами
+                    Реальные деньги кассы на сейчас. Обязательства перед инвесторами
                     сюда не заложены — они показаны отдельной строкой «Резерв для инвесторов».
                   </div>
                 </div>
@@ -1301,12 +1852,12 @@ async function handleDelete() {
                    Show it inline (sum) plus the per-CI breakdown below — same
                    visual approach as the legacy finance.vue. -->
               <div v-if="capitalDetails.coInvestorCapital > 0" class="wf-expand-row">
-                <span>Капитал со-инвесторов</span>
+                <span>Капитал инвесторов</span>
                 <span class="wf-expand-val">{{ formatCurrency(capitalDetails.coInvestorCapital) }}</span>
               </div>
               <div v-if="cashBoxCoInvestors.length > 0" class="wf-ci-breakdown">
                 <div class="wf-ci-breakdown-head">
-                  <span>Со-инвесторы кассы</span>
+                  <span>Инвесторы кассы</span>
                   <router-link to="/co-investors" class="wf-panel-link">
                     <v-icon icon="mdi-arrow-top-right" size="13" />
                     Управление
@@ -1688,6 +2239,7 @@ async function handleDelete() {
             <div class="wf-utilization-fill" :style="{ width: capitalUtilization + '%', background: box.color }" />
           </div>
         </div>
+        </template>
       </div>
 
       <!-- ============================ -->
@@ -2006,11 +2558,11 @@ async function handleDelete() {
           </div>
 
           <!-- Не блокируем (сервер разрешает cash-basis), только предупреждаем:
-               после снятия в кассе останется меньше обязательства перед со-инвесторами. -->
+               после снятия в кассе останется меньше обязательства перед инвесторами. -->
           <div v-if="capBelowCIReserve" class="cap-calc cap-calc--warn mt-3">
             <v-icon icon="mdi-account-cash-outline" size="16" />
             <div>
-              После снятия в кассе останется меньше, чем причитается со-инвесторам
+              После снятия в кассе останется меньше, чем причитается инвесторам
               (<strong>{{ formatCurrency(pendingCIPayout) }}</strong>). Сначала выплатите дивиденды.
             </div>
           </div>
@@ -2031,6 +2583,15 @@ async function handleDelete() {
     </v-dialog>
 
     <!-- Edit dialog -->
+    <!-- Раскладываем по счетам именно этой кассы: чужие счета её деньги
+         держать не могут. -->
+    <AllocateUnallocatedDialog
+      v-model="showAllocate"
+      :amount="unallocated"
+      :cash-box-id="id"
+      @done="() => { void accounting.fetchAccounts(); void refreshUnallocated(); void loadDetails() }"
+    />
+
     <CashBoxEditDialog v-model="showEdit" :cashbox="box" @saved="(b) => { box = b; loadDetails() }" />
 
     <!-- ── Create/Edit Transaction Dialog (matches old finance.vue) ── -->
@@ -2146,11 +2707,9 @@ async function handleDelete() {
           <!-- Date -->
           <div class="mb-2">
             <label class="fn-field-label">Дата</label>
-            <input
-              v-model="txForm.date"
-              type="date"
-              class="fn-field-input"
-            />
+            <!-- Дата операции ограничена так же, как дата оплаты: сотрудник
+                 не может провести расход прошлым месяцем. -->
+            <DateField v-model="txForm.date" :min="opDate.minDate.value" :max="opDate.maxDate.value" plain />
           </div>
         </div>
 
@@ -2365,14 +2924,6 @@ async function handleDelete() {
 <style scoped>
 .cb-page { max-width: 1440px; margin: 0 auto; padding: 24px; }
 
-.cb-back {
-  display: inline-flex; align-items: center; gap: 6px;
-  background: transparent; border: none; cursor: pointer;
-  color: rgba(var(--v-theme-on-surface), 0.6); font-size: 13px; font-weight: 600;
-  margin-bottom: 18px; padding: 6px 0;
-  transition: color 0.15s;
-}
-.cb-back:hover { color: rgb(var(--v-theme-on-surface)); }
 
 /* Read-only (locked) banner */
 .cb-locked-banner {
@@ -2844,6 +3395,181 @@ async function handleDelete() {
   background: rgba(var(--v-theme-on-surface), 0.06); overflow: hidden;
 }
 .wf-utilization-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+
+/* ── Вкладка «Где лежат деньги» ── */
+.cb-tab-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: #f59e0b; margin-left: 6px; vertical-align: middle;
+}
+.cb-where-top {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; padding: 16px 0 14px;
+}
+.cb-where-total-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+}
+.cb-where-total-value {
+  font-size: 28px; font-weight: 700; letter-spacing: -0.6px; margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.cb-where-total-note { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.48); margin-top: 3px; }
+
+/* Полоса «разнесено / не разнесено»: одна сумма, поделённая надвое. */
+.cb-where-split { padding-bottom: 18px; }
+
+/* Полоса деления. Цвет несёт смысл: изумруд — деньги на своих местах,
+   янтарь — деньги, про которые ещё не сказано, где они лежат. */
+.cb-where-bar {
+  height: 10px; border-radius: 6px; overflow: hidden;
+  background: linear-gradient(90deg, #fde68a 0%, #fbbf24 100%);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+.cb-where-bar-fill {
+  height: 100%; border-radius: 6px 0 0 6px;
+  background: linear-gradient(90deg, #10b981 0%, #059669 60%, #047857 100%);
+  box-shadow: 0 0 0 1px rgba(4, 120, 87, 0.18);
+  transition: width 0.4s;
+}
+
+/* Две карточки вместо строчки-легенды: суммы читаются как показатели, а не
+   как подпись к картинке. */
+.cb-where-cards {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px; margin-top: 12px;
+}
+.cb-where-card {
+  display: flex; align-items: center; gap: 11px;
+  padding: 12px 14px; border-radius: 12px;
+  border: 1px solid transparent;
+}
+.cb-where-card-ico {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 10px; flex: none;
+}
+.cb-where-card-body { min-width: 0; flex: 1; }
+.cb-where-card-label {
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.2px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.cb-where-card-value {
+  font-size: 17px; font-weight: 700; margin-top: 2px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.cb-where-card-value--calm { font-size: 14.5px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.cb-where-card-pct {
+  font-size: 12.5px; font-weight: 700; padding: 3px 9px; border-radius: 8px;
+  font-variant-numeric: tabular-nums; flex: none;
+}
+
+.cb-where-card--ok {
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.04));
+  border-color: rgba(16, 185, 129, 0.24);
+}
+.cb-where-card--ok .cb-where-card-ico { background: rgba(16, 185, 129, 0.16); color: #047857; }
+.cb-where-card--ok .cb-where-card-value { color: #047857; }
+.cb-where-card--ok .cb-where-card-pct { background: rgba(16, 185, 129, 0.16); color: #047857; }
+
+.cb-where-card--warn {
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04));
+  border-color: rgba(245, 158, 11, 0.3);
+}
+.cb-where-card--warn .cb-where-card-ico { background: rgba(245, 158, 11, 0.18); color: #b45309; }
+.cb-where-card--warn .cb-where-card-value { color: #b45309; }
+.cb-where-card--warn .cb-where-card-pct { background: rgba(245, 158, 11, 0.18); color: #b45309; }
+
+/* Нечего разносить — карточка не должна тревожить цветом. */
+.cb-where-card--calm {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  border-color: rgba(var(--v-theme-on-surface), 0.08);
+}
+.cb-where-card--calm .cb-where-card-ico {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.cb-where-card--calm .cb-where-card-pct {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+.cb-where-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cb-where-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 38px; padding: 0 14px; border-radius: 9px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.cb-where-btn:hover { border-color: rgba(4, 120, 87, 0.4); color: #047857; }
+.cb-where-btn--main {
+  background: linear-gradient(135deg, #10b981, #047857);
+  border-color: #047857; color: #fff;
+  box-shadow: 0 2px 8px rgba(4, 120, 87, 0.25);
+}
+.cb-where-btn--main:hover { background: linear-gradient(135deg, #059669, #036b4e); color: #fff; }
+
+/* Подзаголовок вида денег — тот же приём, что в списке счетов «Баланса»:
+   полоса во всю ширину карточки, поэтому список выходит за её поля. */
+.cb-where-grouprow {
+  display: flex; align-items: center; gap: 7px;
+  padding: 11px 24px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.cb-where-grouptitle {
+  font-size: 12.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+}
+.cb-where-groupcount {
+  font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.cb-where-grouphint { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.38); }
+.cb-where-groupsum {
+  margin-left: auto; font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: rgba(var(--v-theme-on-surface), 0.8);
+}
+
+.cb-where-code {
+  margin-left: 6px; padding: 1px 6px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.3px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.cb-where-num { text-align: right; min-width: 120px; }
+.cb-where-share {
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+  margin-top: 4px; font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.42);
+  font-variant-numeric: tabular-nums;
+}
+.cb-where-share-bar {
+  width: 46px; height: 3px; border-radius: 2px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.cb-where-share-fill {
+  display: block; height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, #10b981, #047857);
+}
+
+.cb-where-go { color: rgba(var(--v-theme-on-surface), 0.3); flex: none; }
+.cb-where-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 36px 24px; text-align: center;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.cb-where-empty-title { font-size: 15px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.8); }
+.cb-where-empty-text { font-size: 13px; max-width: 420px; line-height: 1.5; }
+@media (max-width: 700px) {
+  .cb-where-actions { margin-left: 0; width: 100%; }
+  .cb-where-grouphint { display: none; }
+  .cb-where-cards { grid-template-columns: minmax(0, 1fr); }
+  .cb-where-grouprow, .cb-where-row { padding-left: 16px; padding-right: 16px; }
+}
 
 /* ─── Tabs row ──────────────────────────────────────────────────────── */
 .fn-tabs {
@@ -3561,4 +4287,200 @@ async function handleDelete() {
   .wf-item-value { font-size: 15px; }
   .wf-item-label { font-size: 11px; }
 }
+
+/* ── Вкладка «Аналитика»: судьба вложенных денег ── */
+.cb-plan-loading { display: flex; justify-content: center; padding: 48px 0; }
+
+.cb-plan-top {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; padding: 16px 0 18px;
+}
+.cb-plan-top-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+}
+.cb-plan-top-value {
+  font-size: 28px; font-weight: 700; letter-spacing: -0.6px; margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.cb-plan-top-note { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.48); margin-top: 3px; }
+
+.cb-plan-cards {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+}
+.cb-plan-card {
+  padding: 13px 15px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.cb-plan-card--profit {
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.03));
+  border-color: rgba(16, 185, 129, 0.22);
+}
+.cb-plan-card-label {
+  font-size: 11.5px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.cb-plan-card-value {
+  font-size: 19px; font-weight: 700; margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.cb-plan-card--profit .cb-plan-card-value { color: #047857; }
+.cb-plan-card-note {
+  font-size: 11.5px; line-height: 1.4; margin-top: 3px;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+}
+
+/* Сколько вложенного сейчас работает, а сколько ждёт своей сделки. */
+.cb-plan-workbar {
+  height: 8px; border-radius: 5px; overflow: hidden; margin-top: 14px;
+  background: rgba(37, 99, 235, 0.18);
+}
+.cb-plan-workbar-fill {
+  height: 100%; border-radius: 5px 0 0 5px;
+  background: linear-gradient(90deg, #34d399, #059669);
+  transition: width 0.4s;
+}
+.cb-plan-worklegend {
+  display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px;
+  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.cb-plan-worklegend span { display: inline-flex; align-items: center; gap: 7px; }
+.cb-plan-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.cb-plan-dot--work { background: #059669; }
+.cb-plan-dot--free { background: rgba(37, 99, 235, 0.5); }
+.cb-plan-dot--principal { background: rgba(37, 99, 235, 0.45); }
+.cb-plan-dot--profit { background: #059669; }
+
+.cb-plan-block {
+  margin-top: 18px; padding: 16px 18px; border-radius: 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  background: rgba(var(--v-theme-on-surface), 0.015);
+}
+.cb-plan-block-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  margin-bottom: 12px;
+}
+.cb-plan-block-title { font-size: 14.5px; font-weight: 700; }
+.cb-plan-block-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.42); }
+.cb-plan-block-pct {
+  font-size: 14px; font-weight: 700; color: #047857;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-plan-pay {
+  height: 10px; border-radius: 6px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.cb-plan-pay-fill {
+  height: 100%; border-radius: 6px 0 0 6px;
+  background: linear-gradient(90deg, #10b981, #047857);
+  transition: width 0.4s;
+}
+.cb-plan-pay-row {
+  display: flex; justify-content: space-between; gap: 12px; margin-top: 7px;
+  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-plan-verdict {
+  display: flex; align-items: flex-start; gap: 9px;
+  margin-top: 12px; padding: 11px 13px; border-radius: 10px;
+  font-size: 13px; line-height: 1.5;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+.cb-plan-verdict b { font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
+.cb-plan-verdict--ok {
+  background: rgba(16, 185, 129, 0.09); color: #047857;
+  border: 1px solid rgba(16, 185, 129, 0.22);
+}
+.cb-plan-verdict--ok b { color: #047857; }
+.cb-plan-verdict--wait {
+  background: rgba(37, 99, 235, 0.07); color: rgba(var(--v-theme-on-surface), 0.7);
+  border: 1px solid rgba(37, 99, 235, 0.18);
+}
+.cb-plan-verdict--warn {
+  background: rgba(245, 158, 11, 0.09); color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+/* Столбики ожидаемых поступлений: снизу возврат вложенного, сверху доход. */
+.cb-plan-chart {
+  display: flex; align-items: flex-end; gap: 6px;
+  height: 150px; padding-top: 6px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+}
+.cb-plan-col { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; height: 100%; }
+.cb-plan-bar {
+  flex: 1; width: 100%; max-width: 34px;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  border-radius: 6px 6px 0 0; overflow: hidden;
+}
+.cb-plan-bar-profit { background: linear-gradient(180deg, #34d399, #059669); }
+.cb-plan-bar-principal { background: rgba(37, 99, 235, 0.4); }
+.cb-plan-col-label {
+  margin-top: 6px; font-size: 10.5px; white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.cb-plan-nochart {
+  padding: 26px 0; text-align: center; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.cb-plan-legend {
+  display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.cb-plan-legend span { display: inline-flex; align-items: center; gap: 7px; }
+
+.cb-plan-facts {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+  margin-top: 14px; padding-top: 14px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+.cb-plan-fact-value {
+  font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.cb-plan-fact-value--profit { color: #047857; }
+.cb-plan-fact-label {
+  font-size: 11.5px; line-height: 1.4; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+.cb-plan-overdue {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  margin-top: 12px; padding: 10px 13px; border-radius: 10px;
+  font-size: 12.5px; line-height: 1.45;
+  background: rgba(220, 38, 38, 0.06);
+  border: 1px solid rgba(220, 38, 38, 0.18);
+  color: #b91c1c;
+}
+.cb-plan-overdue span { flex: 1; min-width: 220px; }
+.cb-plan-overdue-btn {
+  height: 30px; padding: 0 12px; border-radius: 8px;
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  font-size: 12.5px; font-weight: 600; color: #b91c1c; cursor: pointer;
+}
+.cb-plan-overdue-btn:hover { background: rgba(220, 38, 38, 0.08); }
+
+@media (max-width: 700px) {
+  .cb-plan-cards, .cb-plan-facts { grid-template-columns: minmax(0, 1fr); }
+  .cb-plan-chart { height: 120px; }
+  .cb-plan-col-label { font-size: 9.5px; }
+}
+
+/* ── Список счетов: строки во всю ширину карточки ── */
+.cb-where-list { margin: 0 -24px -6px; }
+.cb-where-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 11px 24px; cursor: pointer;
+}
+.cb-where-row:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.cb-where-body { flex: 1; min-width: 0; }
+.cb-where-name {
+  font-size: 13.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cb-where-meta { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 1px; }
+.cb-where-sum { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 </style>

@@ -8,7 +8,7 @@
   >
     <v-card rounded="lg" class="cicd">
       <div class="cicd-header">
-        <span class="cicd-title">Новый со-инвестор</span>
+        <span class="cicd-title">Новый инвестор</span>
         <button class="cicd-close" @click="close">
           <v-icon icon="mdi-close" size="18" />
         </button>
@@ -28,13 +28,7 @@
 
         <div class="cicd-field mb-4">
           <label class="cicd-label">Телефон</label>
-          <input
-            v-model="form.phone"
-            v-maska="PHONE_MASK"
-            type="tel"
-            class="cicd-input"
-            placeholder="+7 (___) ___-__-__"
-          />
+          <PhoneField v-model="form.phone" plain />
         </div>
 
         <div class="cicd-field mb-4">
@@ -99,12 +93,12 @@
               />
               <span class="cicd-suffix">%</span>
             </div>
-            <div class="cicd-hint">От 1% до 99%. Этот процент со-инвестор будет забирать с каждой сделки кассы первым.</div>
+            <div class="cicd-hint">От 1% до 99%. Этот процент инвестор будет забирать с каждой сделки кассы первым.</div>
           </template>
 
           <div v-else class="cicd-hint cicd-hint--info">
             <v-icon icon="mdi-information-outline" size="14" />
-            Со-инвестор получит долю пропорционально вложенному капиталу — из остатка после со-инвесторов с фиксированным процентом.
+            Инвестор получит долю пропорционально вложенному капиталу — из остатка после инвесторов с фиксированным процентом.
           </div>
         </div>
 
@@ -134,7 +128,7 @@
             <span class="cicd-suffix">%</span>
           </div>
           <div class="cicd-hint">
-            Сколько вы забираете с доли этого со-инвестора по вкладу. 0% — делите чисто по капиталу; 50% — половину его расчётной доли забираете себе за управление.
+            Сколько вы забираете с доли этого инвестора по вкладу. 0% — делите чисто по капиталу; 50% — половину его расчётной доли забираете себе за управление.
           </div>
         </div>
       </div>
@@ -154,9 +148,10 @@
 import { reactive, ref, computed, watch, nextTick } from 'vue'
 import { vMaska } from 'maska/vue'
 import { useCoInvestors } from '@/composables/useCoInvestors'
+import PhoneField from '@/components/PhoneField.vue'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { PHONE_MASK, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import type { CoInvestor } from '@/types'
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -217,11 +212,11 @@ async function onSave() {
       // Commission only meaningful for by-capital share; fixed-% is already final.
       managementFeePct: form.mode === 'weight' ? (form.managementFeePct || 0) : 0,
     })
-    showToast('Со-инвестор создан', 'success')
+    showToast('Инвестор создан', 'success')
     emit('created', created)
     close()
   } catch (e: any) {
-    showToast(e.message || 'Не удалось создать со-инвестора', 'error')
+    showToast(e.message || 'Не удалось создать инвестора', 'error')
   } finally {
     saving.value = false
   }

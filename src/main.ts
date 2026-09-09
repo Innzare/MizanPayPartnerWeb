@@ -18,6 +18,11 @@ import { vMaska } from 'maska/vue'
 import 'unfonts.css'
 import '@/styles/admin-tables.css'
 import '@/styles/forms.css'
+import '@/styles/row-actions.css'
+import '@/styles/filter-panel.css'
+import '@/styles/page-tabs.css'
+import '@/styles/anchored-menu.css'
+import '@/styles/back-button.css'
 
 // AG Grid — register community modules once for entire app
 import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community'

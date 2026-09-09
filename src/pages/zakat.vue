@@ -269,16 +269,17 @@
 
         <v-row dense>
           <v-col cols="12" md="6">
-            <v-text-field
+            <!-- Значение уходит на сервер сразу при изменении, поэтому поле
+                 отдаёт его только по завершённому вводу, а не по каждой цифре. -->
+            <DateField
               label="Дата начала хаула"
               :model-value="hawlInputDate"
-              @update:model-value="onHawlChange"
-              type="date"
               density="comfortable"
-              variant="outlined"
-              hint="Когда вы впервые достигли нисаба или дата прошлой выплаты"
-              persistent-hint
+              @update:model-value="onHawlChange"
             />
+            <div class="text-caption text-medium-emphasis mt-1">
+              Когда вы впервые достигли нисаба или дата прошлой выплаты
+            </div>
           </v-col>
           <v-col cols="12" md="6">
             <v-select
@@ -360,12 +361,10 @@
         Сумма закята: <strong>{{ formatRub(calculation?.zakatAmount ?? 0) }}</strong>
       </p>
 
-      <v-text-field
-        label="Дата выплаты"
+      <DateField
         v-model="saveForm.paidAt"
-        type="date"
+        label="Дата выплаты"
         density="comfortable"
-        variant="outlined"
         class="mb-3"
       />
       <v-select
@@ -397,6 +396,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
+import { todayIso } from '@/utils/dateInput'
+import DateField from '@/components/DateField.vue'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useZakat, RECIPIENT_LABELS, type ManualAssets, type RecipientCategory } from '@/composables/useZakat'
@@ -457,12 +458,12 @@ const saveForm = reactive<{
   paidAt: string
   recipientCategory: RecipientCategory | null
   recipientNote: string
-}>({ paidAt: new Date().toISOString().slice(0, 10), recipientCategory: null, recipientNote: '' })
+}>({ paidAt: todayIso(), recipientCategory: null, recipientNote: '' })
 
 const recipientItems = Object.entries(RECIPIENT_LABELS).map(([value, label]) => ({ value, label }))
 
 function onSavePayment() {
-  saveForm.paidAt = new Date().toISOString().slice(0, 10)
+  saveForm.paidAt = todayIso()
   saveForm.recipientCategory = null
   saveForm.recipientNote = ''
   saveDialog.value = true

@@ -2,11 +2,11 @@
 import { ref, computed, watch } from 'vue'
 import { useSuppliersStore, type SupplierRow, type SupplierInput } from '@/stores/suppliers'
 import FormModal from '@/components/FormModal.vue'
+import PhoneField from '@/components/PhoneField.vue'
 import AddressPicker from '@/components/AddressPicker.vue'
 import ComboBox from '@/components/ComboBox.vue'
 import { CITIES } from '@/constants/cities'
 import { SUPPLIER_CATEGORIES } from '@/constants/suppliers'
-import { PHONE_MASK } from '@/utils/formatters'
 
 const props = defineProps<{ modelValue: boolean; supplier?: SupplierRow | null }>()
 const emit = defineEmits<{
@@ -105,7 +105,7 @@ async function save() {
       </div>
       <div class="form-field">
         <label class="field-label">Телефон</label>
-        <input v-model="form.phone" v-maska="PHONE_MASK" type="tel" class="field-input" placeholder="+7 (___) ___-__-__" />
+        <PhoneField v-model="form.phone" plain />
       </div>
     </div>
 

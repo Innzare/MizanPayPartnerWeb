@@ -180,7 +180,7 @@ async function deleteProduct() {
   <div class="at-page" v-else-if="product" :class="{ dark: isDark }">
     <!-- Back + Actions -->
     <div class="d-flex align-center justify-space-between mb-5">
-      <button class="back-btn" @click="router.push('/products')">
+      <button class="back-btn back-btn--inline" @click="router.push('/products')">
         <v-icon icon="mdi-arrow-left" size="18" />
         Каталог
       </button>
@@ -491,18 +491,6 @@ async function deleteProduct() {
 
 <style scoped>
 /* Back button */
-.back-btn {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 14px; border-radius: 10px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  font-size: 14px; font-weight: 500;
-  cursor: pointer; transition: all 0.15s;
-}
-.back-btn:hover {
-  background: rgba(var(--v-theme-primary), 0.08);
-  color: rgb(var(--v-theme-primary));
-}
 
 /* Action buttons */
 .action-outlined-btn {

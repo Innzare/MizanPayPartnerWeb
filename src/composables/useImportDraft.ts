@@ -118,6 +118,20 @@ export interface DraftStats {
     /** Снимок подозрительных строк на момент подтверждения — зеркало серверного гейта. */
     acknowledgedRows?: { rowIdx: number; totalPrice: number }[]
   }
+  /** Скидки в файле — что произойдёт с договорами до того, как нажать «Импортировать». */
+  discounts?: {
+    rows: number
+    totalAmount: number
+    /** Закроется сразу: оплачено вместе со скидкой покрывает весь долг. */
+    willClose: number
+    /** Останутся активными: скидка есть, но долг не закрыт. */
+    stayActive: number
+    /** Скидка больше дохода — будет срезана до дохода. */
+    overIncome: number
+    overIncomeAmount: number
+    /** Насколько уменьшится доля со-инвесторов. */
+    coInvestor?: { deals: number; shareLoss: number; byCapital?: boolean }
+  }
 }
 
 export interface ImportDraft {

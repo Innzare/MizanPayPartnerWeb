@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { useClientProfilesStore } from '@/stores/clientProfiles'
+import CityInput from '@/components/CityInput.vue'
+import PhoneListField, { type PhoneDraft } from '@/components/PhoneListField.vue'
+import { api } from '@/api/client'
+import DateField from '@/components/DateField.vue'
+import { useClientCities } from '@/composables/useClientCities'
 import type { ClientProfile } from '@/types'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { PHONE_MASK } from '@/utils/formatters'
 
 const props = defineProps<{
   modelValue: boolean
@@ -16,6 +20,7 @@ const emit = defineEmits<{
 
 const store = useClientProfilesStore()
 const toast = useToast()
+const { refresh: refreshCities } = useClientCities()
 const { isMobile } = useIsMobile()
 
 const show = computed({
@@ -25,18 +30,27 @@ const show = computed({
 
 const saving = ref(false)
 const form = ref(emptyForm())
+/**
+ * Дополнительные номера — здесь же, а не в карточке созданного клиента.
+ * Заполняют их в один заход с основным: «жена, работа, сосед» вспоминают
+ * ровно в тот момент, когда записывают человека.
+ */
+const extraPhones = ref<PhoneDraft[]>([])
 
 function emptyForm() {
   return {
     phone: '', firstName: '', lastName: '', patronymic: '',
     birthDate: '', passportSeries: '', passportNumber: '',
     passportIssuedBy: '', passportIssuedAt: '',
-    registrationAddress: '', residentialAddress: '', inn: '',
+    city: '', registrationAddress: '', residentialAddress: '', inn: '',
   }
 }
 
 watch(show, (v) => {
-  if (v) form.value = emptyForm()
+  if (v) {
+    form.value = emptyForm()
+    extraPhones.value = []
+  }
 })
 
 const canSave = computed(() =>
@@ -58,11 +72,32 @@ async function save() {
       passportNumber: f.passportNumber || undefined,
       passportIssuedBy: f.passportIssuedBy || undefined,
       passportIssuedAt: f.passportIssuedAt || undefined,
+      city: f.city || undefined,
       registrationAddress: f.registrationAddress || undefined,
       residentialAddress: f.residentialAddress || undefined,
       inn: f.inn || undefined,
     })
+    // Номера заводим после клиента: до создания профиля их не к чему привязать.
+    // Сбой на одном номере не отменяет клиента — он уже создан; поэтому просто
+    // говорим, какие номера не сохранились, чтобы их дописали в карточке.
+    const failed: string[] = []
+    for (const extra of extraPhones.value) {
+      if (!extra.phone.trim()) continue
+      try {
+        await api.post(`/client-profiles/${profile.id}/phones`, {
+          phone: extra.phone,
+          label: extra.label.trim() || null,
+          hasWhatsapp: !!extra.hasWhatsapp,
+        })
+      } catch {
+        failed.push(extra.phone)
+      }
+    }
+    if (failed.length) toast.warning(`Не удалось сохранить номера: ${failed.join(', ')}`)
+
     emit('created', profile)
+    // Новый город должен сразу попасть в подсказки и фильтр.
+    if (f.city) void refreshCities()
     show.value = false
     toast.success('Клиент создан')
   } catch (e: any) {
@@ -95,19 +130,21 @@ async function save() {
             <input v-model="form.firstName" type="text" class="field-input" placeholder="Иван" />
           </div>
         </div>
-        <div class="form-row-2">
-          <div class="form-field">
-            <label class="field-label">Отчество</label>
-            <input v-model="form.patronymic" type="text" class="field-input" placeholder="Сергеевич" />
-          </div>
-          <div class="form-field">
-            <label class="field-label">Телефон <span class="required">*</span></label>
-            <input v-model="form.phone" v-maska="PHONE_MASK" type="tel" class="field-input" placeholder="+7 (___) ___-__-__" />
-          </div>
+        <div class="form-field">
+          <label class="field-label">Отчество</label>
+          <input v-model="form.patronymic" type="text" class="field-input" placeholder="Сергеевич" />
         </div>
+
+        <!-- Телефоны вместе: основной и «как ещё дозвониться». Раньше вторые
+             номера заводили уже в карточке созданного клиента — форму
+             сохраняли, искали человека и возвращались дописывать. -->
+        <PhoneListField
+          v-model:primary="form.phone"
+          v-model:extras="extraPhones"
+        />
         <div class="form-field">
           <label class="field-label">Дата рождения</label>
-          <input v-model="form.birthDate" type="date" class="field-input" />
+          <DateField v-model="form.birthDate" open-to="year" :presets="false" plain />
         </div>
 
         <div class="form-section-label mt-5">Паспортные данные</div>
@@ -127,10 +164,16 @@ async function save() {
         </div>
         <div class="form-field">
           <label class="field-label">Когда выдан</label>
-          <input v-model="form.passportIssuedAt" type="date" class="field-input" />
+          <DateField v-model="form.passportIssuedAt" plain />
         </div>
 
         <div class="form-section-label mt-5">Адреса</div>
+        <!-- Город отдельным полем: по нему фильтруют списки, а внутри строки
+             адреса его пишут кто во что горазд. -->
+        <div class="form-field">
+          <label class="field-label">Город</label>
+          <CityInput v-model="form.city" />
+        </div>
         <div class="form-field">
           <label class="field-label">Адрес прописки</label>
           <input v-model="form.registrationAddress" type="text" class="field-input" placeholder="г. Москва, ул. Ленина 1, кв 5" />

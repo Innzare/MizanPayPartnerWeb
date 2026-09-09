@@ -2,12 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { todayIso } from '@/utils/dateInput'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useCoInvestors } from '@/composables/useCoInvestors'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import ServerPager from '@/components/ServerPager.vue'
+import DateField from '@/components/DateField.vue'
 import CoInvestorRemoveDialog from '@/components/CoInvestorRemoveDialog.vue'
 import { formatCurrency, formatDate, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { PAYOUT_SCHEDULE_LABELS, type CoInvestorJournalEntry, type CoInvestorSummary, type StakeDealRow } from '@/types'
@@ -376,7 +378,7 @@ function openPayDialog() {
   payForm.value = {
     amount: summary.value.balanceOwed,
     note: '',
-    date: new Date().toISOString().slice(0, 10),
+    date: todayIso(),
   }
   // Generate idemKey only when there isn't one already pending. If a
   // previous submit timed out (504) without a confirmed success, the same
@@ -1597,7 +1599,7 @@ function pluralDeals(n: number) {
 
           <div class="field mb-3">
             <label class="field-label">Дата</label>
-            <input v-model="payForm.date" type="date" class="field-input" />
+            <DateField v-model="payForm.date" plain />
           </div>
 
           <div class="field">

@@ -1,0 +1,44 @@
+/**
+ * Кнопка «назад» — один вид на весь сервис.
+ *
+ * Она стоит первой на каждой странице-карточке (сделка, клиент, счёт, касса,
+ * сотрудник, партнёр), и раньше в каждом разделе рисовалась заново: где-то
+ * серая плашка, где-то голый текст, где-то другой размер стрелки. Возврат —
+ * одно и то же действие, поэтому и выглядеть должен одинаково.
+ *
+ * Отступ снизу — часть кнопки, а не забота страницы. Раньше он ставился
+ * классами в разметке: где-то `mb-4`, где-то `mb-5`, а где-то забывали вовсе,
+ * и кнопка прилипала к содержимому.
+ *
+ * Разметка:
+ *   <button class="back-btn" @click="router.back()">
+ *     <v-icon icon="mdi-arrow-left" size="18" />
+ *     Назад
+ *   </button>
+ *
+ * Внутри строки действий (кнопка стоит в ряд с другими) отступ снимается
+ * классом `back-btn--inline` — там его задаёт сама строка.
+ */
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.back-btn:hover {
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+
+/* В ряду с другими кнопками отступ снизу задаёт сама строка. */
+.back-btn--inline { margin-bottom: 0; }

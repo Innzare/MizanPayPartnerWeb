@@ -146,7 +146,7 @@ onMounted(load)
     <template v-else-if="sheet">
       <!-- Панель действий -->
       <div class="rsd-bar">
-        <button class="rsd-back" @click="router.push('/suppliers?tab=routesheets')"><v-icon icon="mdi-arrow-left" size="18" /> К путевым листам</button>
+        <button class="back-btn back-btn--inline" @click="router.push('/suppliers?tab=routesheets')"><v-icon icon="mdi-arrow-left" size="18" /> К путевым листам</button>
         <v-menu location="bottom end" :close-on-content-click="true">
           <template #activator="{ props }">
             <button class="rsd-actions-btn" v-bind="props">
@@ -271,8 +271,6 @@ onMounted(load)
 <style scoped>
 .rsd-page { padding-bottom: 72px; }
 .rsd-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
-.rsd-back { display: inline-flex; align-items: center; gap: 6px; border: none; background: none; cursor: pointer; font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6); padding: 0; }
-.rsd-back:hover { color: #047857; }
 .rsd-actions-btn { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12); background: rgba(var(--v-theme-surface), 1); color: rgba(var(--v-theme-on-surface), 0.8); font-size: 13.5px; font-weight: 600; cursor: pointer; }
 .rsd-actions-btn:hover { background: rgba(var(--v-theme-on-surface), 0.05); border-color: rgba(var(--v-theme-on-surface), 0.2); }
 .rsd-menu { background: rgb(var(--v-theme-surface)); border: 1px solid rgba(var(--v-theme-on-surface), 0.1); border-radius: 12px; padding: 6px; min-width: 200px; box-shadow: 0 12px 32px rgba(0,0,0,0.18); }

@@ -1,14 +1,17 @@
 <script lang="ts" setup>
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { dateToIso } from '@/utils/dateInput'
 import { useAuthStore } from '@/stores/auth'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
-import { formatCurrency, formatCurrencyShort, formatPhone, PHONE_MASK, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useCapital } from '@/composables/useCapital'
 import { useCoInvestors } from '@/composables/useCoInvestors'
 import CoInvestorRemoveDialog from '@/components/CoInvestorRemoveDialog.vue'
+import PhoneField from '@/components/PhoneField.vue'
+import DateField from '@/components/DateField.vue'
 import CoInvestorEditDialog from '@/components/CoInvestorEditDialog.vue'
 import type { InvestorPerson, PersonStake } from '@/types'
 
@@ -328,7 +331,7 @@ function openCreate() {
     managementFeePct: 0,
     costFeeDefaultRatePct: null,
     payoutSchedule: 'MONTHLY',
-    nextPayoutDate: defaultNext.toISOString().slice(0, 10),
+    nextPayoutDate: dateToIso(defaultNext),
     cashBoxId: preselectedCashBoxId,
   }
   // Preselect the scoped/default cashbox as the first block (Task 3).
@@ -408,7 +411,7 @@ async function saveCoInvestor() {
         )
       }
 
-      toast.success('Со-инвестор создан')
+      toast.success('Инвестор создан')
       showDialog.value = false
       await refreshList()
     }
@@ -513,7 +516,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
           </div>
           <div>
             <div class="stat-value">{{ formatCurrency(summaryStats.totalShared) }}</div>
-            <div class="stat-label">Доля со-инвесторов (начислено)</div>
+            <div class="stat-label">Доля инвесторов (начислено)</div>
           </div>
         </div>
         <div class="stat-card">
@@ -531,7 +534,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
           </div>
           <div>
             <div class="stat-value">{{ summaryStats.count }}</div>
-            <div class="stat-label">Со-инвесторов</div>
+            <div class="stat-label">Инвесторов</div>
           </div>
         </div>
         <div v-if="isCapitalSet && capital" class="stat-card" @click="router.push('/cashboxes')" style="cursor: pointer;">
@@ -607,7 +610,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             </div>
             <button class="ci-add-btn" @click="openCreate">
               <v-icon icon="mdi-plus" size="18" />
-              <span class="d-none d-sm-inline">Добавить со-инвестора</span>
+              <span class="d-none d-sm-inline">Добавить инвестора</span>
               <span class="d-sm-none">Добавить</span>
             </button>
           </div>
@@ -617,13 +620,13 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             <div class="ci-empty-icon">
               <v-icon icon="mdi-account-group-outline" size="48" color="grey" />
             </div>
-            <div class="ci-empty-title">Нет со-инвесторов</div>
+            <div class="ci-empty-title">Нет инвесторов</div>
             <div class="ci-empty-subtitle">
               Добавьте партнёра, чтобы распределять прибыль по сделкам
             </div>
             <button class="ci-add-btn mt-4" @click="openCreate">
               <v-icon icon="mdi-plus" size="18" />
-              Добавить первого со-инвестора
+              Добавить первого инвестора
             </button>
           </div>
 
@@ -804,7 +807,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             </div>
             <button class="ci-add-btn" @click="openCreate">
               <v-icon icon="mdi-plus" size="18" />
-              <span>Добавить со-инвестора</span>
+              <span>Добавить инвестора</span>
             </button>
           </div>
 
@@ -813,13 +816,13 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             <div class="ci-empty-icon">
               <v-icon icon="mdi-account-group-outline" size="48" color="grey" />
             </div>
-            <div class="ci-empty-title">Нет со-инвесторов</div>
+            <div class="ci-empty-title">Нет инвесторов</div>
             <div class="ci-empty-subtitle">
               {{ search || selectedCashBoxId ? 'Ничего не найдено по фильтру' : 'Добавьте партнёра, чтобы распределять прибыль по сделкам' }}
             </div>
             <button v-if="!search && !selectedCashBoxId" class="ci-add-btn mt-4" @click="openCreate">
               <v-icon icon="mdi-plus" size="18" />
-              Добавить первого со-инвестора
+              Добавить первого инвестора
             </button>
           </div>
 
@@ -1068,13 +1071,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
           <!-- Phone -->
           <div class="ci-field mb-4">
             <label class="ci-field-label">Телефон</label>
-            <input
-              v-model="form.phone"
-              v-maska="PHONE_MASK"
-              type="tel"
-              class="ci-field-input"
-              placeholder="+7 (___) ___-__-__"
-            />
+            <PhoneField v-model="form.phone" plain />
           </div>
 
           <!-- Task 3: multi-cashbox picker. Pinned to the top of the scroll area
@@ -1241,11 +1238,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
           <!-- Next planned payout date -->
           <div class="ci-field mt-4">
             <label class="ci-field-label">Первая выплата</label>
-            <input
-              v-model="form.nextPayoutDate"
-              type="date"
-              class="ci-field-input"
-            />
+            <DateField v-model="form.nextPayoutDate" plain />
             <div class="ci-field-hint">
               Конкретная дата ближайшей выплаты. После каждой выплаты автоматически
               сдвинется вперёд на выбранную периодичность.
@@ -1303,7 +1296,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             </div>
             <p class="help-p">
               <strong>Касса</strong> — это отдельный «кошелёк» с собственным учётом капитала, сделок и инвесторов.
-              У каждой кассы свой начальный капитал (ваш вклад), своя прибыль, свой список сделок и свой набор со-инвесторов.
+              У каждой кассы свой начальный капитал (ваш вклад), своя прибыль, свой список сделок и свой набор инвесторов.
             </p>
             <p class="help-p">
               Каждая сделка обязательно принадлежит одной кассе. Деньги клиента приходят в эту кассу,
@@ -1316,16 +1309,16 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
           <section class="help-section">
             <div class="help-section-title">
               <v-icon icon="mdi-account-group-outline" size="20" color="primary" />
-              Что такое со-инвестор
+              Что такое инвестор
             </div>
             <p class="help-p">
-              <strong>Со-инвестор</strong> — это человек, который вложил свои деньги в одну из ваших касс и делит с вами прибыль с её сделок.
-              Один инвестор привязан к одной кассе. По умолчанию новая сделка кассы включает всех её со-инвесторов —
+              <strong>Инвестор</strong> — это человек, который вложил свои деньги в одну из ваших касс и делит с вами прибыль с её сделок.
+              Один инвестор привязан к одной кассе. По умолчанию новая сделка кассы включает всех её инвесторов —
               подключать к каждой сделке вручную не нужно.
             </p>
             <p class="help-p">
               Но участие можно настраивать по сделке: при создании сделки уберите лишних инвесторов или
-              переопределите их процент именно для этой сделки. А со-инвестора, добавленного в кассу
+              переопределите их процент именно для этой сделки. А инвестора, добавленного в кассу
               <strong>после</strong> создания сделки, нужно привязать к ней вручную — старые сделки его не подхватывают.
             </p>
           </section>
@@ -1566,7 +1559,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
 .filter-input {
   width: 100%; padding: 9px 12px 9px 36px;
   border-radius: 10px; border: 1px solid #e5e7eb;
-  background: #f9fafb; font-size: 14px; outline: none;
+  background: #fff; font-size: 14px; outline: none;
   color: rgba(var(--v-theme-on-surface), 0.85);
   transition: all 0.15s;
 }

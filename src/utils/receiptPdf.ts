@@ -1,5 +1,6 @@
 // @ts-ignore
 import pdfMake from 'pdfmake/build/pdfmake'
+import { exportReceiptTemplatePdf } from './receiptTemplatePdf'
 // @ts-ignore
 import pdfFonts from 'pdfmake/build/vfs_fonts'
 import type { Deal, Payment, User } from '@/types'
@@ -7,7 +8,10 @@ import { formatDate } from './formatters'
 
 pdfMake.vfs = pdfFonts
 
-function curr(amount: number): string {
+function curr(amount: number | null | undefined): string {
+  // Пустое значение печатаем прочерком, а не «NaN руб.»: квитанцию отдают
+  // клиенту, и такая строка выглядит как поломка сервиса.
+  if (amount == null || !Number.isFinite(amount)) return '—'
   return Math.round(amount).toLocaleString('ru-RU') + ' руб.'
 }
 
@@ -16,12 +20,79 @@ function fullName(obj: any): string {
   return parts.join(' ') || 'Не указано'
 }
 
+/**
+ * Бланк квитанции — то, как партнёр настроил свой документ.
+ *
+ * Не передан — печатается стандартный вид, ровно как до появления настройки.
+ */
+export interface ReceiptTemplate {
+  companyName?: string
+  phone?: string
+  address?: string
+  site?: string
+  requisites?: string
+  inn?: string
+  blocks?: string[]
+  footerText?: string
+  showSignature?: boolean
+  accentColor?: string
+  fontSize?: number
+  /**
+   * Свой бланк, собранный в конструкторе.
+   *
+   * Пусто — печатается стандартная квитанция (её вид у всех партнёров один и
+   * меняться не должен). Заполнено — печатаем разметку партнёра тем же путём,
+   * что и договор.
+   */
+  html?: string | null
+  htmlMargins?: { top: number; bottom: number; left: number; right: number } | null
+}
+
+/** Стандартный бланк: им пользуются все, кто ничего не настраивал. */
+const DEFAULT_TEMPLATE: Required<Pick<ReceiptTemplate, 'blocks' | 'showSignature' | 'accentColor' | 'fontSize'>> = {
+  blocks: ['contract', 'payment', 'summary'],
+  showSignature: true,
+  accentColor: '#047857',
+  fontSize: 10,
+}
+
 export function generateReceipt(
   deal: Deal,
   payment: Payment,
   investor: Partial<User>,
-  opts: { returnBlob?: boolean } = {},
+  opts: { returnBlob?: boolean; template?: ReceiptTemplate | null } = {},
 ): Promise<Blob> | void {
+  const tpl = { ...DEFAULT_TEMPLATE, ...(opts.template ?? {}) }
+
+  // Партнёр собрал свой бланк — печатаем его. Стандартный остаётся у всех
+  // остальных ровно таким, каким был.
+  const customHtml = opts.template?.html
+  if (customHtml && String(customHtml).trim()) {
+    return exportReceiptTemplatePdf(
+      String(customHtml),
+      deal,
+      payment,
+      (deal.payments as Payment[]) ?? [payment],
+      investor,
+      {
+        companyName: opts.template?.companyName,
+        phone: opts.template?.phone,
+        address: opts.template?.address,
+        requisites: opts.template?.requisites,
+        inn: opts.template?.inn,
+      },
+      opts.template?.htmlMargins ?? undefined,
+      { returnBlob: opts.returnBlob },
+    ) as Promise<Blob> | void
+  }
+  const has = (block: string) => tpl.blocks.includes(block)
+  const accent = tpl.accentColor || DEFAULT_TEMPLATE.accentColor
+  /**
+   * Партнёр без настроенного бланка обязан получить в точности прежний
+   * документ — вплоть до цвета заголовка. Любое «улучшение» здесь означает,
+   * что у сотен партнёров молча изменился документ, который они отдают людям.
+   */
+  const custom = !!opts.template
   const cp = deal.clientProfile
   const client = cp
     ? { firstName: cp.firstName, lastName: cp.lastName, patronymic: cp.patronymic, phone: cp.phone }
@@ -35,14 +106,55 @@ export function generateReceipt(
   const docDefinition: any = {
     pageSize: 'A4',
     pageMargins: [50, 40, 50, 40],
-    defaultStyle: { fontSize: 10, lineHeight: 1.3 },
+    defaultStyle: { fontSize: tpl.fontSize, lineHeight: 1.3 },
     content: [
+      // Шапка партнёра: название, телефон, адрес — то, по чему клиент найдёт,
+      // куда идти с вопросами. Печатается, только если партнёр её заполнил.
+      ...(tpl.companyName || tpl.phone || tpl.address || tpl.site
+        ? [
+            {
+              columns: [
+                {
+                  width: '*',
+                  stack: [
+                    ...(tpl.companyName
+                      ? [{ text: tpl.companyName, bold: true, fontSize: tpl.fontSize + 2, color: accent }]
+                      : []),
+                    ...(tpl.inn ? [{ text: `ИНН ${tpl.inn}`, fontSize: tpl.fontSize - 2, color: '#777' }] : []),
+                  ],
+                },
+                {
+                  // Доля, а не 'auto': длинная строка без пробелов при 'auto'
+                  // не переносится и уезжает за край листа.
+                  width: '40%',
+                  alignment: 'right',
+                  stack: [
+                    ...(tpl.phone ? [{ text: tpl.phone, fontSize: tpl.fontSize - 1 }] : []),
+                    ...(tpl.address
+                      ? [{ text: tpl.address, fontSize: tpl.fontSize - 2, color: '#777' }]
+                      : []),
+                    ...(tpl.site ? [{ text: tpl.site, fontSize: tpl.fontSize - 2, color: '#777' }] : []),
+                  ],
+                },
+              ],
+              margin: [0, 0, 0, 6],
+            },
+            {
+              canvas: [
+                { type: 'line', x1: 0, y1: 0, x2: 495, y2: 0, lineWidth: 0.7, lineColor: accent },
+              ],
+              margin: [0, 0, 0, 14],
+            },
+          ]
+        : []),
+
       // Header
       {
         text: 'КВИТАНЦИЯ ОБ ОПЛАТЕ',
         alignment: 'center',
-        fontSize: 16,
+        fontSize: tpl.fontSize + 6,
         bold: true,
+        ...(custom ? { color: accent } : {}),
         margin: [0, 0, 0, 2],
       },
       {
@@ -60,7 +172,9 @@ export function generateReceipt(
         margin: [0, 0, 0, 16],
       },
 
-      // Main info table
+      // Данные договора: кто, что и по какому договору. Блок необязательный —
+      // при оплате в мессенджере клиенту важнее сумма и остаток.
+      ...(has('contract') ? [
       {
         table: {
           widths: ['auto', '*'],
@@ -98,8 +212,10 @@ export function generateReceipt(
         },
         margin: [0, 0, 0, 16],
       },
+      ] : []),
 
-      // Payment details
+      // Данные платежа: какой по счёту, срок и сумма.
+      ...(has('payment') ? [
       {
         text: 'ДАННЫЕ ПЛАТЕЖА',
         fontSize: 11,
@@ -125,7 +241,7 @@ export function generateReceipt(
             ],
             [
               { text: 'Сумма платежа', border: [false, false, false, false], bold: true, fontSize: 13 },
-              { text: curr(payment.amount), alignment: 'right', bold: true, fontSize: 12, color: '#047857', border: [false, false, false, false] },
+              { text: curr(payment.amount), alignment: 'right', bold: true, fontSize: tpl.fontSize + 2, color: accent, border: [false, false, false, false] },
             ],
           ],
         },
@@ -138,8 +254,11 @@ export function generateReceipt(
         },
         margin: [0, 0, 0, 16],
       },
+      ] : []),
 
-      // Deal summary
+      // Сводка по договору — блок необязательный: партнёру бывает нужнее
+      // короткая квитанция без итогов по всей сделке.
+      ...(has('summary') ? [
       {
         text: 'СВОДКА ПО ДОГОВОРУ',
         fontSize: 11,
@@ -178,6 +297,7 @@ export function generateReceipt(
         },
         margin: [0, 0, 0, 20],
       },
+      ] : []),
 
       // Confirmation text
       {
@@ -191,7 +311,36 @@ export function generateReceipt(
         margin: [0, 0, 0, 24],
       },
 
-      // Signatures
+      // Реквизиты для перевода — то, о чём клиенты спрашивают чаще всего.
+      ...(has('requisites') && tpl.requisites
+        ? [
+            {
+              table: {
+                widths: ['*'],
+                body: [
+                  [
+                    {
+                      stack: [
+                        { text: 'РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ', fontSize: tpl.fontSize - 2, color: accent, bold: true, margin: [0, 0, 0, 4] },
+                        { text: tpl.requisites, fontSize: tpl.fontSize - 1 },
+                      ],
+                      border: [false, false, false, false],
+                      fillColor: '#f7f7f7',
+                      margin: [8, 6, 8, 6],
+                    },
+                  ],
+                ],
+              },
+              layout: 'noBorders',
+              margin: [0, 0, 0, 16],
+            },
+          ]
+        : []),
+
+      // Подписи. Партнёр может их отключить: квитанцию часто просто отдают в
+      // руки или отправляют в мессенджер, и пустые линии там ни к чему.
+      ...(tpl.showSignature
+        ? [
       {
         columns: [
           {
@@ -214,6 +363,21 @@ export function generateReceipt(
           },
         ],
       },
+          ]
+        : []),
+
+      // Своя строка внизу: благодарность, режим работы, что угодно.
+      ...(tpl.footerText
+        ? [
+            {
+              text: tpl.footerText,
+              fontSize: tpl.fontSize - 2,
+              color: '#777',
+              alignment: 'center',
+              margin: [0, 18, 0, 0],
+            },
+          ]
+        : []),
     ],
   }
 

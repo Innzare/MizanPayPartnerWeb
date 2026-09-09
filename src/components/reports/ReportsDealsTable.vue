@@ -52,7 +52,7 @@ const ALL_COLUMNS: { key: ColKey; label: string; hint?: string; num?: boolean }[
   { key: 'remaining', label: 'Остаток долга', num: true },
   { key: 'progress', label: 'Платежей', hint: 'Оплачено из общего числа' },
   { key: 'grossProfit', label: 'Вся прибыль', hint: 'Наценка с пришедших денег', num: true },
-  { key: 'ciProfit', label: 'Со-инвесторам', num: true },
+  { key: 'ciProfit', label: 'Инвесторам', num: true },
   { key: 'netProfit', label: 'Заработано', hint: 'Ваша прибыль с уже пришедших денег', num: true },
   { key: 'projectedNet', label: 'Будет всего', hint: 'Сколько заработаете, когда сделка закроется полностью', num: true },
   { key: 'profitLeft', label: 'Осталось заработать', hint: 'Разница между итоговой прибылью и уже заработанной', num: true },
@@ -226,7 +226,16 @@ function dateStr(iso: string) {
               <v-icon v-if="sortKey === c.key" :icon="sortDesc ? 'mdi-menu-down' : 'mdi-menu-up'" size="14" />
             </th>
           </tr>
-          <tr v-if="rows.length" class="rt-total rt-total--top">
+          <!-- Пока считаются новые цифры, итоги тоже под заглушкой: строка
+               «ИТОГО» с прежними суммами выглядела бы уже пересчитанной. -->
+          <tr v-if="loading" class="rt-total rt-total--top">
+            <td class="rt-td rt-td--deal"><div class="rt-sk rt-sk--wide" /></td>
+            <td v-for="c in shown" :key="c.key" class="rt-td" :class="{ 'rt-td--num': c.num }">
+              <div class="rt-sk" />
+            </td>
+          </tr>
+
+          <tr v-else-if="rows.length" class="rt-total rt-total--top">
             <td class="rt-td rt-td--deal">ИТОГО · {{ totals.count }}</td>
             <td v-for="c in shown" :key="c.key" class="rt-td" :class="{ 'rt-td--num': c.num }">
               <template v-if="c.key === 'cost'">{{ formatCurrency(totals.cost) }}</template>
@@ -252,7 +261,22 @@ function dateStr(iso: string) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in rows" :key="r.id" class="rt-row" @click="router.push(`/deals/${r.id}`)">
+          <!-- Пока считаются новые цифры, показываем заглушку той же формы.
+               Иначе при смене кассы или статуса на экране пару секунд стоят
+               прежние строки, и непонятно, обновилось уже или нет. -->
+          <tr v-for="sk in (loading ? 8 : 0)" :key="`sk-${sk}`" class="rt-row rt-row--sk">
+            <td class="rt-td"><div class="rt-sk rt-sk--wide" /></td>
+            <td v-for="c in shown" :key="c.key" class="rt-td" :class="{ 'rt-td--num': c.num }">
+              <div class="rt-sk" />
+            </td>
+          </tr>
+
+          <tr
+            v-for="r in (loading ? [] : rows)"
+            :key="r.id"
+            class="rt-row"
+            @click="router.push(`/deals/${r.id}`)"
+          >
             <td class="rt-td rt-td--deal">
               <div class="rt-deal-name">{{ r.productName }}</div>
               <div class="rt-deal-num">№{{ r.dealNumber }}</div>
@@ -306,12 +330,19 @@ function dateStr(iso: string) {
               </template>
             </td>
           </tr>
-          <tr v-if="!rows.length">
+          <tr v-if="!loading && !rows.length">
             <td :colspan="shown.length + 1" class="rt-empty">Нет сделок по выбранным условиям</td>
           </tr>
         </tbody>
         <tfoot>
-          <tr v-if="rows.length" class="rt-total rt-total--bottom">
+          <tr v-if="loading" class="rt-total rt-total--bottom">
+            <td class="rt-td rt-td--deal"><div class="rt-sk rt-sk--wide" /></td>
+            <td v-for="c in shown" :key="c.key" class="rt-td" :class="{ 'rt-td--num': c.num }">
+              <div class="rt-sk" />
+            </td>
+          </tr>
+
+          <tr v-else-if="rows.length" class="rt-total rt-total--bottom">
             <td class="rt-td rt-td--deal">ИТОГО · {{ totals.count }}</td>
             <td v-for="c in shown" :key="c.key" class="rt-td" :class="{ 'rt-td--num': c.num }">
               <template v-if="c.key === 'cost'">{{ formatCurrency(totals.cost) }}</template>
@@ -352,6 +383,21 @@ function dateStr(iso: string) {
 </template>
 
 <style scoped>
+/* Заглушки строк: та же высота и та же сетка, чтобы таблица не «прыгала»
+   при переходе от заглушки к данным. */
+.rt-row--sk { cursor: default; }
+.rt-row--sk:hover { background: transparent; }
+.rt-sk {
+  height: 11px; border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  animation: rt-sk-pulse 1.2s ease-in-out infinite;
+}
+.rt-sk--wide { width: 70%; }
+@keyframes rt-sk-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 .rp-block-title { font-size: 15px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
 .rp-block-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 2px; }
 
@@ -391,6 +437,10 @@ function dateStr(iso: string) {
      заголовков не включается — это осознанный размен на полную высоту. */
   overflow-x: auto;
   margin-top: 14px;
+  /* Запас под горизонтальную полосу прокрутки: без него она ложится поверх
+     последней строки, и «ИТОГО» оказывалось наполовину срезанным, а его
+     липкая первая ячейка вылезала зелёным хвостом под таблицу. */
+  padding-bottom: 18px;
   /* Высота строки заголовков — по ней позиционируется строка ИТОГО. */
   --rt-head-h: 38px;
   /* Цвета состояний строк. Липкая первая колонка обязана быть НЕПРОЗРАЧНОЙ
@@ -477,6 +527,9 @@ function dateStr(iso: string) {
 }
 .rt-total--top .rt-td { border-bottom: 2px solid rgba(16, 185, 129, 0.4); }
 .rt-total--bottom .rt-td { border-top: 2px solid rgba(16, 185, 129, 0.4); }
+/* Нижняя строка не липнет по вертикали, поэтому и слой ей нужен пониже:
+   с высоким z-index её первая ячейка рисовалась поверх панели страниц. */
+.rt-total--bottom .rt-td--deal { z-index: 1; }
 /* Липкая только верхняя — нижняя просто замыкает таблицу. */
 .rt-total--top .rt-td {
   position: sticky;

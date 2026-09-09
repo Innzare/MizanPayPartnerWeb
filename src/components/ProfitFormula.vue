@@ -48,7 +48,7 @@ const props = withDefaults(
         <b>{{ formatCurrency(props.gross) }}</b>
       </div>
       <div v-if="props.coInvestor > 0" class="pf-row">
-        <span>Со-инвесторам</span>
+        <span>Инвесторам</span>
         <b>− {{ formatCurrency(props.coInvestor) }}</b>
       </div>
 

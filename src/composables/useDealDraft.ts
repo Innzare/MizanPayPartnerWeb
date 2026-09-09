@@ -54,6 +54,17 @@ export interface DealDraft {
   customFirstPayment: string
   useWholesalePrice: boolean
   wholesalePrice: number | null
+  /**
+   * Поля, добавленные позже. Все необязательные: черновики, сохранённые до
+   * их появления, должны восстанавливаться без ошибок.
+   */
+  /** Ручной ₽-взнос в процентном режиме — иначе при возврате он пересчитается. */
+  manualDownPayment?: number | null
+  /** Партнёр-поставщик и отметка «оплачено ему». */
+  selectedSupplierId?: string | null
+  paidToSupplier?: boolean
+  /** Кто из со-инвесторов участвует в этой сделке и с какими долями. */
+  dealParticipants?: Array<Record<string, unknown>>
   profitSplitBase: 'MARKUP_ONLY' | 'FULL_MARGIN'
 
   selectedClientProfileId: string | null

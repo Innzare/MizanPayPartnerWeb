@@ -2,10 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { vMaska } from 'maska/vue'
 import { useCoInvestors } from '@/composables/useCoInvestors'
+import DateField from '@/components/DateField.vue'
+import PhoneField from '@/components/PhoneField.vue'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
-import { PHONE_MASK, CURRENCY_MASK, parseMasked, formatCurrency } from '@/utils/formatters'
+import { CURRENCY_MASK, parseMasked, formatCurrency } from '@/utils/formatters'
 import type { PayoutSchedule } from '@/types'
 
 // Full PERSON editor. Loads the person's whole profile by id, then lets the
@@ -303,13 +305,7 @@ async function save() {
 
         <div class="ced-field mb-4">
           <label class="ced-label">Телефон</label>
-          <input
-            v-model="pPhone"
-            v-maska="PHONE_MASK"
-            type="tel"
-            class="ced-input"
-            placeholder="+7 (___) ___-__-__"
-          />
+          <PhoneField v-model="pPhone" plain />
         </div>
 
         <div class="ced-field mb-2">
@@ -331,7 +327,7 @@ async function save() {
 
         <div class="ced-field mt-4">
           <label class="ced-label">Следующая выплата</label>
-          <input v-model="pNextPayout" type="date" class="ced-input" />
+          <DateField v-model="pNextPayout" plain />
         </div>
 
         <!-- Приватность: показывать ли долю партнёра инвестору в кабинете по ссылке -->

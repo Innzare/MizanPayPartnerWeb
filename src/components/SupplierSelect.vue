@@ -65,7 +65,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocPointer))
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 10px; font-size: 14px; color: inherit; text-align: left;
-  background: rgba(var(--v-theme-on-surface), 0.03);
+  background: rgb(var(--v-theme-surface));
   cursor: pointer; transition: all 0.15s;
 }
 .ss-control:hover { border-color: rgba(var(--v-theme-on-surface), 0.2); }
@@ -84,6 +84,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocPointer))
   max-height: 280px; overflow-y: auto;
 }
 .ss-item {
+  /* Просвет между пунктами: слипшиеся строки читаются одним блоком. */
+  margin-bottom: 2px;
   padding: 10px 12px; border-radius: 8px; font-size: 14px; cursor: pointer;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -97,4 +99,5 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocPointer))
   font-size: 13.5px; font-weight: 600; color: #047857; cursor: pointer;
 }
 .ss-add:hover { background: rgba(4, 120, 87, 0.06); }
+.ss-item:last-child { margin-bottom: 0; }
 </style>

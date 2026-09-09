@@ -159,7 +159,7 @@ const overdueAmount = computed(() => summary.value?.payments.overdueSum ?? 0)
 
 // Total earned profit (from paid payments)
 // Итоги за всё время считает сервер — теми же формулами, что «Отчёты».
-const { summary } = useAnalyticsSummary(() => selectedCashBoxId.value)
+const { summary, loading: summaryLoading } = useAnalyticsSummary(() => selectedCashBoxId.value)
 
 const earnedProfit = computed(() => summary.value?.deals.grossEarned ?? 0)
 
@@ -453,10 +453,19 @@ interface MonthData {
  * перебирала все платежи партнёра в памяти; у крупного это сотни тысяч строк.
  * Правила те же: факт учитывается по дате оплаты, прогноз — по плановому сроку.
  */
-const { rows: yearRows } = useAnalyticsMonthly(
+const { rows: yearRows, loading: yearLoading } = useAnalyticsMonthly(
   () => ({ from: `${calYear.value}-01-01`, to: `${calYear.value}-12-31` }),
   () => selectedCashBoxId.value,
 )
+
+/**
+ * Идёт пересчёт обзора.
+ *
+ * Смена кассы меняет все цифры сразу: пока новые считаются, старые остаются на
+ * экране, и понять, обновилось уже или нет, невозможно — особенно если суммы
+ * похожи. Заглушка снимает этот вопрос.
+ */
+const overviewBusy = computed(() => summaryLoading.value || yearLoading.value)
 
 const yearMonths = computed((): MonthData[] => {
   const now = new Date()
@@ -887,11 +896,11 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 
     <template v-else>
       <!-- Вкладки раздела. «Отчёты» видны только с правом и тарифом. -->
-      <div v-if="canSeeReports" class="an-tabs-row">
-        <div class="an-tabs">
+      <div v-if="canSeeReports" class="page-tabs-row">
+        <div class="page-tabs">
           <button
-            class="an-tab"
-            :class="{ 'an-tab--active': activeTab === 'overview' }"
+            class="page-tab"
+            :class="{ active: activeTab === 'overview' }"
             type="button"
             @click="activeTab = 'overview'"
           >
@@ -899,8 +908,8 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
             Обзор
           </button>
           <button
-            class="an-tab"
-            :class="{ 'an-tab--active': activeTab === 'reports' }"
+            class="page-tab"
+            :class="{ active: activeTab === 'reports' }"
             type="button"
             @click="activeTab = 'reports'"
           >
@@ -911,7 +920,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 
         <div
           v-if="activeTab === 'reports' && reportsTabRef?.canExport && reportsTabRef?.ready"
-          class="an-export-group"
+          class="page-tabs-actions"
         >
           <button
             class="an-tab-export an-tab-export--excel"
@@ -988,7 +997,17 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
       />
 
       <template v-if="activeTab === 'overview'">
-      <div class="an-sections-wrap" :class="{ 'an-sections-wrap--reorder': !hasCharts }">
+      <!-- Пока считаются новые цифры, обзор гаснет и показывает вращающийся
+           индикатор: смена кассы меняет здесь всё сразу, а старые суммы,
+           стоящие на экране, выглядят как уже пересчитанные. -->
+      <div
+        class="an-sections-wrap"
+        :class="{ 'an-sections-wrap--reorder': !hasCharts, 'an-sections-wrap--busy': overviewBusy }"
+      >
+        <div v-if="overviewBusy" class="an-busy-overlay">
+          <v-progress-circular indeterminate size="30" width="3" color="primary" />
+        </div>
+
 
       <!-- Charts: BUSINESS+ only (blurred for lower plans) -->
       <div class="an-charts-section" :class="{ 'an-charts-section--locked': !hasCharts }">
@@ -1066,7 +1085,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
               <ExactValue class="yc-stat-value" style="color: #34d399;" :value="Math.max(0, yearTotal.partnerEarned)">{{ formatCurrencyShort(Math.max(0, yearTotal.partnerEarned)) }}</ExactValue>
               <div class="yc-stat-label">Мой чистый доход</div>
               <div v-if="yearTotal.coInvestorEarned > 0" class="yc-stat-sub">
-                весь доход <ExactValue :value="yearTotal.earned" :hint="false">{{ formatCurrencyShort(yearTotal.earned) }}</ExactValue> · со-инвесторам <ExactValue :value="yearTotal.coInvestorEarned" :hint="false">{{ formatCurrencyShort(yearTotal.coInvestorEarned) }}</ExactValue>
+                весь доход <ExactValue :value="yearTotal.earned" :hint="false">{{ formatCurrencyShort(yearTotal.earned) }}</ExactValue> · инвесторам <ExactValue :value="yearTotal.coInvestorEarned" :hint="false">{{ formatCurrencyShort(yearTotal.coInvestorEarned) }}</ExactValue>
               </div>
             </div>
             <div class="yc-stat-divider" />
@@ -1100,8 +1119,20 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 
         <!-- Month list — one row per month -->
         <div class="yc-list">
+          <!-- Пока считаются новые цифры, показываем заглушки той же формы:
+               иначе при смене кассы месяцы пару секунд стоят со старыми
+               суммами. -->
+          <div v-for="sk in (overviewBusy ? 12 : 0)" :key="`yc-sk-${sk}`" class="yc-row yc-row--sk">
+            <div class="yc-row-month"><div class="an-sk an-sk--sm" /></div>
+            <div class="yc-row-mid"><div class="an-sk" /></div>
+            <div class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
+            <div class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
+            <div class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
+            <div class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
+          </div>
+
           <div
-            v-for="m in yearMonths"
+            v-for="m in (overviewBusy ? [] : yearMonths)"
             :key="m.month"
             class="yc-row"
             :class="{
@@ -1133,7 +1164,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
               </div>
               <div v-if="m.coInvestorEarned > 0 || m.earlyOffMonth > 0 || m.lateOffMonth > 0" class="yc-row-chips">
                 <span v-if="m.coInvestorEarned > 0" class="yc-chip">
-                  весь доход <ExactValue :value="m.earned" :hint="false">{{ formatCurrencyShort(m.earned) }}</ExactValue> · со-инвесторам <ExactValue :value="m.coInvestorEarned" :hint="false">{{ formatCurrencyShort(m.coInvestorEarned) }}</ExactValue>
+                  весь доход <ExactValue :value="m.earned" :hint="false">{{ formatCurrencyShort(m.earned) }}</ExactValue> · инвесторам <ExactValue :value="m.coInvestorEarned" :hint="false">{{ formatCurrencyShort(m.coInvestorEarned) }}</ExactValue>
                 </span>
                 <span
                   v-if="m.earlyOffMonth > 0"
@@ -1485,9 +1516,9 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
               </div>
             </div>
             <div v-if="profitDetailCoInvestorAll > 0" class="pd-stat">
-              <div class="pd-stat-label">Со-инвесторам</div>
+              <div class="pd-stat-label">Инвесторам</div>
               <div class="pd-stat-value" style="color: #8b5cf6;">{{ formatCurrency(profitDetailCoInvestorAll) }}</div>
-              <div class="pd-stat-hint">доля со-инвесторов со всех платежей<template v-if="profitDetailProfitAll > 0"> · ≈ {{ Math.round(profitDetailCoInvestorAll / profitDetailProfitAll * 100) }}% дохода</template></div>
+              <div class="pd-stat-hint">доля инвесторов со всех платежей<template v-if="profitDetailProfitAll > 0"> · ≈ {{ Math.round(profitDetailCoInvestorAll / profitDetailProfitAll * 100) }}% дохода</template></div>
             </div>
           </div>
 
@@ -1510,7 +1541,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
             <div class="pdt-head">
               <span class="pdt-h-deal">Сделка</span>
               <span class="pdt-h-num" title="Полная сумма платежей по этой сделке за месяц — которые были оплачены или должны быть по плану">Платёж за месяц</span>
-              <span class="pdt-h-num" title="Ваш чистый заработок с этих платежей — доля наценки за вычетом доли со-инвесторов">Ваша прибыль</span>
+              <span class="pdt-h-num" title="Ваш чистый заработок с этих платежей — доля наценки за вычетом доли инвесторов">Ваша прибыль</span>
               <span class="pdt-h-chev" />
             </div>
 
@@ -1569,7 +1600,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
                   />
                 </div>
                 <div class="pdt-num-sub" title="Какая доля каждого платежа — прибыль. Остальное — возврат вложенных денег за товар">прибыль {{ Math.round(d.profitShare * 100) }}% от платежа</div>
-                <div v-if="d.coInv > 0" class="pdt-num-sub">со-инвесторам {{ formatCurrency(d.coInv) }}</div>
+                <div v-if="d.coInv > 0" class="pdt-num-sub">инвесторам {{ formatCurrency(d.coInv) }}</div>
                 <div v-if="d.hasPaid && d.hasPending" class="pdt-num-sub pdt-num-sub--proj">часть — прогноз по неоплаченным</div>
                 <div v-else-if="!d.hasPaid" class="pdt-num-sub pdt-num-sub--proj">будет после оплаты</div>
               </div>
@@ -1708,6 +1739,35 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 }
 
 /* KPI Row */
+/* Обзор во время пересчёта: содержимое гаснет, поверх — индикатор. Тот же
+   приём, что в списках сделок и платежей. */
+.an-sections-wrap { position: relative; }
+.an-sections-wrap--busy > :not(.an-busy-overlay) {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.an-busy-overlay {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 80px;
+}
+
+/* Заглушки обзора: та же высота и сетка, чтобы блок не «прыгал» при переходе
+   от заглушки к цифрам. */
+.an-sk {
+  height: 12px; border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  animation: an-sk-pulse 1.2s ease-in-out infinite;
+}
+.an-sk--sm { width: 60%; }
+.yc-row--sk { cursor: default; }
+.yc-row--sk:hover { background: transparent; }
+@keyframes an-sk-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 .kpi-row {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -2087,22 +2147,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 /* ── Вкладки раздела «Обзор | Отчёты» ── */
 /* Строка без собственного фона: слева «пилюля» вкладок, справа — отдельная
    кнопка выгрузки. Общий фон визуально склеивал бы их в один элемент. */
-.an-tabs-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-.an-tabs {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 12px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
+/* Табы раздела — общий стиль, см. styles/page-tabs.css */
 .an-tab-export {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 9px 16px;
@@ -2115,27 +2160,11 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 }
 .an-tab-export:hover:not(:disabled) { background: rgba(220, 38, 38, 0.07); }
 .an-tab-export:disabled { opacity: 0.5; cursor: default; }
-.an-export-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .an-tab-export--excel {
   border-color: rgba(16, 124, 65, 0.3);
   color: #107c41;
 }
 .an-tab-export--excel:hover:not(:disabled) { background: rgba(16, 124, 65, 0.07); }
-.an-tab {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 18px;
-  border: none; border-radius: 9px;
-  background: transparent;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  font-size: 14px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s;
-}
-.an-tab:hover { color: rgba(var(--v-theme-on-surface), 0.8); }
-.an-tab--active {
-  background: rgb(var(--v-theme-surface));
-  color: rgb(var(--v-theme-primary));
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
 
 /* ── Formula explainer ── */
 .an-formula {

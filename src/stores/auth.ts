@@ -14,22 +14,35 @@ const NAV_PERMISSION: Record<string, string> = {
   '/clients': 'clients.view',
   '/payments': 'payments.view',
   '/debtors': 'debtors.view',
+  '/guarantors': 'guarantors.view',
   '/suppliers/requests': 'suppliers.requests',
   '/suppliers/route-sheets': 'suppliers.routesheet',
   '/suppliers': 'suppliers.view',
   '/broadcasts': 'broadcasts.view',
   '/co-investors': 'coinvestors.view',
   '/cashboxes': 'cashboxes.view',
+  '/collections': 'collections.view',
+  // Инкассация переехала на вкладку «Пункты приёма»: инкассатору нужен доступ
+  // к ней по своему праву, без доступа ко всей бухгалтерии.
+  '/accounting/points': 'accounting.view|collections.view',
+  '/accounting/reports': 'accounting.reports',
+  '/accounting/audit': 'accounting.audit',
+  '/accounting': 'accounting.view',
   '/registry': 'registry.view',
   '/activity': 'activity.view',
   '/staff': 'staff.manage',
   '/roles': 'staff.manage',
+  // Копия — файл с персональными данными: раздел открыт тем, кто настраивает
+  // расписание, и тем, кому разрешено скачивать готовые файлы.
+  '/backups': 'backups.manage|backups.download',
 }
 // Доступны любому аутентифицированному сотруднику (не гейтятся правом).
 // /messages — переписка с владельцем, доступна всегда.
 // /help — обучающая справка: она нужна сотруднику не меньше, чем владельцу,
 // и без этой строки неизвестный роут закрывается редиректом (см. canAccess ниже).
-const STAFF_ALWAYS = ['/calculator', '/notifications', '/messages', '/help']
+const STAFF_ALWAYS = ['/calculator', '/messages', '/help']
+// Кабинет пункта приёма: там работает только оператор пункта, а он — только там.
+const POINT_ROOT = '/point'
 // Только владелец аккаунта.
 const OWNER_ONLY = ['/', '/settings']
 
@@ -61,6 +74,11 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => !!accessToken.value)
   const isStaff = computed(() => !!user.value?.staffId)
   const staffRole = computed(() => user.value?.staffRole)
+  /**
+   * Оператор пункта приёма — внешний человек с отдельным кабинетом. У него
+   * нет ни прав, ни общей навигации: только четыре своих экрана.
+   */
+  const isPointOperator = computed(() => user.value?.staffRole === 'POINT_OPERATOR')
   const isOwner = computed(() => isAuthenticated.value && !isStaff.value)
   const userName = computed(() => {
     if (!user.value) return ''
@@ -76,7 +94,18 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function canAccess(path: string): boolean {
+    // Кабинет пункта — только для оператора пункта, и для него только он.
+    const isPointPath = path === POINT_ROOT || path.startsWith(POINT_ROOT + '/')
+    if (isPointOperator.value) return isPointPath
+    if (isPointPath) return false
     if (!isStaff.value) return true // owner sees everything
+    // Свою страницу сотрудник открывает всегда: это его собственная работа.
+    // Раздел «Сотрудники» при этом остаётся закрытым, как и был.
+    if (user.value?.staffId && path === `/staff/${user.value.staffId}`) return true
+    // Чужой профиль — по праву «Статистика сотрудников». Без этой строки
+    // человек видел бы сравнительную таблицу, но не мог открыть из неё никого:
+    // сервер такой профиль отдаёт, а интерфейс был строже сервера.
+    if (path.startsWith('/staff/') && can('staff.stats')) return true
     // Только владелец.
     if (OWNER_ONLY.some((r) => path === r || path.startsWith(r + '/'))) return false
     // Всегда доступно сотруднику.
@@ -86,7 +115,8 @@ export const useAuthStore = defineStore('auth', () => {
     const base = Object.keys(NAV_PERMISSION)
       .filter((r) => path === r || path.startsWith(r + '/'))
       .sort((a, b) => b.length - a.length)[0]
-    if (base) return can(NAV_PERMISSION[base])
+    // У раздела может быть несколько подходящих прав («или»), см. /accounting/points.
+    if (base) return (NAV_PERMISSION[base] ?? '').split('|').some((key) => can(key))
     return false // неизвестный сотруднику роут — закрыт
   }
 
@@ -94,9 +124,10 @@ export const useAuthStore = defineStore('auth', () => {
    *  сотрудник → первый доступный по правам не-подписочный раздел (чтобы не
    *  ловить редирект-петлю на подписочных разделах на FREE-плане). */
   const defaultRoute = computed(() => {
+    if (isPointOperator.value) return POINT_ROOT
     if (!isStaff.value) return '/'
     for (const p of ['/deals', '/payments', '/clients']) {
-      if (can(NAV_PERMISSION[p])) return p
+      if (can(NAV_PERMISSION[p] ?? '')) return p
     }
     return '/messages' // переписка с владельцем — всегда доступна сотруднику
   })
@@ -110,6 +141,16 @@ export const useAuthStore = defineStore('auth', () => {
       refreshToken.value = data.refreshToken
       localStorage.setItem('access_token', data.accessToken)
       localStorage.setItem('refresh_token', data.refreshToken)
+
+      // Оператору пункта профиль партнёра недоступен (и не нужен): там тариф,
+      // настройки и данные компании. Берём то, что вернул вход.
+      if (data.staffRole === 'POINT_OPERATOR') {
+        data.user.staffId = data.staffId
+        data.user.staffRole = data.staffRole
+        user.value = data.user
+        localStorage.setItem('user', JSON.stringify(data.user))
+        return
+      }
 
       // Fetch full profile (includes planFeatures, planLimits, etc.)
       try {
@@ -171,11 +212,16 @@ export const useAuthStore = defineStore('auth', () => {
       }
     }
 
-    // Validate with backend
+    // Validate with backend. Оператору пункта профиль партнёра закрыт — для
+    // него проверяем токен его же эндпоинтом, иначе вход выбрасывало бы наружу.
     try {
-      const profile = await api.getSilent<User>('/auth/investor/profile')
-      user.value = profile
-      localStorage.setItem('user', JSON.stringify(profile))
+      if (user.value?.staffRole === 'POINT_OPERATOR') {
+        await api.getSilent('/point/context')
+      } else {
+        const profile = await api.getSilent<User>('/auth/investor/profile')
+        user.value = profile
+        localStorage.setItem('user', JSON.stringify(profile))
+      }
     } catch {
       await logout()
     }
@@ -186,8 +232,13 @@ export const useAuthStore = defineStore('auth', () => {
     isLoading.value = true
     try {
       const updated = await api.patch<User>('/auth/investor/profile', updates)
-      user.value = updated
-      localStorage.setItem('user', JSON.stringify(updated))
+      // Дописываем поверх, а не заменяем целиком: в профиле лежит и тариф
+      // (planFeatures, dealAccessThreshold), и права сотрудника. Ответ, где
+      // их не окажется, иначе «отключил» бы подписку до перезагрузки —
+      // разделы покрывались коронами после сохранения личных данных.
+      const merged = { ...(user.value as any), ...(updated as any) } as User
+      user.value = merged
+      localStorage.setItem('user', JSON.stringify(merged))
     } finally {
       isLoading.value = false
     }
@@ -202,5 +253,5 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  return { user, accessToken, refreshToken, isLoading, error, isAuthenticated, isStaff, staffRole, isOwner, userName, permissions, can, canAccess, defaultRoute, login, logout, checkAuth, updateProfile, changePassword }
+  return { user, accessToken, refreshToken, isLoading, error, isAuthenticated, isStaff, staffRole, isPointOperator, isOwner, userName, permissions, can, canAccess, defaultRoute, login, logout, checkAuth, updateProfile, changePassword }
 })

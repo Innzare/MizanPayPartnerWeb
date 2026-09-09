@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
+import ClientPhones from '@/components/ClientPhones.vue'
 import { useRouter } from 'vue-router'
 import { useDebtorsStore, type DebtorRow, type CollectionActivity, type PromiseStatus, type DealPayment, type PaymentStatus } from '@/stores/debtors'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { formatCurrency, formatDateShort } from '@/utils/formatters'
 import PromiseDialog from './PromiseDialog.vue'
+import ClientLink from './ClientLink.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -281,7 +283,7 @@ const promiseByPayment = computed(() => {
           <div class="dm-hero-avatar">{{ initials }}</div>
           <div class="dm-hero-info">
             <div class="dm-hero-badge"><span class="dm-hero-dot-red" /> Просрочка {{ daysLabel(row.overdueDays) }}</div>
-            <div class="dm-hero-name">{{ row.clientName }}</div>
+            <div class="dm-hero-name"><ClientLink :profile-id="row.clientProfileId" :name="row.clientName" /></div>
             <div class="dm-hero-meta">
               <span v-if="row.clientPhone" class="dm-hero-phone">{{ row.clientPhone }}</span>
               <span class="dm-hero-dot">·</span>
@@ -348,6 +350,12 @@ const promiseByPayment = computed(() => {
             <span class="dm-stat-val">{{ row.paidPayments }}/{{ row.numberOfPayments }}</span>
             <v-progress-linear :model-value="progressPct(row)" color="primary" rounded height="4" class="mt-1" />
           </div>
+        </div>
+
+        <!-- Дополнительные номера: тот, ради кого обзвон и делается, часто
+             не берёт трубку — звонят жене или на работу. -->
+        <div v-if="row.clientProfileId" class="dm-phones">
+          <ClientPhones :profile-id="row.clientProfileId" readonly />
         </div>
 
         <!-- Обещания оплаты — сворачиваемый список с редактированием/удалением -->
@@ -528,7 +536,8 @@ const promiseByPayment = computed(() => {
 .dm-card { display: flex; flex-direction: column; overflow: hidden; max-height: 88vh; }
 
 /* Шапка — фирменный зелёный градиент проекта */
-.dm-hero { position: relative; padding: 20px 24px; background: linear-gradient(135deg, #047857 0%, #065f46 100%); color: #fff; }
+/* На зелёной подложке ссылка-имя должна быть белой, иначе сливается. */
+.dm-hero { position: relative; padding: 20px 24px; background: linear-gradient(135deg, #047857 0%, #065f46 100%); color: #fff; --client-link-color: #fff; --client-link-underline: rgba(255,255,255,0.6); }
 .dm-close { position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; border-radius: 8px; border: none; background: rgba(255,255,255,0.2); color: #fff; cursor: pointer; }
 .dm-close:hover { background: rgba(255,255,255,0.32); }
 .dm-hero-row { display: flex; align-items: center; gap: 16px; }
@@ -658,5 +667,11 @@ const promiseByPayment = computed(() => {
   .dm-card { max-height: none; height: 100%; }
   .dm-timeline { min-height: 160px; }
   .dm-hero-product { max-width: 200px; }
+}
+
+.dm-phones {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 </style>

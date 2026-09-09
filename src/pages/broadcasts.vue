@@ -6,6 +6,8 @@ import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useAuthStore } from '@/stores/auth'
+import ClientLink from '@/components/ClientLink.vue'
+import MessageTemplatesTab from '@/components/MessageTemplatesTab.vue'
 import { useDealLock } from '@/composables/useDealLock'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 
@@ -25,12 +27,26 @@ const { isDealLocked } = useDealLock()
 function goToDeal(dealId: string) { router.push(`/deals/${dealId}`) }
 function goToClient(clientProfileId: string | null) { if (clientProfileId) router.push(`/clients/${clientProfileId}`) }
 
-type Tab = 'send' | 'auto' | 'chats' | 'connection'
+type Tab = 'send' | 'auto' | 'templates' | 'chats' | 'connection'
 const activeTab = ref<Tab>('chats')
+
+/** Включены ли сообщения по событиям — от этого зависит подсказка на вкладке
+ *  авто-напоминаний: два механизма одновременно не работают. */
+const eventEngineOn = ref(false)
+onMounted(async () => {
+  try {
+    const res = await api.getSilent<{ engineEnabled: boolean }>('/message-templates')
+    eventEngineOn.value = !!res?.engineEnabled
+  } catch {
+    // не критично: подсказка просто не появится
+  }
+})
 
 // ── Переписка с клиентами (inbox) ──
 interface ChatListItem {
   id: string; name: string; phone: string
+  /** Профиль клиента — для перехода в карточку из шапки чата. */
+  clientProfileId: string | null
   dealId: string; productName: string; activeDealsCount: number
   remaining: number; nextDueDate: number | null; nextDueAmount: number
   overdueAmount: number; overdueDays: number
@@ -730,24 +746,27 @@ function goConnect() { activeTab.value = 'connection' }
   <div class="bc-page" :class="{ dark: isDark }">
     <!-- Один блок на всю ширину: слева табы, справа действия раздела
          (заголовок раздела — в верхнем баре) -->
-    <div class="bc-tabs">
-      <div class="bc-tabs-list">
-        <button class="bc-tab" :class="{ active: activeTab === 'chats' }" @click="activeTab = 'chats'">
+    <div class="page-tabs-row">
+      <div class="page-tabs">
+        <button class="page-tab" :class="{ active: activeTab === 'chats' }" @click="activeTab = 'chats'">
           <v-icon icon="mdi-message-text-outline" size="16" /> Чаты с клиентами
         </button>
-        <button class="bc-tab" :class="{ active: activeTab === 'send' }" @click="activeTab = 'send'">
+        <button class="page-tab" :class="{ active: activeTab === 'send' }" @click="activeTab = 'send'">
           <v-icon icon="mdi-send-outline" size="16" /> Напоминания
         </button>
-        <button class="bc-tab" :class="{ active: activeTab === 'auto' }" @click="activeTab = 'auto'">
+        <button class="page-tab" :class="{ active: activeTab === 'auto' }" @click="activeTab = 'auto'">
           <v-icon icon="mdi-clock-check-outline" size="16" /> Авто-напоминания и шаблоны
         </button>
-        <button class="bc-tab" :class="{ active: activeTab === 'connection' }" @click="activeTab = 'connection'">
+        <button class="page-tab" :class="{ active: activeTab === 'templates' }" @click="activeTab = 'templates'">
+          <v-icon icon="mdi-message-cog-outline" size="16" /> Сообщения по событиям
+        </button>
+        <button class="page-tab" :class="{ active: activeTab === 'connection' }" @click="activeTab = 'connection'">
           <v-icon icon="mdi-link-variant" size="16" /> Подключение
-          <span v-if="!connected && waStatus !== 'loading'" class="bc-tab-dot" />
+          <span v-if="!connected && waStatus !== 'loading'" class="page-tab-dot" />
         </button>
       </div>
 
-      <div class="bc-tabs-actions">
+      <div class="page-tabs-actions">
         <button class="bc-guide-btn" @click="showGuide = true" title="Как не получить блокировку">
           <v-icon icon="mdi-shield-alert-outline" size="16" />
           Защита от бана
@@ -907,7 +926,9 @@ function goConnect() { activeTab.value = 'connection' }
               </label>
               <div class="bc-group-avatar" :class="{ 'bc-group-avatar--overdue': effectiveTotals(g).overdueCount > 0 }">{{ getInitials(g.clientName) }}</div>
               <div class="bc-group-main">
-                <div class="bc-group-name">{{ g.clientName }}</div>
+                <div class="bc-group-name">
+                  <ClientLink :profile-id="g.clientProfileId" :name="g.clientName" />
+                </div>
                 <div class="bc-group-sub">
                   <span v-if="g.canSend">{{ maskPhone(g.clientPhone) }}</span>
                   <span v-else class="bc-no-phone"><v-icon icon="mdi-phone-off" size="11" /> нет телефона</span>
@@ -977,6 +998,16 @@ function goConnect() { activeTab.value = 'connection' }
         <v-icon icon="mdi-alert-circle-outline" size="18" />
         <span>WhatsApp не подключён — настройки сохранятся, но авто-напоминания начнут отправляться только после подключения.</span>
         <button class="bc-warn-btn" @click="goConnect"><v-icon icon="mdi-qrcode-scan" size="15" /> Подключить</button>
+      </div>
+
+      <!-- Два механизма одновременно не работают: пока включены сообщения по
+           событиям, эти настройки лежат без дела, и об этом надо сказать. -->
+      <div v-if="eventEngineOn" class="bc-warn">
+        <v-icon icon="mdi-information-outline" size="18" />
+        <span>Сейчас работают «Сообщения по событиям» — эти авто-напоминания отключены, чтобы клиент не получал одно и то же дважды.</span>
+        <button class="bc-warn-btn" @click="activeTab = 'templates'">
+          <v-icon icon="mdi-message-cog-outline" size="15" /> Перейти
+        </button>
       </div>
 
       <div class="bc-auto-grid">
@@ -1105,6 +1136,11 @@ function goConnect() { activeTab.value = 'connection' }
       </div>
     </template>
 
+    <!-- ══════════════ TAB: Сообщения по событиям ══════════════ -->
+    <template v-else-if="activeTab === 'templates'">
+      <MessageTemplatesTab />
+    </template>
+
     <!-- ══════════════ TAB: Чаты с клиентами ══════════════ -->
     <template v-else-if="activeTab === 'chats'">
       <div v-if="inboxEnabling" class="bc-card bc-conn bc-conn--center pa-6">
@@ -1183,7 +1219,9 @@ function goConnect() { activeTab.value = 'connection' }
                 <template v-else>{{ (selectedChat.name[0] || '?').toUpperCase() }}</template>
               </div>
               <div class="bc-chat-conv-who">
-                <div class="bc-chat-conv-name">{{ selectedChat.name }}</div>
+                <div class="bc-chat-conv-name">
+                  <ClientLink :profile-id="selectedChat.clientProfileId" :name="selectedChat.name" />
+                </div>
                 <div class="bc-chat-conv-phone">{{ selectedChat.phone }}</div>
               </div>
             </header>
@@ -1436,23 +1474,7 @@ function goConnect() { activeTab.value = 'connection' }
 .bc-conn-chip--off { background: rgba(245,158,11,0.12); color: #b45309; }
 
 /* Tabs — white segmented bar */
-.bc-tabs {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 18px;
-  background: rgb(var(--v-theme-surface));
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  border-radius: 12px; padding: 5px;
-}
-.bc-tabs-list { display: flex; gap: 4px; flex: 1; min-width: 0; }
-.bc-tabs-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding-right: 3px; }
-.bc-tab {
-  position: relative; display: inline-flex; align-items: center; gap: 6px;
-  padding: 9px 16px; border: none; background: transparent; cursor: pointer;
-  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.55);
-  border-radius: 8px; transition: all 0.15s;
-}
-.bc-tab:hover { color: rgba(var(--v-theme-on-surface), 0.85); background: rgba(var(--v-theme-on-surface), 0.04); }
-.bc-tab.active { color: #047857; background: rgba(4, 120, 87, 0.1); }
-.bc-tab.active:hover { background: rgba(4, 120, 87, 0.12); }
+/* Табы раздела — общий стиль, см. styles/page-tabs.css */
 
 /* ── Чаты с клиентами ── */
 .bc-chat-shell {
@@ -1663,7 +1685,6 @@ function goConnect() { activeTab.value = 'connection' }
   transition: background .12s;
 }
 .bc-chat-back:hover { background: rgba(var(--v-theme-on-surface), 0.08); }
-.bc-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; }
 
 /* Campaign progress */
 .bc-prog-card { margin-bottom: 14px; }
@@ -1994,11 +2015,8 @@ function goConnect() { activeTab.value = 'connection' }
 /* Tablets / large phones — tabs scroll horizontally instead of wrapping. */
 @media (max-width: 760px) {
   /* Пилюля переносит строки: табы (со скроллом) сверху, действия — под ними. */
-  .bc-tabs { flex-wrap: wrap; }
-  .bc-tabs-list { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex: 1 1 100%; }
-  .bc-tabs-list::-webkit-scrollbar { display: none; }
-  .bc-tab { flex: 0 0 auto; white-space: nowrap; padding: 9px 13px; }
-  .bc-tabs-actions { flex: 1 1 100%; justify-content: flex-end; padding: 2px 2px 3px; }
+  .page-tabs { flex: 1 1 100%; }
+  .page-tabs-actions { flex: 1 1 100%; justify-content: flex-end; }
 }
 
 @media (max-width: 599px) {

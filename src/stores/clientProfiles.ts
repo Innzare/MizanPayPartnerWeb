@@ -13,6 +13,7 @@ export interface CreateClientProfileInput {
   passportNumber?: string
   passportIssuedBy?: string
   passportIssuedAt?: string
+  city?: string
   registrationAddress?: string
   residentialAddress?: string
   inn?: string
@@ -36,6 +37,11 @@ export const useClientProfilesStore = defineStore('clientProfiles', () => {
     } finally {
       isLoading.value = false
     }
+  }
+
+  /** Последние клиенты — список «по умолчанию» в поле выбора, до ввода. */
+  async function recent(limit = 8): Promise<ClientProfile[]> {
+    return api.get<ClientProfile[]>(`/client-profiles/recent?limit=${limit}`)
   }
 
   async function search(query: string, limit = 10): Promise<ClientProfile[]> {
@@ -115,7 +121,7 @@ export const useClientProfilesStore = defineStore('clientProfiles', () => {
 
   return {
     myClients, isLoading, error,
-    fetchMyClients, search, findByPhone, findById, getStats,
+    fetchMyClients, search, recent, findByPhone, findById, getStats,
     create, update, deleteClient,
     searchGlobalRegistry, publish, unpublish, cloneFromGlobal,
     getClient,

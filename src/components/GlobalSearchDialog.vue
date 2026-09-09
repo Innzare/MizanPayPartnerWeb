@@ -6,7 +6,9 @@
     transition="fade-transition"
     :fullscreen="isMobile"
   >
-    <v-card rounded="xl" class="gs-card">
+    <!-- Скругление то же, что у окна быстрых действий: два окна открываются
+         из одной шапки и не должны отличаться формой. -->
+    <v-card rounded="lg" class="gs-card">
       <!-- Search input -->
       <div class="gs-search">
         <v-icon icon="mdi-magnify" size="20" class="gs-search-icon" />

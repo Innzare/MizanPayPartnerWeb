@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { api } from '@/api/client'
+import CityInput from '@/components/CityInput.vue'
+import PhoneListField, { type PhoneDraft } from '@/components/PhoneListField.vue'
+import { isCompletePhone } from '@/utils/phone'
+import ClientPhones from '@/components/ClientPhones.vue'
+import DateField from '@/components/DateField.vue'
+import { useClientCities } from '@/composables/useClientCities'
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import { useAuthStore } from '@/stores/auth'
 import { useSections } from '@/composables/useSections'
 import { type ClientProfile, type ClientProfileStats, clientProfileName, type Deal } from '@/types'
-import { formatCurrency, formatDate, formatPhone, timeAgo, PHONE_MASK } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
@@ -19,6 +25,7 @@ const authStore = useAuthStore()
 const sections = useSections()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+const { refresh: refreshCities } = useClientCities()
 
 const profileId = computed(() => (route.params as { id: string }).id)
 const pageLoading = ref(true)
@@ -42,6 +49,7 @@ const form = ref({
   passportNumber: '',
   passportIssuedBy: '',
   passportIssuedAt: '',
+  city: '',
   registrationAddress: '',
   residentialAddress: '',
   inn: '',
@@ -59,6 +67,9 @@ onMounted(async () => {
     await Promise.all([
       clientsStore.getStats(p.id).then((st) => { stats.value = st }),
       loadClientDeals(true),
+      // Вкладку «Как поручитель» показываем, только если он реально ручался,
+      // поэтому сводку запрашиваем сразу — она лёгкая.
+      loadGuarantorInfo(),
     ])
   } catch (e: any) {
     if (e.message?.includes('404') || e.message?.includes('не найден')) {
@@ -70,6 +81,15 @@ onMounted(async () => {
     pageLoading.value = false
   }
 })
+
+/**
+ * Перечитать профиль — после обмена основного номера с дополнительным.
+ * Иначе в шапке остался бы прежний номер, и по нему бы и позвонили.
+ */
+async function reloadProfile() {
+  const p = await clientsStore.findById(profileId.value)
+  if (p) profile.value = p
+}
 
 // ── Сделки клиента ──
 // Приходят с сервера по тому же ключу, что группирует список клиентов, —
@@ -125,6 +145,12 @@ const finance = computed(() => ({
   onTimeRate: (stats.value as any)?.finance?.onTimeRate ?? 100,
 }))
 
+/** Открыть переписку с клиентом во встроенном разделе. */
+function openChat() {
+  const digits = cleanPhone(profile.value?.phone ?? '')
+  if (digits) router.push(`/broadcasts?chat=${digits}`)
+}
+
 function cleanPhone(phone: string) {
   return phone.replace(/\D/g, '')
 }
@@ -134,6 +160,9 @@ function cleanPhone(phone: string) {
 const canEdit = computed(() => {
   if (!profile.value) return false
   if (profile.value.userId) return false
+  // Сотруднику без права на правку клиентов кнопки показывать незачем: сервер
+  // всё равно откажет, а человек будет думать, что сломалось.
+  if (!authStore.can('clients.edit')) return false
   const me = (authStore.user as any)?.id
   return profile.value.createdByInvestorId === me
 })
@@ -176,8 +205,26 @@ async function doDelete() {
   }
 }
 
+/**
+ * Дополнительные номера в форме, а не отдельным блоком карточки.
+ *
+ * `extraPhones` — то, что сейчас в форме; `originalPhones` — то, что лежит на
+ * сервере. Разница между ними и есть список операций при сохранении: удалить,
+ * изменить, добавить.
+ */
+const extraPhones = ref<PhoneDraft[]>([])
+const originalPhones = ref<PhoneDraft[]>([])
+
 function startEditing() {
   if (!profile.value) return
+  const saved = (profile.value.extraPhones ?? []).map((p) => ({
+    id: p.id,
+    phone: p.phone,
+    label: p.label ?? '',
+    hasWhatsapp: !!p.hasWhatsapp,
+  }))
+  originalPhones.value = saved.map((p) => ({ ...p }))
+  extraPhones.value = saved.map((p) => ({ ...p }))
   form.value = {
     phone: profile.value.phone || '',
     firstName: profile.value.firstName || '',
@@ -188,6 +235,7 @@ function startEditing() {
     passportNumber: profile.value.passportNumber || '',
     passportIssuedBy: profile.value.passportIssuedBy || '',
     passportIssuedAt: profile.value.passportIssuedAt || '',
+    city: profile.value.city || '',
     registrationAddress: profile.value.registrationAddress || '',
     residentialAddress: profile.value.residentialAddress || '',
     inn: profile.value.inn || '',
@@ -195,12 +243,61 @@ function startEditing() {
   editing.value = true
 }
 
+/**
+ * Разложить правку списка на операции сервера.
+ *
+ * Порядок важен: сначала удаления, потом правки, потом добавления — иначе
+ * перестановка двух номеров упирается в проверку «такой номер уже записан».
+ * Сбой на одном номере не отменяет сохранённый профиль: говорим, что именно
+ * не легло, и оставляем форму открытой на этих номерах.
+ */
+async function saveExtraPhones() {
+  const id = resolvedProfileId.value!
+  const kept = extraPhones.value.filter((p) => p.phone.trim())
+  const keptIds = new Set(kept.map((p) => p.id).filter(Boolean))
+  const failed: string[] = []
+
+  for (const was of originalPhones.value) {
+    if (was.id && !keptIds.has(was.id)) {
+      try {
+        await api.delete(`/client-profiles/${id}/phones/${was.id}`)
+      } catch {
+        failed.push(was.phone)
+      }
+    }
+  }
+
+  for (const row of kept) {
+    const body = {
+      phone: row.phone,
+      label: row.label.trim() || null,
+      hasWhatsapp: !!row.hasWhatsapp,
+    }
+    const was = row.id ? originalPhones.value.find((p) => p.id === row.id) : null
+    try {
+      if (!row.id) {
+        await api.post(`/client-profiles/${id}/phones`, body)
+      } else if (
+        was &&
+        (was.phone !== row.phone || (was.label || '') !== row.label.trim() || !!was.hasWhatsapp !== !!row.hasWhatsapp)
+      ) {
+        await api.patch(`/client-profiles/${id}/phones/${row.id}`, body)
+      }
+    } catch (e: any) {
+      failed.push(row.phone)
+    }
+  }
+
+  if (failed.length) toast.warning(`Не удалось сохранить номера: ${failed.join(', ')}`)
+  await reloadProfile()
+}
+
 async function saveProfile() {
   if (!form.value.firstName || !form.value.lastName) {
     toast.error('Имя и фамилия обязательны')
     return
   }
-  if (!form.value.phone || form.value.phone.replace(/\D/g, '').length < 10) {
+  if (!form.value.phone || !isCompletePhone(form.value.phone)) {
     toast.error('Укажите корректный номер телефона')
     return
   }
@@ -208,10 +305,16 @@ async function saveProfile() {
   try {
     const data: Record<string, string | undefined> = {}
     const fields = ['phone', 'firstName', 'lastName', 'patronymic', 'birthDate', 'passportSeries',
-      'passportNumber', 'passportIssuedBy', 'passportIssuedAt', 'registrationAddress',
+      'passportNumber', 'passportIssuedBy', 'passportIssuedAt', 'city', 'registrationAddress',
       'residentialAddress', 'inn'] as const
     for (const key of fields) data[key] = form.value[key] || undefined
     profile.value = await clientsStore.update(resolvedProfileId.value!, data)
+    // Номера сохраняем ПОСЛЕ профиля: если основной номер поменялся местами с
+    // дополнительным, сервер справедливо не даст записать прежний основной,
+    // пока он ещё числится основным в профиле.
+    await saveExtraPhones()
+    // Город мог измениться — обновляем подсказки и список для фильтра.
+    if (data.city !== undefined) void refreshCities()
     editing.value = false
     toast.success('Профиль обновлён')
   } catch (e: any) {
@@ -253,13 +356,59 @@ function avatarColor(name: string) {
 }
 
 // Active tab
-const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
+const activeTab = ref<'info' | 'deals' | 'reviews' | 'guarantor'>('info')
+
+// ─── Как поручитель ─────────────────────────────────────────────────
+// Человек может быть и клиентом, и поручителем одновременно: роль зависит от
+// сделки, а не от карточки. Поэтому вкладка появляется, только если он реально
+// за кого-то поручился.
+interface GuarantorDeal {
+  dealId: string
+  dealNumber: number
+  productName: string
+  status: string
+  totalPrice: number
+  remainingAmount: number
+  dealDate: string | null
+  overdueAmount: number
+  overdueDays: number
+  clientId: string | null
+  clientName: string | null
+}
+interface GuarantorSummary {
+  guaranteeCount: number
+  activeCount: number
+  closedCount: number
+  guaranteeVolume: number
+  guaranteeRemaining: number
+  overdueAmount: number
+  overdueDealCount: number
+  ownDebt: number
+  totalExposure: number
+  deals: GuarantorDeal[]
+}
+const guarantorInfo = ref<GuarantorSummary | null>(null)
+const guarantorLoading = ref(false)
+
+async function loadGuarantorInfo() {
+  if (guarantorInfo.value || guarantorLoading.value) return
+  guarantorLoading.value = true
+  try {
+    guarantorInfo.value = await api.get<GuarantorSummary>(
+      `/guarantors/summary/${resolvedProfileId.value || profileId.value}`,
+    )
+  } catch {
+    // Раздел не критичен для карточки — молча оставляем вкладку пустой.
+  } finally {
+    guarantorLoading.value = false
+  }
+}
 </script>
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
     <!-- Back -->
-    <button class="back-btn mb-5" @click="router.back()">
+    <button class="back-btn" @click="router.back()">
       <v-icon icon="mdi-arrow-left" size="18" />
       Назад
     </button>
@@ -309,12 +458,28 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
 
             <!-- Contact buttons -->
             <div class="contact-row">
-              <a :href="`https://wa.me/${cleanPhone(profile.phone)}`" target="_blank" class="contact-btn contact-btn--wa">
+              <!-- Ведём во встроенную переписку: внешняя ссылка уводила из
+                   сервиса, и история переговоров с клиентом там не остаётся. -->
+              <button class="contact-btn contact-btn--wa" @click="openChat">
                 <v-icon icon="mdi-whatsapp" size="18" /> WhatsApp
-              </a>
+              </button>
               <a :href="`https://t.me/+${cleanPhone(profile.phone)}`" target="_blank" class="contact-btn contact-btn--tg">
                 <v-icon icon="mdi-send" size="18" /> Telegram
               </a>
+            </div>
+
+            <v-divider />
+
+            <!-- Дополнительные номера: жена, работа, сосед. По ним звонят,
+                 когда клиент не берёт трубку. -->
+            <div class="px-4 py-3">
+              <!-- Здесь только показываем и звоним: правка живёт в форме
+                   «Редактирование», рядом с основным номером. -->
+              <ClientPhones
+                :profile-id="profile.id"
+                :initial="profile.extraPhones ?? null"
+                readonly
+              />
             </div>
 
             <v-divider />
@@ -338,13 +503,11 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
               </div>
             </div>
 
-            <!-- Edit button (only for external clients) -->
-            <div v-if="canEdit" class="px-4 pb-4">
-              <button class="edit-profile-btn" @click="startEditing">
-                <v-icon icon="mdi-pencil-outline" size="16" />
-                Редактировать профиль
-              </button>
-              <button v-if="canDelete" class="delete-profile-btn mt-2" @click="openDeleteDialog">
+            <!-- Правка профиля живёт в самой вкладке «Информация», в строке
+                 заголовка «Личные данные»: кнопка стоит там, где смотрят на
+                 данные, а не в другой колонке экрана. -->
+            <div v-if="canEdit && canDelete" class="px-4 pb-4">
+              <button class="delete-profile-btn" @click="openDeleteDialog">
                 <v-icon icon="mdi-delete-outline" size="16" />
                 Удалить клиента
               </button>
@@ -455,13 +618,100 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
               <v-icon icon="mdi-star-outline" size="16" /> Отзывы
               <span class="tab-badge">{{ stats.reviews.length }}</span>
             </button>
+            <button
+              v-if="guarantorInfo?.guaranteeCount"
+              class="tab-item" :class="{ active: activeTab === 'guarantor' }"
+              @click="activeTab = 'guarantor'"
+            >
+              <v-icon icon="mdi-account-check-outline" size="16" /> Как поручитель
+              <span class="tab-badge">{{ guarantorInfo.guaranteeCount }}</span>
+            </button>
           </div>
+
+          <!-- ── Tab: как поручитель ── -->
+          <v-card
+            v-if="activeTab === 'guarantor' && guarantorInfo"
+            rounded="xl"
+            elevation="0"
+            border
+            class="pa-5"
+          >
+            <div class="section-label">ЗА КОГО ПОРУЧИЛСЯ</div>
+            <div class="gr-metrics">
+              <div class="gr-metric">
+                <div class="gr-metric-label">Поручительств</div>
+                <div class="gr-metric-value">
+                  {{ guarantorInfo.guaranteeCount }}
+                  <span class="gr-metric-sub">действующих {{ guarantorInfo.activeCount }}</span>
+                </div>
+              </div>
+              <div class="gr-metric">
+                <div class="gr-metric-label">На сумму</div>
+                <div class="gr-metric-value">{{ formatCurrency(guarantorInfo.guaranteeVolume) }}</div>
+              </div>
+              <div class="gr-metric">
+                <div class="gr-metric-label">Остаток под поручительством</div>
+                <div class="gr-metric-value">{{ formatCurrency(guarantorInfo.guaranteeRemaining) }}</div>
+              </div>
+              <div class="gr-metric" :class="{ 'gr-metric--bad': guarantorInfo.overdueAmount > 0 }">
+                <div class="gr-metric-label">Из них просрочено</div>
+                <div class="gr-metric-value">
+                  {{ formatCurrency(guarantorInfo.overdueAmount) }}
+                  <span v-if="guarantorInfo.overdueDealCount" class="gr-metric-sub">
+                    в {{ guarantorInfo.overdueDealCount }} сделк{{ guarantorInfo.overdueDealCount === 1 ? 'е' : 'ах' }}
+                  </span>
+                </div>
+              </div>
+              <div class="gr-metric gr-metric--total">
+                <div class="gr-metric-label">Общая ответственность</div>
+                <div class="gr-metric-value">
+                  {{ formatCurrency(guarantorInfo.totalExposure) }}
+                  <span class="gr-metric-sub">со своим долгом {{ formatCurrency(guarantorInfo.ownDebt) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="section-label mt-5">СДЕЛКИ, ГДЕ ОН ПОРУЧИТЕЛЬ</div>
+            <div class="gr-deals">
+              <div
+                v-for="d in guarantorInfo.deals"
+                :key="d.dealId"
+                class="gr-deal"
+                @click="router.push(`/deals/${d.dealId}`)"
+              >
+                <div class="flex-grow-1 min-w-0">
+                  <div class="gr-deal-title">
+                    №{{ d.dealNumber }} · {{ d.productName }}
+                  </div>
+                  <div class="gr-deal-sub">
+                    {{ d.clientName || 'клиент не указан' }}
+                    <template v-if="d.dealDate"> · {{ formatDate(d.dealDate) }}</template>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="gr-deal-amount">{{ formatCurrency(d.remainingAmount) }}</div>
+                  <div v-if="d.overdueAmount > 0" class="gr-deal-overdue">
+                    просрочка {{ formatCurrency(d.overdueAmount) }} · {{ d.overdueDays }} дн.
+                  </div>
+                  <div v-else class="gr-deal-status">
+                    {{ d.status === 'ACTIVE' ? 'платит вовремя' : 'закрыта' }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </v-card>
 
           <!-- ── Tab: Info ── -->
           <v-card v-if="activeTab === 'info'" rounded="xl" elevation="0" border class="pa-5">
             <template v-if="!editing">
               <!-- Personal -->
-              <div class="section-label">ЛИЧНЫЕ ДАННЫЕ</div>
+              <div class="section-head">
+                <div class="section-label">ЛИЧНЫЕ ДАННЫЕ</div>
+                <button v-if="canEdit" class="section-action" @click="startEditing">
+                  <v-icon icon="mdi-pencil-outline" size="15" />
+                  Редактировать
+                </button>
+              </div>
               <div class="data-grid">
                 <div class="data-item">
                   <div class="data-label">Фамилия</div>
@@ -513,6 +763,10 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
               <!-- Addresses -->
               <div class="section-label mt-5">АДРЕСА</div>
               <div class="data-grid">
+                <div class="data-item">
+                  <div class="data-label">Город</div>
+                  <div class="data-value">{{ profile.city || '—' }}</div>
+                </div>
                 <div class="data-item span-2">
                   <div class="data-label">Адрес прописки</div>
                   <div class="data-value">{{ profile.registrationAddress || '—' }}</div>
@@ -526,81 +780,93 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
 
             <!-- Edit mode -->
             <template v-else>
-              <div class="edit-header">
-                <div class="edit-header-title">
-                  <v-icon icon="mdi-pencil-outline" size="18" class="mr-2" />
-                  Редактирование
-                </div>
-                <div class="edit-header-actions">
-                  <button class="edit-btn edit-btn--cancel" @click="editing = false" :disabled="saving">
+              <!-- Те же поля и та же сетка, что в окнах «Новый клиент» и
+                   «Счёт»: раньше здесь стояли поля Vuetify другого размера и
+                   с другими подписями, и вкладка выглядела чужой. -->
+              <div class="section-head">
+                <div class="section-label">ЛИЧНЫЕ ДАННЫЕ</div>
+                <div class="section-actions">
+                  <button class="section-action" :disabled="saving" @click="editing = false">
                     Отмена
                   </button>
-                  <button class="edit-btn edit-btn--save" @click="saveProfile" :disabled="saving">
-                    <v-progress-circular v-if="saving" indeterminate size="14" width="2" color="white" class="mr-1" />
-                    <v-icon v-else icon="mdi-check" size="16" class="mr-1" />
+                  <button class="section-action section-action--primary" :disabled="saving" @click="saveProfile">
+                    <v-progress-circular v-if="saving" indeterminate size="13" width="2" color="white" />
+                    <v-icon v-else icon="mdi-check" size="15" />
                     Сохранить
                   </button>
                 </div>
               </div>
 
-              <div class="section-label">ЛИЧНЫЕ ДАННЫЕ</div>
-              <v-row dense>
-                <v-col cols="12" sm="4">
-                  <v-text-field v-model="form.lastName" label="Фамилия *" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-                <v-col cols="12" sm="4">
-                  <v-text-field v-model="form.firstName" label="Имя *" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-                <v-col cols="12" sm="4">
-                  <v-text-field v-model="form.patronymic" label="Отчество" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-                <v-col cols="12" sm="6">
-                  <v-text-field
-                    v-model="form.phone"
-                    v-maska="PHONE_MASK"
-                    label="Телефон *"
-                    type="tel"
-                    placeholder="+7 (___) ___-__-__"
-                    density="compact"
-                    variant="outlined"
-                    rounded="lg"
-                    hint="Идентификатор клиента в системе"
-                    persistent-hint
-                  />
-                </v-col>
-                <v-col cols="12" sm="6">
-                  <v-text-field v-model="form.birthDate" label="Дата рождения" type="date" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-                <v-col cols="12">
-                  <v-text-field v-model="form.inn" label="ИНН" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-              </v-row>
+              <div class="cf-row cf-row--3">
+                <div class="cf-field">
+                  <label class="cf-label">Фамилия <span class="cf-req">*</span></label>
+                  <input v-model="form.lastName" type="text" class="cf-input" placeholder="Иванов" />
+                </div>
+                <div class="cf-field">
+                  <label class="cf-label">Имя <span class="cf-req">*</span></label>
+                  <input v-model="form.firstName" type="text" class="cf-input" placeholder="Иван" />
+                </div>
+                <div class="cf-field">
+                  <label class="cf-label">Отчество</label>
+                  <input v-model="form.patronymic" type="text" class="cf-input" placeholder="Сергеевич" />
+                </div>
+              </div>
 
-              <div class="section-label mt-3">ПАСПОРТНЫЕ ДАННЫЕ</div>
-              <v-row dense>
-                <v-col cols="6" sm="3">
-                  <v-text-field v-model="form.passportSeries" label="Серия" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-                <v-col cols="6" sm="3">
-                  <v-text-field v-model="form.passportNumber" label="Номер" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-                <v-col cols="12" sm="6">
-                  <v-text-field v-model="form.passportIssuedAt" label="Дата выдачи" type="date" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-                <v-col cols="12">
-                  <v-text-field v-model="form.passportIssuedBy" label="Кем выдан" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-              </v-row>
+              <div class="cf-row cf-row--2">
+                <div class="cf-field">
+                  <label class="cf-label">Дата рождения</label>
+                  <DateField v-model="form.birthDate" open-to="year" :presets="false" plain />
+                </div>
+                <div class="cf-field">
+                  <label class="cf-label">ИНН</label>
+                  <input v-model="form.inn" type="text" class="cf-input" placeholder="500100123456" maxlength="12" />
+                </div>
+              </div>
 
-              <div class="section-label mt-3">АДРЕСА</div>
-              <v-row dense>
-                <v-col cols="12" sm="6">
-                  <v-text-field v-model="form.registrationAddress" label="Адрес прописки" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-                <v-col cols="12" sm="6">
-                  <v-text-field v-model="form.residentialAddress" label="Адрес проживания" density="compact" variant="outlined" rounded="lg" />
-                </v-col>
-              </v-row>
+              <!-- Телефоны правятся здесь же, вместе с остальными данными:
+                   отдельный блок в карточке заставлял открывать форму ради
+                   имени и закрывать её ради второго номера. -->
+              <PhoneListField
+                v-model:primary="form.phone"
+                v-model:extras="extraPhones"
+                hint="Основной номер — идентификатор клиента в системе"
+              />
+
+              <div class="section-label section-label--form">ПАСПОРТНЫЕ ДАННЫЕ</div>
+              <div class="cf-row cf-row--3">
+                <div class="cf-field">
+                  <label class="cf-label">Серия</label>
+                  <input v-model="form.passportSeries" type="text" class="cf-input" placeholder="4510" maxlength="4" />
+                </div>
+                <div class="cf-field">
+                  <label class="cf-label">Номер</label>
+                  <input v-model="form.passportNumber" type="text" class="cf-input" placeholder="123456" maxlength="6" />
+                </div>
+                <div class="cf-field">
+                  <label class="cf-label">Дата выдачи</label>
+                  <DateField v-model="form.passportIssuedAt" plain />
+                </div>
+              </div>
+              <!-- «Кем выдан» во всю ширину: в половине строки название отдела
+                   обрезается на середине. -->
+              <div class="cf-field">
+                <label class="cf-label">Кем выдан</label>
+                <input v-model="form.passportIssuedBy" type="text" class="cf-input" placeholder="ОВД г. Махачкалы" />
+              </div>
+
+              <div class="section-label section-label--form">АДРЕСА</div>
+              <div class="cf-field cf-city">
+                <label class="cf-label">Город</label>
+                <CityInput v-model="form.city" />
+              </div>
+              <div class="cf-field">
+                <label class="cf-label">Адрес прописки</label>
+                <input v-model="form.registrationAddress" type="text" class="cf-input" placeholder="г. Махачкала, ул. Ленина 1, кв. 5" />
+              </div>
+              <div class="cf-field">
+                <label class="cf-label">Адрес проживания</label>
+                <input v-model="form.residentialAddress" type="text" class="cf-input" placeholder="г. Махачкала, ул. Тверская 10, кв. 20" />
+              </div>
             </template>
           </v-card>
 
@@ -752,19 +1018,81 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
 </template>
 
 <style scoped>
+.gr-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+.gr-metric {
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 12px;
+}
+.gr-metric--bad {
+  border-color: rgba(220, 38, 38, 0.35);
+  background: rgba(220, 38, 38, 0.04);
+}
+.gr-metric--total {
+  border-color: rgba(var(--v-theme-primary), 0.35);
+  background: rgba(var(--v-theme-primary), 0.04);
+}
+.gr-metric-label {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.gr-metric-value {
+  font-size: 18px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+.gr-metric-sub {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.gr-deals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gr-deal {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px;
+  cursor: pointer;
+}
+.gr-deal:hover {
+  border-color: rgba(var(--v-theme-primary), 0.4);
+}
+.gr-deal-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gr-deal-sub {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.gr-deal-amount {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.gr-deal-overdue {
+  font-size: 12px;
+  color: #dc2626;
+  white-space: nowrap;
+}
+.gr-deal-status {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
 /* ── Back button ── */
-.back-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 16px; border-radius: 10px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  font-size: 13px; font-weight: 500; cursor: pointer;
-  transition: all 0.15s;
-}
-.back-btn:hover {
-  background: rgba(var(--v-theme-on-surface), 0.1);
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
 
 /* ── Profile card ── */
 .profile-card {
@@ -921,6 +1249,64 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
   color: rgba(var(--v-theme-on-surface), 0.35);
   margin-bottom: 12px;
 }
+/* Заголовок раздела и его действие в одной строке: «Редактировать» стоит
+   там, где смотрят на данные, а не в другой колонке экрана. */
+.section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 12px;
+}
+.section-head .section-label { margin-bottom: 0; }
+.section-actions { display: flex; align-items: center; gap: 8px; }
+.section-action {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 12px; border-radius: 9px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent;
+  font-size: 12.5px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  cursor: pointer; transition: all 0.15s;
+}
+.section-action:hover:not(:disabled) { border-color: rgba(4, 120, 87, 0.4); color: #047857; }
+.section-action:disabled { opacity: 0.55; cursor: default; }
+.section-action--primary {
+  background: #047857; border-color: #047857; color: #fff;
+}
+.section-action--primary:hover:not(:disabled) { background: #036b4e; color: #fff; }
+
+/* ── Поля формы профиля ──
+   Те же размеры и подписи, что в окнах «Новый клиент» и «Счёт»: вкладка
+   не должна выглядеть формой из другого приложения. */
+.section-label--form { margin-top: 22px; }
+.cf-row { display: grid; gap: 12px; }
+.cf-row--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cf-row--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 700px) {
+  .cf-row--2, .cf-row--3 { grid-template-columns: minmax(0, 1fr); }
+}
+.cf-field { margin-bottom: 12px; min-width: 0; }
+.cf-label {
+  display: block; font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6); margin-bottom: 4px;
+}
+.cf-req { color: #ef4444; }
+.cf-input {
+  width: 100%; height: 40px; padding: 0 12px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.87);
+  font-size: 14px; outline: none; transition: border-color 0.15s;
+}
+.cf-input:focus { border-color: rgba(4, 120, 87, 0.5); }
+.cf-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.32); }
+
+/* Город — подсказка Vuetify, а не свой инпут: подгоняем её под соседние поля,
+   иначе строка выше остальных и форма «ступенькой». */
+.cf-city :deep(.v-field) {
+  border-radius: 10px;
+  font-size: 14px;
+}
+.cf-city :deep(.v-field__input) { min-height: 38px; padding-top: 0; padding-bottom: 0; }
+.cf-city :deep(.v-input__details) { display: none; }
 
 .data-grid {
   display: grid;
@@ -983,24 +1369,6 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
   justify-content: center; padding: 40px 20px;
 }
 
-/* ── Edit profile button ── */
-.edit-profile-btn {
-  width: 100%;
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  padding: 11px 16px;
-  border-radius: 12px;
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  background: rgba(var(--v-theme-on-surface), 0.04);
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  cursor: pointer; transition: all 0.15s;
-}
-.edit-profile-btn:hover {
-  background: rgba(var(--v-theme-on-surface), 0.08);
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  border-color: rgba(var(--v-theme-on-surface), 0.2);
-}
-
 /* Удаление — та же форма, что у кнопки редактирования, но приглушённо
    красная: действие необратимое, а рядом стоит обычное. */
 .delete-profile-btn {
@@ -1046,49 +1414,6 @@ const activeTab = ref<'info' | 'deals' | 'reviews'>('info')
 .del-choice-sub {
   font-size: 12.5px; line-height: 1.4; margin-top: 2px;
   color: rgba(var(--v-theme-on-surface), 0.6);
-}
-
-/* ── Edit mode header ── */
-.edit-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-}
-.edit-header-title {
-  display: flex; align-items: center;
-  font-size: 16px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.edit-header-actions {
-  display: flex; gap: 8px;
-}
-.edit-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 8px 18px;
-  border-radius: 10px;
-  font-size: 13px; font-weight: 600;
-  border: none; cursor: pointer;
-  transition: all 0.15s;
-}
-.edit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.edit-btn--cancel {
-  background: rgba(var(--v-theme-on-surface), 0.06);
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-}
-.edit-btn--cancel:hover:not(:disabled) {
-  background: rgba(var(--v-theme-on-surface), 0.1);
-  color: rgba(var(--v-theme-on-surface), 0.8);
-}
-.edit-btn--save {
-  background: #10b981;
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2);
-}
-.edit-btn--save:hover:not(:disabled) {
-  background: #059669;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
 }
 
 /* ── Dark mode ── */

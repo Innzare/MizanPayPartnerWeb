@@ -44,6 +44,14 @@ function ensureRefresh(): Promise<boolean> {
   return refreshPromise;
 }
 
+/**
+ * Сколько раз пережидаем ограничение частоты, прежде чем сдаться.
+ *
+ * Два повтора закрывают всплеск от быстрой прокрутки; дальше молчать нельзя —
+ * значит что-то действительно не так, и об этом нужно сказать.
+ */
+const THROTTLE_RETRIES = 2;
+
 function clearSessionAndRedirect(): never {
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
@@ -63,6 +71,11 @@ async function request<T>(
   // clock skew), bail out instead of looping. Private — callers should
   // not set this.
   _retried = false,
+  /**
+   * Сколько раз запрос уже пережидал ограничение частоты. Приватное —
+   * снаружи не передаётся.
+   */
+  _throttleRetries = 0,
 ): Promise<T> {
   const token = getToken();
 
@@ -95,15 +108,37 @@ async function request<T>(
     // failure (no/invalid refresh token, server error) triggers logout.
     const refreshed = await ensureRefresh();
     if (refreshed) {
-      return request<T>(method, path, body, skipAuthRedirect, true);
+      return request<T>(method, path, body, skipAuthRedirect, true, _throttleRetries);
     }
     clearSessionAndRedirect();
+  }
+
+  /**
+   * Сервер попросил сбавить темп.
+   *
+   * Это не ошибка партнёра: так отвечает защита от слишком частых запросов,
+   * когда быстро прокручивают длинный список. Пережидаем и повторяем сами —
+   * человек не должен видеть «Too many requests» посреди прокрутки. Сколько
+   * ждать, сервер сообщает в заголовке; если не сообщил, ждём с нарастанием.
+   */
+  if (response.status === 429 && _throttleRetries < THROTTLE_RETRIES) {
+    const header = Number(response.headers.get('Retry-After'));
+    const waitMs = Number.isFinite(header) && header > 0
+      ? Math.min(header * 1000, 10_000)
+      : 600 * 2 ** _throttleRetries;
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    return request<T>(method, path, body, skipAuthRedirect, _retried, _throttleRetries + 1);
   }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Ошибка сервера' }));
     const message = Array.isArray(error.message) ? error.message[0] : error.message;
-    const err = new Error(message || `HTTP ${response.status}`);
+    // Технический текст защиты от частых запросов партнёру ничего не говорит.
+    const err = new Error(
+      response.status === 429
+        ? 'Слишком много запросов подряд — подождите несколько секунд'
+        : message || `HTTP ${response.status}`,
+    );
     // Пробрасываем структурированные поля (code/status) — фронт распознаёт
     // тарифные блокировки (DEAL_LOCKED, CASHBOX_LIMIT и т.п.).
     (err as any).code = error.code;

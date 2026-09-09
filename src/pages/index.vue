@@ -2,7 +2,6 @@
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { useRequestsStore } from '@/stores/requests'
-import { useNotificationsStore } from '@/stores/notifications'
 import { formatCurrency, formatCurrencyShort, formatDateShort, formatPhone } from '@/utils/formatters'
 import { userName, clientProfileName } from '@/types'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
@@ -32,7 +31,6 @@ const { capital, isCapitalSet, fetchCapital } = useCapital()
 const dealsStore = useDealsStore()
 const paymentsStore = usePaymentsStore()
 const requestsStore = useRequestsStore()
-const notificationsStore = useNotificationsStore()
 const authStore = useAuthStore()
 const subscription = useSubscription()
 const sections = useSections()
@@ -158,7 +156,6 @@ onMounted(async () => {
       loadUpcoming(),
       loadTopDeals(),
       requestsStore.fetchRequests(),
-      notificationsStore.fetchNotifications(),
       fetchCapital(),
       canSeeCoInvestors.value
         ? api.get<any[]>('/co-investors/persons')
@@ -208,7 +205,7 @@ const BREAKDOWN_META: Record<string, { title: string; hint: string; color: strin
   },
   profit: {
     title: 'Наценка по сделкам',
-    hint: 'Наценка по каждой сделке: цена продажи минус закупка. Это доход до вычета доли со-инвесторов.',
+    hint: 'Наценка по каждой сделке: цена продажи минус закупка. Это доход до вычета доли инвесторов.',
     color: '#059669',
   },
   remaining: {
@@ -493,7 +490,7 @@ function getAvatarColor(name?: string) {
         </div>
         <div class="kpi-info">
           <div class="kpi-value">{{ investorsCount }}</div>
-          <div class="kpi-label">Со-инвесторов</div>
+          <div class="kpi-label">Инвесторов</div>
         </div>
       </div>
 

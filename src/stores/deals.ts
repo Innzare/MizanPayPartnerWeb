@@ -23,6 +23,12 @@ export interface DealsPageParams {
   dir?: 'asc' | 'desc'
   limit: number
   offset: number
+  /**
+   * Расширенные фильтры (период, признаки, диапазоны и т.д.) — готовые
+   * параметры из панели фильтров. Уходят на сервер как есть: имена совпадают
+   * с теми, что сервер понимает, и с ключами в адресе страницы.
+   */
+  extra?: Record<string, string | number>
 }
 
 /** Собирает query-строку, пропуская пустые параметры. */
@@ -37,6 +43,9 @@ function dealsQuery(p: Partial<DealsPageParams>): string {
   if (p.dir) qs.set('dir', p.dir)
   if (p.limit != null) qs.set('limit', String(p.limit))
   if (p.offset) qs.set('offset', String(p.offset))
+  for (const [k, v] of Object.entries(p.extra ?? {})) {
+    if (v !== '' && v != null) qs.set(k, String(v))
+  }
   return qs.toString()
 }
 
@@ -58,18 +67,68 @@ export const useDealsStore = defineStore('deals', () => {
   const counts = ref<DealCounts | null>(null)
   const countsLoading = ref(false)
 
+  /**
+   * Снимок списка на время сессии — чтобы вернуться из сделки туда же, где был.
+   *
+   * В режиме автоподгрузки партнёр пролистывает сотни строк; без снимка
+   * возврат из карточки сделки отбрасывал бы его в начало списка, и всё
+   * пришлось бы листать заново.
+   *
+   * Живёт только в памяти: при обновлении страницы список честно грузится
+   * заново, иначе можно было бы увидеть вчерашние остатки.
+   */
+  const listSnapshot = ref<{
+    key: string
+    items: Deal[]
+    total: number
+    scrollY: number
+    openedId: string | null
+  } | null>(null)
+
+  function saveListSnapshot(snap: { key: string; scrollY: number; openedId: string | null }) {
+    listSnapshot.value = {
+      ...snap,
+      items: list.value.slice(),
+      total: listTotal.value,
+    }
+  }
+
+  /** Вернуть сохранённый список, если он от той же выборки. */
+  function restoreListSnapshot(key: string): { scrollY: number; openedId: string | null } | null {
+    const snap = listSnapshot.value
+    if (!snap || snap.key !== key || !snap.items.length) return null
+    list.value = snap.items
+    listTotal.value = snap.total
+    listSnapshot.value = null
+    return { scrollY: snap.scrollY, openedId: snap.openedId }
+  }
+
+  function dropListSnapshot() {
+    listSnapshot.value = null
+  }
+
   // Защита от гонок: быстрый набор в поиске порождает несколько запросов, и
   // ответ на устаревший может прийти последним, затерев свежий результат.
   let pageReq = 0
   let countsReq = 0
 
-  async function fetchDealsPage(params: DealsPageParams) {
+  /**
+   * @param append дописать порцию к текущему списку (автоподгрузка), а не
+   *               заменить его. Дубликаты по id отбрасываем: между запросами
+   *               в начало списка могла попасть новая сделка и сдвинуть окно.
+   */
+  async function fetchDealsPage(params: DealsPageParams, append = false) {
     const req = ++pageReq
     listLoading.value = true
     try {
       const res = await api.get<Page<Deal>>(`/deals?${dealsQuery(params)}`)
       if (req !== pageReq) return // пришёл ответ на отменённый запрос
-      list.value = res.items
+      if (append) {
+        const seen = new Set(list.value.map((d) => d.id))
+        list.value = [...list.value, ...res.items.filter((d) => !seen.has(d.id))]
+      } else {
+        list.value = res.items
+      }
       listTotal.value = res.total
     } catch (e: any) {
       if (req !== pageReq) return
@@ -153,6 +212,8 @@ export const useDealsStore = defineStore('deals', () => {
   }
 
   async function updateDeal(id: string, data: {
+    /** Программа рассрочки; null — отвязать договор от программы. */
+    programId?: string | null
     productName?: string
     externalClientName?: string
     externalClientPhone?: string
@@ -201,6 +262,8 @@ export const useDealsStore = defineStore('deals', () => {
     totalPrice?: number
     downPayment?: number
     numberOfPayments: number
+    /** Программа рассрочки, по которой оформляется договор. */
+    programId?: string
     paymentInterval?: string
     paymentType?: string
     dealDate?: string
@@ -216,6 +279,12 @@ export const useDealsStore = defineStore('deals', () => {
     // creation (so the down-payment accrual already respects it). Omit to
     // default to every CI of the deal's cashbox.
     participants?: Array<{ coInvestorId: string; profitPercentOverride?: number | null; managementFeePctOverride?: number | null; costFeeRatePct?: number | null }>
+    /**
+     * Счета движений: откуда платим поставщику и куда лёг первый взнос.
+     * Пусто — сервер подставит сам (счёт кассы, затем счёт по умолчанию).
+     */
+    deployAccountId?: string
+    downPaymentAccountId?: string
   }) {
     isLoading.value = true
     error.value = null
@@ -246,9 +315,11 @@ export const useDealsStore = defineStore('deals', () => {
     q?: string; sort?: string; dir?: 'asc' | 'desc'; limit: number; offset: number
   } | null = null
 
-  async function fetchTrash(params?: {
-    q?: string; sort?: string; dir?: 'asc' | 'desc'; limit?: number; offset?: number
-  }) {
+  /** @param append дописать порцию (автоподгрузка), а не заменить список. */
+  async function fetchTrash(
+    params?: { q?: string; sort?: string; dir?: 'asc' | 'desc'; limit?: number; offset?: number },
+    append = false,
+  ) {
     const p = {
       q: params?.q ?? '', sort: params?.sort, dir: params?.dir,
       limit: params?.limit ?? 50, offset: params?.offset ?? 0,
@@ -265,7 +336,12 @@ export const useDealsStore = defineStore('deals', () => {
       if (p.offset) qs.set('offset', String(p.offset))
       const res = await api.get<Page<Deal>>(`/deals/trash/list?${qs}`)
       if (req !== trashReq) return
-      trash.value = res.items
+      if (append) {
+        const seen = new Set(trash.value.map((d) => d.id))
+        trash.value = [...trash.value, ...res.items.filter((d) => !seen.has(d.id))]
+      } else {
+        trash.value = res.items
+      }
       trashTotal.value = res.total
       trashCount.value = res.total
     } catch (e: any) {
@@ -343,6 +419,7 @@ export const useDealsStore = defineStore('deals', () => {
     deals, isLoading, error,
     getDeal, fetchDeal, updateDealStatus, updateDeal, fetchAnalytics, createDirectDeal,
     list, listTotal, listLoading, counts, countsLoading, fetchDealsPage, fetchDealCounts, patchInList,
+    saveListSnapshot, restoreListSnapshot, dropListSnapshot,
     trash, trashTotal, trashCount, trashLoading,
     fetchTrash, fetchTrashCount, refreshTrash,
     restoreDeal, restoreBatch, permanentDelete, emptyTrash,

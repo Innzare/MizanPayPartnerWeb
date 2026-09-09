@@ -21,6 +21,8 @@ export interface PaymentsPageParams {
   dir?: 'asc' | 'desc'
   limit?: number
   offset?: number
+  /** Расширенные фильтры панели (период оплаты, суммы, участники и т.д.). */
+  extra?: Record<string, string | number>
 }
 
 /** Собирает query-строку, пропуская пустые параметры. */
@@ -40,6 +42,11 @@ function paymentsQuery(p: PaymentsPageParams): string {
   if (p.dir) qs.set('dir', p.dir)
   if (p.limit != null) qs.set('limit', String(p.limit))
   if (p.offset) qs.set('offset', String(p.offset))
+  // Расширенные фильтры панели уходят как есть: имена совпадают с теми, что
+  // понимает сервер, и с ключами в адресе страницы.
+  for (const [k, v] of Object.entries(p.extra ?? {})) {
+    if (v !== '' && v != null) qs.set(k, String(v))
+  }
   return qs.toString()
 }
 
@@ -72,7 +79,8 @@ export const usePaymentsStore = defineStore('payments', () => {
   let facetsReq = 0
   let calendarReq = 0
 
-  async function fetchPaymentsPage(params: PaymentsPageParams) {
+  /** @param append дописать порцию (автоподгрузка), а не заменить список. */
+  async function fetchPaymentsPage(params: PaymentsPageParams, append = false) {
     const req = ++pageReq
     listLoading.value = true
     try {
@@ -80,7 +88,13 @@ export const usePaymentsStore = defineStore('payments', () => {
         `/payments?${paymentsQuery(params)}`,
       )
       if (req !== pageReq) return
-      list.value = res.items
+      if (append) {
+        // Дубли по id: между запросами выборка могла сдвинуться новой строкой.
+        const seen = new Set(list.value.map((p) => p.id))
+        list.value = [...list.value, ...res.items.filter((p) => !seen.has(p.id))]
+      } else {
+        list.value = res.items
+      }
       listTotal.value = res.total
       listSum.value = res.sums?.amount ?? 0
     } catch (e: any) {
@@ -159,6 +173,10 @@ export const usePaymentsStore = defineStore('payments', () => {
       paidAt?: string
       redistributeMode?: 'EQUAL' | 'NEXT' | 'LAST' | 'MANUAL'
       remainingSchedule?: Array<{ paymentId: string; amount: number }>
+      /** Режим ввода суммы: платёж за месяц или досрочное погашение. */
+      payMode?: 'MONTH' | 'EARLY'
+      /** Что делать с недостающей частью: разложить по графику или простить. */
+      shortfallAction?: 'REDISTRIBUTE' | 'FORGIVE'
     }
   ) {
     try {

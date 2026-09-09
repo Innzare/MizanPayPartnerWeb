@@ -130,8 +130,22 @@ export async function exportTemplatePdf(
   margins?: { top: number; bottom: number; left: number; right: number },
   opts: { returnBlob?: boolean } = {},
 ): Promise<Blob | void> {
+  return renderHtmlToPdf(replaceVariables(html, deal, payments, investor), margins, opts)
+}
+
+/**
+ * Разметка шаблона → PDF.
+ *
+ * Общая часть для договора и квитанции: подстановка переменных у них своя, а
+ * печать одна и та же. Держать две копии этого кода — значит однажды починить
+ * поля только в одном документе.
+ */
+export async function renderHtmlToPdf(
+  finalHtml: string,
+  margins?: { top: number; bottom: number; left: number; right: number },
+  opts: { returnBlob?: boolean } = {},
+): Promise<Blob | void> {
   const m = margins || { top: 20, bottom: 20, left: 25, right: 15 }
-  const finalHtml = replaceVariables(html, deal, payments, investor)
 
   // Calculate content area in px
   const marginTopPx = Math.round(m.top * PX_PER_MM)

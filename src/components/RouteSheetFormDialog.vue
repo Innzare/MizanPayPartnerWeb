@@ -5,6 +5,7 @@ import { useSuppliersStore, type SupplierRow, type SupplierDebt } from '@/stores
 import { useRouteSheetsStore, type RouteSheetInput } from '@/stores/routeSheets'
 import { formatCurrency } from '@/utils/formatters'
 import FormModal from '@/components/FormModal.vue'
+import DateField from '@/components/DateField.vue'
 
 const props = defineProps<{ modelValue: boolean; editId?: string | null }>()
 const emit = defineEmits<{
@@ -204,7 +205,7 @@ async function save() {
           </div>
           <div class="form-field">
             <label class="field-label">Дата</label>
-            <input v-model="date" type="date" class="field-input" />
+            <DateField v-model="date" plain />
           </div>
         </div>
 

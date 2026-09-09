@@ -12,6 +12,8 @@
  */
 import { computed, ref, watch } from 'vue'
 import { usePaymentsStore } from '@/stores/payments'
+import { dateToIso, shiftIso, todayIso } from '@/utils/dateInput'
+import DateField from '@/components/DateField.vue'
 import { useToast } from '@/composables/useToast'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import type { Deal, Payment } from '@/types'
@@ -58,11 +60,7 @@ const REASON_OPTIONS = [
 ]
 
 /** Переносить можно только вперёд — минимум на завтра. */
-const minDate = computed(() => {
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  return tomorrow.toISOString().slice(0, 10)
-})
+const minDate = computed(() => shiftIso(todayIso(), { days: 1 }))
 
 // Сброс при каждом открытии: иначе в модалку протекали бы дата и причина от
 // предыдущего платежа.
@@ -73,7 +71,7 @@ watch(
     // По умолчанию — неделя от текущего срока: самый частый шаг переноса.
     const d = new Date(props.payment.dueDate)
     d.setDate(d.getDate() + 7)
-    newDate.value = d.toISOString().slice(0, 10)
+    newDate.value = dateToIso(d)
     reason.value = ''
   },
   { immediate: true },
@@ -130,7 +128,7 @@ async function confirm() {
 
       <div class="mb-4">
         <label class="field-label">Новая дата</label>
-        <input v-model="newDate" type="date" :min="minDate" class="field-input" />
+        <DateField v-model="newDate" :min="minDate" plain />
       </div>
 
       <div class="mb-5">

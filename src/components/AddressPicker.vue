@@ -249,14 +249,24 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="ap">
+    <!-- Поле поиска — такое же, как остальные поля формы: раньше здесь стоял
+         Vuetify-инпут со своей высотой, рамкой и фоном, и адрес выбивался из
+         строя полей вокруг. -->
     <div class="ap-search">
-      <v-text-field
+      <v-icon icon="mdi-magnify" size="18" class="ap-search-icon" />
+      <input
         v-model="search"
-        variant="outlined" density="comfortable" rounded="lg" hide-details
+        type="text"
+        class="ap-input"
         placeholder="Начните вводить адрес…"
-        prepend-inner-icon="mdi-magnify"
-        :loading="searchLoading"
         autocomplete="off"
+      />
+      <v-progress-circular
+        v-if="searchLoading"
+        indeterminate
+        size="16"
+        width="2"
+        class="ap-search-spinner"
       />
       <v-list v-if="suggestions.length" class="ap-suggest" density="compact" rounded="lg">
         <v-list-item
@@ -289,6 +299,29 @@ onBeforeUnmount(() => {
 <style scoped>
 .ap { position: relative; }
 .ap-search { position: relative; margin-bottom: 10px; }
+/* Повторяет .field-input из styles/forms.css: компонент вставляют и в формы
+   без обёртки .mz-form, поэтому размеры заданы здесь. */
+.ap-input {
+  width: 100%; height: 44px; padding: 0 40px 0 38px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 10px; font-size: 14px;
+  color: rgb(var(--v-theme-on-surface));
+  background: rgb(var(--v-theme-surface));
+  outline: none; transition: all 0.15s;
+}
+.ap-input::placeholder { color: rgba(var(--v-theme-on-surface), 0.3); }
+.ap-input:focus {
+  border-color: #047857;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #047857 8%, transparent);
+}
+.ap-search-icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: rgba(var(--v-theme-on-surface), 0.35); pointer-events: none;
+}
+.ap-search-spinner {
+  position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  color: #047857;
+}
 .ap-suggest {
   position: absolute; top: 100%; left: 0; right: 0; z-index: 30; margin-top: 4px;
   max-height: 240px; overflow-y: auto;

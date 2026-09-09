@@ -1,7 +1,7 @@
 // Investor (authenticated user in partner web)
 export type VerificationLevel = 'NONE' | 'BASIC' | 'VERIFIED' | 'FULL'
 export type SubscriptionPlan = 'FREE' | 'PRO' | 'BUSINESS' | 'PREMIUM'
-export type StaffRole = 'MANAGER' | 'OPERATOR'
+export type StaffRole = 'MANAGER' | 'OPERATOR' | 'POINT_OPERATOR'
 export type DealsAccessMode = 'ALL' | 'ASSIGNED_ONLY'
 
 export interface PlanFeatures {
@@ -80,6 +80,11 @@ export interface User {
   // меньше threshold. null = ограничения нет. Используется, чтобы помечать
   // недоступные сделки во всех местах, где они показываются.
   dealAccessThreshold?: number | null
+  /**
+   * На сколько дней назад СОТРУДНИК может датировать денежную операцию.
+   * Владельца не касается. 0 — только сегодняшний день.
+   */
+  backdateWindowDays?: number
   staffId?: string
   staffRole?: StaffRole
   accessOverrides?: string[]
@@ -109,6 +114,10 @@ export interface StaffMember {
   canCreateDeals?: boolean
   // Cashbox ids hidden from this staff (deny-list). Empty = sees all cashboxes.
   cashBoxOverrides?: string[]
+  // Пункты приёма оператора — белый список. Пусто = доступа нет.
+  assignedAccountIds?: string[]
+  // Права, выданные сотруднику поимённо сверх роли.
+  extraPermissions?: string[]
   // RBAC: назначенная кастомная роль (grant-list прав). null = на legacy-правах.
   roleId?: string | null
   createdAt: string
@@ -134,24 +143,27 @@ export interface StaffRoleTemplate {
 export const STAFF_ROLE_LABELS: Record<StaffRole, string> = {
   MANAGER: 'Менеджер',
   OPERATOR: 'Оператор',
+  POINT_OPERATOR: 'Оператор пункта приёма',
 }
 
 // Routes accessible per role (owner = all routes). The home page `/` is
 // owner-only — staff is redirected to /deals (or first accessible route).
 export const ROLE_ROUTE_ACCESS: Record<StaffRole, string[]> = {
-  MANAGER: ['/analytics', '/deals', '/clients', '/payments', '/broadcasts', '/products', '/requests', '/co-investors', '/cashboxes', '/registry', '/notifications', '/activity', '/calculator', '/create-deal', '/create-product', '/import', '/messages'],
-  OPERATOR: ['/analytics', '/deals', '/clients', '/payments', '/broadcasts', '/notifications', '/activity', '/calculator', '/messages'],
+  MANAGER: ['/analytics', '/deals', '/clients', '/payments', '/broadcasts', '/products', '/requests', '/co-investors', '/cashboxes', '/registry', '/activity', '/calculator', '/create-deal', '/create-product', '/import', '/messages'],
+  OPERATOR: ['/analytics', '/deals', '/clients', '/payments', '/broadcasts', '/activity', '/calculator', '/messages'],
+  // Оператор пункта работает только в своём кабинете.
+  POINT_OPERATOR: ['/point'],
 }
 
 // Sections that the partner can disable per-staff via accessOverrides.
-// Excludes always-on stuff (`/`, `/calculator`, `/notifications`, `/messages`)
+// Excludes always-on stuff (`/`, `/calculator`, `/messages`)
 // and action shortcuts (`/create-deal`, `/import`) — those follow their parent.
 export const STAFF_TOGGLEABLE_ROUTES: { path: string; label: string; icon: string }[] = [
   { path: '/analytics', label: 'Аналитика и отчёты', icon: 'mdi-chart-line' },
   { path: '/deals', label: 'Сделки', icon: 'mdi-briefcase' },
   { path: '/clients', label: 'Клиенты', icon: 'mdi-account-group' },
   { path: '/payments', label: 'Платежи', icon: 'mdi-cash-multiple' },
-  { path: '/co-investors', label: 'Со-инвесторы', icon: 'mdi-account-group-outline' },
+  { path: '/co-investors', label: 'Инвесторы', icon: 'mdi-account-group-outline' },
   { path: '/cashboxes', label: 'Кассы', icon: 'mdi-wallet-outline' },
   { path: '/registry', label: 'Реестр клиентов', icon: 'mdi-shield-account' },
   { path: '/activity', label: 'История действий', icon: 'mdi-history' },
@@ -185,9 +197,23 @@ export type DealStatus =
 export type PaymentInterval = 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
 export type PaymentType = 'EQUAL' | 'DECREASING' | 'CUSTOM'
 
+/** Ближайший неоплаченный платёж — для кнопки «Оплатить» прямо в строке. */
+export interface NextPaymentBrief {
+  id: string
+  amount: number
+  dueDate: string
+  number: number
+  status: PaymentStatus
+}
+
 export interface Deal {
   id: string
   dealNumber: number
+  /**
+   * Ближайший неоплаченный платёж. Приходит вместе со списком, чтобы окно
+   * оплаты открывалось сразу, без отдельного запроса графика.
+   */
+  nextPayment?: NextPaymentBrief | null
   // Тарифная блокировка: сделка недоступна на текущем тарифе (на FREE открыты
   // только последние N сделок). Видна в списке, но открыть/менять нельзя.
   locked?: boolean
@@ -212,6 +238,23 @@ export interface Deal {
   // — see backend cash-flow.service.ts for full semantics.
   wholesalePrice?: number | null
   profitSplitBase?: 'MARKUP_ONLY' | 'FULL_MARGIN'
+  /** Прощённый по сделке долг (скидка). Уменьшает и остаток, и базу прибыли. */
+  discount?: number
+  /** Свободная пометка партнёра по договору. */
+  comment?: string | null
+
+  // ── Данные для дополнительных колонок таблицы ──
+  // Приходят, только когда соответствующая колонка включена: сервер считает
+  // их отдельными запросами и делает это лишь для строк текущей страницы.
+  supplierName?: string | null
+  clientBirthDate?: string | null
+  clientAddress?: string | null
+  clientRegAddress?: string | null
+  /** Поручители сделки: имя, телефон и адрес каждого. */
+  guarantorsList?: Array<{ name: string; phone: string | null; address: string | null }>
+  overdueAmount?: number
+  overdueCount?: number
+  paidTotal?: number
   externalClientName?: string
   externalClientPhone?: string
   clientProfileId?: string
@@ -773,6 +816,7 @@ export interface ClientProfile {
   passportNumber?: string
   passportIssuedBy?: string
   passportIssuedAt?: string
+  city?: string | null
   registrationAddress?: string
   residentialAddress?: string
   inn?: string
@@ -781,8 +825,21 @@ export interface ClientProfile {
   createdByInvestorId?: string
   /** Профиль клиента платформы (виден всем партнёрам), а не личная запись. */
   isPublic?: boolean
+  /**
+   * Дополнительные номера: жена, работа, сосед — по кому клиента можно
+   * застать. В склейке клиентов не участвуют, только в звонках и поиске.
+   */
+  extraPhones?: ClientExtraPhone[]
   createdAt: string
   updatedAt: string
+}
+
+export interface ClientExtraPhone {
+  id: string
+  phone: string
+  label?: string | null
+  hasWhatsapp: boolean
+  order: number
 }
 
 export interface ClientProfileStats {

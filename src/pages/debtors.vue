@@ -1,18 +1,26 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDebtorsStore, type DebtorRow, type PromiseStatus, type DebtorAnalytics } from '@/stores/debtors'
 import { useAuthStore } from '@/stores/auth'
+import ClientLink from '@/components/ClientLink.vue'
+import DateField from '@/components/DateField.vue'
 import { useSections } from '@/composables/useSections'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { formatCurrency, formatDateShort } from '@/utils/formatters'
 import ServerPager from '@/components/ServerPager.vue'
+import { useAutoLoad } from '@/composables/useAutoLoad'
+import { useDebtorsFilters } from '@/composables/useDebtorsFilters'
+import DebtorsFilterPanel from '@/components/DebtorsFilterPanel.vue'
+import { api } from '@/api/client'
 import DebtorDetailModal from '@/components/DebtorDetailModal.vue'
 import PromiseDialog from '@/components/PromiseDialog.vue'
 
 const store = useDebtorsStore()
 const auth = useAuthStore()
+/** Подсказку про адрес показываем только тем, кто по нему реально ищет. */
+const canSearchAddress = computed(() => auth.can('clients.view'))
 const sections = useSections()
 const router = useRouter()
 const { isDark } = useIsDark()
@@ -49,6 +57,38 @@ function openRowPromise(row: DebtorRow, e?: Event) {
   e?.stopPropagation()
   rowPromiseRow.value = row
   rowPromiseOpen.value = true
+}
+
+/** Открыть саму сделку — из строки должника это самый частый следующий шаг. */
+function openDealPage(row: DebtorRow, e?: Event) {
+  e?.stopPropagation()
+  router.push(`/deals/${row.dealId}`)
+}
+
+// ── Тень у закреплённой колонки действий (как на странице сделок) ──
+// Показываем её, только когда справа реально осталось что прокручивать.
+const tableWrapRef = ref<HTMLElement | null>(null)
+const hasHiddenColumns = ref(false)
+
+function updateScrollShadow() {
+  const el = tableWrapRef.value
+  if (!el) {
+    hasHiddenColumns.value = false
+    return
+  }
+  hasHiddenColumns.value = el.scrollWidth - el.clientWidth - el.scrollLeft > 1
+}
+
+function bindTableScroll() {
+  const el = document.querySelector('.dbt-table .v-table__wrapper') as HTMLElement | null
+  if (el && el === tableWrapRef.value) {
+    updateScrollShadow()
+    return
+  }
+  tableWrapRef.value?.removeEventListener('scroll', updateScrollShadow)
+  tableWrapRef.value = el
+  el?.addEventListener('scroll', updateScrollShadow, { passive: true })
+  updateScrollShadow()
 }
 
 // ── Настраиваемые колонки таблицы (как на странице сделок) ──
@@ -162,6 +202,26 @@ const assigneeParam = computed(() => {
   return f
 })
 
+// ── Расширенные фильтры ──
+// Та же панель, что в сделках и платежах. Состав свой: здесь отбирают по
+// глубине просрочки.
+const filtersOpen = ref(false)
+const selectedClientLabel = ref('')
+const filters = useDebtorsFilters({ labels: () => ({ client: selectedClientLabel.value }) })
+
+watch(
+  () => filters.state.value.clientKey,
+  async (key) => {
+    if (!key.startsWith('cp:')) { selectedClientLabel.value = ''; return }
+    try {
+      const p = await api.get<any>(`/client-profiles/${key.slice(3)}`)
+      selectedClientLabel.value = [p.lastName, p.firstName].filter(Boolean).join(' ') || 'клиент'
+    } catch {
+      selectedClientLabel.value = 'клиент'
+    }
+  },
+)
+
 function pageParams() {
   return {
     q: search.value,
@@ -171,13 +231,57 @@ function pageParams() {
     dir: sortDir.value,
     limit: perPage.value,
     offset: (page.value - 1) * perPage.value,
+    extra: filters.query.value,
   }
 }
+
+// Смена условий возвращает на первую страницу: иначе можно оказаться на
+// сороковой странице выборки, где всего две.
+watch(
+  () => filters.query.value,
+  () => {
+    if (page.value !== 1) page.value = 1
+    else loadPage()
+  },
+  { deep: true },
+)
 
 function loadPage() {
   if (isArchive.value) store.fetchArchive(pageParams())
   else store.fetchDebtors(pageParams())
 }
+
+// ── Автоподгрузка ────────────────────────────────────────────────────
+// Настройка своя у раздела: в сделках может быть включена, здесь — нет.
+const loadedCount = computed(() => displayedRows.value.length)
+const hasMore = computed(() => loadedCount.value < totalRows.value)
+
+async function loadNextChunk() {
+  if (!hasMore.value || listLoading.value) return
+  const params = { ...pageParams(), offset: loadedCount.value }
+  if (isArchive.value) await store.fetchArchive(params, true)
+  else await store.fetchDebtors(params, true)
+}
+
+const autoLoad = useAutoLoad({
+  storageKey: 'debtors:auto-load',
+  hasMore,
+  busy: listLoading,
+  loadMore: loadNextChunk,
+})
+/** Метка конца списка — её отслеживает автоподгрузка. */
+const autoLoadSentinel = autoLoad.sentinel
+
+// Переключение режима всегда возвращает к началу выборки, иначе счётчик
+// «показано N» врал бы про уже пролистанные страницы.
+watch(
+  () => autoLoad.enabled.value,
+  () => {
+    autoLoad.reset()
+    if (page.value !== 1) page.value = 1
+    else loadPage()
+  },
+)
 
 /** После правки обещания меняются и строка списка, и счётчик нарушенных. */
 function refreshAfterMutation() {
@@ -187,6 +291,14 @@ function refreshAfterMutation() {
 
 // Любая смена условий возвращает на первую страницу — иначе можно оказаться
 // на 40-й странице выборки, где всего две.
+// Таблица перерисовывается при смене набора колонок и содержимого — обёртку
+// прокрутки надо находить заново, иначе тень «залипнет».
+watch(
+  () => [visibleCols.value, store.rows, store.archiveRows],
+  () => { void nextTick(bindTableScroll) },
+  { deep: true },
+)
+
 watch([search, promiseFilter, assigneeFilter, sortCol, sortDir, perPage], () => {
   page.value = 1
   loadPage()
@@ -388,11 +500,7 @@ function applyPreset(p: { key: PresetKey; fromIso: string; toIso: string }) {
 }
 // Ручная правка дат сбрасывает выбранный пресет (период становится «свой»).
 function onDateEdit() { activePreset.value = null }
-// Клик по полю даты открывает нативный календарь (там, где поддерживается showPicker).
-function openCal(e: Event) {
-  const input = (e.currentTarget as HTMLElement)?.querySelector('input') as HTMLInputElement | null
-  try { input?.showPicker?.() } catch { /* нет поддержки — обычный клик */ }
-}
+
 const agingRows = computed(() => {
   const a = analytics.value?.aging
   if (!a) return []
@@ -426,9 +534,16 @@ watch(tab, (t) => {
 
 onMounted(() => {
   loadPage()
+  void nextTick(bindTableScroll)
+  window.addEventListener('resize', updateScrollShadow)
   if (auth.can('debtors.kpi')) store.fetchKpi()
   if (canSettings.value) store.fetchSettings()
   if (canAssign.value) store.fetchStaff()
+})
+
+onUnmounted(() => {
+  tableWrapRef.value?.removeEventListener('scroll', updateScrollShadow)
+  window.removeEventListener('resize', updateScrollShadow)
 })
 </script>
 
@@ -477,22 +592,22 @@ onMounted(() => {
     </div>
 
     <!-- Табы (единый стиль проекта — как в настройках) -->
-    <div class="settings-tabs">
-      <button class="settings-tab" :class="{ active: tab === 'list' }" @click="tab = 'list'">
+    <div class="page-tabs">
+      <button class="page-tab" :class="{ active: tab === 'list' }" @click="tab = 'list'">
         <v-icon icon="mdi-account-alert-outline" size="18" />
         <span>Должники</span>
-        <span class="dbt-tabcount" :class="{ 'dbt-tabcount--on': tab === 'list' }">{{ stats.count }}</span>
+        <span class="page-tab-count">{{ stats.count }}</span>
       </button>
-      <button class="settings-tab" :class="{ active: tab === 'archive' }" @click="tab = 'archive'">
+      <button class="page-tab" :class="{ active: tab === 'archive' }" @click="tab = 'archive'">
         <v-icon icon="mdi-archive-outline" size="18" />
         <span>Архив</span>
-        <span v-if="store.archiveTotal" class="dbt-tabcount" :class="{ 'dbt-tabcount--on': tab === 'archive' }">{{ store.archiveTotal }}</span>
+        <span v-if="store.archiveTotal" class="page-tab-count">{{ store.archiveTotal }}</span>
       </button>
-      <button class="settings-tab" :class="{ active: tab === 'analytics' }" @click="tab = 'analytics'">
+      <button class="page-tab" :class="{ active: tab === 'analytics' }" @click="tab = 'analytics'">
         <v-icon icon="mdi-chart-box-outline" size="18" />
         <span>Аналитика</span>
       </button>
-      <button v-if="canSettings" class="settings-tab" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">
+      <button v-if="canSettings" class="page-tab" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">
         <v-icon icon="mdi-cog-outline" size="18" />
         <span>Настройки</span>
       </button>
@@ -521,7 +636,18 @@ onMounted(() => {
             </v-menu>
 
             <!-- Фильтр по колонке «Обещал оплатить» -->
-            <v-menu :close-on-content-click="true" location="bottom start">
+                          <!-- Расширенные фильтры: суммы, дни просрочки, товар, клиент. -->
+              <button
+                class="fb-btn"
+                :class="{ 'fb-btn--active': filters.hasAny.value }"
+                @click="filtersOpen = true"
+              >
+                <v-icon icon="mdi-filter-variant" size="16" />
+                <span>Фильтры</span>
+                <span v-if="filters.activeCount.value" class="fb-btn-count">{{ filters.activeCount.value }}</span>
+              </button>
+
+              <v-menu :close-on-content-click="true" location="bottom start">
               <template #activator="{ props: menuProps }">
                 <button class="fb-btn" :class="{ 'fb-btn--active': promiseFilter !== 'all' }" v-bind="menuProps">
                   <v-icon icon="mdi-hand-coin-outline" size="16" />
@@ -573,10 +699,10 @@ onMounted(() => {
             </button>
           </div>
 
-          <div class="d-flex align-center ga-2">
+          <div class="d-flex align-center ga-2 flex-grow-1 justify-end">
             <div class="dbt-search">
               <v-icon icon="mdi-magnify" size="18" />
-              <input v-model="search" type="text" placeholder="Поиск…" />
+              <input v-model="search" type="text" :placeholder="`Поиск по клиенту, товару${canSearchAddress ? ', адресу' : ''}, номеру…`" />
             </div>
             <!-- Включить режим выбора (скрыт по умолчанию — как на сделках) -->
             <button v-if="canAssign && !isArchive && !selectMode" class="fb-btn" title="Выбрать сделки" @click="selectMode = true">
@@ -629,7 +755,28 @@ onMounted(() => {
         </div>
 
         <!-- Таблица -->
-        <v-table v-else-if="displayedRows.length" density="default" hover class="dbt-table">
+        <!-- Плашки включённых фильтров. -->
+        <div v-if="filters.chips.value.length" class="active-filters">
+          <button
+            v-for="chip in filters.chips.value"
+            :key="chip.key"
+            type="button"
+            class="af-chip"
+            @click="chip.clear()"
+          >
+            <span>{{ chip.label }}</span>
+            <v-icon icon="mdi-close" size="13" />
+          </button>
+          <button type="button" class="af-clear" @click="filters.reset()">Сбросить всё</button>
+        </div>
+
+        <v-table
+          v-else-if="displayedRows.length"
+          density="default"
+          hover
+          class="dbt-table"
+          :class="{ 'table--scrolled': hasHiddenColumns }"
+        >
           <thead>
             <tr>
               <th v-if="selectMode" style="width: 40px;">
@@ -658,7 +805,9 @@ onMounted(() => {
                   />
                 </span>
               </th>
-              <th v-if="canActivity && !isArchive" class="text-end" style="width: 56px;"></th>
+              <!-- Действия по должнику прямо в строке: колонка закреплена
+                   справа, чтобы кнопки не уезжали при прокрутке вбок. -->
+              <th v-if="!selectMode" class="text-end col-actions">Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -677,7 +826,9 @@ onMounted(() => {
 
               <td v-if="isColVisible('client')" style="min-width: 220px;">
                 <div>
-                  <div class="text-no-wrap font-weight-medium">{{ row.clientName }}</div>
+                  <div class="text-no-wrap font-weight-medium">
+                    <ClientLink :profile-id="row.clientProfileId" :name="row.clientName" :disabled="selectMode" />
+                  </div>
                   <div v-if="row.clientPhone" class="dbt-phone text-no-wrap">{{ row.clientPhone }}</div>
                 </div>
               </td>
@@ -745,10 +896,28 @@ onMounted(() => {
                 </div>
               </td>
 
-              <td v-if="canActivity && !isArchive" class="text-end" @click.stop>
-                <button class="dbt-rowaction" title="Обещал оплатить" @click="openRowPromise(row, $event)">
-                  <v-icon icon="mdi-hand-coin-outline" size="18" />
-                </button>
+              <td v-if="!selectMode" class="text-end text-no-wrap col-actions" @click.stop>
+                <div class="row-actions">
+                  <button
+                    v-if="canActivity && !isArchive"
+                    class="row-action-btn row-action-btn--warning"
+                    title="Обещал оплатить"
+                    @click="openRowPromise(row, $event)"
+                  >
+                    <v-icon icon="mdi-hand-coin-outline" size="17" />
+                  </button>
+                  <button
+                    v-if="sections.visible('whatsapp') && row.clientPhone"
+                    class="row-action-btn row-action-btn--whatsapp"
+                    title="Написать в WhatsApp"
+                    @click="writeWhatsApp(row, $event)"
+                  >
+                    <v-icon icon="mdi-whatsapp" size="17" />
+                  </button>
+                  <button class="row-action-btn" title="Открыть сделку" @click="openDealPage(row, $event)">
+                    <v-icon icon="mdi-open-in-new" size="16" />
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -765,6 +934,9 @@ onMounted(() => {
           </div>
         </div>
 
+        <!-- Метка конца списка для автоподгрузки. -->
+        <div v-if="autoLoad.enabled.value" ref="autoLoadSentinel" class="auto-load-sentinel" />
+
         <ServerPager
           v-if="totalRows > 0"
           :page="page"
@@ -772,8 +944,14 @@ onMounted(() => {
           :per-page="perPage"
           :busy="listLoading"
           :per-page-options="PER_PAGE_OPTIONS"
+          :auto-load="autoLoad.enabled.value"
+          :loaded="loadedCount"
+          :has-more="hasMore"
+          :paused="autoLoad.paused.value"
           @update:page="page = $event"
           @update:per-page="perPage = $event"
+          @update:auto-load="autoLoad.enabled.value = $event"
+          @load-more="autoLoad.loadMoreManually()"
         />
       </div>
     </div>
@@ -851,14 +1029,12 @@ onMounted(() => {
         <!-- Свой период + сотрудник + применить -->
         <div class="dbt-an-custom">
           <span class="dbt-an-clabel">Свой период</span>
-          <div class="dbt-an-datebox" @click="openCal">
-            <v-icon icon="mdi-calendar-outline" size="15" class="dbt-an-cal-ico" />
-            <input v-model="anFrom" type="date" class="dbt-an-dateinput" @change="onDateEdit" />
+          <div class="dbt-an-datebox">
+            <DateField v-model="anFrom" :max="anTo || undefined" plain @update:model-value="onDateEdit" />
           </div>
           <span class="dbt-an-dash">—</span>
-          <div class="dbt-an-datebox" @click="openCal">
-            <v-icon icon="mdi-calendar-outline" size="15" class="dbt-an-cal-ico" />
-            <input v-model="anTo" type="date" class="dbt-an-dateinput" @change="onDateEdit" />
+          <div class="dbt-an-datebox">
+            <DateField v-model="anTo" :min="anFrom || undefined" plain @update:model-value="onDateEdit" />
           </div>
 
           <div v-if="canAssign && store.staff.length" class="dbt-an-staffwrap">
@@ -988,9 +1164,45 @@ onMounted(() => {
       </v-card>
     </v-dialog>
   </div>
+
+    <!-- Панель расширенных фильтров -->
+    <DebtorsFilterPanel
+      v-model="filtersOpen"
+      :state="filters.state.value"
+      :active-count="filters.activeCount.value"
+      :presets="filters.saved.value"
+      @reset="filters.reset()"
+      @save-preset="filters.savePreset($event)"
+      @apply-preset="filters.applyPresetSaved($event)"
+      @remove-preset="filters.removePreset($event)"
+    />
+
 </template>
 
 <style scoped>
+/* Плашки включённых фильтров над списком. */
+.active-filters {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.af-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 8px 5px 11px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.07);
+  color: rgb(var(--v-theme-primary));
+  font-size: 12.5px; font-weight: 500; cursor: pointer;
+}
+.af-chip:hover { background: rgba(var(--v-theme-primary), 0.14); }
+.af-clear {
+  font-size: 12.5px; padding: 5px 8px; border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.5); cursor: pointer;
+}
+.af-clear:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+
+/* Невидимый якорь автоподгрузки в конце списка. */
+.auto-load-sentinel { height: 1px; }
+
 /* Нижний отступ, чтобы контент не был прижат к краю при прокрутке до конца */
 .dbt-page { padding-bottom: 72px; }
 .dbt-header { margin-bottom: 20px; }
@@ -1010,39 +1222,7 @@ onMounted(() => {
 .stat-value { font-size: 18px; font-weight: 700; line-height: 1.2; color: rgba(var(--v-theme-on-surface), 0.9); }
 .stat-label { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); }
 
-/* Табы — единый стиль проекта (из settings.vue) */
-.settings-tabs {
-  display: flex; gap: 4px; margin-bottom: 24px;
-  padding: 4px; border-radius: 12px;
-  background: #fff;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-}
-.settings-tab {
-  display: flex; align-items: center; gap: 6px;
-  padding: 10px 18px; border-radius: 8px; border: none;
-  background: transparent;
-  font-size: 13px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  cursor: pointer; transition: all 0.15s;
-}
-.settings-tab:hover { color: rgba(var(--v-theme-on-surface), 0.7); background: rgba(var(--v-theme-on-surface), 0.04); }
-.settings-tab.active:hover { background: #047857; color: #fff; }
-.settings-tab.active {
-  background: #047857; color: #fff; font-weight: 600;
-  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
-}
-.dbt-page.dark .settings-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); box-shadow: none; }
-.dbt-tabcount {
-  font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.08); line-height: 18px; min-width: 20px; text-align: center;
-}
-.dbt-tabcount--on { background: rgba(255, 255, 255, 0.25); color: #fff; }
-@media (max-width: 600px) {
-  .settings-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
-  .settings-tabs::-webkit-scrollbar { display: none; }
-  .settings-tab { flex-shrink: 0; white-space: nowrap; padding: 8px 14px; }
-}
+/* Табы раздела — общий стиль, см. styles/page-tabs.css */
 
 /* Карточка-контейнер — как секции проекта (12px, 1px бордер, без тени) */
 .dbt-card {
@@ -1140,7 +1320,11 @@ onMounted(() => {
 .dbt-search {
   display: flex; align-items: center; gap: 8px; padding: 8px 14px;
   border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  min-width: 260px; color: rgba(var(--v-theme-on-surface), 0.6);
+  /* Минимум подобран под самую длинную подсказку («…товару, адресу, номеру…»),
+     иначе текст обрезается на полуслове. */
+  flex: 1 1 340px; min-width: 300px; max-width: 460px;
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.6);
 }
 .dbt-search input { flex: 1; border: none; background: none; outline: none; color: inherit; font-size: 14px; }
 
@@ -1173,12 +1357,6 @@ onMounted(() => {
 .dbt-dealstatus--cancelled { background: rgba(239, 68, 68, 0.14); color: #dc2626; }
 
 /* Кнопка «Обещал оплатить» в строке */
-.dbt-rowaction {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 34px; height: 34px; border-radius: 8px; border: 1px solid rgba(245, 158, 11, 0.35);
-  background: rgba(245, 158, 11, 0.1); color: #d98b09; cursor: pointer; transition: all 0.12s;
-}
-.dbt-rowaction:hover { background: #f59e0b; color: #fff; border-color: #f59e0b; }
 
 /* Аналитика — пресеты периода (кнопки с диапазоном «от — до») */
 .dbt-an-presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
@@ -1193,19 +1371,8 @@ onMounted(() => {
 /* Свой период + сотрудник + применить — стиль фильтров журнала кассы */
 .dbt-an-custom { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08); }
 .dbt-an-clabel { font-size: 12px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.5); margin-right: 2px; }
-.dbt-an-datebox { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
-.dbt-an-cal-ico { position: absolute; left: 9px; color: rgba(var(--v-theme-on-surface), 0.45); pointer-events: none; z-index: 1; }
-.dbt-an-dateinput {
-  height: 34px; width: 158px; padding: 0 10px 0 30px; border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.85);
-  font-size: 13px; font-family: inherit; outline: none; cursor: pointer; transition: border-color 0.15s;
-  color-scheme: light dark;
-}
-.dbt-an-dateinput:hover { border-color: rgba(var(--v-theme-on-surface), 0.22); }
-.dbt-an-dateinput:focus { border-color: #047857; }
+.dbt-an-datebox { width: 158px; position: relative; display: inline-flex; align-items: center; cursor: pointer; }
 /* Прячем нативную иконку-индикатор — у нас своя слева, клик открывает showPicker */
-.dbt-an-dateinput::-webkit-calendar-picker-indicator { opacity: 0; cursor: pointer; }
 .dbt-an-dash { color: rgba(var(--v-theme-on-surface), 0.4); font-weight: 600; }
 
 .dbt-an-staffwrap { position: relative; display: inline-flex; align-items: center; }
@@ -1221,7 +1388,6 @@ onMounted(() => {
 .dbt-an-staffsel:hover { border-color: rgba(var(--v-theme-on-surface), 0.22); }
 .dbt-an-staffsel:focus { border-color: #047857; }
 @media (max-width: 640px) {
-  .dbt-an-dateinput { flex: 1; width: auto; min-width: 0; }
   .dbt-an-staffwrap { flex: 1 1 100%; }
   .dbt-an-staffsel { width: 100%; }
   .dbt-an-custom .ml-auto { flex: 1 1 100%; margin-left: 0 !important; }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
+import DateField from '@/components/DateField.vue'
 import { formatCurrency } from '@/utils/formatters'
 import { useReports, rangeForPreset, customLabel } from '@/composables/useReports'
 import type { PeriodPreset, PeriodRange, ReportDealRow } from '@/types/reports'
@@ -361,7 +362,7 @@ const sections = computed((): SummarySection[] => {
       title: 'Ваш доход — после вычета доли инвесторов',
       rows: [
         row('earned', 'Ваш чистый доход',
-          'заработано за вычетом доли со-инвесторов',
+          'заработано за вычетом доли инвесторов',
           c.earnedNet, p.earnedNet, { color: '#059669', accent: true }),
         row('left', 'Ваш доход впереди',
           'останется вам, когда клиенты доплатят',
@@ -498,7 +499,7 @@ const DETAILS: Record<string, {
   },
   ciFact: {
     title: 'Доля инвесторов — уже начислено',
-    hint: 'Сколько из полученного дохода начислено со-инвесторам по каждой сделке.',
+    hint: 'Сколько из полученного дохода начислено инвесторам по каждой сделке.',
     color: '#8b5cf6',
     value: (r) => r.ciProfitFact,
     parts: (r) => [
@@ -509,7 +510,7 @@ const DETAILS: Record<string, {
   },
   ciLeft: {
     title: 'Доля инвесторов — начислится впереди',
-    hint: 'Сколько получат со-инвесторы, когда клиенты доплатят.',
+    hint: 'Сколько получат инвесторы, когда клиенты доплатят.',
     color: '#8b5cf6',
     value: ciProjectedOf,
     parts: (r) => [
@@ -520,7 +521,7 @@ const DETAILS: Record<string, {
   },
   ciTotal: {
     title: 'Всего инвесторам',
-    hint: 'Вся доля со-инвесторов по каждой сделке: начисленная и будущая.',
+    hint: 'Вся доля инвесторов по каждой сделке: начисленная и будущая.',
     color: '#8b5cf6',
     value: (r) => r.ciProfitFact + ciProjectedOf(r),
     parts: (r) => [
@@ -532,7 +533,7 @@ const DETAILS: Record<string, {
   },
   earned: {
     title: 'Заработано',
-    hint: 'Ваша прибыль с уже вернувшихся денег — за вычетом доли со-инвесторов.',
+    hint: 'Ваша прибыль с уже вернувшихся денег — за вычетом доли инвесторов.',
     color: '#059669',
     value: (r) => Math.max(0, r.netProfitReceived),
     parts: (r) => [
@@ -711,9 +712,9 @@ defineExpose({ exportPdf, exportExcel, canExport, ready, exporting })
             </template>
             <v-card min-width="280" class="pa-4">
               <div class="text-caption text-medium-emphasis mb-2">С какой даты</div>
-              <input v-model="customFrom" type="date" class="rp-date" >
+              <DateField v-model="customFrom" :max="customTo || undefined" />
               <div class="text-caption text-medium-emphasis mt-3 mb-2">По какую</div>
-              <input v-model="customTo" type="date" class="rp-date" >
+              <DateField v-model="customTo" :min="customFrom || undefined" />
               <v-btn color="primary" block class="mt-4" @click="applyCustom">Показать</v-btn>
             </v-card>
           </v-menu>
@@ -727,8 +728,21 @@ defineExpose({ exportPdf, exportExcel, canExport, ready, exporting })
         {{ error }}
       </div>
 
-      <div v-if="loading && !summary" class="d-flex justify-center py-8">
-        <v-progress-circular indeterminate color="primary" size="32" />
+      <!-- Пока считаются новые цифры, показываем заглушку той же формы.
+           Раньше при переключении «Все / Активные / Завершённые» на экране
+           пару секунд стояли прежние значения, и было неясно, обновилось уже
+           или нет. -->
+      <div v-if="loading" class="rp-skeleton">
+        <div v-for="sec in 3" :key="sec" class="rp-sk-sec">
+          <div class="rp-sk-title" />
+          <div v-for="row in 3" :key="row" class="rp-sk-row">
+            <div class="rp-sk-left">
+              <div class="rp-sk-label" />
+              <div class="rp-sk-hint" />
+            </div>
+            <div class="rp-sk-value" />
+          </div>
+        </div>
       </div>
 
       <template v-else-if="summary">
@@ -816,6 +830,49 @@ defineExpose({ exportPdf, exportExcel, canExport, ready, exporting })
 </template>
 
 <style scoped>
+/* Заглушка повторяет форму итогов: переключил статус — сразу видно, что цифры
+   пересчитываются, а не замерли. */
+.rp-skeleton {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+  padding: 4px 0 8px;
+}
+.rp-sk-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rp-sk-title,
+.rp-sk-label,
+.rp-sk-hint,
+.rp-sk-value {
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    rgba(var(--v-theme-on-surface), 0.06) 25%,
+    rgba(var(--v-theme-on-surface), 0.11) 37%,
+    rgba(var(--v-theme-on-surface), 0.06) 63%
+  );
+  background-size: 400% 100%;
+  animation: rp-sk-shimmer 1.4s ease infinite;
+}
+.rp-sk-title { height: 12px; width: 90px; }
+.rp-sk-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.rp-sk-left { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.rp-sk-label { height: 13px; width: 60%; }
+.rp-sk-hint { height: 10px; width: 40%; }
+.rp-sk-value { height: 18px; width: 82px; }
+@keyframes rp-sk-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
 /* Статус сделок — общий фильтр вкладки */
 .rp-status {
   display: flex; flex-wrap: wrap; gap: 2px;
@@ -879,16 +936,6 @@ defineExpose({ exportPdf, exportExcel, canExport, ready, exporting })
   border-color: rgba(16, 185, 129, 0.32);
   color: #10b981;
 }
-.rp-date {
-  width: 100%;
-  padding: 9px 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
-  background: transparent;
-  color: rgb(var(--v-theme-on-surface));
-  font-size: 14px;
-}
-
 /* ── Итоги: секции и строки ── */
 .rp-sections { display: flex; flex-direction: column; }
 .rp-sec + .rp-sec {

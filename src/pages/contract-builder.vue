@@ -20,14 +20,36 @@ import { Placeholder } from '@tiptap/extension-placeholder'
 import { BorderedBlock } from '@/utils/tiptap-bordered-block'
 import { FontSize } from '@/utils/tiptap-font-size'
 import { CONTRACT_TEMPLATES, CONTRACT_VARIABLES, type ContractTemplate } from '@/utils/contractTemplates'
+import { RECEIPT_TEMPLATES, RECEIPT_VARIABLES } from '@/utils/receiptTemplates'
+import { useRoute, useRouter } from 'vue-router'
 
 const { isDark } = useIsDark()
 const toast = useToast()
 const { isMobile } = useIsMobile()
+const route = useRoute()
+const router = useRouter()
+
+/**
+ * Какой документ собираем.
+ *
+ * Договор и квитанция — разные бумаги, но собираются одинаково: тот же
+ * редактор, те же приёмы. Держать для них два разных экрана значило бы учить
+ * партнёра дважды, поэтому здесь просто переключатель, а различаются только
+ * набор переменных, готовые образцы и место хранения.
+ */
+type DocKind = 'contract' | 'receipt'
+const docKind = ref<DocKind>(route.query.doc === 'receipt' ? 'receipt' : 'contract')
+const isReceipt = computed(() => docKind.value === 'receipt')
+
+/** Переменные и образцы — свои у каждого документа. */
+const variables = computed(() => (isReceipt.value ? RECEIPT_VARIABLES : CONTRACT_VARIABLES))
+const presetTemplates = computed(() => (isReceipt.value ? RECEIPT_TEMPLATES : CONTRACT_TEMPLATES))
 
 // State
 const loading = ref(true)
 const saving = ref(false)
+/** Есть ли несохранённые правки — чтобы не потерять их при смене документа. */
+const dirty = ref(false)
 const showTemplateDialog = ref(false)
 
 // Page margins (mm)
@@ -115,21 +137,43 @@ const editor = useEditor({
       return true
     },
   },
+  onUpdate() {
+    dirty.value = true
+  },
 })
 
 // Load saved template
 async function loadTemplate() {
   loading.value = true
   try {
-    const data = await api.get<{ template: any }>('/auth/investor/contract-template')
-    if (data.template && typeof data.template === 'string') {
-      editor.value?.commands.setContent(data.template)
-    } else if (data.template && data.template.html) {
-      editor.value?.commands.setContent(data.template.html)
-      if (data.template.margins) margins.value = data.template.margins
+    if (isReceipt.value) {
+      // Бланк квитанции лежит рядом с её настройками: это один документ, и
+      // разносить его по двум местам значило бы однажды забыть про одно.
+      const data = await api.get<{ html: string | null; htmlMargins: any }>('/receipt-template')
+      editor.value?.commands.setContent(data.html || RECEIPT_TEMPLATES[0]!.html)
+      margins.value = data.htmlMargins || { top: 12, bottom: 12, left: 14, right: 14 }
+    } else {
+      const data = await api.get<{ template: any }>('/auth/investor/contract-template')
+      if (data.template && typeof data.template === 'string') {
+        editor.value?.commands.setContent(data.template)
+      } else if (data.template && data.template.html) {
+        editor.value?.commands.setContent(data.template.html)
+        if (data.template.margins) margins.value = data.template.margins
+      }
     }
   } catch { /* silent */ }
   finally { loading.value = false }
+}
+
+// Переключили документ — читаем его шаблон. Несохранённые правки при этом
+// теряются, поэтому спрашиваем.
+async function switchDoc(kind: DocKind) {
+  if (kind === docKind.value) return
+  if (dirty.value && !confirm('Несохранённые изменения будут потеряны. Продолжить?')) return
+  docKind.value = kind
+  router.replace({ query: kind === 'receipt' ? { doc: 'receipt' } : {} })
+  await loadTemplate()
+  dirty.value = false
 }
 
 // Save template
@@ -137,10 +181,18 @@ async function saveTemplate() {
   if (!editor.value) return
   saving.value = true
   try {
-    await api.patch('/auth/investor/contract-template', {
-      template: { html: editor.value.getHTML(), margins: margins.value },
-    })
-    toast.success('Шаблон сохранён')
+    if (isReceipt.value) {
+      await api.patch('/receipt-template', {
+        html: editor.value.getHTML(),
+        htmlMargins: margins.value,
+      })
+    } else {
+      await api.patch('/auth/investor/contract-template', {
+        template: { html: editor.value.getHTML(), margins: margins.value },
+      })
+    }
+    dirty.value = false
+    toast.success(isReceipt.value ? 'Бланк квитанции сохранён' : 'Шаблон сохранён')
   } catch (e: any) {
     // 413 — шаблон перерос лимит запроса. Практически всегда это картинки:
     // они лежат внутри HTML как base64, и десяток фотографий даёт мегабайты.
@@ -154,6 +206,7 @@ async function saveTemplate() {
 
 // Apply preset template
 function applyTemplate(template: ContractTemplate) {
+  dirty.value = true
   if (editor.value?.getHTML() && editor.value.getHTML() !== '<p></p>') {
     if (!confirm('Текущий шаблон будет заменён. Продолжить?')) return
   }
@@ -171,9 +224,9 @@ function insertVariable(variable: string) {
 // Group variables
 const variableGroups = computed(() => {
   const groups: Record<string, typeof CONTRACT_VARIABLES> = {}
-  for (const v of CONTRACT_VARIABLES) {
-    if (!groups[v.group]) groups[v.group] = []
-    groups[v.group].push(v)
+  for (const v of variables.value) {
+    const list = groups[v.group] ?? (groups[v.group] = [])
+    list.push(v)
   }
   return groups
 })
@@ -197,8 +250,34 @@ onBeforeUnmount(() => { editor.value?.destroy() })
       <!-- Header -->
       <div class="cb-header">
         <div>
-          <div class="cb-title">Конструктор договора</div>
-          <div class="cb-subtitle">Редактируйте шаблон как в Word. Переменные подставятся из сделки автоматически</div>
+          <div class="cb-title">Конструктор документов</div>
+          <div class="cb-subtitle">
+            {{ isReceipt
+              ? 'Бланк квитанции: тот же редактор, что и у договора. Переменные подставятся из платежа'
+              : 'Редактируйте шаблон как в Word. Переменные подставятся из сделки автоматически' }}
+          </div>
+
+          <!-- Договор и квитанция — два документа одного конструктора: они
+               собираются одинаково, и разводить их по разным экранам значило
+               бы объяснять партнёру одно и то же дважды. -->
+          <div class="cb-docs">
+            <button
+              class="cb-doc"
+              :class="{ 'cb-doc--on': !isReceipt }"
+              @click="switchDoc('contract')"
+            >
+              <v-icon icon="mdi-file-document-outline" size="16" />
+              Договор
+            </button>
+            <button
+              class="cb-doc"
+              :class="{ 'cb-doc--on': isReceipt }"
+              @click="switchDoc('receipt')"
+            >
+              <v-icon icon="mdi-receipt-text-outline" size="16" />
+              Квитанция
+            </button>
+          </div>
         </div>
         <div class="d-flex ga-2">
           <button class="cb-btn cb-btn--outline" @click="showTemplateDialog = true">
@@ -416,7 +495,7 @@ onBeforeUnmount(() => { editor.value?.destroy() })
         </div>
         <div class="cb-template-grid">
           <button
-            v-for="t in CONTRACT_TEMPLATES"
+            v-for="t in presetTemplates"
             :key="t.id"
             class="cb-template-card"
             @click="applyTemplate(t)"
@@ -440,6 +519,21 @@ onBeforeUnmount(() => { editor.value?.destroy() })
   margin-bottom: 16px; flex-wrap: wrap; gap: 12px;
 }
 .cb-title { font-size: 20px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
+
+/* Переключатель документа: тот же вид, что у вкладок разделов — партнёр уже
+   знает, как это работает. */
+.cb-docs { display: flex; gap: 6px; margin-top: 12px; }
+.cb-doc {
+  display: flex; align-items: center; gap: 6px;
+  height: 34px; padding: 0 14px; border-radius: 9px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent;
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer;
+}
+.cb-doc:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+.cb-doc--on { background: #047857; border-color: #047857; color: #fff; }
 .cb-subtitle { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.4); margin-top: 2px; }
 
 .cb-btn {

@@ -33,7 +33,7 @@ const rows = computed(() => [
   ...(props.data.owedToCoInvestors > 0
     ? [{
         key: 'owed',
-        label: 'Должны со-инвесторам',
+        label: 'Должны инвесторам',
         hint: 'начислено им, но ещё не выплачено',
         value: props.data.owedToCoInvestors,
         color: '#8b5cf6',

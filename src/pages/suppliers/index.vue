@@ -39,21 +39,21 @@ onMounted(() => {
 
 <template>
   <div class="at-page sup-page" :class="{ dark: isDark }">
-    <div class="settings-tabs">
-      <button class="settings-tab" :class="{ active: tab === 'partners' }" @click="tab = 'partners'">
+    <div class="page-tabs">
+      <button class="page-tab" :class="{ active: tab === 'partners' }" @click="tab = 'partners'">
         <v-icon icon="mdi-handshake-outline" size="18" />
         <span>Партнёры</span>
       </button>
-      <button v-if="canRequests" class="settings-tab" :class="{ active: tab === 'requests' }" @click="tab = 'requests'">
+      <button v-if="canRequests" class="page-tab" :class="{ active: tab === 'requests' }" @click="tab = 'requests'">
         <v-icon icon="mdi-clipboard-text-outline" size="18" />
         <span>Заявки</span>
-        <span v-if="store.requestsNewCount" class="sup-tabcount" :class="{ 'sup-tabcount--on': tab === 'requests' }">{{ store.requestsNewCount }}</span>
+        <span v-if="store.requestsNewCount" class="page-tab-count">{{ store.requestsNewCount }}</span>
       </button>
-      <button v-if="canRouteSheets" class="settings-tab" :class="{ active: tab === 'routesheets' }" @click="tab = 'routesheets'">
+      <button v-if="canRouteSheets" class="page-tab" :class="{ active: tab === 'routesheets' }" @click="tab = 'routesheets'">
         <v-icon icon="mdi-clipboard-list-outline" size="18" />
         <span>Путевые листы</span>
       </button>
-      <button class="settings-tab" :class="{ active: tab === 'activity' }" @click="tab = 'activity'">
+      <button class="page-tab" :class="{ active: tab === 'activity' }" @click="tab = 'activity'">
         <v-icon icon="mdi-history" size="18" />
         <span>История операций</span>
       </button>
@@ -69,39 +69,5 @@ onMounted(() => {
 <style scoped>
 .sup-page { padding-bottom: 72px; }
 
-.settings-tabs {
-  display: flex; gap: 4px; margin-bottom: 24px;
-  padding: 4px; border-radius: 12px;
-  background: #fff;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-}
-.settings-tab {
-  display: flex; align-items: center; gap: 6px;
-  padding: 10px 18px; border-radius: 8px; border: none;
-  background: transparent;
-  font-size: 13px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  cursor: pointer; transition: all 0.15s;
-}
-.settings-tab:hover { color: rgba(var(--v-theme-on-surface), 0.7); background: rgba(var(--v-theme-on-surface), 0.04); }
-.settings-tab.active:hover { background: #047857; color: #fff; }
-.settings-tab.active {
-  background: #047857; color: #fff; font-weight: 600;
-  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
-}
-.sup-page.dark .settings-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); box-shadow: none; }
-.sup-tabcount {
-  font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 10px;
-  /* В светлой теме те же белый фон и фирменный зелёный, что были; в тёмных —
-     слой темы и светлый изумруд, иначе кружок светится дыркой на вкладке. */
-  background: rgb(var(--v-theme-surface)); color: rgb(var(--v-theme-accent));
-  line-height: 18px; min-width: 20px; text-align: center;
-  border: 1px solid rgba(4, 120, 87, 0.2);
-}
-.settings-tab.active .sup-tabcount { border-color: transparent; }
-@media (max-width: 600px) {
-  .settings-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
-  .settings-tabs::-webkit-scrollbar { display: none; }
-}
+/* Табы раздела — общий стиль, см. styles/page-tabs.css */
 </style>

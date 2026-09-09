@@ -1,0 +1,244 @@
+/**
+ * Панель фильтров — общее оформление для всех разделов.
+ *
+ * Панель одинаковая в сделках, платежах, клиентах и должниках: меняется
+ * только состав секций. Пока стили лежали внутри одной страницы, второй
+ * раздел получил бы «почти такую же» панель, которая разъезжается после
+ * первой правки.
+ *
+ * Классы глобальные, поэтому имена конкретные: `fp-*`.
+ */
+
+/* Диалог прижат к правому краю и во всю высоту — читается как выдвижная
+   панель, но не требует каркаса приложения. */
+/* Селектор с `.v-overlay` и `!important` — не украшательство: у Vuetify свои
+   правила для содержимого диалога (отступ 24px и ограничение высоты), и при
+   равной силе побеждали они. Панель тогда висела с отступом от края, а её
+   нижние кнопки уезжали за экран.
+   `:deep()` здесь не нужен — файл глобальный, а не scoped. */
+.v-overlay.fp-dialog > .v-overlay__content {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  width: 380px;
+  max-width: 100vw;
+  height: 100% !important;
+  max-height: 100% !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+}
+@media (max-width: 480px) {
+  .v-overlay.fp-dialog > .v-overlay__content { width: 100vw; }
+}
+.fp-drawer {
+  display: flex;
+  flex-direction: column;
+  /* Высота — от контейнера диалога, а не 100vh: на телефоне адресная строка
+     съедает часть экрана, и панель уходила бы под неё. */
+  height: 100%;
+  width: 100%;
+  background: rgb(var(--v-theme-surface));
+}
+@media (max-width: 480px) {
+  .fp-drawer { width: 100vw; }
+}
+.fp-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.fp-title { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.fp-count {
+  font-size: 11.5px; font-weight: 700;
+  background: rgb(var(--v-theme-primary)); color: #fff;
+  border-radius: 10px; padding: 1px 7px;
+}
+.fp-close {
+  width: 30px; height: 30px; border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.fp-close:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
+
+/* Тело панели чуть темнее секций: карточки на нём читаются как отдельные
+   блоки, а не как один длинный список полей. */
+.fp-body {
+  flex: 1; overflow-y: auto;
+  padding: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.fp-section {
+  padding: 14px 16px 18px;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  border-radius: 12px;
+}
+/* Заголовок отделён от содержимого заметным просветом: прижатый вплотную, он
+   читался как часть первой строки полей. */
+.fp-section-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 16px;
+}
+.fp-section-icon { color: rgba(var(--v-theme-on-surface), 0.35); }
+.fp-section-title {
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+/* Сколько условий выбрано в секции — видно, не разворачивая содержимое. */
+.fp-section-count {
+  font-size: 11px; font-weight: 700; line-height: 1;
+  padding: 3px 6px; border-radius: 20px;
+  background: rgba(var(--v-theme-primary), 0.12);
+  color: rgb(var(--v-theme-primary));
+}
+.fp-section-info {
+  margin-left: auto;
+  color: rgba(var(--v-theme-on-surface), 0.3);
+  cursor: help;
+}
+.fp-section-info:hover { color: rgba(var(--v-theme-on-surface), 0.6); }
+.fp-section-clear {
+  margin-left: auto;
+  font-size: 11.5px; padding: 3px 7px; border-radius: 6px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  cursor: pointer;
+}
+.fp-section-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+/* Секция, в которой что-то выбрано, отмечена цветной рамкой — глазу не нужно
+   перечитывать содержимое, чтобы понять, где сработал фильтр. */
+.fp-section--on {
+  border-color: rgba(var(--v-theme-primary), 0.35);
+  box-shadow: 0 0 0 1px rgba(var(--v-theme-primary), 0.08);
+}
+.fp-hint {
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.45);
+  /* Подсказка живёт при заголовке, поэтому подтянута к нему, а от кнопок
+     отделена тем же просветом, что и остальное содержимое. */
+  margin: -8px 0 12px;
+}
+
+.fp-presets { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 12px; }
+.fp-preset {
+  /* Пять быстрых периодов должны помещаться в одну строку: перенос одной
+     кнопки на вторую строку выглядит случайным. */
+  padding: 5px 8px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.12s;
+  white-space: nowrap;
+}
+.fp-preset:hover { border-color: rgba(var(--v-theme-primary), 0.5); color: rgb(var(--v-theme-primary)); }
+
+.fp-row { display: flex; gap: 8px; }
+.fp-row > * { flex: 1; min-width: 0; }
+/* Ряд полей и то, что идёт за ним, не должны слипаться: выбор поля даты
+   стоял вплотную к паре «с — по» и выглядел их продолжением.
+   `.sf` — корень нашего выпадающего списка: правило написано и под него, иначе
+   при замене системных `select` отступ пропадает. */
+.fp-row + .fp-select,
+.fp-row + .fp-check,
+.fp-row + .sf,
+.fp-chips + .fp-select,
+.fp-chips + .sf,
+.fp-check + .sf,
+.sf + .fp-check,
+.sf + .sf { margin-top: 12px; }
+
+.fp-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.fp-chip {
+  /* Ширина панели 380 px: четыре статуса должны помещаться в строку, иначе
+     последний висит один и читается как отдельная группа. */
+  padding: 6px 10px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.12s;
+}
+.fp-chip:hover { border-color: rgba(var(--v-theme-primary), 0.4); }
+/* Выбранное значение — с заливкой, а не только с рамкой: при десятке кнопок
+   в секции тонкий контур теряется. */
+.fp-chip--on {
+  border-color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.14);
+  color: rgb(var(--v-theme-primary));
+  font-weight: 600;
+}
+.fp-chip--on:hover { background: rgba(var(--v-theme-primary), 0.2); }
+
+/* Список городов идёт после поля товара — отделяем. */
+.fp-cities { margin-top: 12px; }
+
+/* Ряд «название набора + Сохранить» — с воздухом от списка наборов. */
+.fp-presets + .fp-row { margin-top: 12px; }
+
+.fp-saved {
+  display: inline-flex; align-items: center;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.07);
+  border-radius: 8px; overflow: hidden;
+}
+.fp-saved-apply {
+  padding: 5px 8px 5px 10px; font-size: 12.5px; font-weight: 500;
+  color: rgb(var(--v-theme-primary)); cursor: pointer;
+}
+.fp-saved-del {
+  padding: 5px 7px; color: rgba(var(--v-theme-primary), 0.6); cursor: pointer;
+}
+.fp-saved-del:hover { color: #dc2626; }
+
+.fp-range { margin-bottom: 14px; }
+.fp-range:last-child { margin-bottom: 0; }
+.fp-range-label {
+  display: block; font-size: 12.5px; margin-bottom: 7px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.fp-input {
+  width: 100%; padding: 8px 11px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgb(var(--v-theme-surface));
+  font-size: 13px; outline: none;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.fp-input:focus { border-color: rgb(var(--v-theme-primary)); }
+.fp-select {
+  width: 100%; height: 36px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgb(var(--v-theme-surface));
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.85);
+  cursor: pointer;
+}
+.fp-select:disabled { opacity: 0.5; cursor: default; }
+.fp-check {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 10px; font-size: 12.5px; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+/* Вторая пара «поставщик / со-инвестор» отделена от первой заметнее, чем
+   поле от своей галочки, — иначе четыре элемента сливаются в один столбец. */
+.fp-check + .fp-select { margin-top: 18px; }
+.fp-check input { width: 15px; height: 15px; accent-color: rgb(var(--v-theme-primary)); cursor: pointer; }
+
+.fp-actions {
+  display: flex; gap: 10px;
+  padding: 14px 18px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.fp-reset {
+  flex: 1; padding: 10px; border-radius: 9px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  font-size: 13px; cursor: pointer;
+}
+.fp-reset:disabled { opacity: 0.5; cursor: default; }
+.fp-apply {
+  flex: 1; padding: 10px; border-radius: 9px;
+  background: #047857; color: #fff;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.fp-apply:hover { background: #065f46; }

@@ -26,6 +26,28 @@ const items = ref<(ClientProfile & { _source?: 'mine' | 'global' })[]>([])
 const loading = ref(false)
 const search = ref('')
 
+/**
+ * Последние клиенты — то, что видно до ввода.
+ *
+ * Пустое поле поиска ничего не подсказывает: партнёры регулярно спрашивают,
+ * «как сюда добавить клиента». Список последних сразу показывает, что база не
+ * пуста и что нужного человека можно просто выбрать, а поиск остаётся для
+ * всех остальных.
+ */
+const recent = ref<(ClientProfile & { _source?: 'mine' | 'global' })[]>([])
+const recentLoaded = ref(false)
+
+async function loadRecent() {
+  if (recentLoaded.value) return
+  recentLoaded.value = true
+  try {
+    recent.value = tagItems(await store.recent(8))
+    if (!search.value.trim() && !items.value.length) items.value = recent.value
+  } catch {
+    // Список-подсказка не критичен: поиск работает и без него.
+  }
+}
+
 let searchTimeout: ReturnType<typeof setTimeout> | null = null
 
 const myId = computed(() => (authStore.user as any)?.id || '')
@@ -38,6 +60,7 @@ function tagItems(rows: ClientProfile[]) {
 }
 
 onMounted(async () => {
+  void loadRecent()
   if (props.modelValue) {
     try {
       const profile = await store.findById(props.modelValue)
@@ -51,7 +74,7 @@ onMounted(async () => {
 watch(() => props.modelValue, async (val) => {
   // External reset (e.g. after adding a guarantor) — clear the field completely,
   // not just the selection, so the input text/list don't linger.
-  if (!val) { selected.value = null; search.value = ''; items.value = []; return }
+  if (!val) { selected.value = null; search.value = ''; items.value = recent.value; return }
   if (selected.value?.id !== val) {
     try {
       const profile = await store.findById(val)
@@ -65,7 +88,11 @@ watch(() => props.modelValue, async (val) => {
 function onSearch(val: string) {
   search.value = val || ''
   if (searchTimeout) clearTimeout(searchTimeout)
-  if (!val?.trim()) { items.value = selected.value ? tagItems([selected.value]) : []; return }
+  // Стёрли поиск — снова показываем последних, а не пустоту.
+  if (!val?.trim()) {
+    items.value = selected.value ? [...tagItems([selected.value]), ...recent.value.filter((r) => r.id !== selected.value?.id)] : recent.value
+    return
+  }
   searchTimeout = setTimeout(async () => {
     loading.value = true
     try {
@@ -135,8 +162,8 @@ defineExpose({ selectProfile })
     v-model="selected"
     :items="items"
     :loading="loading"
-    :label="label || 'Поиск клиента по телефону или имени...'"
-    :placeholder="label || 'Поиск клиента по телефону или имени...'"
+    :label="label || 'Клиент'"
+    :placeholder="'Выберите из списка или начните вводить имя'"
     item-value="id"
     :item-title="(item: any) => clientProfileName(item)"
     return-object
@@ -149,6 +176,15 @@ defineExpose({ selectProfile })
     @update:search="onSearch"
     @update:model-value="onSelect"
   >
+    <!-- Заголовок объясняет, что за строки в списке: без него партнёр не
+         понимает, откуда взялись люди, которых он не искал. -->
+    <template #prepend-item>
+      <div class="cp-list-head">
+        <template v-if="search.trim()">Найдено по запросу</template>
+        <template v-else-if="items.length">Последние клиенты — выберите или начните вводить имя</template>
+      </div>
+    </template>
+
     <template #item="{ item, props: itemProps }">
       <v-list-item v-bind="itemProps" :title="undefined" :subtitle="undefined">
         <template #prepend>
@@ -213,6 +249,11 @@ defineExpose({ selectProfile })
 </template>
 
 <style scoped>
+.cp-list-head {
+  padding: 8px 16px 4px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+}
 .cp-selection {
   display: flex;
   align-items: center;

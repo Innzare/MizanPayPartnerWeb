@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useDebtorsStore, type DebtorRow, type CollectionActivity, type DealPayment } from '@/stores/debtors'
+import { dateToIso, todayIso } from '@/utils/dateInput'
+import DateField from '@/components/DateField.vue'
 import { formatCurrency, formatDateShort } from '@/utils/formatters'
 
 const props = defineProps<{ modelValue: boolean; row: DebtorRow | null; editActivity?: CollectionActivity | null }>()
@@ -9,18 +11,13 @@ const emit = defineEmits<{
   (e: 'saved', activity: CollectionActivity): void
 }>()
 const isEdit = computed(() => !!props.editActivity)
-function localIso(ts: number) {
-  const d = new Date(ts)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
 const store = useDebtorsStore()
 const date = ref('')
 const amount = ref<number | null>(null)
 const note = ref('')
 const saving = ref(false)
 const error = ref('')
-const todayIso = new Date().toISOString().slice(0, 10)
+const todayIsoValue = todayIso()
 
 // Просроченные платежи сделки — можно выбрать, какие именно обещают оплатить.
 const overduePays = ref<DealPayment[]>([])
@@ -43,7 +40,7 @@ function syncAmount() {
 watch(() => props.modelValue, async (open) => {
   if (open) {
     const ed = props.editActivity
-    date.value = ed?.promisedDate ? localIso(ed.promisedDate) : (props.row?.promisedDate ? localIso(props.row.promisedDate) : '')
+    date.value = ed?.promisedDate ? dateToIso(new Date(ed.promisedDate)) : (props.row?.promisedDate ? dateToIso(new Date(props.row.promisedDate)) : '')
     amount.value = ed?.promisedAmount ?? props.row?.overdueAmount ?? null
     note.value = ed?.text ?? ''
     error.value = ''
@@ -128,7 +125,7 @@ async function save() {
         </div>
 
         <label class="pd-label">Дата обещания</label>
-        <v-text-field v-model="date" type="date" :min="todayIso" variant="outlined" density="comfortable" rounded="lg" hide-details class="mb-4" />
+        <DateField v-model="date" :min="todayIsoValue" density="comfortable" class="mb-4" />
         <label class="pd-label">Сумма (необязательно)</label>
         <v-text-field v-model.number="amount" type="number" min="0" suffix="₽" variant="outlined" density="comfortable" rounded="lg" hide-details class="mb-4" />
         <label class="pd-label">Заметка (необязательно)</label>

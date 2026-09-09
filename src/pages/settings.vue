@@ -1,6 +1,10 @@
 <script lang="ts" setup>
 import { useAuthStore } from '@/stores/auth'
-import { formatPhone, formatDate, PHONE_MASK } from '@/utils/formatters'
+import SelectField from '@/components/SelectField.vue'
+import DangerConfirmDialog from '@/components/DangerConfirmDialog.vue'
+import DateField from '@/components/DateField.vue'
+import PhoneField from '@/components/PhoneField.vue'
+import { formatPhone, formatDate } from '@/utils/formatters'
 import { CITIES } from '@/constants/cities'
 
 import { useIsDark } from '@/composables/useIsDark'
@@ -10,6 +14,7 @@ import { useSubscription } from '@/composables/useSubscription'
 import { useSections, HIDEABLE_SECTIONS } from '@/composables/useSections'
 import { api } from '@/api/client'
 import QRCode from 'qrcode'
+import InstallmentPrograms from '@/components/InstallmentPrograms.vue'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -20,7 +25,7 @@ const settingsPlanLabels: Record<string, string> = { PRO: 'Стандарт', BU
 
 // Tabs
 const route = useRoute()
-const validTabs = ['profile', 'security', 'sections', 'whatsapp', 'export', 'contract', 'subscription'] as const
+const validTabs = ['profile', 'security', 'sections', 'whatsapp', 'contract', 'programs', 'subscription'] as const
 type TabId = typeof validTabs[number]
 const initTab = validTabs.includes(route.query.tab as TabId) ? route.query.tab as TabId : 'profile'
 const activeTab = ref<TabId>(initTab)
@@ -195,116 +200,104 @@ onMounted(() => {
   // Статус WhatsApp спрашиваем, только если раздел вообще доступен: иначе
   // запрос уходил при каждом открытии настроек и падал в консоль ошибкой.
   if (sectionsState.visible('whatsapp')) checkWhatsAppStatus()
-  fetchWeeklyExport()
   if (authStore.isOwner) loadSectionBlockers()
-  // Переход по ссылке из еженедельного письма: файл скачивается сразу, но
-  // только после входа — до кабинета такой адрес просто не доведёт.
+  // Переход по ссылке из письма: файл скачивается сразу, но только после
+  // входа — до кабинета такой адрес просто не доведёт. `backup` — новые
+  // резервные копии, `export` — ссылки из старых писем, они должны работать.
+  // Ссылки из писем ведут в раздел резервных копий: скачивание живёт там.
+  const backupToken = route.query.backup
   const token = route.query.export
-  if (typeof token === 'string' && token) downloadWeeklyFile(token)
+  const linkToken = typeof backupToken === 'string' && backupToken
+    ? backupToken
+    : typeof token === 'string' && token
+      ? token
+      : null
+  if (linkToken) _settingsRouter.replace({ path: '/backups', query: { file: linkToken } })
 })
 
-/** Скачать готовый отчёт по токену из письма. */
-async function downloadWeeklyFile(token: string) {
-  exporting.value = true
-  try {
-    const response = await fetch(`${import.meta.env.VITE_API_URL}/export/download/${token}`, {
-      headers: { Authorization: `Bearer ${authStore.accessToken}` },
-    })
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}))
-      throw new Error(
-        response.status === 410
-          ? 'Срок действия ссылки истёк — сформируйте выгрузку заново'
-          : err.message || 'Не удалось скачать отчёт',
-      )
-    }
-    const blob = await response.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `MizanPay_Export_${new Date().toISOString().slice(0, 10)}.xlsx`
-    a.click()
-    URL.revokeObjectURL(url)
-    toast.success('Отчёт скачан')
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось скачать отчёт')
-  } finally {
-    exporting.value = false
-    // Убираем токен из адреса, чтобы обновление страницы не качало файл снова.
-    _settingsRouter.replace({ query: { ...route.query, export: undefined } })
-  }
-}
+
 
 // Export Excel
-const exporting = ref(false)
 
 // Weekly auto-export to email — opt-in toggle stored on the Investor row.
-const weeklyExportEmail = ref(false)
-const weeklyExportToggling = ref(false)
-const weeklyExportEmailAddress = ref<string | null>(null)
 
-async function fetchWeeklyExport() {
-  try {
-    const res = await api.get<{ enabled: boolean; email: string | null }>('/export/weekly-email')
-    weeklyExportEmail.value = res.enabled
-    weeklyExportEmailAddress.value = res.email
-  } catch { /* silent */ }
-}
 
-async function toggleWeeklyExport(value: boolean) {
-  weeklyExportToggling.value = true
-  try {
-    const res = await api.patch<{ enabled: boolean; email: string | null }>('/export/weekly-email', { enabled: value })
-    weeklyExportEmail.value = res.enabled
-    toast.success(res.enabled ? 'Еженедельная рассылка включена' : 'Еженедельная рассылка выключена')
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить')
-    weeklyExportEmail.value = !value // revert
-  } finally {
-    weeklyExportToggling.value = false
-  }
-}
 
-async function exportExcel() {
-  exporting.value = true
-  try {
-    const response = await fetch(`${import.meta.env.VITE_API_URL}/export/excel`, {
-      headers: { Authorization: `Bearer ${authStore.accessToken}` },
-    })
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}))
-      throw new Error(err.message || 'Ошибка экспорта')
-    }
-    const blob = await response.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `MizanPay_Export_${new Date().toISOString().slice(0, 10)}.xlsx`
-    a.click()
-    URL.revokeObjectURL(url)
-    toast.success('Файл скачан')
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка экспорта')
-  } finally {
-    exporting.value = false
-  }
-}
+
+/**
+ * Личные данные партнёра для показа.
+ *
+ * Список собирается здесь, а не в разметке: полей полтора десятка, и в
+ * шаблоне они превращались в стену одинаковых блоков, которую невозможно
+ * читать глазами при правке.
+ */
+const profileGroups = computed(() => {
+  const u: any = authStore.user ?? {}
+  const phone = u.phone ? formatPhone(u.phone) : ''
+  return [
+    {
+      title: 'Кто вы',
+      fields: [
+        { label: 'Имя', value: u.firstName || '', icon: 'mdi-account-outline' },
+        { label: 'Фамилия', value: u.lastName || '', icon: 'mdi-account-outline' },
+        { label: 'Отчество', value: u.patronymic || '', icon: 'mdi-account-outline' },
+        { label: 'Компания', value: u.companyName || '', icon: 'mdi-domain' },
+      ],
+    },
+    {
+      title: 'Как связаться',
+      fields: [
+        { label: 'Телефон', value: phone, icon: 'mdi-phone-outline' },
+        { label: 'Email', value: u.email || '', icon: 'mdi-email-outline' },
+        { label: 'Город', value: u.city || '', icon: 'mdi-map-marker-outline' },
+        {
+          label: 'Дата рождения',
+          value: u.birthDate ? formatDate(u.birthDate) : '',
+          icon: 'mdi-cake-variant-outline',
+        },
+      ],
+    },
+    {
+      title: 'Аккаунт',
+      fields: [
+        { label: 'Роль', value: 'Владелец', icon: 'mdi-shield-account-outline', badge: true },
+        {
+          label: 'В сервисе с',
+          value: u.createdAt ? formatDate(u.createdAt) : '',
+          icon: 'mdi-calendar-check-outline',
+        },
+      ],
+    },
+  ] as Array<{
+    title: string
+    fields: Array<{
+      label: string
+      value: string
+      icon: string
+      badge?: boolean
+    }>
+  }>
+})
 
 // Delete account
-const deletingAccount = ref(false)
+const deleteDialog = ref(false)
+/** Очистка кабинета — окном с подтверждением словом и паролем. */
+const resetDialog = ref(false)
 
-async function confirmDeleteAccount() {
-  if (!confirm('Удалить аккаунт? Все данные будут удалены безвозвратно. Это действие необратимо.')) return
-  deletingAccount.value = true
-  try {
-    await api.delete('/auth/investor/account')
-    toast.success('Аккаунт удалён')
-    authStore.logout()
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить аккаунт')
-  } finally {
-    deletingAccount.value = false
-  }
+/**
+ * После очистки перезагружаем страницу.
+ *
+ * В памяти остались списки сделок, счётчики и остатки, которых в базе больше
+ * нет: без перезагрузки кабинет выглядел бы полным, пока его не обновят руками.
+ */
+function reloadAfterReset() {
+  window.location.reload()
+}
+
+/** Аккаунт удалён — возвращаться в кабинет уже некуда. */
+function onAccountDeleted() {
+  toast.success('Аккаунт удалён')
+  authStore.logout()
 }
 
 const tabs = [
@@ -312,10 +305,40 @@ const tabs = [
   { id: 'security' as const, label: 'Безопасность', icon: 'mdi-shield-lock-outline' },
   // WhatsApp moved to the dedicated /broadcasts section (connection + auto-reminders).
   { id: 'sections' as const, label: 'Разделы', icon: 'mdi-eye-off-outline' },
-  { id: 'export' as const, label: 'Экспорт', icon: 'mdi-download-outline' },
-  { id: 'contract' as const, label: 'Договор', icon: 'mdi-file-cog-outline' },
+  { id: 'contract' as const, label: 'Документы', icon: 'mdi-file-cog-outline' },
+  { id: 'programs' as const, label: 'Тарифы', icon: 'mdi-percent-outline' },
   { id: 'subscription' as const, label: 'Подписка', icon: 'mdi-crown-outline' },
 ]
+
+// ── Окно дат для сотрудников ──
+// Сотрудник не должен уводить оплату в закрытый месяц: доход и остаток кассы
+// за прошлый период иначе меняются задним числом. Владельца не ограничивает.
+const backdateWindow = ref<number>(authStore.user?.backdateWindowDays ?? 7)
+const backdateSaving = ref(false)
+
+watch(
+  () => authStore.user?.backdateWindowDays,
+  (v) => { if (typeof v === 'number') backdateWindow.value = v },
+)
+
+async function saveBackdateWindow() {
+  backdateSaving.value = true
+  try {
+    const days = Math.min(Math.max(Math.trunc(Number(backdateWindow.value) || 0), 0), 365)
+    await api.patch('/auth/investor/backdate-window', { backdateWindowDays: days })
+    backdateWindow.value = days
+    if (authStore.user) authStore.user.backdateWindowDays = days
+    toast.success(
+      days === 0
+        ? 'Сотрудники смогут проводить операции только сегодняшним числом'
+        : `Сотрудники смогут датировать операции до ${days} дн. назад`,
+    )
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось сохранить настройку')
+  } finally {
+    backdateSaving.value = false
+  }
+}
 
 // ── Скрытие ненужных разделов ──
 // Настройка АККАУНТА: скрытый раздел исчезает и у владельца, и у сотрудников.
@@ -359,7 +382,7 @@ function sectionWarning(key: string): string | null {
 const sectionGroups = computed(() => {
   const by = (keys: string[]) => HIDEABLE_SECTIONS.filter((s) => keys.includes(s.key))
   return [
-    { title: 'Деньги и аналитика', items: by(['analytics', 'coInvestors']) },
+    { title: 'Деньги и аналитика', items: by(['analytics', 'coInvestors', 'paymentPoints', 'pettyExpenses']) },
     { title: 'Работа с людьми', items: by(['debtors', 'suppliers', 'whatsapp', 'staff', 'registry']) },
     { title: 'Дополнительно', items: by(['import', 'help']) },
   ].filter((g) => g.items.length)
@@ -370,7 +393,12 @@ const sectionGroups = computed(() => {
  * переживёт повышение тарифа, и после оплаты раздел не вылезет неожиданно.
  */
 function sectionPlanLocked(key: string): boolean {
-  return key !== 'help' && !canAccessFeature(key as any)
+  if (key === 'help') return false
+  // Части «Бухгалтерии» своей строки в тарифе не имеют — они открываются
+  // вместе с финансовым блоком. Без этой развилки они помечались «нет на
+  // вашем тарифе» даже на Премиуме.
+  if (key === 'paymentPoints' || key === 'pettyExpenses') return !canAccessFeature('finance')
+  return !canAccessFeature(key as any)
 }
 
 /** Вернуть все разделы разом — без этого пришлось бы щёлкать каждый. */
@@ -549,19 +577,6 @@ async function changePassword() {
   }
 }
 
-// Verification
-const verificationLabels: Record<number, string> = {
-  0: 'Не верифицирован',
-  1: 'Телефон подтверждён',
-  2: 'Документ проверен',
-  3: 'Полная верификация',
-}
-
-const verificationSteps = [
-  { level: 1, label: 'Телефон', icon: 'mdi-phone-check' },
-  { level: 2, label: 'Документ', icon: 'mdi-card-account-details' },
-  { level: 3, label: 'Селфи', icon: 'mdi-face-recognition' },
-]
 
 // Subscription
 const planLabels: Record<string, string> = {
@@ -643,7 +658,7 @@ const plans = [
       'Нет экспорта в Excel',
       'Нет импорта из Excel',
       'Нет WhatsApp-напоминаний',
-      'Нет со-инвесторов',
+      'Нет инвесторов',
       'Нет сотрудников',
       'Нет раздела «Мой капитал»',
       'Нет реестра клиентов',
@@ -673,7 +688,7 @@ const plans = [
     ],
     limitations: [
       'Нет графиков в аналитике',
-      'Нет со-инвесторов',
+      'Нет инвесторов',
       'Нет экспорта в Excel',
       'Нет импорта из Excel',
       'Нет сотрудников и чата',
@@ -696,7 +711,7 @@ const plans = [
       'До 150 активных сделок',
       'До 5 касс',
       'Отклик на заявку — 100 ₽',
-      'Со-инвесторы и пул капитала',
+      'Инвесторы и пул капитала',
       'Полная аналитика + графики',
       'Экспорт PDF / Excel',
       'Импорт из Excel',
@@ -737,11 +752,11 @@ const plans = [
     <!-- Заголовок раздела — в верхнем баре. -->
 
     <!-- Tabs -->
-    <div class="settings-tabs">
+    <div class="page-tabs">
       <button
         v-for="tab in tabs"
         :key="tab.id"
-        class="settings-tab"
+        class="page-tab"
         :class="{ active: activeTab === tab.id }"
         @click="activeTab = tab.id"
       >
@@ -790,49 +805,48 @@ const plans = [
             </div>
 
             <!-- View mode -->
-            <div v-if="!isEditing" class="profile-rows">
-              <div v-if="authStore.user?.companyName" class="profile-row">
-                <span class="profile-row-label">Компания</span>
-                <span class="profile-row-value">{{ authStore.user.companyName }}</span>
-              </div>
-              <div class="profile-row">
-                <span class="profile-row-label">Имя</span>
-                <span class="profile-row-value">{{ authStore.user?.firstName }}</span>
-              </div>
-              <div class="profile-row">
-                <span class="profile-row-label">Фамилия</span>
-                <span class="profile-row-value">{{ authStore.user?.lastName }}</span>
-              </div>
-              <div v-if="authStore.user?.patronymic" class="profile-row">
-                <span class="profile-row-label">Отчество</span>
-                <span class="profile-row-value">{{ authStore.user.patronymic }}</span>
-              </div>
-              <div class="profile-row">
-                <span class="profile-row-label">Телефон</span>
-                <span class="profile-row-value">{{ formatPhone(authStore.user?.phone || '') }}</span>
-              </div>
-              <div class="profile-row">
-                <span class="profile-row-label">Email</span>
-                <span class="profile-row-value">{{ authStore.user?.email || '—' }}</span>
-              </div>
-              <div class="profile-row">
-                <span class="profile-row-label">Город</span>
-                <span class="profile-row-value">{{ authStore.user?.city }}</span>
-              </div>
-              <div v-if="(authStore.user as any)?.birthDate" class="profile-row">
-                <span class="profile-row-label">Дата рождения</span>
-                <span class="profile-row-value">{{ formatDate((authStore.user as any).birthDate) }}</span>
-              </div>
-              <div class="profile-row">
-                <span class="profile-row-label">Роль</span>
-                <span class="profile-row-value">
-                  <span class="role-badge">Инвестор</span>
-                </span>
-              </div>
-              <div class="profile-row">
-                <span class="profile-row-label">Дата регистрации</span>
-                <span class="profile-row-value">{{ authStore.user?.createdAt ? formatDate(authStore.user.createdAt) : '—' }}</span>
-              </div>
+            <!-- Сетка вместо длинного списка «подпись — значение по краям»:
+                 десять строк во всю ширину карточки заставляли глаз проходить
+                 её насквозь ради каждого значения. Поля сгруппированы по
+                 смыслу — кто, как связаться, служебное. -->
+            <div v-if="!isEditing" class="pf-groups">
+              <section v-for="g in profileGroups" :key="g.title" class="pf-group">
+                <div class="pf-group-title">{{ g.title }}</div>
+                <div class="pf-grid">
+                  <!-- Плашка на поле: иконка задаёт вид данных быстрее подписи,
+                       а незаполненное видно сразу — оно приглушено и говорит
+                       «не указано» вместо прочерка неясного смысла. -->
+                  <div
+                    v-for="f in g.fields"
+                    :key="f.label"
+                    class="pf-item"
+                    :class="{ 'pf-item--empty': !f.value }"
+                  >
+                    <div class="pf-ico"><v-icon :icon="f.icon" size="16" /></div>
+                    <div class="pf-body">
+                      <span class="pf-label">{{ f.label }}</span>
+                      <span v-if="f.badge && f.value" class="pf-value">
+                        <span class="role-badge">{{ f.value }}</span>
+                      </span>
+                      <span v-else class="pf-value" :title="f.value || undefined">
+                        {{ f.value || 'не указано' }}
+                      </span>
+                    </div>
+
+                    <!-- Единственное действие на поле — заполнить пустое.
+                         «Позвонить» и «написать» здесь были бы бессмыслицей:
+                         это собственные данные партнёра, а не карточка клиента. -->
+                    <button
+                      v-if="!f.value"
+                      class="pf-act"
+                      title="Заполнить"
+                      @click="startEditing"
+                    >
+                      <v-icon icon="mdi-pencil-outline" size="14" />
+                    </button>
+                  </div>
+                </div>
+              </section>
             </div>
 
             <!-- Edit mode -->
@@ -857,18 +871,22 @@ const plans = [
               </div>
               <div class="form-field">
                 <label class="field-label">Телефон <span class="required">*</span></label>
-                <input v-model="editForm.phone" v-maska="PHONE_MASK" type="tel" class="field-input" placeholder="+7 (___) ___-__-__" />
+                <PhoneField v-model="editForm.phone" plain />
               </div>
               <div class="form-field">
                 <label class="field-label">Город <span class="required">*</span></label>
-                <select v-model="editForm.city" class="field-input field-select">
-                  <option value="" disabled>Выберите город</option>
-                  <option v-for="c in CITIES" :key="c" :value="c">{{ c }}</option>
-                </select>
+                <SelectField
+                  :model-value="editForm.city || null"
+                  :options="CITIES.map((c) => ({ value: c, label: c }))"
+                  placeholder="Выберите город"
+                  @update:model-value="editForm.city = $event ?? ''"
+                />
               </div>
               <div class="form-field">
                 <label class="field-label">Дата рождения</label>
-                <input v-model="editForm.birthDate" type="date" class="field-input" />
+                <!-- Дата рождения открывается сразу на выборе года: листать
+                     месяцы на сорок лет назад — не вариант. -->
+                <DateField v-model="editForm.birthDate" open-to="year" :presets="false" plain />
               </div>
             </div>
           </v-card>
@@ -940,6 +958,46 @@ const plans = [
     <div v-if="activeTab === 'security'" class="tab-content">
       <v-row>
         <v-col cols="12" lg="7">
+          <!-- Окно дат для сотрудников: настройка владельца -->
+          <v-card v-if="!authStore.isStaff" rounded="lg" elevation="0" border class="pa-5 mb-4">
+            <div class="section-header">
+              <div class="section-header-left">
+                <v-icon icon="mdi-calendar-lock-outline" size="18" />
+                <span>Даты операций у сотрудников</span>
+              </div>
+            </div>
+
+            <p class="text-body-2 text-medium-emphasis mb-4">
+              Насколько глубоко в прошлое сотрудник может поставить дату оплаты, расхода или
+              прощения долга. Нужно, чтобы платёж не уходил в закрытый месяц и отчётность за него
+              не менялась задним числом. Вас ограничение не касается.
+            </p>
+
+            <div class="form-field" style="max-width: 320px;">
+              <label class="field-label">Разрешить датировать назад, дней</label>
+              <div class="d-flex ga-2 align-center">
+                <input
+                  v-model.number="backdateWindow"
+                  type="number"
+                  min="0"
+                  max="365"
+                  class="field-input"
+                  style="max-width: 120px;"
+                />
+                <button class="btn-primary" :disabled="backdateSaving" @click="saveBackdateWindow">
+                  <v-progress-circular v-if="backdateSaving" indeterminate size="16" width="2" />
+                  <span v-else>Сохранить</span>
+                </button>
+              </div>
+              <div class="field-hint">
+                {{ backdateWindow === 0
+                  ? 'Только сегодняшний день'
+                  : `Сегодня и ${backdateWindow} дн. назад` }} · будущие даты недоступны никому
+              </div>
+            </div>
+          </v-card>
+
+
           <!-- Change password -->
           <v-card rounded="lg" elevation="0" border class="pa-5 mb-4">
             <div class="section-header">
@@ -1017,61 +1075,27 @@ const plans = [
           </v-card>
         </v-col>
 
-        <!-- Verification -->
-        <v-col cols="12" lg="5">
-          <v-card rounded="lg" elevation="0" border class="pa-5">
-            <div class="section-header">
-              <div class="section-header-left">
-                <v-icon icon="mdi-shield-check-outline" size="18" />
-                <span>Верификация</span>
-              </div>
-            </div>
-
-            <div class="verification-status">
-              <div class="verification-progress-ring">
-                <v-progress-circular
-                  :model-value="((authStore.user?.verificationLevel || 0) / 3) * 100"
-                  :size="72"
-                  :width="5"
-                  color="#047857"
-                >
-                  <span class="verification-progress-text">{{ authStore.user?.verificationLevel }}/3</span>
-                </v-progress-circular>
-              </div>
-              <div class="verification-level-text">
-                {{ verificationLabels[authStore.user?.verificationLevel || 0] }}
-              </div>
-            </div>
-
-            <div class="verification-steps">
-              <div
-                v-for="vs in verificationSteps"
-                :key="vs.level"
-                class="verification-step"
-                :class="{ done: (authStore.user?.verificationLevel || 0) >= vs.level }"
-              >
-                <div class="verification-step-icon">
-                  <v-icon
-                    v-if="(authStore.user?.verificationLevel || 0) >= vs.level"
-                    icon="mdi-check"
-                    size="16"
-                  />
-                  <v-icon v-else :icon="vs.icon" size="16" />
-                </div>
-                <div class="verification-step-info">
-                  <span class="verification-step-label">Уровень {{ vs.level }}</span>
-                  <span class="verification-step-desc">{{ vs.label }}</span>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="(authStore.user?.verificationLevel || 0) < 3" class="info-banner mt-4">
-              <v-icon icon="mdi-information-outline" size="18" />
-              <span>Повысьте верификацию для доступа к расширенным функциям</span>
-            </div>
-          </v-card>
-        </v-col>
       </v-row>
+
+      <!-- Очистка кабинета: шаг мягче удаления аккаунта — сам аккаунт,
+           тариф и доступ остаются, стирается только работа. -->
+      <div class="delete-account-bar delete-account-bar--reset">
+        <div class="d-flex align-center ga-3">
+          <div class="delete-account-icon delete-account-icon--reset">
+            <v-icon icon="mdi-broom" size="18" />
+          </div>
+          <div>
+            <div class="delete-account-title">Очистить личный кабинет</div>
+            <div class="delete-account-desc">
+              Удалит сделки, платежи, клиентов и всю историю. Аккаунт и подписка останутся,
+              а перед очисткой сервис соберёт резервную копию
+            </div>
+          </div>
+        </div>
+        <button class="delete-account-btn delete-account-btn--reset" @click="resetDialog = true">
+          Очистить
+        </button>
+      </div>
 
       <!-- Delete account -->
       <div class="delete-account-bar">
@@ -1084,14 +1108,7 @@ const plans = [
             <div class="delete-account-desc">Все данные будут удалены безвозвратно</div>
           </div>
         </div>
-        <button
-          class="delete-account-btn"
-          :disabled="deletingAccount"
-          @click="confirmDeleteAccount"
-        >
-          <v-progress-circular v-if="deletingAccount" indeterminate size="14" width="2" color="white" />
-          {{ deletingAccount ? 'Удаление...' : 'Удалить' }}
-        </button>
+        <button class="delete-account-btn" @click="deleteDialog = true">Удалить</button>
       </div>
     </div>
 
@@ -1140,7 +1157,7 @@ const plans = [
             Перейти к подпискам
           </button>
         </div>
-      </template>
+</template>
 
       <template v-else>
       <v-card v-if="waStatus === 'connected'" rounded="lg" elevation="0" border class="pa-6">
@@ -1552,132 +1569,9 @@ const plans = [
       </div>
     </div>
 
-    <div v-if="activeTab === 'export'" class="tab-content">
-      <template v-if="!canAccessFeature('excelExport')">
-        <!-- Locked state -->
-        <div class="export-locked-card">
-          <div class="export-locked-icon-wrap">
-            <v-icon icon="mdi-file-excel-outline" size="36" color="#047857" />
-            <div class="export-locked-crown">
-              <v-icon icon="mdi-crown" size="16" color="#e8b931" />
-            </div>
-          </div>
-          <div class="export-locked-title">Экспорт данных</div>
-          <div class="export-locked-desc">
-            Скачайте все данные из личного кабинета в формате Excel — сделки, платежи, клиентов и сводку с формулами.
-          </div>
-
-          <div class="export-locked-features">
-            <div class="export-locked-feature">
-              <v-icon icon="mdi-handshake" size="18" color="#047857" />
-              <span>Все сделки с финансами</span>
-            </div>
-            <div class="export-locked-feature">
-              <v-icon icon="mdi-calendar-check" size="18" color="#047857" />
-              <span>История платежей</span>
-            </div>
-            <div class="export-locked-feature">
-              <v-icon icon="mdi-account-group" size="18" color="#047857" />
-              <span>База клиентов</span>
-            </div>
-            <div class="export-locked-feature">
-              <v-icon icon="mdi-function-variant" size="18" color="#047857" />
-              <span>Формулы и итоги</span>
-            </div>
-          </div>
-
-          <div class="export-locked-plan-badge">
-            <v-icon icon="mdi-crown" size="14" color="#e8b931" />
-            Доступно с плана Бизнес
-          </div>
-
-          <button class="export-locked-btn" @click="activeTab = 'subscription'">
-            <v-icon icon="mdi-arrow-right" size="18" />
-            Перейти к подпискам
-          </button>
-        </div>
-      </template>
-
-      <template v-else>
-        <!-- Available state -->
-        <div class="export-card">
-          <div class="export-card-header">
-            <div class="export-card-icon">
-              <v-icon icon="mdi-file-excel-outline" size="24" />
-            </div>
-            <div>
-              <div class="export-card-title">Экспорт в Excel</div>
-              <div class="export-card-desc">Скачать все данные из личного кабинета</div>
-            </div>
-          </div>
-
-          <div class="export-sheets">
-            <div class="export-sheet">
-              <v-icon icon="mdi-chart-pie" size="20" color="#047857" />
-              <div>
-                <div class="export-sheet-title">Сводка</div>
-                <div class="export-sheet-desc">Общие показатели, ROI, статистика платежей</div>
-              </div>
-            </div>
-            <div class="export-sheet">
-              <v-icon icon="mdi-handshake" size="20" color="#3b82f6" />
-              <div>
-                <div class="export-sheet-title">Сделки</div>
-                <div class="export-sheet-desc">Все сделки с формулами наценки и итогами</div>
-              </div>
-            </div>
-            <div class="export-sheet">
-              <v-icon icon="mdi-calendar-check" size="20" color="#8b5cf6" />
-              <div>
-                <div class="export-sheet-title">Платежи</div>
-                <div class="export-sheet-desc">Все платежи, суммы по статусам (SUMIF)</div>
-              </div>
-            </div>
-            <div class="export-sheet">
-              <v-icon icon="mdi-account-group" size="20" color="#f59e0b" />
-              <div>
-                <div class="export-sheet-title">Клиенты</div>
-                <div class="export-sheet-desc">Профили клиентов, паспортные данные, суммы</div>
-              </div>
-            </div>
-          </div>
-
-          <button
-            class="export-download-btn"
-            :disabled="exporting"
-            @click="exportExcel"
-          >
-            <v-progress-circular v-if="exporting" indeterminate size="18" width="2" color="white" />
-            <v-icon v-else icon="mdi-download" size="20" />
-            {{ exporting ? 'Формирование файла...' : 'Скачать Excel' }}
-          </button>
-
-          <!-- Auto-email subscription toggle -->
-          <div class="weekly-export-card">
-            <div class="weekly-export-icon">
-              <v-icon icon="mdi-email-fast-outline" size="20" />
-            </div>
-            <div class="weekly-export-text">
-              <div class="weekly-export-title">Еженедельный отчёт на почту</div>
-              <div class="weekly-export-desc">
-                Каждый понедельник в 09:00 будем отправлять свежий Excel со всеми сделками на
-                <span v-if="weeklyExportEmailAddress" class="weekly-export-email">{{ weeklyExportEmailAddress }}</span>
-                <span v-else class="weekly-export-email weekly-export-email--missing">— email не указан</span>
-              </div>
-            </div>
-            <label class="weekly-export-switch" :class="{ 'weekly-export-switch--on': weeklyExportEmail }">
-              <input
-                type="checkbox"
-                :checked="weeklyExportEmail"
-                :disabled="weeklyExportToggling || !weeklyExportEmailAddress"
-                @change="(e) => toggleWeeklyExport((e.target as HTMLInputElement).checked)"
-              />
-              <span class="weekly-export-switch-track" />
-            </label>
-          </div>
-        </div>
-      </template>
-    </div>
+    <!-- Вкладки «Экспорт» больше нет: выгрузка, письма и резервные копии
+         живут одним разделом «Резервные копии» — искать их в двух местах было
+         неоткуда. Ссылки из старых писем ведут сюда же и перенаправляются. -->
 
     <!-- Contract Template Tab -->
     <div v-if="activeTab === 'contract'" class="tab-content">
@@ -1687,13 +1581,17 @@ const plans = [
             <v-icon icon="mdi-file-cog-outline" size="24" />
           </div>
           <div>
-            <div style="font-size: 17px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85);">Конструктор договора</div>
-            <div style="font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 2px;">Создайте свой шаблон договора для сделок</div>
+            <div style="font-size: 17px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85);">Конструктор документов</div>
+            <div style="font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 2px;">Договор и квитанция — свой вид у каждого</div>
           </div>
         </div>
 
         <div style="font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6); line-height: 1.6; margin-bottom: 20px;">
-          В конструкторе вы можете собрать шаблон договора под свой бизнес — как в Word. Добавьте свои тексты, условия, юридические пункты. Используйте переменные (имя клиента, товар, цена, график) — они подставятся автоматически из данных сделки при скачивании PDF.
+          В конструкторе собираются оба документа — как в Word. Договор: свои условия и
+          юридические пункты, переменные (имя клиента, товар, цена, график) подставятся
+          из сделки. Квитанция: свой вид бумаги, которую клиент уносит с собой, с
+          переменными платежа. Пока свой бланк квитанции не собран, печатается
+          стандартный — его реквизиты настраиваются отдельно.
         </div>
 
         <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px;">
@@ -1709,16 +1607,47 @@ const plans = [
           </div>
         </div>
 
-        <button
-          style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 24px; border-radius: 10px; border: none; background: #047857; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s;"
-          @click="$router.push('/contract-builder')"
-        >
-          <v-icon icon="mdi-pencil-ruler" size="18" />
-          Открыть конструктор
-        </button>
+        <!-- Договор и квитанция — два документа одного конструктора: они
+             собираются одинаково, и разводить их по разным вкладкам значило бы
+             объяснять одно и то же дважды. -->
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+          <button
+            style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 24px; border-radius: 10px; border: none; background: #047857; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;"
+            @click="$router.push('/contract-builder')"
+          >
+            <v-icon icon="mdi-file-document-outline" size="18" />
+            Договор
+          </button>
+          <button
+            style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 24px; border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.14); background: transparent; color: rgba(var(--v-theme-on-surface), 0.8); font-size: 14px; font-weight: 600; cursor: pointer;"
+            @click="$router.push({ path: '/contract-builder', query: { doc: 'receipt' } })"
+          >
+            <v-icon icon="mdi-receipt-text-outline" size="18" />
+            Квитанция
+          </button>
+          <button
+            style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.14); background: transparent; color: rgba(var(--v-theme-on-surface), 0.6); font-size: 14px; cursor: pointer;"
+            @click="$router.push('/receipt-template')"
+          >
+            <v-icon icon="mdi-tune" size="18" />
+            Реквизиты квитанции
+          </button>
+        </div>
       </v-card>
     </div>
 
+    <!-- Программы рассрочки: справочник условий для новых договоров — прямо
+         здесь. Отдельная страница ради одного справочника только уводила из
+         настроек и обратно. -->
+    <div v-if="activeTab === 'programs'" class="tab-content">
+      <!-- Белая карточка, как у остальных вкладок настроек: раздел не должен
+           выглядеть висящим прямо на фоне страницы. -->
+      <v-card rounded="lg" elevation="0" border class="pa-6">
+        <InstallmentPrograms />
+      </v-card>
+    </div>
+
+    <!-- Бланк квитанции: сама настройка на отдельной странице, здесь вход. -->
     <!-- Subscription Tab -->
     <div v-if="activeTab === 'subscription'" class="tab-content">
       <!-- Current plan -->
@@ -1957,9 +1886,54 @@ const plans = [
       </v-dialog>
     </div>
   </div>
+  <!-- Оба опасных действия подтверждаются одним и тем же окном: разойдись
+       они, защита в одном из них однажды оказалась бы слабее. Окна живут на
+       уровне страницы, а не внутри вкладки — иначе они не отрисовываются, и
+       кнопка молча ничего не делает. -->
+  <DangerConfirmDialog
+    v-model="resetDialog"
+    title="Очистить личный кабинет"
+    subtitle="Кабинет станет таким, каким был в день создания"
+    word="ОЧИСТИТЬ"
+    action="Очистить кабинет"
+    preview-url="/account/reset/preview"
+    submit-url="/account/reset"
+    :rows="[
+      { key: 'deals', label: 'Сделки' },
+      { key: 'payments', label: 'Платежи' },
+      { key: 'clients', label: 'Клиенты' },
+      { key: 'accounts', label: 'Счета' },
+      { key: 'journal', label: 'Записи в журнале кассы' },
+      { key: 'staff', label: 'Сотрудники' },
+    ]"
+    note="Перед очисткой сервис сам соберёт полную резервную копию. Она останется в разделе «Резервные копии» — из неё можно вернуть всю работу целиком."
+    @done="reloadAfterReset"
+  />
+
+  <DangerConfirmDialog
+    v-model="deleteDialog"
+    title="Удалить аккаунт"
+    subtitle="Аккаунт, подписка и все данные будут удалены"
+    word="УДАЛИТЬ"
+    action="Удалить аккаунт"
+    preview-url="/account/delete/preview"
+    submit-url="/account/delete"
+    :rows="[
+      { key: 'deals', label: 'Сделки' },
+      { key: 'payments', label: 'Платежи' },
+      { key: 'clients', label: 'Клиенты' },
+      { key: 'staff', label: 'Сотрудники' },
+      { key: 'backups', label: 'Резервные копии' },
+    ]"
+    note="Восстановить будет нечем: резервные копии удаляются вместе с аккаунтом. Если данные могут понадобиться — скачайте файл восстановления заранее, в разделе «Резервные копии»."
+    note-danger
+    @done="onAccountDeleted"
+  />
+
 </template>
 
 <style scoped>
+
 /* Page header */
 .page-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -1980,36 +1954,7 @@ const plans = [
   font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45);
 }
 
-/* Tabs */
-.settings-tabs {
-  display: flex; gap: 4px; margin-bottom: 24px;
-  padding: 4px; border-radius: 12px;
-  background: #fff;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-.settings-tab {
-  display: flex; align-items: center; gap: 6px;
-  padding: 10px 18px; border-radius: 8px; border: none;
-  background: transparent;
-  font-size: 13px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  cursor: pointer; transition: all 0.15s;
-}
-.settings-tab:hover {
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-.settings-tab.active {
-  background: #047857;
-  color: #fff;
-  font-weight: 600;
-  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
-}
-@media (max-width: 600px) {
-  .settings-tabs { overflow-x: auto; }
-  .settings-tab { white-space: nowrap; padding: 8px 14px; font-size: 12px; }
-}
+/* Табы раздела — общий стиль, см. styles/page-tabs.css */
 
 /* Section header */
 .section-header {
@@ -2057,6 +2002,57 @@ const plans = [
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Profile rows (view) */
+/* Личные данные: смысловые группы, внутри — сетка «подпись сверху, значение
+   снизу». Значение стоит под своей подписью, а не в другом конце строки. */
+.pf-groups { display: flex; flex-direction: column; gap: 18px; }
+.pf-group-title {
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 10px;
+}
+.pf-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+}
+.pf-item {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 9px 12px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.025);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+}
+/* Незаполненное поле не должно выглядеть как заполненное: приглушаем и
+   предлагаем заполнить. */
+.pf-item--empty { background: transparent; border-style: dashed; }
+.pf-item--empty .pf-value { color: rgba(var(--v-theme-on-surface), 0.35); font-weight: 500; }
+.pf-ico {
+  width: 30px; height: 30px; flex: none; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 120, 87, 0.09); color: #047857;
+}
+.pf-item--empty .pf-ico {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.3);
+}
+.pf-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.pf-act {
+  width: 28px; height: 28px; flex: none; border-radius: 8px; border: none;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: pointer; text-decoration: none;
+}
+.pf-act:hover { background: rgba(var(--v-theme-on-surface), 0.06); color: #047857; }
+.pf-label { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.45); }
+.pf-value {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Длинная почта обрезается многоточием, а целиком показывается подсказкой:
+   перенос делал плашку выше соседних и ломал ряд. */
+@media (max-width: 600px) {
+  .pf-grid { grid-template-columns: 1fr; }
+}
+
 .profile-rows { display: flex; flex-direction: column; gap: 14px; }
 .profile-row {
   display: flex; justify-content: space-between; align-items: center;
@@ -2235,160 +2231,44 @@ const plans = [
   color: #ef4444; border-color: rgba(239, 68, 68, 0.12);
 }
 
-/* Export tab — locked card */
-.export-locked-card {
-  display: flex; flex-direction: column; align-items: center;
-  background: #fff; border: 2px solid rgba(232, 185, 49, 0.25);
-  border-radius: 16px; padding: 40px 32px; text-align: center;
+.export-backups-link {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 18px; padding: 14px 16px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  text-decoration: none;
 }
-.export-locked-icon-wrap {
-  position: relative; width: 72px; height: 72px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(4, 120, 87, 0.08); border-radius: 50%; margin-bottom: 16px;
-}
-.export-locked-crown {
-  position: absolute; bottom: -2px; right: -2px;
-  width: 26px; height: 26px; border-radius: 50%;
-  background: #fff; border: 2px solid rgba(232, 185, 49, 0.3);
-  display: flex; align-items: center; justify-content: center;
-}
-.export-locked-title {
-  font-size: 20px; font-weight: 700; margin-bottom: 8px;
-}
-.export-locked-desc {
-  font-size: 14px; color: rgba(var(--v-theme-on-surface), 0.55);
-  max-width: 460px; line-height: 1.5; margin-bottom: 24px;
-}
-.export-locked-features {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px;
-  text-align: left; margin-bottom: 24px; width: 100%; max-width: 480px;
-}
-.export-locked-feature {
-  display: flex; align-items: center; gap: 10px;
-  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.7);
-  background: rgba(4, 120, 87, 0.05); border-radius: 10px; padding: 10px 14px;
-}
-.export-locked-plan-badge {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 13px; font-weight: 600; color: #b8941e;
-  background: rgba(232, 185, 49, 0.1); border: 1px solid rgba(232, 185, 49, 0.2);
-  border-radius: 20px; padding: 6px 16px; margin-bottom: 20px;
-}
-.export-locked-btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  height: 44px; padding: 0 28px; border-radius: 12px; border: none;
-  background: #047857; color: #fff; font-size: 14px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s;
-}
-.export-locked-btn:hover { background: #065f46; }
+.export-backups-link:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.export-backups-link-body { flex: 1; min-width: 0; }
+.export-backups-link-title { font-size: 14px; font-weight: 600; }
+.export-backups-link-sub { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
 
-/* Export tab — available card */
-.export-card {
-  background: #fff; border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  border-radius: 16px; padding: 28px;
-}
-.export-card-header {
-  display: flex; align-items: center; gap: 14px; margin-bottom: 24px;
-}
-.export-card-icon {
-  width: 48px; height: 48px; border-radius: 14px;
-  background: rgba(4, 120, 87, 0.1); color: #047857;
-  display: flex; align-items: center; justify-content: center;
-}
-.export-card-title { font-size: 18px; font-weight: 700; }
-.export-card-desc { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 2px; }
 
-.export-sheets {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px;
-}
-.export-sheet {
-  display: flex; align-items: flex-start; gap: 12px;
-  padding: 14px 16px; border-radius: 12px;
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-}
-.export-sheet .v-icon { margin-top: 2px; flex-shrink: 0; }
-.export-sheet-title { font-size: 13px; font-weight: 600; }
-.export-sheet-desc { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 2px; }
 
-.export-download-btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  height: 48px; padding: 0 32px; border-radius: 12px; border: none;
-  background: #047857; color: #fff; font-size: 14px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s;
-}
-.export-download-btn:hover { background: #065f46; }
-.export-download-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
 
 /* Weekly auto-export to email */
-.weekly-export-card {
-  display: flex; align-items: center; gap: 14px;
-  margin-top: 16px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: rgba(99, 102, 241, 0.04);
-  border: 1px solid rgba(99, 102, 241, 0.15);
-}
-.weekly-export-icon {
-  width: 38px; height: 38px; min-width: 38px; border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(99, 102, 241, 0.12); color: #6366f1;
-}
-.weekly-export-text { flex: 1; min-width: 0; }
-.weekly-export-title {
-  font-size: 14px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.9);
-}
-.weekly-export-desc {
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
-  margin-top: 3px; line-height: 1.45;
-}
-.weekly-export-email {
-  font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.weekly-export-email--missing { color: #ef4444; }
 
 /* iOS-style switch */
-.weekly-export-switch {
-  position: relative; width: 44px; height: 26px; flex-shrink: 0; cursor: pointer;
-  display: inline-block;
-}
-.weekly-export-switch input {
-  opacity: 0; width: 0; height: 0; position: absolute;
-}
-.weekly-export-switch input:disabled + .weekly-export-switch-track {
-  opacity: 0.4; cursor: not-allowed;
-}
-.weekly-export-switch-track {
-  position: absolute; inset: 0; border-radius: 999px;
-  background: rgba(var(--v-theme-on-surface), 0.18);
-  transition: background 0.18s;
-}
-.weekly-export-switch-track::after {
-  content: ''; position: absolute; left: 3px; top: 3px;
-  width: 20px; height: 20px; border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.20);
-  transition: transform 0.18s;
-}
-.weekly-export-switch--on .weekly-export-switch-track {
-  background: #6366f1;
-}
-.weekly-export-switch--on .weekly-export-switch-track::after {
-  transform: translateX(18px);
-}
 
-.dark .weekly-export-card {
-  background: rgba(99, 102, 241, 0.08);
-  border-color: rgba(99, 102, 241, 0.25);
-}
 
 /* Dark mode export */
-.dark .export-locked-card { background: rgb(var(--v-theme-surface)); border-color: rgba(232, 185, 49, 0.15); }
-.dark .export-locked-crown { background: rgb(var(--v-theme-surface)); }
-.dark .export-locked-feature { background: rgba(4, 120, 87, 0.08); }
 .dark .export-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .export-sheet { background: rgba(var(--v-theme-on-surface), 0.04); border-color: rgb(var(--v-theme-border)); }
+
+/* Очистка кабинета: тот же ряд, что и удаление аккаунта, но спокойнее по
+   цвету — это обратимое действие, копия делается автоматически. */
+.delete-account-bar--reset { border-color: rgba(var(--v-theme-on-surface), 0.12); }
+.delete-account-icon--reset {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.delete-account-btn--reset {
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.16);
+}
 
 /* Delete account */
 .delete-account-bar {
@@ -2875,51 +2755,6 @@ const plans = [
 .btn-whatsapp-save:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* Verification */
-.verification-status {
-  display: flex; flex-direction: column; align-items: center;
-  padding: 16px 0 20px; gap: 10px;
-}
-.verification-progress-text {
-  font-size: 16px; font-weight: 700; color: #047857;
-}
-.verification-level-text {
-  font-size: 14px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
-.verification-steps {
-  display: flex; flex-direction: column; gap: 10px;
-}
-.verification-step {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 12px; border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-}
-.verification-step.done {
-  background: rgba(4, 120, 87, 0.04);
-  border-color: rgba(4, 120, 87, 0.12);
-}
-.verification-step-icon {
-  width: 32px; height: 32px; min-width: 32px; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(var(--v-theme-on-surface), 0.06);
-  color: rgba(var(--v-theme-on-surface), 0.35);
-}
-.verification-step.done .verification-step-icon {
-  background: rgba(4, 120, 87, 0.12); color: #047857;
-}
-.verification-step-info {
-  display: flex; flex-direction: column; gap: 1px;
-}
-.verification-step-label {
-  font-size: 11px; font-weight: 600; text-transform: uppercase;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-}
-.verification-step.done .verification-step-label { color: #047857; }
-.verification-step-desc {
-  font-size: 13px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
 
 /* Current plan banner */
 .current-plan-banner {
@@ -3324,10 +3159,6 @@ const plans = [
 }
 
 /* Dark mode */
-.dark .settings-tab.active {
-  background: #047857; color: #fff;
-  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.3);
-}
 .dark .field-input {
   background: rgb(var(--v-theme-surface-elevated)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.92);
 }
@@ -3348,13 +3179,10 @@ const plans = [
 .dark .plan-response-price--free { background: rgba(4, 120, 87, 0.1); }
 .dark .plan-divider { background: rgb(var(--v-theme-border)); }
 .dark .plans-comparison-note { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); }
-.dark .verification-step { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
-.dark .verification-step.done { background: rgba(4, 120, 87, 0.06); border-color: rgba(4, 120, 87, 0.2); }
 .dark .current-plan-banner {
   background: linear-gradient(135deg, rgba(4, 120, 87, 0.12) 0%, rgba(4, 120, 87, 0.04) 100%);
   border-color: rgba(4, 120, 87, 0.2);
 }
-.dark .settings-tabs { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); }
 .dark .billing-toggle-wrap { background: rgb(var(--v-theme-surface-deep)); border-color: rgb(var(--v-theme-border)); box-shadow: none; }
 .dark .billing-toggle-btn.active { background: #047857; color: #fff; }
 .dark .billing-discount-badge { background: rgba(4, 120, 87, 0.2); color: #34d399; }
@@ -3408,15 +3236,7 @@ const plans = [
   .page-title { font-size: 16px; }
   .page-subtitle { font-size: 12px; }
 
-  .settings-tabs {
-    margin-bottom: 16px;
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-  }
-  .settings-tabs::-webkit-scrollbar { display: none; }
-  .settings-tab { flex-shrink: 0; }
+  .page-tabs { margin-bottom: 16px; }
 
   .section-header {
     flex-wrap: wrap;

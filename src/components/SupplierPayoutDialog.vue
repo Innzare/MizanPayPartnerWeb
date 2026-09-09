@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { useSuppliersStore, type SupplierDebt } from '@/stores/suppliers'
 import { formatCurrency, formatDateShort } from '@/utils/formatters'
 import FormModal from '@/components/FormModal.vue'
+import DateField from '@/components/DateField.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -111,7 +112,7 @@ async function save() {
 
         <div class="form-field mt-3">
           <label class="field-label">Дата выплаты (необязательно)</label>
-          <input v-model="date" type="date" class="field-input" />
+          <DateField v-model="date" plain />
         </div>
 
         <div class="form-field">

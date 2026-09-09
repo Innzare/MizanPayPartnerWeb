@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useSections } from '@/composables/useSections'
 import { useCashBoxesStore } from '@/stores/cashboxes'
+import { useAccountingStore } from '@/stores/accounting'
 import type { CashBoxSummary } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
@@ -20,6 +21,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useCashBoxesStore()
+const accounting = useAccountingStore()
 const toast = useToast()
 const { isDark } = useIsDark()
 const { isMobile } = useIsMobile()
@@ -30,6 +32,42 @@ const name = ref('')
 const color = ref('#3b82f6')
 const icon = ref('mdi-wallet-outline')
 const initialCapital = ref<number | null>(null)
+
+/**
+ * Где будут лежать деньги новой кассы.
+ *
+ * Касса отвечает «сколько денег», счета — «где они». Разложить капитал сразу
+ * дешевле, чем потом искать строку «не разнесено»: партнёр в этот момент как
+ * раз держит в голове, что у него в сейфе и что на карте.
+ *
+ * Заводится только при создании: у существующей кассы счета уже есть, и
+ * дублировать их форму здесь незачем.
+ */
+const layout = ref<Array<{ name: string; type: 'CASH' | 'BANK_CARD'; amount: number | null }>>([])
+
+const laidOut = computed(() =>
+  layout.value.reduce((sum, row) => sum + Math.max(0, Math.round(row.amount ?? 0)), 0),
+)
+const capital = computed(() => Math.max(0, Math.round(initialCapital.value ?? 0)))
+/** Остаток капитала, которому не назначили место. */
+const layoutRest = computed(() => capital.value - laidOut.value)
+
+function addRow() {
+  layout.value.push({
+    name: layout.value.length === 0 ? 'Сейф' : '',
+    type: layout.value.length === 0 ? 'CASH' : 'BANK_CARD',
+    amount: layoutRest.value > 0 ? layoutRest.value : null,
+  })
+}
+
+function removeRow(i: number) {
+  layout.value.splice(i, 1)
+}
+
+/** Строку без названия или без суммы просто пропускаем — она ничего не значит. */
+const layoutReady = computed(() =>
+  layout.value.filter((r) => r.name.trim() && Math.round(r.amount ?? 0) > 0),
+)
 // Phase 4: does the partner's own capital join the by-capital profit split in
 // this cashbox? true = partner invests alongside co-investors; false = partner
 // only manages (their cut comes from each CI's commission).
@@ -90,6 +128,13 @@ async function handleSave() {
     toast.error('Введите название кассы')
     return
   }
+  // Разложить больше, чем есть в кассе, нельзя: сумма счетов обязана
+  // сходиться с её деньгами.
+  if (!isEdit.value && layoutRest.value < 0) {
+    toast.error('По счетам разложено больше, чем капитал кассы')
+    return
+  }
+
   submitting.value = true
   try {
     const payload = {
@@ -102,6 +147,25 @@ async function handleSave() {
     const box = props.cashbox
       ? await store.update(props.cashbox.id, payload)
       : await store.create(payload)
+
+    // Счета заводим после кассы: до её создания их не к чему привязать.
+    // Ошибка здесь не отменяет кассу — она уже есть, а счета партнёр добавит
+    // в «Бухгалтерии»; поэтому говорим об этом отдельно, а не общим отказом.
+    if (!isEdit.value && layoutReady.value.length && box?.id) {
+      try {
+        for (const row of layoutReady.value) {
+          await accounting.createAccount({
+            name: row.name.trim(),
+            type: row.type,
+            cashBoxId: box.id,
+            openingBalance: Math.round(row.amount ?? 0),
+          })
+        }
+      } catch (e: any) {
+        toast.error(e?.message || 'Касса создана, но счета завести не удалось')
+      }
+    }
+
     toast.success(isEdit.value ? 'Касса обновлена' : 'Касса создана')
     emit('saved', box)
     emit('update:modelValue', false)
@@ -179,6 +243,60 @@ async function handleSave() {
           />
           <div class="cb-hint">
             Сумма с которой начинает работать касса. Если касса для конкретного партнёра — введите ту сумму, что он внёс.
+          </div>
+        </div>
+
+        <!-- Где будут лежать эти деньги. Только при создании: у существующей
+             кассы счета уже заведены в «Бухгалтерии». -->
+        <div v-if="!isEdit && capital > 0" class="cb-field">
+          <label class="cb-label">Где будут лежать эти деньги</label>
+
+          <div v-for="(row, i) in layout" :key="i" class="cb-lay-row">
+            <v-text-field
+              v-model="row.name"
+              placeholder="Сейф, Карта Сбер"
+              variant="outlined"
+              density="compact"
+              hide-details
+              :class="{ 'cb-input cb-lay-name': true, dark: isDark }"
+            />
+            <select v-model="row.type" class="cb-lay-type" :class="{ dark: isDark }">
+              <option value="CASH">Наличные</option>
+              <option value="BANK_CARD">Карта</option>
+            </select>
+            <v-text-field
+              :model-value="row.amount === null ? '' : row.amount.toLocaleString('ru-RU')"
+              @update:model-value="(v: string) => row.amount = parseInt(String(v).replace(/\D/g, ''), 10) || null"
+              placeholder="0"
+              variant="outlined"
+              density="compact"
+              hide-details
+              suffix="₽"
+              :class="{ 'cb-input cb-lay-sum': true, dark: isDark }"
+            />
+            <button class="cb-lay-del" title="Убрать" @click="removeRow(i)">
+              <v-icon icon="mdi-close" size="16" />
+            </button>
+          </div>
+
+          <div class="cb-lay-foot">
+            <button class="cb-lay-add" @click="addRow">
+              <v-icon icon="mdi-plus" size="15" />
+              {{ layout.length ? 'Ещё счёт' : 'Указать счета' }}
+            </button>
+            <span v-if="layout.length" class="cb-lay-rest" :class="{ 'cb-lay-rest--over': layoutRest < 0 }">
+              <template v-if="layoutRest > 0">
+                Не разнесено: {{ layoutRest.toLocaleString('ru-RU') }} ₽
+              </template>
+              <template v-else-if="layoutRest < 0">
+                Разложено больше капитала на {{ (-layoutRest).toLocaleString('ru-RU') }} ₽
+              </template>
+              <template v-else>Всё разложено</template>
+            </span>
+          </div>
+
+          <div class="cb-hint">
+            Необязательно: что не разложите, останется строкой «не разнесено» в «Бухгалтерии».
           </div>
         </div>
 
@@ -330,6 +448,33 @@ async function handleSave() {
   text-transform: uppercase; letter-spacing: 0.4px;
 }
 .cb-dialog.dark .cb-label { color: rgba(var(--v-theme-on-surface), 0.65); }
+
+/* Раскладка капитала по счетам: строка «название · вид · сумма». */
+.cb-lay-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cb-lay-name { flex: 1 1 auto; min-width: 0; }
+.cb-lay-sum { flex: 0 0 140px; }
+.cb-lay-type {
+  flex: 0 0 118px; height: 40px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.18);
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.85); font-size: 13px; cursor: pointer;
+}
+.cb-lay-del {
+  flex: none; width: 30px; height: 30px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: rgba(var(--v-theme-on-surface), 0.4); cursor: pointer;
+}
+.cb-lay-del:hover { background: rgba(var(--v-theme-on-surface), 0.06); color: #dc2626; }
+.cb-lay-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.cb-lay-add {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 11px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.2);
+  color: rgba(var(--v-theme-on-surface), 0.6); cursor: pointer;
+}
+.cb-lay-add:hover { border-color: #047857; color: #047857; }
+.cb-lay-rest { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.cb-lay-rest--over { color: #b45309; font-weight: 600; }
 
 .cb-hint { font-size: 11px; color: #737373; line-height: 1.4; }
 .cb-dialog.dark .cb-hint { color: rgba(var(--v-theme-on-surface), 0.5); }

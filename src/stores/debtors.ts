@@ -24,6 +24,8 @@ export interface DebtorRow {
   dealId: string
   dealNumber: number
   clientName: string
+  /** Профиль клиента — для ссылки на его карточку; у импортных сделок пусто. */
+  clientProfileId: string | null
   clientPhone: string | null
   productName: string
   totalPrice: number
@@ -107,6 +109,8 @@ export interface DebtorsPageParams {
   dir?: 'asc' | 'desc'
   limit: number
   offset: number
+  /** Расширенные фильтры панели. */
+  extra?: Record<string, string | number>
 }
 
 /** KPI шапки — считаются на сервере по всей выборке, а не по странице. */
@@ -129,6 +133,11 @@ function debtorsQuery(p: DebtorsPageParams): string {
   if (p.dir) qs.set('dir', p.dir)
   qs.set('limit', String(p.limit))
   if (p.offset) qs.set('offset', String(p.offset))
+  // Фильтры панели уходят как есть: имена совпадают с теми, что понимает
+  // сервер, и с ключами в адресе страницы.
+  for (const [k, v] of Object.entries(p.extra ?? {})) {
+    if (v !== '' && v != null) qs.set(k, String(v))
+  }
   return qs.toString()
 }
 
@@ -155,28 +164,38 @@ export const useDebtorsStore = defineStore('debtors', () => {
   // зная ни фильтров, ни номера страницы.
   let lastParams: { params: DebtorsPageParams; archive: boolean } | null = null
 
-  async function fetchDebtors(params: DebtorsPageParams) {
+  /**
+   * Слияние порций при автоподгрузке. Дубликаты по сделке отбрасываем: между
+   * запросами в начало выборки мог попасть новый должник и сдвинуть окно.
+   */
+  function mergeRows(current: DebtorRow[], incoming: DebtorRow[]): DebtorRow[] {
+    const seen = new Set(current.map((r) => r.dealId))
+    return [...current, ...incoming.filter((r) => !seen.has(r.dealId))]
+  }
+
+  /** @param append дописать порцию (автоподгрузка), а не заменить список. */
+  async function fetchDebtors(params: DebtorsPageParams, append = false) {
     lastParams = { params, archive: false }
     const req = ++listReq
     loading.value = true
     try {
       const res = await api.get<Page<DebtorRow>>(`/debtors?${debtorsQuery(params)}`)
       if (req !== listReq) return
-      rows.value = res.items
+      rows.value = append ? mergeRows(rows.value, res.items) : res.items
       total.value = res.total
     } finally {
       if (req === listReq) loading.value = false
     }
   }
 
-  async function fetchArchive(params: DebtorsPageParams) {
+  async function fetchArchive(params: DebtorsPageParams, append = false) {
     lastParams = { params, archive: true }
     const req = ++archiveReq
     archiveLoading.value = true
     try {
       const res = await api.get<Page<DebtorRow>>(`/debtors/archive?${debtorsQuery(params)}`)
       if (req !== archiveReq) return
-      archiveRows.value = res.items
+      archiveRows.value = append ? mergeRows(archiveRows.value, res.items) : res.items
       archiveTotal.value = res.total
     } finally {
       if (req === archiveReq) archiveLoading.value = false

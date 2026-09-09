@@ -9,6 +9,11 @@ export type CashFlowEntryType =
   | 'DIVIDEND_OUT'
   | 'MANUAL_INCOME'
   | 'MANUAL_EXPENSE'
+  // Заёмные деньги: лежат на счетах и работают, но бизнесу не принадлежат.
+  | 'LOAN_IN'
+  | 'LOAN_REPAY_OUT'
+  | 'LENT_OUT'
+  | 'LENT_REPAY_IN'
   | 'CAPITAL_IN'
   | 'CAPITAL_OUT'
   | 'PROFIT_ACCRUED'

@@ -1,0 +1,53 @@
+/**
+ * Появление своих выпадающих списков.
+ *
+ * Меню Vuetify (например «Операции» на «Балансе») всплывают с анимацией, а
+ * наши собственные списки — выбор кассы, счёта, банка — возникали мгновенно.
+ * Рядом это читалось как подвисание: одно меню «выезжает», соседнее «моргает».
+ *
+ * Стиль общий и лежит здесь, а не в компонентах: классы перехода вешаются на
+ * телепортированный в body элемент, до которого scoped-стили страницы не
+ * достают, и правка должна быть одна на все списки.
+ *
+ * Разметка:
+ *   <Transition name="menu-pop">
+ *     <div v-if="open" class="…" :class="{ 'menu-pop--up': flipped }">…</div>
+ *   </Transition>
+ */
+
+.menu-pop-enter-active {
+  transition:
+    opacity 0.16s cubic-bezier(0.2, 0.8, 0.3, 1),
+    transform 0.16s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+/* Закрытие быстрее открытия: ждать исчезновения списка никто не хочет. */
+.menu-pop-leave-active {
+  transition:
+    opacity 0.11s ease,
+    transform 0.11s ease;
+}
+
+.menu-pop-enter-from,
+.menu-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.97);
+}
+
+/* Список, открытый вверх, растёт от своего нижнего края — то есть тоже от
+   кнопки, а не от воздуха над ней. */
+.menu-pop--up.menu-pop-enter-from,
+.menu-pop--up.menu-pop-leave-to {
+  transform: translateY(6px) scale(0.97);
+}
+
+/* Точка роста — у кнопки: без неё список масштабируется из центра и «дышит». */
+.menu-pop-enter-active,
+.menu-pop-leave-active { transform-origin: top center; }
+.menu-pop--up.menu-pop-enter-active,
+.menu-pop--up.menu-pop-leave-active { transform-origin: bottom center; }
+
+/* Кому важнее скорость системы, чем плавность, — анимации не будет. */
+@media (prefers-reduced-motion: reduce) {
+  .menu-pop-enter-active,
+  .menu-pop-leave-active { transition: none; }
+}

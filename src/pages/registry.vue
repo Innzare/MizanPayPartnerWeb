@@ -1,12 +1,14 @@
 <script lang="ts" setup>
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
-import { formatPhone, formatDate, PHONE_MASK } from '@/utils/formatters'
+import PhoneField from '@/components/PhoneField.vue'
+import { formatPhone, formatDate } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import ClientLink from '@/components/ClientLink.vue'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -619,19 +621,19 @@ function renderStars(rating: number): string[] {
     </div>
 
     <!-- Mode switch: My clients / Global search -->
-    <div class="rg-mode-switch mb-4">
+    <div class="page-tabs">
       <button
-        class="rg-mode-btn"
-        :class="{ 'rg-mode-btn--active': registryMode === 'my' }"
+        class="page-tab"
+        :class="{ active: registryMode === 'my' }"
         @click="switchMode('my')"
       >
         <v-icon icon="mdi-account-group-outline" size="18" />
         <span>Мои клиенты</span>
-        <span class="rg-mode-count">{{ registryMode === 'my' ? stats.total : '' }}</span>
+        <span v-if="registryMode === 'my'" class="page-tab-count">{{ stats.total }}</span>
       </button>
       <button
-        class="rg-mode-btn"
-        :class="{ 'rg-mode-btn--active': registryMode === 'global' }"
+        class="page-tab"
+        :class="{ active: registryMode === 'global' }"
         @click="switchMode('global')"
       >
         <v-icon icon="mdi-earth" size="18" />
@@ -844,7 +846,7 @@ function renderStars(rating: number): string[] {
               <div class="rg-main">
                 <div class="rg-name-row">
                   <span class="rg-name" :class="{ 'rg-name--blacklisted': client.blacklisted }">
-                    {{ client.names.join(' / ') }}
+                    <ClientLink :profile-id="client.id" :name="client.names.join(' / ')" :disabled="selectionMode" />
                   </span>
                   <span
                     class="rg-status-badge"
@@ -1126,13 +1128,7 @@ function renderStars(rating: number): string[] {
           <!-- Phone -->
           <div class="rg-field mb-4">
             <label class="rg-field-label">Телефон <span style="color: #ef4444;">*</span></label>
-            <input
-              v-model="blacklistForm.phone"
-              v-maska="PHONE_MASK"
-              type="tel"
-              class="rg-field-input"
-              placeholder="+7 (___) ___-__-__"
-            />
+            <PhoneField v-model="blacklistForm.phone" plain />
           </div>
 
           <!-- Name -->
@@ -1185,13 +1181,7 @@ function renderStars(rating: number): string[] {
           <!-- Phone -->
           <div class="rg-field mb-4">
             <label class="rg-field-label">Телефон <span style="color: #ef4444;">*</span></label>
-            <input
-              v-model="reviewForm.phone"
-              v-maska="PHONE_MASK"
-              type="tel"
-              class="rg-field-input"
-              placeholder="+7 (___) ___-__-__"
-            />
+            <PhoneField v-model="reviewForm.phone" plain />
           </div>
 
           <!-- Name -->
@@ -1755,6 +1745,15 @@ function renderStars(rating: number): string[] {
   text-decoration: line-through;
   opacity: 0.6;
 }
+/* Клиент в чёрном списке: имя остаётся ссылкой, но зелёным не светится —
+   зачёркнутое и одновременно «зовущее нажать» читалось бы противоречиво. */
+.rg-name--blacklisted :deep(.client-link) {
+  color: inherit;
+  text-decoration-color: transparent;
+}
+.rg-name--blacklisted :deep(.client-link:hover) {
+  text-decoration-color: currentColor;
+}
 .rg-status-badge {
   display: inline-flex;
   align-items: center;
@@ -2281,55 +2280,7 @@ function renderStars(rating: number): string[] {
 }
 
 /* ── Mode switch ── */
-.rg-mode-switch {
-  display: flex;
-  gap: 8px;
-  padding: 4px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
-  border-radius: 12px;
-  width: fit-content;
-}
-
-.rg-mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 18px;
-  border-radius: 10px;
-  border: none;
-  background: transparent;
-  color: rgba(var(--v-theme-on-surface), 0.55);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.rg-mode-btn:hover {
-  color: rgba(var(--v-theme-on-surface), 0.8);
-}
-
-.rg-mode-btn--active {
-  background: rgba(var(--v-theme-surface), 1);
-  color: rgb(var(--v-theme-primary));
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
-
-.rg-mode-count {
-  font-size: 11px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: rgba(var(--v-theme-primary), 0.12);
-  color: rgb(var(--v-theme-primary));
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.rg-mode-count:empty { display: none; }
+/* Табы раздела — общий стиль, см. styles/page-tabs.css */
 
 .rg-global-hint {
   display: flex;
@@ -2342,15 +2293,6 @@ function renderStars(rating: number): string[] {
   color: rgba(var(--v-theme-on-surface), 0.7);
   font-size: 13px;
   line-height: 1.45;
-}
-
-.dark .rg-mode-switch {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.dark .rg-mode-btn--active {
-  background: rgb(var(--v-theme-surface));
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 /* ── Mobile ── */
@@ -2373,21 +2315,9 @@ function renderStars(rating: number): string[] {
   .rg-search-icon { left: 12px; }
   .rg-search-spinner { right: 12px; }
 
-  /* Mode switch — full-width, 2 кнопки на всю ширину */
-  .rg-mode-switch {
-    width: 100%;
-    gap: 4px;
-  }
-  .rg-mode-btn {
-    flex: 1;
-    justify-content: center;
-    padding: 0 10px;
-    font-size: 12.5px;
-    height: 36px;
-    gap: 5px;
-  }
-  .rg-mode-btn .v-icon { font-size: 16px !important; }
-  .rg-mode-count { min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
+  /* Табы — на всю ширину, по половине на кнопку */
+  .page-tabs { width: 100%; }
+  .page-tab { flex: 1; justify-content: center; }
 
   /* Stats row */
   .stats-row { grid-template-columns: 1fr; gap: 8px; }
@@ -2457,7 +2387,7 @@ function renderStars(rating: number): string[] {
   .rg-hero-title { font-size: 16px; }
   .rg-hero-subtitle { display: none; }
 
-  .rg-mode-btn span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .page-tab span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .rg-stats-mobile { grid-template-columns: repeat(2, 1fr); }
   .rg-detail-grid { grid-template-columns: 1fr; }

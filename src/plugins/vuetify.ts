@@ -31,6 +31,7 @@ import "vuetify/styles";
 // Composables
 import { createVuetify } from "vuetify";
 import type { ThemeDefinition } from "vuetify";
+import { ru } from "vuetify/locale";
 
 /** Идентификаторы тем — единственный источник правды для переключателя. */
 export const THEME_IDS = ["light", "dark", "night"] as const;
@@ -119,5 +120,15 @@ export default createVuetify({
   theme: {
     defaultTheme: "light",
     themes: { light, dark, night },
+  },
+  // Русский язык для встроенных подписей Vuetify. Раньше локаль не
+  // настраивали, и календарь показывал бы месяцы и дни недели по-английски.
+  locale: {
+    locale: "ru",
+    fallback: "en",
+    messages: { ru },
+  },
+  date: {
+    locale: { ru: "ru-RU" },
   },
 });

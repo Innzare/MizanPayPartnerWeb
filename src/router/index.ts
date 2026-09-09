@@ -12,6 +12,8 @@ const ROUTE_FEATURES: Record<string, keyof PlanFeatures> = {
   '/registry': 'registry',
   '/co-investors': 'coInvestors',
   '/cashboxes': 'finance',
+  '/accounting': 'finance',
+  '/collections': 'finance',
   '/staff': 'staff',
   '/debtors': 'debtors',
   '/suppliers': 'suppliers',
@@ -88,7 +90,13 @@ router.beforeEach(async (to, from, next) => {
   // Раздел скрыт владельцем — ведём на стартовую страницу, как и с
   // hiddenRoutes выше. Петли нет: ни один стартовый раздел скрыть нельзя.
   if (authStore.isAuthenticated) {
-    const hidden: string[] = (authStore.user as any)?.hiddenSections ?? [];
+    // Своя страница показателей — не «раздел сотрудников»: даже если владелец
+    // скрыл его для себя, человек должен видеть собственную работу.
+    const ownProfilePath = authStore.user?.staffId ? `/staff/${authStore.user.staffId}` : null;
+    const hidden: string[] =
+      ownProfilePath && to.path === ownProfilePath
+        ? []
+        : ((authStore.user as any)?.hiddenSections ?? []);
     const sectionKey = Object.keys(ROUTE_SECTIONS)
       .filter((r) => to.path === r || to.path.startsWith(r + '/'))
       .sort((a, b) => b.length - a.length)[0];

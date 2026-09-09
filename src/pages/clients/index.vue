@@ -5,18 +5,45 @@ import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type ClientProfile, type Payment, userName, clientProfileName } from '@/types'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
+import { useAutoLoad } from '@/composables/useAutoLoad'
 import { useIsDark } from '@/composables/useIsDark'
+import { useClientCities } from '@/composables/useClientCities'
 import { useToast } from '@/composables/useToast'
 import { useDealLock } from '@/composables/useDealLock'
+import { useSections } from '@/composables/useSections'
+import { useClientsFilters } from '@/composables/useClientsFilters'
+import ClientsFilterPanel from '@/components/ClientsFilterPanel.vue'
+import GuarantorsPanel from '@/components/guarantors/GuarantorsPanel.vue'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
+
+/**
+ * Вкладки раздела: клиенты и поручители.
+ *
+ * Поручитель — тот же человек из справочника клиентов, поэтому отдельного
+ * раздела у него больше нет. Вкладка живёт в адресе (?tab=guarantors): ссылку
+ * можно отправить коллеге, а обновление страницы не сбрасывает выбор.
+ */
+type ClientsTab = 'clients' | 'guarantors'
+const canSeeGuarantors = computed(() => authStore.can('guarantors.view'))
+const tab = ref<ClientsTab>(
+  route.query.tab === 'guarantors' && canSeeGuarantors.value ? 'guarantors' : 'clients',
+)
+watch(tab, v => {
+  const query = { ...route.query }
+  if (v === 'guarantors') query.tab = 'guarantors'
+  else delete query.tab
+  router.replace({ query })
+})
 const paymentsStore = usePaymentsStore()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+const sections = useSections()
 
 // Reactive mobile flag для fullscreen-диалога деталей сделки.
 const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
@@ -67,15 +94,37 @@ let listReq = 0
 
 const pageLoading = ref(true)
 
-async function loadClients() {
+/** Фильтр по городу: значения — фактические города клиентов партнёра. */
+const filterCity = ref<string | null>(null)
+const { cities: clientCities } = useClientCities()
+const cityOptions = computed(() =>
+  clientCities.value.map((c) => ({ title: `${c.city} (${c.count})`, value: c.city })),
+)
+
+/** @param append дописать порцию (автоподгрузка), а не заменить список. */
+// ── Расширенные фильтры ──
+// Та же панель, что в остальных списках. Условия здесь про состояние
+// договоров человека.
+const filtersOpen = ref(false)
+const filters = useClientsFilters()
+
+watch(
+  () => filters.query.value,
+  () => { page.value = 1; loadClients() },
+  { deep: true },
+)
+
+async function loadClients(append = false) {
   const cur = ++listReq
   listLoading.value = true
   try {
     const qs = new URLSearchParams({
       limit: String(PAGE_SIZE),
-      offset: String((page.value - 1) * PAGE_SIZE),
+      offset: String(append ? rows.value.length : (page.value - 1) * PAGE_SIZE),
     })
     if (debouncedSearch.value.trim()) qs.set('q', debouncedSearch.value.trim())
+    if (filterCity.value) qs.set('city', filterCity.value)
+    for (const [k, v] of Object.entries(filters.query.value)) qs.set(k, String(v))
 
     const res = await api.get<{
       items: any[]
@@ -84,7 +133,7 @@ async function loadClients() {
     }>(`/client-profiles/summary?${qs.toString()}`)
     if (cur !== listReq) return
 
-    rows.value = res.items.map((r) => ({
+    const mapped = res.items.map((r) => ({
       key: r.key,
       clientProfileId: r.clientProfileId ?? null,
       userId: r.userId ?? null,
@@ -110,6 +159,13 @@ async function loadClients() {
       onTimeRate: r.onTimeRate,
       nextPaymentDate: r.nextPaymentDate ?? null,
     }))
+    if (append) {
+      // Дубли по ключу клиента: между запросами выборка могла сдвинуться.
+      const seen = new Set(rows.value.map((c) => c.key))
+      rows.value = [...rows.value, ...mapped.filter((c) => !seen.has(c.key))]
+    } else {
+      rows.value = mapped
+    }
     total.value = res.total
     totalsAgg.value = res.totals
   } catch (e: any) {
@@ -130,7 +186,8 @@ watch(search, (v) => {
   }, 350)
 })
 
-watch([page, debouncedSearch], () => { loadClients() })
+watch(filterCity, () => { page.value = 1 })
+watch([page, debouncedSearch, filterCity], () => { loadClients() })
 
 onMounted(async () => {
   try {
@@ -148,6 +205,26 @@ function hasClientProfile(client: ClientRow): boolean {
   return !!client.clientProfileId
 }
 
+// ── Действия прямо в карточке клиента ──
+// Раньше, чтобы написать клиенту или завести ему сделку, приходилось сначала
+// открывать его страницу.
+
+/** Право заводить сделки — без него кнопку не показываем. */
+const canCreateDeal = computed(() => authStore.can('deals.create'))
+
+function writeWhatsApp(client: ClientRow, e?: Event) {
+  e?.stopPropagation()
+  const digits = (client.phone || '').replace(/\D/g, '')
+  if (digits) router.push(`/broadcasts?chat=${digits}`)
+}
+
+/** Новая сделка с уже подставленным клиентом. */
+function createDealFor(client: ClientRow, e?: Event) {
+  e?.stopPropagation()
+  const q = client.clientProfileId ? `?clientProfileId=${client.clientProfileId}` : ''
+  router.push(`/create-deal${q}`)
+}
+
 const expandedClients = ref<string[]>([])
 
 // Deal dialog
@@ -156,6 +233,28 @@ const showDialog = ref(false)
 
 /** Поиск серверный — список уже отфильтрован. */
 const filteredClients = computed(() => rows.value)
+
+// ── Автоподгрузка ────────────────────────────────────────────────────
+const hasMore = computed(() => rows.value.length < total.value)
+
+const autoLoad = useAutoLoad({
+  storageKey: 'clients:auto-load',
+  hasMore,
+  busy: listLoading,
+  loadMore: () => loadClients(true),
+})
+/** Метка конца списка — её отслеживает автоподгрузка. */
+const autoLoadSentinel = autoLoad.sentinel
+
+// Переключение режима возвращает к началу выборки.
+watch(
+  () => autoLoad.enabled.value,
+  () => {
+    autoLoad.reset()
+    if (page.value !== 1) page.value = 1
+    else loadClients()
+  },
+)
 
 // Итоги по ВСЕЙ выборке, а не по странице.
 const stats = computed(() => ({
@@ -261,6 +360,23 @@ const selectedDealPaidTotal = computed(() =>
     </div>
 
     <template v-else>
+    <!-- Поручители показываются здесь же вкладкой: свой раздел им не нужен.
+         Табы раздела — общий стиль, см. styles/page-tabs.css -->
+    <div v-if="canSeeGuarantors" class="page-tabs">
+      <button class="page-tab" :class="{ active: tab === 'clients' }" @click="tab = 'clients'">
+        <v-icon icon="mdi-account-group" size="18" />
+        <span>Клиенты</span>
+        <span v-if="stats.count" class="page-tab-count">{{ stats.count }}</span>
+      </button>
+      <button class="page-tab" :class="{ active: tab === 'guarantors' }" @click="tab = 'guarantors'">
+        <v-icon icon="mdi-account-check-outline" size="18" />
+        <span>Поручители</span>
+      </button>
+    </div>
+
+    <GuarantorsPanel v-if="tab === 'guarantors'" />
+
+    <template v-else>
     <!-- KPI Cards — скрываются у ролей без права clients.kpi -->
     <div v-if="authStore.can('clients.kpi')" class="stats-row mb-6">
       <div class="stat-card">
@@ -321,13 +437,57 @@ const selectedDealPaidTotal = computed(() =>
             <input
               v-model="search"
               type="text"
-              placeholder="Поиск по имени, городу, телефону..."
+              placeholder="Поиск по имени, городу, адресу, телефону..."
               class="filter-input"
             />
           </div>
+          <!-- Фильтр по городу: список наполняется фактическими городами
+               партнёра, поэтому пустых пунктов в нём не бывает. -->
+          <v-select
+            v-if="cityOptions.length"
+            v-model="filterCity"
+            :items="cityOptions"
+            item-title="title"
+            item-value="value"
+            label="Город"
+            density="compact"
+            variant="outlined"
+            hide-details
+            clearable
+            class="clients-city-filter"
+            prepend-inner-icon="mdi-city-variant-outline"
+          />
+          <!-- Расширенные фильтры: состояние договоров, товар, город. -->
+          <button
+            class="clients-filter-btn"
+            :class="{ 'clients-filter-btn--active': filters.hasAny.value }"
+            @click="filtersOpen = true"
+          >
+            <v-icon icon="mdi-filter-variant" size="16" />
+            Фильтры
+            <span v-if="filters.activeCount.value" class="clients-filter-count">
+              {{ filters.activeCount.value }}
+            </span>
+          </button>
+
           <div class="text-caption text-medium-emphasis clients-search-count">
             {{ filteredClients.length }} из {{ stats.count }}
           </div>
+        </div>
+
+        <!-- Плашки включённых фильтров. -->
+        <div v-if="filters.chips.value.length" class="active-filters">
+          <button
+            v-for="chip in filters.chips.value"
+            :key="chip.key"
+            type="button"
+            class="af-chip"
+            @click="chip.clear()"
+          >
+            <span>{{ chip.label }}</span>
+            <v-icon icon="mdi-close" size="13" />
+          </button>
+          <button type="button" class="af-clear" @click="filters.reset()">Сбросить всё</button>
         </div>
 
         <!-- Client list -->
@@ -379,6 +539,33 @@ const selectedDealPaidTotal = computed(() =>
                   <div class="client-stat-value" style="color: #f59e0b;">{{ formatCurrency(client.remaining) }}</div>
                   <div class="client-stat-label">Остаток</div>
                 </div>
+              </div>
+
+              <div class="row-actions client-row-actions" @click.stop>
+                <button
+                  v-if="sections.visible('whatsapp') && client.phone"
+                  class="row-action-btn row-action-btn--whatsapp"
+                  title="Написать в WhatsApp"
+                  @click="writeWhatsApp(client, $event)"
+                >
+                  <v-icon icon="mdi-whatsapp" size="17" />
+                </button>
+                <button
+                  v-if="canCreateDeal"
+                  class="row-action-btn row-action-btn--success"
+                  title="Новая сделка для этого клиента"
+                  @click="createDealFor(client, $event)"
+                >
+                  <v-icon icon="mdi-plus-box-outline" size="17" />
+                </button>
+                <button
+                  v-if="hasClientProfile(client)"
+                  class="row-action-btn"
+                  title="Открыть карточку клиента"
+                  @click="goToClientProfile(client)"
+                >
+                  <v-icon icon="mdi-open-in-new" size="16" />
+                </button>
               </div>
 
               <div class="expand-icon">
@@ -497,13 +684,22 @@ const selectedDealPaidTotal = computed(() =>
         </div>
 
         <!-- Пагинация серверного списка. -->
+        <!-- Метка конца списка для автоподгрузки. -->
+        <div v-if="autoLoad.enabled.value" ref="autoLoadSentinel" class="auto-load-sentinel" />
+
         <ServerPager
           :page="page"
           :total="total"
           :per-page="25"
           :busy="listLoading"
           :per-page-options="[25]"
+          :auto-load="autoLoad.enabled.value"
+          :loaded="rows.length"
+          :has-more="hasMore"
+          :paused="autoLoad.paused.value"
           @update:page="page = $event"
+          @update:auto-load="autoLoad.enabled.value = $event"
+          @load-more="autoLoad.loadMoreManually()"
         />
 
       </div>
@@ -617,10 +813,71 @@ const selectedDealPaidTotal = computed(() =>
       </v-card>
     </v-dialog>
     </template>
+    </template>
   </div>
+
+    <!-- Панель расширенных фильтров -->
+    <ClientsFilterPanel
+      v-model="filtersOpen"
+      :state="filters.state.value"
+      :active-count="filters.activeCount.value"
+      :presets="filters.saved.value"
+      @reset="filters.reset()"
+      @save-preset="filters.savePreset($event)"
+      @apply-preset="filters.applyPresetSaved($event)"
+      @remove-preset="filters.removePreset($event)"
+    />
+
 </template>
 
 <style scoped>
+/* Кнопка расширенных фильтров рядом с поиском. */
+.clients-filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 40px; padding: 0 14px; border-radius: 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgb(var(--v-theme-surface));
+  font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.75);
+  cursor: pointer; white-space: nowrap;
+}
+.clients-filter-btn:hover { border-color: rgba(var(--v-theme-primary), 0.45); }
+.clients-filter-btn--active {
+  border-color: rgb(var(--v-theme-primary));
+  color: rgb(var(--v-theme-primary));
+}
+.clients-filter-count {
+  font-size: 11px; font-weight: 700; line-height: 1;
+  padding: 2px 6px; border-radius: 10px;
+  background: rgb(var(--v-theme-primary)); color: #fff;
+}
+
+/* Плашки включённых фильтров над списком. */
+.active-filters {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.af-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 8px 5px 11px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.07);
+  color: rgb(var(--v-theme-primary));
+  font-size: 12.5px; font-weight: 500; cursor: pointer;
+}
+.af-chip:hover { background: rgba(var(--v-theme-primary), 0.14); }
+.af-clear {
+  font-size: 12.5px; padding: 5px 8px; border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.5); cursor: pointer;
+}
+.af-clear:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+
+/* Невидимый якорь автоподгрузки в конце списка. */
+.auto-load-sentinel { height: 1px; }
+
+/* Кнопки действий в шапке карточки: на узком экране статистика уезжает вниз,
+   а кнопки должны остаться рядом со стрелкой раскрытия. */
+.client-row-actions { flex-shrink: 0; margin: 0 4px 0 12px; }
+
 /* Прилипающая пагинация (ServerPager) требует, чтобы карточка не обрезала
    содержимое — у v-card overflow: hidden по умолчанию. */
 .clients-card { overflow: visible; }
@@ -672,9 +929,15 @@ const selectedDealPaidTotal = computed(() =>
   gap: 12px;
   margin-bottom: 16px;
 }
+.clients-city-filter {
+  flex: 0 1 220px;
+  min-width: 180px;
+}
 .clients-search-input {
-  flex: 1;
-  max-width: 360px;
+  /* Подсказка перечисляет четыре поля поиска — на 360px она обрезалась. */
+  flex: 1 1 340px;
+  min-width: 300px;
+  max-width: 460px;
 }
 .clients-search-count {
   margin-left: auto;
@@ -723,7 +986,7 @@ const selectedDealPaidTotal = computed(() =>
 .filter-input {
   width: 100%; height: 40px; padding: 0 16px 0 38px;
   border: 1px solid #e4e4e7; border-radius: 10px;
-  background: #f4f4f5; font-size: 14px; color: inherit;
+  background: #fff; font-size: 14px; color: inherit;
   outline: none; transition: all 0.15s ease;
 }
 .filter-input::placeholder { color: #9ca3af; }

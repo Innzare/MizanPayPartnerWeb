@@ -1,0 +1,138 @@
+/**
+ * Табы разделов — один вид на весь сервис.
+ *
+ * Речь именно о переключателе подразделов в начале страницы: «Должники ·
+ * Архив · Аналитика», «Баланс · Отчёты · Аудит», «Сотрудники · Роли». Раньше
+ * каждый раздел рисовал их по-своему — где-то зелёная заливка активного,
+ * где-то бледная подсветка, — и одинаковые по смыслу элементы выглядели
+ * по-разному. Стиль общий и лежит здесь, чтобы правка была одна на всех.
+ *
+ * Фильтры внутри страницы (например статусы в реестре клиентов) — это НЕ
+ * табы раздела: они цветные по смыслу и живут своей жизнью.
+ *
+ * Разметка:
+ *   <div class="page-tabs">
+ *     <button class="page-tab" :class="{ active: … }">…</button>
+ *   </div>
+ *
+ * Если справа нужны действия раздела — обернуть в page-tabs-row:
+ *   <div class="page-tabs-row">
+ *     <div class="page-tabs">…</div>
+ *     <div class="page-tabs-actions">…</div>
+ *   </div>
+ */
+
+.page-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 24px;
+  padding: 4px;
+  border-radius: 12px;
+  /* Через токены темы, а не «белый»: иначе на тёмной теме плашка светится
+     дыркой везде, где над страницей не оказалось класса dark. */
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.page-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.page-tab:hover:not(.active):not(.page-tab--active) {
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+/* Две формы записи активного таба — чтобы не переписывать разметку разделов. */
+.page-tab.active,
+.page-tab--active {
+  background: #047857;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.25);
+}
+
+/* Счётчик на табе: сколько должников, сколько новых заявок. */
+.page-tab-count {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  text-align: center;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.page-tab.active .page-tab-count,
+.page-tab--active .page-tab-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  border-color: transparent;
+}
+
+/* Точка-предупреждение (например «WhatsApp не подключён»). */
+.page-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+/* Строка «табы слева, действия раздела справа». */
+.page-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+/* Плашка занимает всю строку и в этом случае: иначе один раздел выглядел бы
+   узкой кнопкой, а соседний — полосой во всю ширину. */
+.page-tabs-row .page-tabs { margin-bottom: 0; flex: 1; min-width: 0; }
+.page-tabs-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* На тёмных темах плашка садится на слой фона — так она не выпирает. */
+.dark .page-tabs {
+  background: rgb(var(--v-theme-surface-deep));
+  border-color: rgb(var(--v-theme-border));
+  box-shadow: none;
+}
+.dark .page-tab.active,
+.dark .page-tab--active {
+  background: #047857;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(4, 120, 87, 0.3);
+}
+
+/* На узком экране табы прокручиваются, а не переносятся: перенос ломает
+   плашку на две строки и та перестаёт читаться как один переключатель. */
+@media (max-width: 600px) {
+  .page-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .page-tabs::-webkit-scrollbar { display: none; }
+  .page-tab { flex-shrink: 0; padding: 8px 14px; font-size: 12px; }
+}

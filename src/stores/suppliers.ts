@@ -19,7 +19,31 @@ export interface SupplierRow {
   openDebtsCount: number
   plannedDebtsCount: number
   dealsCount: number
+
+  /** Помесячная картина за год: по ней рисуется мини-график и считается тренд. */
+  monthly: SupplierMonth[]
+  trend: SupplierTrend
+  /** Насколько изменилось: 0.25 — на четверть больше. Пусто — сравнивать не с чем. */
+  trendChange: number | null
+  lastDealAt: number | null
+  /** Скрыты у сотрудника без права видеть закупку. */
+  averageCheck: number | null
+  margin: number | null
+  shareOfPurchase: number
+  problemShare: number
 }
+
+export interface SupplierMonth {
+  /** Месяц в виде `ГГГГ-ММ`. */
+  ym: string
+  deals: number
+  purchase: number
+  retail: number
+  margin: number
+}
+
+/** Как идут дела: растём, стоим, падаем, работа встала, только начали. */
+export type SupplierTrend = 'GROWING' | 'STABLE' | 'FALLING' | 'DORMANT' | 'NEW'
 
 export interface SupplierInput {
   name: string

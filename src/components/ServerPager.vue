@@ -19,13 +19,38 @@ const props = withDefaults(
     /** Блокировка на время запроса — чтобы не накликать несколько переходов. */
     busy?: boolean
     perPageOptions?: number[]
+    /**
+     * Автоподгрузка: долистали до конца — следующая порция грузится сама.
+     * Настройка своя у каждого раздела, поэтому хранит её страница.
+     */
+    autoLoad?: boolean
+    /** Сколько строк уже на экране (в режиме автоподгрузки). */
+    loaded?: number
+    /** Есть ли что грузить дальше. */
+    hasMore?: boolean
+    /**
+     * Автоподгрузка приостановлена после нескольких порций подряд: на слабой
+     * машине с двумя тысячами строк список начинает подтормаживать, поэтому
+     * дальше — только по кнопке.
+     */
+    paused?: boolean
   }>(),
-  { busy: false, perPageOptions: () => [25, 50, 100, 200] },
+  {
+    busy: false,
+    perPageOptions: () => [25, 50, 100, 200],
+    autoLoad: false,
+    loaded: 0,
+    hasMore: false,
+    paused: false,
+  },
 )
 
 const emit = defineEmits<{
   (e: 'update:page', value: number): void
   (e: 'update:perPage', value: number): void
+  (e: 'update:autoLoad', value: boolean): void
+  /** Партнёр нажал «Загрузить ещё». */
+  (e: 'loadMore'): void
 }>()
 
 const pageCount = computed(() => Math.max(1, Math.ceil(props.total / props.perPage)))
@@ -117,10 +142,39 @@ function onJumpStep(delta: number) {
 <template>
   <div v-if="total > 0" class="sp-pager">
     <div class="sp-info">
-      Показано {{ rangeFrom }}–{{ rangeTo }} из {{ total.toLocaleString('ru-RU') }}
+      <template v-if="autoLoad">
+        Показано {{ loaded.toLocaleString('ru-RU') }} из {{ total.toLocaleString('ru-RU') }}
+      </template>
+      <template v-else>
+        Показано {{ rangeFrom }}–{{ rangeTo }} из {{ total.toLocaleString('ru-RU') }}
+      </template>
     </div>
 
-    <div class="sp-nav">
+    <!-- В режиме автоподгрузки номера страниц не нужны: список один длинный.
+         Остаются кнопка ручной догрузки и размер порции. -->
+    <div v-if="autoLoad" class="sp-nav">
+      <!-- Пауза объясняется словами: без подписи автоподгрузка выглядит
+           сломавшейся — она просто перестаёт работать посреди прокрутки. -->
+      <span v-if="hasMore && paused && !busy" class="sp-paused">
+        Список длинный — дальше по кнопке
+      </span>
+      <button
+        v-if="hasMore"
+        class="sp-more"
+        :class="{ 'sp-more--accent': paused }"
+        :disabled="busy"
+        @click="emit('loadMore')"
+      >
+        <v-progress-circular v-if="busy" indeterminate size="15" width="2" />
+        <template v-else>
+          <v-icon icon="mdi-chevron-down" size="16" />
+          <span>Загрузить ещё {{ Math.min(perPage, total - loaded) }}</span>
+        </template>
+      </button>
+      <span v-else class="sp-done">Показано всё</span>
+    </div>
+
+    <div v-else class="sp-nav">
       <button class="sp-btn" :disabled="page <= 1 || busy" @click="goToPage(page - 1)">
         <v-icon icon="mdi-chevron-left" size="18" />
       </button>
@@ -164,20 +218,72 @@ function onJumpStep(delta: number) {
     </div>
 
     <div class="sp-size">
-      <span class="sp-size-label">На странице</span>
-      <select
-        :value="perPage"
-        class="sp-select"
-        :disabled="busy"
-        @change="emit('update:perPage', Number(($event.target as HTMLSelectElement).value))"
-      >
-        <option v-for="n in perPageOptions" :key="n" :value="n">{{ n }}</option>
-      </select>
+      <!-- Переключатель режима: страницы или бесконечная лента. -->
+      <label class="sp-auto" :title="autoLoad ? 'Списки грузятся порциями по мере прокрутки' : 'Включить подгрузку при прокрутке'">
+        <input
+          type="checkbox"
+          :checked="autoLoad"
+          :disabled="busy"
+          @change="emit('update:autoLoad', ($event.target as HTMLInputElement).checked)"
+        />
+        <span>Подгружать при прокрутке</span>
+      </label>
+
+      <!-- Размер порции отделён чертой: переключатель режима и выбор размера —
+           разные вещи, без разделителя читались как один блок. -->
+      <div class="sp-size-group">
+        <span class="sp-size-label">{{ autoLoad ? 'Порция' : 'На странице' }}</span>
+        <select
+          :value="perPage"
+          class="sp-select"
+          :disabled="busy"
+          @change="emit('update:perPage', Number(($event.target as HTMLSelectElement).value))"
+        >
+          <option v-for="n in perPageOptions" :key="n" :value="n">{{ n }}</option>
+        </select>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.sp-auto {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6);
+  cursor: pointer; user-select: none;
+}
+.sp-size-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(var(--v-theme-on-surface), 0.2);
+}
+.sp-auto input { width: 15px; height: 15px; accent-color: rgb(var(--v-theme-primary)); cursor: pointer; }
+.sp-more {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14);
+  background: transparent;
+  font-size: 13px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  cursor: pointer; transition: all 0.15s;
+}
+.sp-more:hover:not(:disabled) { border-color: rgba(var(--v-theme-primary), 0.5); color: rgb(var(--v-theme-primary)); }
+.sp-more:disabled { opacity: 0.6; cursor: default; }
+/* Автоподгрузка приостановлена — кнопка должна привлечь внимание. */
+.sp-more--accent {
+  border-color: rgb(var(--v-theme-primary));
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgb(var(--v-theme-primary));
+}
+.sp-paused {
+  font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
+.sp-done { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.4); }
+
 .sp-pager {
   position: sticky;
   bottom: 0;
@@ -269,7 +375,11 @@ function onJumpStep(delta: number) {
 .sp-current:disabled { opacity: 0.45; cursor: default; }
 
 
-.sp-size { display: flex; align-items: center; gap: 8px; }
+.sp-size { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+@media (max-width: 640px) {
+  /* Перенос строки уже разделяет блоки — черта в начале строки лишняя. */
+  .sp-size-group { padding-left: 0; border-left: none; }
+}
 .sp-size-label { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6); }
 
 .sp-select {

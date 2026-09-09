@@ -15,9 +15,9 @@ const id = computed(() => (route.params as { id: string }).id)
 </script>
 
 <template>
-  <div class="ci-detail" :class="{ dark: isDark }">
+  <div class="at-page ci-detail" :class="{ dark: isDark }">
     <div class="topbar mb-4">
-      <button class="back-btn" @click="router.back()">
+      <button class="back-btn back-btn--inline" @click="router.back()">
         <v-icon icon="mdi-arrow-left" size="18" />
         Назад
       </button>
@@ -28,21 +28,6 @@ const id = computed(() => (route.params as { id: string }).id)
 </template>
 
 <style scoped>
-.ci-detail { padding: 8px; }
-
+/* Поля страницы — общие для всего сервиса (.at-page). */
 .topbar { display: flex; align-items: center; gap: 8px; }
-.back-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 14px; border-radius: 10px; border: 1px solid #e5e7eb;
-  background: #fff; color: rgba(var(--v-theme-on-surface), 0.7);
-  font-size: 13px; font-weight: 500; cursor: pointer;
-  transition: all 0.15s;
-}
-.back-btn:hover {
-  background: rgba(var(--v-theme-on-surface), 0.04);
-  border-color: #d1d5db;
-}
-.dark .back-btn {
-  background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); color: rgba(var(--v-theme-on-surface), 0.8);
-}
 </style>

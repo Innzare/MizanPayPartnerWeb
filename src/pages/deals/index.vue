@@ -2,6 +2,7 @@
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
+import { todayIso } from '@/utils/dateInput'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type DealFolder, type Payment, userName, clientProfileName } from '@/types'
 import { useRoute, useRouter } from 'vue-router'
@@ -11,10 +12,17 @@ import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import ClientLink from '@/components/ClientLink.vue'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
 import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
+import QuickPayDialog from '@/components/QuickPayDialog.vue'
+import { useAutoLoad } from '@/composables/useAutoLoad'
+import { useDealsFilters } from '@/composables/useDealsFilters'
+import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useSuppliersStore } from '@/stores/suppliers'
+import DealsFilterPanel from '@/components/DealsFilterPanel.vue'
 import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
 
 const router = useRouter()
@@ -23,15 +31,28 @@ const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const dealsStore = useDealsStore()
 const authStore = useAuthStore()
+/** Подсказку про адрес показываем только тем, кто по нему реально ищет. */
+const canSearchAddress = computed(() => authStore.can('clients.view'))
 const sections = useSections()
 const paymentsStore = usePaymentsStore()
 const { folders, fetchFolders, createFolder, updateFolder, deleteFolder, moveDeal, moveBatch } = useFolders()
 
 // Folders
-const activeFolder = ref<string | null>(null) // null = all
+/**
+ * Касса, ответственный и папка живут в общем наборе фильтров — как и все
+ * прочие условия выборки. Здесь короткие ссылки на них, чтобы остальной код
+ * страницы не менялся.
+ */
+const activeFolder = computed({
+  get: () => filters.state.value.folderId || null,
+  set: (v: string | null) => { filters.state.value.folderId = v ?? '' },
+}) // null = все папки
 
 // Co-investor filter — null = all deals (regardless of CI link)
-const activeCashBoxId = ref<string | null>(null)
+const activeCashBoxId = computed({
+  get: () => filters.state.value.cashBoxId || null,
+  set: (v: string | null) => { filters.state.value.cashBoxId = v ?? '' },
+})
 const cashBoxesStore = useCashBoxesStore()
 const { items: cashBoxes } = storeToRefs(cashBoxesStore)
 cashBoxesStore.fetchAll()
@@ -42,7 +63,10 @@ const activeCashBoxObj = computed(() =>
 // Staff assignee filter — partner-only. null = all deals.
 interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
 const staffList = ref<StaffOption[]>([])
-const activeStaff = ref<string | null>(null)
+const activeStaff = computed({
+  get: () => filters.state.value.staffId || null,
+  set: (v: string | null) => { filters.state.value.staffId = v ?? '' },
+})
 async function loadStaffList() {
   if (!authStore.isOwner) return
   try {
@@ -123,12 +147,26 @@ async function handleMoveSingle(dealId: string, folderId: string | null) {
 const pageLoading = ref(true)
 
 onMounted(async () => {
+  // Вернулись из сделки той же выборкой — показываем сохранённый список и
+  // возвращаем прокрутку, не дожидаясь сервера.
+  const restored = dealsStore.restoreListSnapshot(listKey.value)
+  if (restored) {
+    highlightedDealId.value = restored.openedId
+    void nextTick(() => {
+      window.scrollTo({ top: restored.scrollY })
+      // Подсветка гаснет сама: она нужна, чтобы взгляд нашёл строку, и
+      // мешала бы, если бы осталась насовсем.
+      setTimeout(() => { highlightedDealId.value = null }, 2500)
+    })
+  }
+
   try {
     // Полный портфель и все платежи здесь больше не грузятся — в этом и был
     // главный вес страницы. Корзина нужна для счётчика на вкладке, папки —
     // для фильтра.
     await Promise.all([
-      refreshList(),
+      restored ? Promise.resolve() : refreshList(),
+      restored ? dealsStore.fetchDealCounts(serverFilters.value) : Promise.resolve(),
       // Только счётчик для вкладки: само содержимое корзины грузится, когда
       // на неё переходят. Раньше каждый вход в раздел тянул её целиком.
       dealsStore.fetchTrashCount(),
@@ -157,6 +195,48 @@ function updateMobile() {
 }
 onMounted(() => window.addEventListener('resize', updateMobile))
 onUnmounted(() => window.removeEventListener('resize', updateMobile))
+
+// ─── Тень у закреплённой колонки действий ─────────────────────────────────
+// Без неё непонятно, что таблица вообще прокручивается вбок: кнопки просто
+// стоят у края. Тень показываем только когда справа осталось что прокручивать,
+// и убираем, когда докрутили до конца, — иначе она врёт про скрытое.
+const tableWrapRef = ref<HTMLElement | null>(null)
+const hasHiddenColumns = ref(false)
+
+function updateScrollShadow() {
+  const el = tableWrapRef.value
+  if (!el) {
+    hasHiddenColumns.value = false
+    return
+  }
+  // Единица допуска — на дробные пиксели при масштабировании браузера.
+  hasHiddenColumns.value = el.scrollWidth - el.clientWidth - el.scrollLeft > 1
+}
+
+/** Обёртку прокрутки рисует Vuetify, своего ref-а ей не поставить. */
+function bindTableScroll() {
+  const el = document.querySelector('.deals-table .v-table__wrapper') as HTMLElement | null
+  // Тот же элемент — обработчик уже висит, но пересчитать надо: колонки могли
+  // включить или выключить, и ширина таблицы изменилась.
+  if (el && el === tableWrapRef.value) {
+    updateScrollShadow()
+    return
+  }
+  tableWrapRef.value?.removeEventListener('scroll', updateScrollShadow)
+  tableWrapRef.value = el
+  el?.addEventListener('scroll', updateScrollShadow, { passive: true })
+  updateScrollShadow()
+}
+
+onMounted(() => {
+  void nextTick(bindTableScroll)
+  window.addEventListener('resize', updateScrollShadow)
+})
+onUnmounted(() => {
+  tableWrapRef.value?.removeEventListener('scroll', updateScrollShadow)
+  window.removeEventListener('resize', updateScrollShadow)
+})
+
 const search = ref('')
 const selectMode = ref(false)
 const selectedIds = ref<Set<string>>(new Set())
@@ -197,7 +277,24 @@ function cancelSelect() {
 
 async function deleteSelected() {
   if (!selectionCount.value) return
-  if (!confirm(`Переместить ${selectionCount.value.toLocaleString('ru-RU')} сделок в корзину?`)) return
+
+  // При удалении всей выборки число берём у сервера тем же запросом, которым
+  // потом удаляем: показать одно, а удалить другое невозможно. На экране
+  // может быть 50 строк, а под фильтр подходить тысячи.
+  let count = selectionCount.value
+  if (selectAllMatching.value) {
+    try {
+      count = await countWholeSelection()
+    } catch (e: any) {
+      toast.error(e.message || 'Не удалось посчитать выборку')
+      return
+    }
+  }
+  if (!count) {
+    toast.error('Под выборку ничего не подходит')
+    return
+  }
+  if (!confirm(`Переместить ${count.toLocaleString('ru-RU')} сделок в корзину?`)) return
 
   deleting.value = true
   try {
@@ -226,12 +323,40 @@ async function deleteSelected() {
  * Обрыв (закрыли вкладку, пропала сеть) не страшен: удалённое уже в корзине,
  * повторный запуск доберёт остаток.
  */
+/**
+ * Условия выборки плоским объектом — в том виде, в каком их принимает сервер.
+ *
+ * Сервер проверяет тело строго: незнакомый параметр — отказ. Это защита от
+ * того, чтобы «удалить по фильтру» когда-нибудь удалило больше показанного,
+ * поэтому вкладывать сюда объекты нельзя.
+ */
+function filterPayload(): Record<string, unknown> {
+  const f = serverFilters.value
+  // Касса, ответственный и папка лежат в `extra` вместе с остальными
+  // условиями: они часть общего набора фильтров.
+  return {
+    status: f.status,
+    q: f.q,
+    ...f.extra,
+  }
+}
+
+/** Сколько сделок попадёт под удаление — спрашиваем тем же запросом. */
+async function countWholeSelection(): Promise<number> {
+  const res = await api.post<{ deleted: number; remaining: number }>('/deals/delete-by-filter', {
+    ...filterPayload(),
+    excludeIds: Array.from(excludedIds.value),
+    dryRun: true,
+  })
+  return res.remaining
+}
+
 async function deleteWholeSelection() {
   bulkProgress.value = { done: 0, total: selectionCount.value }
   let guard = 0
   for (;;) {
     const res = await api.post<{ deleted: number; remaining: number }>('/deals/delete-by-filter', {
-      ...serverFilters.value,
+      ...filterPayload(),
       excludeIds: Array.from(excludedIds.value),
       batchSize: 200,
     })
@@ -367,23 +492,78 @@ const sortOptions = [
 ]
 
 // ── Управляемые колонки таблицы ──
-interface DealColumn { key: string; label: string; align: 'start' | 'end' | 'center'; sortable: boolean }
-const ALL_COLUMNS: DealColumn[] = [
-  { key: 'dealNumber', label: '№', align: 'start', sortable: true },
-  { key: 'product', label: 'Товар', align: 'start', sortable: true },
-  { key: 'client', label: 'Клиент', align: 'start', sortable: true },
-  { key: 'total', label: 'Итого', align: 'end', sortable: true },
-  { key: 'markup', label: 'Наценка', align: 'end', sortable: true },
-  { key: 'remaining', label: 'Остаток долга', align: 'end', sortable: true },
-  { key: 'monthly', label: 'Ежемесячно', align: 'end', sortable: true },
-  { key: 'downPayment', label: 'Первонач. взнос', align: 'end', sortable: true },
-  { key: 'term', label: 'Срок рассрочки', align: 'center', sortable: true },
-  { key: 'progress', label: 'Прогресс', align: 'center', sortable: true },
-  { key: 'status', label: 'Статус', align: 'start', sortable: true },
-  { key: 'createdAt', label: 'Дата создания', align: 'end', sortable: true },
-  { key: 'dealDate', label: 'Дата заключения', align: 'end', sortable: true },
-  { key: 'lastPayment', label: 'Последний платёж', align: 'end', sortable: true },
+/**
+ * Колонка таблицы. `tdClass`/`tdStyle` описывают ячейку здесь, а не в разметке:
+ * ячейки рисуются циклом по текущему порядку колонок, и «прибить» оформление
+ * к месту в шаблоне больше нельзя.
+ */
+interface DealColumn {
+  key: string
+  label: string
+  align: 'start' | 'end' | 'center'
+  sortable: boolean
+  tdClass?: string
+  tdStyle?: string
+  /** Раздел в меню выбора: при трёх десятках колонок плоский список неудобен. */
+  group: ColumnGroup
+  /**
+   * Дополнительные данные, без которых колонку не заполнить. Сервер считает
+   * их только для включённых колонок — иначе список тормозил бы у всех.
+   */
+  extra?: 'clientDetails' | 'guarantors' | 'supplier' | 'overdue' | 'paidTotal'
+}
+
+type ColumnGroup = 'deal' | 'client' | 'money' | 'payments' | 'guarantors'
+
+const COLUMN_GROUPS: { key: ColumnGroup; label: string }[] = [
+  { key: 'deal', label: 'Договор' },
+  { key: 'client', label: 'Клиент' },
+  { key: 'money', label: 'Деньги' },
+  { key: 'payments', label: 'Платежи' },
+  { key: 'guarantors', label: 'Поручители' },
 ]
+const ALL_COLUMNS: DealColumn[] = [
+  // ── Договор ──
+  { key: 'dealNumber', label: '№', align: 'start', sortable: true, group: 'deal', tdClass: 'text-start text-no-wrap' },
+  { key: 'product', label: 'Товар', align: 'start', sortable: true, group: 'deal' },
+  { key: 'status', label: 'Статус', align: 'start', sortable: true, group: 'deal' },
+  { key: 'createdAt', label: 'Дата создания', align: 'end', sortable: true, group: 'deal', tdClass: 'text-end text-medium-emphasis text-no-wrap' },
+  { key: 'dealDate', label: 'Дата договора', align: 'end', sortable: true, group: 'deal', tdClass: 'text-end text-medium-emphasis text-no-wrap' },
+  { key: 'term', label: 'Срок рассрочки', align: 'center', sortable: true, group: 'deal', tdClass: 'text-center text-no-wrap' },
+  { key: 'staff', label: 'Сотрудник', align: 'start', sortable: false, group: 'deal', tdClass: 'text-no-wrap' },
+  { key: 'supplier', label: 'Поставщик', align: 'start', sortable: false, group: 'deal', extra: 'supplier', tdClass: 'text-no-wrap' },
+  { key: 'comment', label: 'Комментарий', align: 'start', sortable: false, group: 'deal', tdStyle: 'min-width: 220px;' },
+
+  // ── Клиент ──
+  { key: 'client', label: 'Клиент', align: 'start', sortable: true, group: 'client', tdStyle: 'min-width: 300px;' },
+  { key: 'clientBirthDate', label: 'Дата рождения', align: 'end', sortable: false, group: 'client', extra: 'clientDetails', tdClass: 'text-end text-no-wrap' },
+  { key: 'clientAddress', label: 'Адрес проживания', align: 'start', sortable: false, group: 'client', extra: 'clientDetails', tdStyle: 'min-width: 220px;' },
+  { key: 'clientRegAddress', label: 'Адрес регистрации', align: 'start', sortable: false, group: 'client', extra: 'clientDetails', tdStyle: 'min-width: 220px;' },
+
+  // ── Деньги ──
+  { key: 'total', label: 'Итого', align: 'end', sortable: true, group: 'money', tdClass: 'text-end font-weight-bold text-no-wrap' },
+  { key: 'purchasePrice', label: 'Стоимость товара', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'markup', label: 'Наценка', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'downPayment', label: 'Первонач. взнос', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'remaining', label: 'Остаток долга', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap text-medium-emphasis' },
+  { key: 'monthly', label: 'Ежемесячно', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'paidTotal', label: 'Оплачено всего', align: 'end', sortable: false, group: 'money', extra: 'paidTotal', tdClass: 'text-end text-no-wrap' },
+  { key: 'overdueAmount', label: 'Сумма просрочки', align: 'end', sortable: false, group: 'money', extra: 'overdue', tdClass: 'text-end text-no-wrap' },
+  { key: 'discount', label: 'Скидка', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
+
+  // ── Платежи ──
+  { key: 'progress', label: 'Прогресс', align: 'center', sortable: true, group: 'payments', tdClass: 'text-center', tdStyle: 'min-width: 140px;' },
+  { key: 'lastPayment', label: 'Дата окончания', align: 'end', sortable: true, group: 'payments', tdClass: 'text-end text-medium-emphasis text-no-wrap' },
+  { key: 'paymentsTotal', label: 'Всего платежей', align: 'center', sortable: false, group: 'payments', tdClass: 'text-center text-no-wrap' },
+  { key: 'paymentsLeft', label: 'Осталось платежей', align: 'center', sortable: false, group: 'payments', tdClass: 'text-center text-no-wrap' },
+  { key: 'payDay', label: 'День оплаты', align: 'center', sortable: false, group: 'payments', tdClass: 'text-center text-no-wrap' },
+  { key: 'payStatus', label: 'Состояние оплат', align: 'start', sortable: false, group: 'payments', extra: 'overdue', tdClass: 'text-no-wrap' },
+
+  // ── Поручители ──
+  { key: 'guarantors', label: 'Поручители', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdStyle: 'min-width: 240px;' },
+  { key: 'guarantorAddresses', label: 'Адреса поручителей', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdStyle: 'min-width: 220px;' },
+]
+
 const DEFAULT_VISIBLE = ['dealNumber', 'product', 'client', 'total', 'markup', 'remaining', 'progress', 'status', 'createdAt']
 const COLS_STORAGE_KEY = 'deals:table-columns'
 function loadVisibleCols(): Record<string, boolean> {
@@ -399,11 +579,208 @@ function loadVisibleCols(): Record<string, boolean> {
 }
 const visibleCols = ref<Record<string, boolean>>(loadVisibleCols())
 watch(visibleCols, (v) => { try { localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(v)) } catch { /* ignore */ } }, { deep: true })
-const shownColumns = computed(() => ALL_COLUMNS.filter((c) => visibleCols.value[c.key]))
-function isColVisible(key: string) { return !!visibleCols.value[key] }
+
+// ── Порядок колонок ──
+// Партнёры смотрят на таблицу по-разному: одному важнее остаток долга, другому
+// статус. Порядок настраивается перетаскиванием и живёт рядом с набором колонок.
+const COLS_ORDER_KEY = 'deals:table-column-order'
+const DEFAULT_ORDER = ALL_COLUMNS.map((c) => c.key)
+
+function loadColumnOrder(): string[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLS_ORDER_KEY) || 'null')
+    if (Array.isArray(saved)) {
+      const known = saved.filter((k: unknown): k is string => typeof k === 'string' && DEFAULT_ORDER.includes(k))
+      // Колонки, появившиеся уже после сохранения порядка, встают на своё место
+      // из умолчания, а не сваливаются в конец списка.
+      DEFAULT_ORDER.forEach((key) => {
+        if (known.includes(key)) return
+        const at = DEFAULT_ORDER.indexOf(key)
+        const prev = DEFAULT_ORDER.slice(0, at).reverse().find((k) => known.includes(k))
+        known.splice(prev ? known.indexOf(prev) + 1 : 0, 0, key)
+      })
+      return known
+    }
+  } catch { /* ignore */ }
+  return [...DEFAULT_ORDER]
+}
+const columnOrder = ref<string[]>(loadColumnOrder())
+watch(columnOrder, (v) => { try { localStorage.setItem(COLS_ORDER_KEY, JSON.stringify(v)) } catch { /* ignore */ } }, { deep: true })
+
+/** Все колонки в пользовательском порядке — для меню настройки. */
+const orderedColumns = computed(
+  () => columnOrder.value.map((k) => ALL_COLUMNS.find((c) => c.key === k)).filter(Boolean) as DealColumn[],
+)
+/** Те же, но только включённые — по ним рисуется таблица. */
+const shownColumns = computed(() => orderedColumns.value.filter((c) => visibleCols.value[c.key]))
+
+/**
+ * Какие дополнительные данные нужны серверу для включённых колонок.
+ *
+ * Адреса, поручители и суммы просрочки считаются отдельными запросами. Если
+ * просить их всегда, список замедлится у всех — включая тех, кто эти колонки
+ * не включал.
+ */
+const neededExtras = computed(() => {
+  const set = new Set<string>()
+  for (const c of shownColumns.value) if (c.extra) set.add(c.extra)
+  return [...set].join(',')
+})
 function toggleColumn(key: string) { visibleCols.value[key] = !visibleCols.value[key] }
 
+// ── Поиск и наборы колонок ──
+// При трёх десятках колонок список приходится проматывать, а нужную ищут
+// глазами. Поиск и готовые наборы закрывают оба случая.
+const colSearch = ref('')
+
+/** Колонки для меню: в пользовательском порядке, отфильтрованные поиском. */
+const menuColumns = computed(() => {
+  const q = colSearch.value.trim().toLowerCase()
+  const list = orderedColumns.value
+  return q ? list.filter((c) => c.label.toLowerCase().includes(q)) : list
+})
+
+/** Колонки меню, разложенные по разделам. Пустые разделы не показываем. */
+const menuGroups = computed(() =>
+  COLUMN_GROUPS.map((g) => ({
+    ...g,
+    columns: menuColumns.value.filter((c) => c.group === g.key),
+  })).filter((g) => g.columns.length),
+)
+
+/** Готовые наборы под частые задачи. */
+const COLUMN_PRESETS: { key: string; label: string; columns: string[] }[] = [
+  {
+    key: 'min',
+    label: 'Минимум',
+    columns: ['dealNumber', 'client', 'total', 'remaining', 'status'],
+  },
+  {
+    key: 'calls',
+    label: 'Для обзвона',
+    columns: ['dealNumber', 'client', 'overdueAmount', 'payStatus', 'comment'],
+  },
+  {
+    key: 'money',
+    label: 'Для бухгалтерии',
+    columns: [
+      'dealNumber', 'client', 'purchasePrice', 'total', 'markup', 'downPayment',
+      'paidTotal', 'remaining', 'discount', 'monthly',
+    ],
+  },
+  { key: 'full', label: 'Полный', columns: ALL_COLUMNS.map((c) => c.key) },
+]
+
+// ── Свои наборы колонок ──
+// Готовых четырёх не хватает: у каждого партнёра свой привычный набор.
+// Хранятся в браузере — это личная привычка, а не настройка компании.
+const COL_PRESETS_KEY = 'deals:column-presets'
+const savedColPresets = ref<Array<{ id: string; name: string; columns: string[]; order: string[] }>>(
+  loadColPresets(),
+)
+const colPresetName = ref('')
+
+function loadColPresets(): Array<{ id: string; name: string; columns: string[]; order: string[] }> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COL_PRESETS_KEY) || 'null')
+    if (!raw || !Array.isArray(raw.items)) return []
+    return raw.items.filter((x: any) => x && typeof x.name === 'string' && Array.isArray(x.columns))
+  } catch {
+    return []
+  }
+}
+
+function persistColPresets() {
+  try {
+    localStorage.setItem(COL_PRESETS_KEY, JSON.stringify({ v: 1, items: savedColPresets.value }))
+  } catch { /* ignore */ }
+}
+
+function saveColPreset() {
+  const name = colPresetName.value.trim()
+  if (!name) return
+  const columns = shownColumns.value.map((c) => c.key)
+  const order = columnOrder.value.slice()
+  const existing = savedColPresets.value.find((p) => p.name.toLowerCase() === name.toLowerCase())
+  if (existing) Object.assign(existing, { columns, order })
+  else savedColPresets.value.push({ id: `c${Date.now()}`, name, columns, order })
+  persistColPresets()
+  colPresetName.value = ''
+}
+
+function applySavedColPreset(p: { columns: string[]; order: string[] }) {
+  const next: Record<string, boolean> = {}
+  ALL_COLUMNS.forEach((c) => { next[c.key] = p.columns.includes(c.key) })
+  visibleCols.value = next
+  // Незнакомые ключи из старого набора отбрасываем, пропавшие — дописываем:
+  // состав колонок со временем меняется, набор не должен ломать таблицу.
+  const known = p.order.filter((k) => DEFAULT_ORDER.includes(k))
+  columnOrder.value = [...known, ...DEFAULT_ORDER.filter((k) => !known.includes(k))]
+}
+
+function removeColPreset(p: { id: string; name: string }) {
+  if (!confirm(`Удалить набор колонок «${p.name}»?`)) return
+  savedColPresets.value = savedColPresets.value.filter((x) => x.id !== p.id)
+  persistColPresets()
+}
+
+function applyColumnPreset(preset: { columns: string[] }) {
+  const next: Record<string, boolean> = {}
+  ALL_COLUMNS.forEach((c) => { next[c.key] = preset.columns.includes(c.key) })
+  visibleCols.value = next
+  // Порядок ставим как в наборе, остальные — следом: иначе «Для обзвона»
+  // показал бы нужные колонки в случайных местах таблицы.
+  const rest = DEFAULT_ORDER.filter((k) => !preset.columns.includes(k))
+  columnOrder.value = [...preset.columns.filter((k) => DEFAULT_ORDER.includes(k)), ...rest]
+}
+
+function resetColumns() {
+  columnOrder.value = [...DEFAULT_ORDER]
+  const base: Record<string, boolean> = {}
+  ALL_COLUMNS.forEach((c) => { base[c.key] = DEFAULT_VISIBLE.includes(c.key) })
+  visibleCols.value = base
+}
+
+// ── Перетаскивание колонок ──
+// Тащить можно и строку в меню, и сам заголовок в таблице — состояние одно.
+const dragColKey = ref<string | null>(null)
+
+function moveColumn(fromKey: string, toKey: string) {
+  if (fromKey === toKey) return
+  const next = columnOrder.value.slice()
+  const from = next.indexOf(fromKey)
+  const to = next.indexOf(toKey)
+  if (from < 0 || to < 0) return
+  const [moved] = next.splice(from, 1)
+  if (!moved) return
+  next.splice(to, 0, moved)
+  columnOrder.value = next
+}
+
+function onColDragStart(key: string, e: DragEvent) {
+  dragColKey.value = key
+  // Без данных Firefox не начинает перетаскивание вовсе.
+  e.dataTransfer?.setData('text/plain', key)
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+/** Переставляем прямо во время перетаскивания — видно, куда встанет колонка. */
+function onColDragOver(key: string, e: DragEvent) {
+  e.preventDefault()
+  if (!dragColKey.value || dragColKey.value === key) return
+  moveColumn(dragColKey.value, key)
+}
+// Отпустили колонку — сортировку не трогаем: у части браузеров следом за
+// перетаскиванием прилетает обычный клик по заголовку.
+let justDraggedCol = false
+function onColDragEnd() {
+  dragColKey.value = null
+  justDraggedCol = true
+  setTimeout(() => { justDraggedCol = false }, 0)
+}
+
 function toggleSort(key: string) {
+  // Отпустили колонку после перетаскивания — это не клик по сортировке.
+  if (dragColKey.value || justDraggedCol) return
   if (sortCol.value === key) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
   } else {
@@ -484,12 +861,56 @@ const TAB_STATUS: Record<number, 'ACTIVE' | 'COMPLETED' | undefined> = {
   2: undefined, // «Все»
 }
 
+// ── Расширенные фильтры ──────────────────────────────────────────────
+// Панель с периодом, признаками, диапазонами и участниками. Её состояние —
+// часть выборки наравне с вкладкой и поиском: список, счётчики в шапке и
+// массовое удаление читают один и тот же объект.
+const filtersOpen = ref(false)
+// Справочники нужны только для подписей на плашках фильтров — сами списки
+// грузит панель, когда её открывают.
+const suppliersStore = useSuppliersStore()
+const { coInvestors } = useCoInvestors()
+const filters = useDealsFilters({
+  // Подписи для плашек: id в фильтре, а на экране нужно имя.
+  labels: () => ({
+    // Списки могут быть ещё не загружены — тогда на плашке будет прочерк,
+    // а не падение страницы.
+    suppliers: Object.fromEntries(
+      (Array.isArray(suppliersStore.rows) ? suppliersStore.rows : []).map((s: any) => [s.id, s.name]),
+    ),
+    coInvestors: Object.fromEntries(
+      (Array.isArray(coInvestors.value) ? coInvestors.value : []).map((c: any) => [c.id, c.name]),
+    ),
+    client: selectedClientLabel.value,
+    cashBoxes: Object.fromEntries(cashBoxes.value.map((b: any) => [b.id, b.name])),
+    staff: Object.fromEntries(
+      staffList.value.map((p: any) => [p.id, `${p.firstName} ${p.lastName}`.trim()]),
+    ),
+    folders: Object.fromEntries(folders.value.map((f: any) => [f.id, f.name])),
+  }),
+})
+
+/** Имя клиента для плашки фильтра — подтягиваем по выбранному профилю. */
+const selectedClientLabel = ref('')
+watch(
+  () => filters.state.value.clientKey,
+  async (key) => {
+    if (!key.startsWith('cp:')) { selectedClientLabel.value = ''; return }
+    try {
+      const p = await api.get<any>(`/client-profiles/${key.slice(3)}`)
+      selectedClientLabel.value = [p.lastName, p.firstName].filter(Boolean).join(' ') || 'клиент'
+    } catch {
+      selectedClientLabel.value = 'клиент'
+    }
+  },
+)
+
 const serverFilters = computed(() => ({
   status: TAB_STATUS[tab.value],
-  folderId: activeFolder.value,
-  cashBoxId: activeCashBoxId.value,
-  assignedStaffId: activeStaff.value,
+  // Касса, ответственный и папка приходят внутри `extra`: они часть общего
+  // набора фильтров.
   q: debouncedSearch.value,
+  extra: { ...filters.query.value, ...(neededExtras.value ? { extras: neededExtras.value } : {}) },
 }))
 
 const serverParams = computed(() => ({
@@ -530,6 +951,9 @@ function initFromQuery() {
   tab.value = t >= 0 && t <= 3 ? t : 0
   perPage.value = PER_PAGE_OPTIONS.includes(int(q.per, 50)) ? int(q.per, 50) : 50
   page.value = int(q.page, 1)
+  // Расширенные фильтры тоже живут в адресе: выборкой можно поделиться
+  // ссылкой, и она переживает перезагрузку страницы.
+  filters.fromQuery(q as Record<string, unknown>)
 
   const qs = str(q.q)
   if (qs) {
@@ -544,9 +968,11 @@ function initFromQuery() {
   if (sc && ALL_COLUMNS.some((c) => c.key === sc)) sortCol.value = sc
   sortDir.value = str(q.dir) === 'asc' ? 'asc' : 'desc'
 
-  activeFolder.value = str(q.folder)
-  activeCashBoxId.value = str(q.box)
-  activeStaff.value = str(q.staff)
+  // Ссылки, сохранённые до переноса этих фильтров в общий набор, приходят со
+  // старыми короткими именами — принимаем и их.
+  if (!activeFolder.value && str(q.folder)) activeFolder.value = str(q.folder)
+  if (!activeCashBoxId.value && str(q.box)) activeCashBoxId.value = str(q.box)
+  if (!activeStaff.value && str(q.staff)) activeStaff.value = str(q.staff)
 }
 
 // Вызов ДО подписок ниже: watch не должен принять восстановление состояния за
@@ -555,7 +981,7 @@ initFromQuery()
 
 watch(
   () => [tab.value, page.value, perPage.value, debouncedSearch.value, sortCol.value, sortDir.value,
-         activeFolder.value, activeCashBoxId.value, activeStaff.value],
+         activeFolder.value, activeCashBoxId.value, activeStaff.value, filters.query.value],
   () => {
     const q: Record<string, string> = {}
     if (tab.value) q.tab = String(tab.value)
@@ -564,9 +990,7 @@ watch(
     if (debouncedSearch.value.trim()) q.q = debouncedSearch.value.trim()
     if (sortCol.value !== 'createdAt') q.sort = sortCol.value
     if (sortDir.value !== 'desc') q.dir = sortDir.value
-    if (activeFolder.value) q.folder = activeFolder.value
-    if (activeCashBoxId.value) q.box = activeCashBoxId.value
-    if (activeStaff.value) q.staff = activeStaff.value
+    Object.assign(q, filters.toQuery())
     // replace, а не push: перебор фильтров не должен забивать историю браузера.
     router.replace({ query: q }).catch(() => {})
   },
@@ -574,9 +998,14 @@ watch(
 
 // Смена фильтра, поиска, сортировки или вкладки — всегда с первой страницы:
 // иначе на 3-й странице после сужения выборки был бы пустой экран.
+// В режиме автоподгрузки это ещё и сброс накопленных порций: склеивать
+// результаты разных выборок нельзя.
 watch(
   () => [serverFilters.value, serverSortKey.value, sortDir.value, perPage.value],
-  () => { page.value = 1 },
+  () => {
+    page.value = 1
+    autoLoad.reset()
+  },
   { deep: true },
 )
 
@@ -660,6 +1089,12 @@ const displayedDeals = computed(() => {
   return isTrashTab.value ? dealsStore.trash : dealsStore.list
 })
 
+// Таблица появляется и перерисовывается: при смене вида, набора колонок и
+// содержимого обёртку прокрутки надо находить заново, иначе тень «залипнет».
+watch([viewMode, visibleCols, columnOrder, displayedDeals], () => {
+  void nextTick(bindTableScroll)
+}, { deep: true })
+
 /** Всего строк в выборке — для пагинатора и подписи «показано X из N». */
 const totalRows = computed(() =>
   isTrashTab.value ? dealsStore.trashTotal : dealsStore.listTotal,
@@ -673,6 +1108,85 @@ const totalRows = computed(() =>
 const listBusy = computed(() =>
   isTrashTab.value ? dealsStore.trashLoading : dealsStore.listLoading,
 )
+
+// ── Автоподгрузка ────────────────────────────────────────────────────
+// Включена — список растёт порциями по мере прокрутки, номера страниц
+// прячутся. Выключена — всё как раньше, постранично.
+//
+// Порции складываются в тот же список, что и обычная страница: страница
+// показывает `dealsStore.list` в обоих режимах, разница только в том,
+// заменяется он или дописывается.
+const loadedCount = computed(() => displayedDeals.value.length)
+const hasMore = computed(() => loadedCount.value < totalRows.value)
+
+const autoLoad = useAutoLoad({
+  storageKey: 'deals:auto-load',
+  hasMore,
+  busy: listBusy,
+  loaded: loadedCount,
+  loadMore: () => loadNextChunk(),
+})
+
+/** Догрузить следующую порцию, не теряя уже показанные строки. */
+async function loadNextChunk() {
+  if (!hasMore.value || listBusy.value) return
+  const nextOffset = loadedCount.value
+  if (isTrashTab.value) {
+    await dealsStore.fetchTrash(
+      {
+        q: debouncedSearch.value,
+        sort: TRASH_SORT_KEYS[sortCol.value],
+        dir: sortDir.value,
+        limit: perPage.value,
+        offset: nextOffset,
+      },
+      true,
+    )
+  } else {
+    await dealsStore.fetchDealsPage({ ...serverParams.value, offset: nextOffset }, true)
+  }
+}
+
+/** Ссылка на метку конца списка — её отслеживает автоподгрузка. */
+const autoLoadSentinel = autoLoad.sentinel
+
+// ── Возврат на то же место ───────────────────────────────────────────
+// Пролистали триста сделок, открыли одну, вернулись — список и позиция те же.
+// Без этого автоподгрузка делает работу хуже, а не лучше: каждый возврат
+// начинался бы с первой порции.
+//
+// Снимок годится только для той же выборки: ключ включает фильтры, сортировку
+// и режим. Сменили что-нибудь — грузим заново.
+const listKey = computed(() =>
+  JSON.stringify([serverFilters.value, serverSortKey.value, sortDir.value, perPage.value, tab.value]),
+)
+
+/** Сделка, на которую уходили: подсвечиваем её при возврате. */
+const highlightedDealId = ref<string | null>(null)
+
+function rememberList(openedId: string | null) {
+  // Корзину не запоминаем: она короткая и живёт своей загрузкой.
+  if (isTrashTab.value) return
+  dealsStore.saveListSnapshot({
+    key: listKey.value,
+    scrollY: window.scrollY,
+    openedId,
+  })
+}
+
+// Переключение режима всегда возвращает к началу выборки. Иначе, включив
+// автоподгрузку на 3-й странице, партнёр увидел бы «Показано 50 из 1240» при
+// строках со 101-й — счётчик врал бы, а прокрутка вверх упиралась в пустоту.
+watch(
+  () => autoLoad.enabled.value,
+  () => {
+    autoLoad.reset()
+    if (page.value !== 1) page.value = 1
+    else if (isTrashTab.value) loadTrashPage()
+    else dealsStore.fetchDealsPage(serverParams.value)
+  },
+)
+
 
 /** KPI считаются вместе со счётчиками: пока они в пути, показываем скелетон,
  *  а не старые цифры от предыдущей вкладки. */
@@ -798,6 +1312,7 @@ function openDeal(deal: Deal) {
 
 function goToDeal(deal: Deal) {
   if (deal.locked) { showLockDialog.value = true; return }
+  rememberList(deal.id)
   router.push(`/deals/${deal.id}`)
 }
 
@@ -825,6 +1340,110 @@ function handleMarkPaid(e: Event, payment: Payment) {
   markPaidDialog.value = true
 }
 
+// ─── Кнопки действий прямо в строке таблицы ───────────────────────────────
+// Раньше, чтобы отметить оплату, надо было нажать строку, дождаться окна
+// предпросмотра, найти в нём кнопку и нажать её. При полусотне отметок в день
+// эти два лишних клика складываются в часы.
+
+/** Число месяца, в которое клиент платит по графику. */
+function payDayLabel(deal: Deal): string {
+  const src = deal.nextPayment?.dueDate || deal.firstPaymentDate
+  if (!src) return '—'
+  const d = new Date(src)
+  return Number.isNaN(d.getTime()) ? '—' : String(d.getDate())
+}
+
+/** Право отмечать оплату — без него кнопки в строке не показываем. */
+const canMarkPaid = computed(() => authStore.can('payments.markPaid'))
+
+// Оплата из строки идёт через своё окно: платёж уже выбран, весь график виден
+// сразу, и там же досрочное погашение с прощением остатка. Окно предпросмотра
+// сделки продолжает работать через общий MarkPaidDialog.
+const quickPayDialog = ref(false)
+const quickPayTarget = ref<Payment | null>(null)
+const quickPayDeal = ref<Deal | null>(null)
+
+/** Просрочен ли ближайший платёж. Считаем по сроку, а не по статусу: */
+/* статус проставляет фоновая задача раз в час и может отставать. */
+function isNextOverdue(deal: Deal): boolean {
+  const due = deal.nextPayment?.dueDate
+  if (!due) return false
+  return due.slice(0, 10) < todayIso()
+}
+
+/** Сколько дней просрочки — для подсказки на кнопке. */
+function overdueDays(deal: Deal): number {
+  const due = deal.nextPayment?.dueDate
+  if (!due) return 0
+  const diff = Date.now() - new Date(due.slice(0, 10)).getTime()
+  return Math.max(Math.floor(diff / 86_400_000), 0)
+}
+
+/** Подпись кнопки: при просрочке зовём к действию, иначе просто сумма и срок. */
+/** Сумма и срок ближайшего платежа — в подсказке: в строке они дублируют
+ *  колонки графика и растягивают закреплённую колонку действий. */
+function payButtonTitle(deal: Deal): string {
+  const np = deal.nextPayment
+  if (!np) return 'Отметить оплату'
+  const amount = formatCurrency(np.amount)
+  if (isNextOverdue(deal)) return `${amount} · просрочен на ${overdueDays(deal)} дн.`
+  return `${amount} · до ${formatDateShort(np.dueDate)}`
+}
+
+/**
+ * Оплата прямо из строки: окно открывается сразу, потому что данные о платеже
+ * пришли вместе со списком. График подгрузится внутри окна сам.
+ */
+function payFromRow(e: Event, deal: Deal) {
+  e.stopPropagation()
+  if (!deal.nextPayment) return
+  quickPayDeal.value = deal
+  quickPayTarget.value = {
+    id: deal.nextPayment.id,
+    amount: deal.nextPayment.amount,
+    dueDate: deal.nextPayment.dueDate,
+    number: deal.nextPayment.number,
+    status: deal.nextPayment.status,
+    dealId: deal.id,
+  } as Payment
+  quickPayDialog.value = true
+}
+
+/**
+ * Написать клиенту — во встроенном разделе, а не во внешнем WhatsApp.
+ *
+ * Внешняя ссылка уводила из сервиса: переписка терялась, история не
+ * сохранялась, а на компьютере ещё и открывалась веб-версия с отдельным
+ * входом. Так же работает кнопка в должниках.
+ */
+function openWhatsApp(e: Event, deal: Deal) {
+  e.stopPropagation()
+  const phone = (dealClientPhone(deal) || '').replace(/\D/g, '')
+  if (phone) router.push(`/broadcasts?chat=${phone}`)
+}
+
+/** То же для поручителя: у него свой номер, не клиентский. */
+function openWhatsAppPhone(e: Event, phone: string | null) {
+  e.stopPropagation()
+  const digits = (phone || '').replace(/\D/g, '')
+  if (digits) router.push(`/broadcasts?chat=${digits}`)
+}
+
+/** Перенести срок ближайшего платежа, не открывая сделку. */
+function rescheduleFromRow(e: Event, deal: Deal) {
+  e.stopPropagation()
+  if (!deal.nextPayment) return
+  rescheduleTarget.value = {
+    id: deal.nextPayment.id,
+    amount: deal.nextPayment.amount,
+    dueDate: deal.nextPayment.dueDate,
+    number: deal.nextPayment.number,
+    status: deal.nextPayment.status,
+    dealId: deal.id,
+  } as Payment
+  rescheduleDialog.value = true
+}
+
 /**
  * Платёж отмечен. График сделки стор перечитал сам, а вот шапка превью и
  * строка в списке (оплачено, остаток, прогресс, статус) считаются на сервере —
@@ -834,6 +1453,22 @@ async function onMarkPaidDone(dealId: string) {
   markPaidTarget.value = null
   await refreshSelectedDeal(dealId)
 }
+
+/** Оплатили из строки — обновляем и строку, и превью, если оно открыто. */
+async function onQuickPayDone(dealId: string) {
+  quickPayTarget.value = null
+  await refreshSelectedDeal(dealId)
+}
+
+// Окно закрыли, не отметив, — сбрасываем цель. Иначе следующая оплата
+// получила бы данные предыдущей: чужой остаток, чужую квитанцию.
+watch(markPaidDialog, (open) => { if (!open) markPaidTarget.value = null })
+watch(quickPayDialog, (open) => {
+  if (!open) {
+    quickPayDeal.value = null
+    quickPayTarget.value = null
+  }
+})
 
 // Перенос даты — тот же общий компонент, что на страницах платежей и сделки:
 // в превью не хватало только его, галочка оплаты уже была.
@@ -922,11 +1557,76 @@ async function refreshSelectedDeal(dealId: string) {
           </button>
         </template>
         <div class="col-menu">
-          <div class="col-menu-title">Колонки таблицы</div>
-          <label v-for="c in ALL_COLUMNS" :key="c.key" class="col-menu-item">
-            <input type="checkbox" :checked="visibleCols[c.key]" @change="toggleColumn(c.key)" />
-            <span>{{ c.label }}</span>
-          </label>
+          <div class="col-menu-head">
+            <span class="col-menu-title">Колонки таблицы</span>
+            <button class="col-menu-reset" @click="resetColumns">Сбросить</button>
+          </div>
+
+          <!-- Готовые наборы под частые задачи: обзвон должников, бухгалтерия. -->
+          <div class="col-menu-presets">
+            <button
+              v-for="p in COLUMN_PRESETS"
+              :key="p.key"
+              type="button"
+              class="col-menu-preset"
+              @click="applyColumnPreset(p)"
+            >{{ p.label }}</button>
+          </div>
+
+          <!-- Свои наборы: сохранённый состав и порядок колонок под именем. -->
+          <div v-if="savedColPresets.length" class="col-menu-presets col-menu-presets--own">
+            <span v-for="p in savedColPresets" :key="p.id" class="col-menu-own">
+              <button type="button" class="col-menu-own-apply" @click="applySavedColPreset(p)">
+                {{ p.name }}
+              </button>
+              <button type="button" class="col-menu-own-del" title="Удалить набор" @click="removeColPreset(p)">
+                <v-icon icon="mdi-close" size="11" />
+              </button>
+            </span>
+          </div>
+
+          <div class="col-menu-save">
+            <input
+              v-model="colPresetName"
+              type="text"
+              placeholder="Сохранить набор как…"
+              @keyup.enter="saveColPreset"
+            />
+            <button :disabled="!colPresetName.trim()" @click="saveColPreset">Сохранить</button>
+          </div>
+
+          <div class="col-menu-search">
+            <v-icon icon="mdi-magnify" size="15" />
+            <input v-model="colSearch" type="text" placeholder="Найти колонку" />
+            <button v-if="colSearch" class="col-menu-search-clear" @click="colSearch = ''">
+              <v-icon icon="mdi-close" size="13" />
+            </button>
+          </div>
+
+          <div class="col-menu-hint">Потяните за <v-icon icon="mdi-drag-horizontal-variant" size="13" />, чтобы поменять порядок</div>
+
+          <div v-for="g in menuGroups" :key="g.key" class="col-menu-group">
+            <div class="col-menu-group-title">{{ g.label }}</div>
+            <div
+              v-for="c in g.columns"
+              :key="c.key"
+              class="col-menu-item"
+              :class="{ 'col-menu-item--dragging': dragColKey === c.key }"
+              draggable="true"
+              @dragstart="onColDragStart(c.key, $event)"
+              @dragover="onColDragOver(c.key, $event)"
+              @dragend="onColDragEnd"
+              @drop.prevent="onColDragEnd"
+            >
+              <v-icon icon="mdi-drag-horizontal-variant" size="16" class="col-menu-grip" />
+              <label class="col-menu-label">
+                <input type="checkbox" :checked="visibleCols[c.key]" @change="toggleColumn(c.key)" />
+                <span>{{ c.label }}</span>
+              </label>
+            </div>
+          </div>
+
+          <div v-if="!menuGroups.length" class="col-menu-empty">Ничего не найдено</div>
         </div>
       </v-menu>
 
@@ -946,140 +1646,35 @@ async function refreshSelectedDeal(dealId: string) {
       <!-- Filter chips (hidden in trash view — those filters don't apply
            to soft-deleted deals). -->
       <div v-if="!isTrashTab" class="d-flex justify-end ga-2 flex-wrap">
-      <!-- Cashbox filter -->
-      <v-menu v-if="cashBoxes.length > 1" :close-on-content-click="true">
-        <template #activator="{ props: mp }">
-          <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeCashBoxId }">
-            <v-icon icon="mdi-wallet-outline" size="16" />
-            <template v-if="activeCashBoxObj">
-              {{ activeCashBoxObj.name }}
-            </template>
-            <template v-else>
-              Касса
-            </template>
-            <v-icon icon="mdi-chevron-down" size="14" style="opacity: 0.4;" />
-          </button>
-        </template>
-        <v-card rounded="lg" elevation="4" class="fb-dropdown">
-          <div class="fb-dropdown-header">
-            <span>Кассы</span>
-          </div>
-          <div class="fb-dropdown-body">
-            <button class="fb-item" :class="{ 'fb-item--active': !activeCashBoxId }" @click="activeCashBoxId = null">
-              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
-              <span class="fb-item-name">Все кассы</span>
-            </button>
-            <div class="fb-divider" />
-            <button
-              v-for="b in cashBoxes"
-              :key="b.id"
-              class="fb-item"
-              :class="{ 'fb-item--active': activeCashBoxId === b.id }"
-              @click="activeCashBoxId = activeCashBoxId === b.id ? null : b.id"
-            >
-              <v-icon icon="mdi-wallet-outline" size="14" :style="{ color: b.color }" />
-              <span class="fb-item-name">{{ b.name }}</span>
-              <span v-if="b.isDefault" class="fb-item-count">осн.</span>
-            </button>
-          </div>
-        </v-card>
-      </v-menu>
+      <!-- Расширенные фильтры: период, признаки, суммы, участники. Их много,
+           поэтому живут в отдельной панели, а включённые видны плашками. -->
+      <button class="fb-btn" :class="{ 'fb-btn--active': filters.hasAny.value }" @click="filtersOpen = true">
+        <v-icon icon="mdi-filter-variant" size="16" />
+        Фильтры
+        <span v-if="filters.activeCount.value" class="fb-btn-count">{{ filters.activeCount.value }}</span>
+      </button>
 
-      <!-- Staff assignee filter -->
-      <v-menu v-if="authStore.isOwner && sections.visible('staff') && staffList.length > 0" :close-on-content-click="true">
-        <template #activator="{ props: mp }">
-          <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeStaff }">
-            <v-icon icon="mdi-account-tie-outline" size="16" />
-            <template v-if="activeStaffObj">
-              {{ activeStaffObj.firstName }} {{ activeStaffObj.lastName }}
-            </template>
-            <template v-else>
-              Сотрудник
-            </template>
-            <v-icon icon="mdi-chevron-down" size="14" style="opacity: 0.4;" />
-          </button>
-        </template>
-        <v-card rounded="lg" elevation="4" class="fb-dropdown">
-          <div class="fb-dropdown-header">
-            <span>Ответственные</span>
-          </div>
-          <div class="fb-dropdown-body">
-            <button class="fb-item" :class="{ 'fb-item--active': !activeStaff }" @click="activeStaff = null">
-              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
-              <span class="fb-item-name">Все сделки</span>
-            </button>
-            <div class="fb-divider" />
-            <button
-              v-for="s in staffList"
-              :key="s.id"
-              class="fb-item"
-              :class="{ 'fb-item--active': activeStaff === s.id }"
-              @click="activeStaff = activeStaff === s.id ? null : s.id"
-            >
-              <v-icon icon="mdi-account-outline" size="14" style="color: rgba(var(--v-theme-on-surface), 0.45);" />
-              <span class="fb-item-name">{{ s.firstName }} {{ s.lastName }}</span>
-            </button>
-          </div>
-        </v-card>
-      </v-menu>
-
-      <!-- Folder filter -->
-      <v-menu :close-on-content-click="false">
-        <template #activator="{ props: mp }">
-          <button v-bind="mp" class="fb-btn" :class="{ 'fb-btn--active': activeFolder }">
-            <v-icon icon="mdi-folder-outline" size="16" />
-            <template v-if="activeFolder">
-              <span class="fb-dot" :style="{ background: folders.find(f => f.id === activeFolder)?.color || '#6366f1' }" />
-              {{ folders.find(f => f.id === activeFolder)?.name || 'Папка' }}
-            </template>
-            <template v-else>
-              Папки
-            </template>
-            <v-icon icon="mdi-chevron-down" size="14" style="opacity: 0.4;" />
-          </button>
-        </template>
-        <v-card rounded="lg" elevation="4" class="fb-dropdown">
-          <div class="fb-dropdown-header">
-            <span>Папки</span>
-            <button class="fb-dropdown-add" @click="openCreateFolder">
-              <v-icon icon="mdi-plus" size="14" />
-              Создать
-            </button>
-          </div>
-
-          <div class="fb-dropdown-body">
-            <!-- All deals -->
-            <button class="fb-item" :class="{ 'fb-item--active': !activeFolder }" @click="activeFolder = null">
-              <v-icon icon="mdi-view-list" size="18" style="color: rgba(var(--v-theme-on-surface), 0.35);" />
-              <span class="fb-item-name">Все сделки</span>
-              <span class="fb-item-count">{{ allFoldersCount }}</span>
-            </button>
-
-            <div v-if="folders.length" class="fb-divider" />
-
-            <!-- Folder list -->
-            <button
-              v-for="f in folders" :key="f.id"
-              class="fb-item" :class="{ 'fb-item--active': activeFolder === f.id }"
-              @click="activeFolder = activeFolder === f.id ? null : f.id"
-            >
-              <span class="fb-item-dot" :style="{ background: f.color }" />
-              <span class="fb-item-name">{{ f.name }}</span>
-              <span class="fb-item-edit" role="button" @click.stop="openEditFolder(f)" title="Редактировать">
-                <v-icon icon="mdi-pencil-outline" size="12" />
-              </span>
-              <span class="fb-item-count">{{ folderCount(f) }}</span>
-            </button>
-
-            <!-- No folders hint -->
-            <div v-if="!folders.length" class="fb-empty">
-              <div style="font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.35);">Нет папок</div>
-              <div style="font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.25);">Создайте папку для группировки</div>
-            </div>
-          </div>
-        </v-card>
-      </v-menu>
+      <!-- Касса, ответственный и папка переехали в панель фильтров: это такие
+           же условия выборки, как остальные, и держать их отдельными кнопками
+           значило разложить фильтры по двум местам. -->
       </div>
+    </div>
+
+    <!-- Плашки включённых фильтров. При десятке условий невидимый фильтр
+         превращается в «сделка пропала», поэтому каждое видно отдельно и
+         снимается одним нажатием. -->
+    <div v-if="!isTrashTab && filters.chips.value.length" class="active-filters">
+      <button
+        v-for="chip in filters.chips.value"
+        :key="chip.key"
+        type="button"
+        class="af-chip"
+        @click="chip.clear()"
+      >
+        <span>{{ chip.label }}</span>
+        <v-icon icon="mdi-close" size="13" />
+      </button>
+      <button type="button" class="af-clear" @click="filters.reset()">Сбросить всё</button>
     </div>
 
     <!-- Main card -->
@@ -1131,12 +1726,12 @@ async function refreshSelectedDeal(dealId: string) {
           </v-menu>
 
           <div class="d-flex flex-wrap ga-2 align-center">
-            <div class="filter-input-wrap" style="max-width: 520px; min-width: 320px; flex: 1;">
+            <div class="filter-input-wrap" style="max-width: 620px; min-width: 380px; flex: 1 1 380px;">
               <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
               <input
                 v-model="search"
                 type="text"
-                placeholder="Поиск по товару, клиенту, номеру..."
+                :placeholder="`Поиск по товару, клиенту, ${canSearchAddress ? 'адресу, ' : ''}номеру...`"
                 class="filter-input"
               />
             </div>
@@ -1328,7 +1923,8 @@ async function refreshSelectedDeal(dealId: string) {
                   {{ deal.productName }}
                 </div>
                 <div class="deal-card-client">
-                  <v-icon icon="mdi-account" size="14" /> {{ dealClientName(deal) }}
+                  <v-icon icon="mdi-account" size="14" />
+                  <ClientLink :profile-id="deal.clientProfileId" :name="dealClientName(deal)" />
                   <span v-if="!deal.client && deal.clientProfile && !deal.clientProfile.userId" class="external-badge">Внешний</span>
                 </div>
                 <div v-if="dealClientPhone(deal)" class="deal-card-phone">
@@ -1357,7 +1953,13 @@ async function refreshSelectedDeal(dealId: string) {
         </v-row>
 
         <!-- TABLE VIEW -->
-        <v-table v-if="viewMode === 'table' && displayedDeals.length" density="default" hover class="deals-table">
+        <v-table
+          v-if="viewMode === 'table' && displayedDeals.length"
+          density="default"
+          hover
+          class="deals-table"
+          :class="{ 'table--scrolled': hasHiddenColumns }"
+        >
           <thead>
             <tr>
               <th v-if="selectMode" style="width: 40px;">
@@ -1370,11 +1972,21 @@ async function refreshSelectedDeal(dealId: string) {
                 />
               </th>
               <th class="th-index"></th>
+              <!-- Заголовок можно перетащить мышью — так порядок колонок
+                   меняется прямо в таблице, не открывая меню. -->
               <th
                 v-for="c in shownColumns"
                 :key="c.key"
-                :class="[`text-${c.align === 'end' ? 'end' : c.align === 'center' ? 'center' : 'start'}`, { 'th-sortable': c.sortable, 'th-sorted': sortCol === c.key }]"
+                draggable="true"
+                :class="[
+                  `text-${c.align === 'end' ? 'end' : c.align === 'center' ? 'center' : 'start'}`,
+                  { 'th-sortable': c.sortable, 'th-sorted': sortCol === c.key, 'th-dragging': dragColKey === c.key },
+                ]"
                 @click="c.sortable && toggleSort(c.key)"
+                @dragstart="onColDragStart(c.key, $event)"
+                @dragover="onColDragOver(c.key, $event)"
+                @dragend="onColDragEnd"
+                @drop.prevent="onColDragEnd"
               >
                 <span class="th-inner">
                   {{ c.label }}
@@ -1386,11 +1998,18 @@ async function refreshSelectedDeal(dealId: string) {
                   />
                 </span>
               </th>
-              <th v-if="isTrashTab" class="text-end">Действия</th>
+              <th v-if="isTrashTab" class="text-end col-actions">Действия</th>
+              <th v-else-if="!selectMode" class="text-end col-actions">Действия</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(deal, idx) in displayedDeals" :key="deal.id" class="cursor-pointer" :class="{ 'deal-row--locked': deal.locked }" @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)">
+            <tr
+              v-for="(deal, idx) in displayedDeals"
+              :key="deal.id"
+              class="cursor-pointer"
+              :class="{ 'deal-row--locked': deal.locked, 'deal-row--returned': deal.id === highlightedDealId }"
+              @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)"
+            >
               <td v-if="selectMode" @click.stop>
                 <v-checkbox-btn
                   :model-value="selectedIds.has(deal.id)"
@@ -1402,65 +2021,176 @@ async function refreshSelectedDeal(dealId: string) {
               <!-- № п/п (перечисление, не номер договора) -->
               <td class="td-index text-medium-emphasis">{{ rowNumber(idx) }}</td>
 
-              <td v-if="isColVisible('dealNumber')" class="text-start text-no-wrap"><span class="table-deal-num">#{{ deal.dealNumber }}</span></td>
+              <!-- Ячейки рисуются по текущему порядку колонок: партнёр
+                   переставляет их сам, поэтому «зашить» последовательность в
+                   разметку нельзя. -->
+              <td
+                v-for="c in shownColumns"
+                :key="c.key"
+                :class="c.tdClass"
+                :style="c.tdStyle"
+              >
+                <template v-if="c.key === 'dealNumber'">
+                  <span class="table-deal-num">#{{ deal.dealNumber }}</span>
+                </template>
 
-              <td v-if="isColVisible('product')">
-                <div class="d-flex align-center ga-2 py-3">
-                  <span class="font-weight-medium table-product-name">{{ deal.productName }}</span>
-                  <span v-if="deal.locked" class="deal-lock-tag">
-                    <v-icon icon="mdi-lock-outline" size="12" />
-                    Недоступно на тарифе
-                  </span>
-                  <span v-if="deal.folder" class="deal-folder-badge" :style="{ background: deal.folder.color + '18', color: deal.folder.color }">
-                    <span class="folder-chip-dot" :style="{ background: deal.folder.color }" />
-                    {{ deal.folder.name }}
-                  </span>
-                </div>
-              </td>
-
-              <td v-if="isColVisible('client')" style="min-width: 300px;">
-                <div>
-                  <div class="text-no-wrap">{{ dealClientName(deal) }}</div>
-                  <div v-if="dealClientPhone(deal)" class="client-phone-row text-no-wrap">
-                    {{ dealClientPhone(deal) }}
+                <template v-else-if="c.key === 'product'">
+                  <div class="d-flex align-center ga-2 py-3">
+                    <span class="font-weight-medium table-product-name">{{ deal.productName }}</span>
+                    <span v-if="deal.locked" class="deal-lock-tag">
+                      <v-icon icon="mdi-lock-outline" size="12" />
+                      Недоступно на тарифе
+                    </span>
+                    <span v-if="deal.folder" class="deal-folder-badge" :style="{ background: deal.folder.color + '18', color: deal.folder.color }">
+                      <span class="folder-chip-dot" :style="{ background: deal.folder.color }" />
+                      {{ deal.folder.name }}
+                    </span>
                   </div>
-                </div>
+                </template>
+
+                <template v-else-if="c.key === 'client'">
+                  <div>
+                    <div class="text-no-wrap">
+                      <ClientLink :profile-id="deal.clientProfileId" :name="dealClientName(deal)" :disabled="selectMode" />
+                    </div>
+                    <!-- Телефон под именем, и сразу переход в переписку:
+                         отдельная колонка под телефон не нужна. -->
+                    <div v-if="dealClientPhone(deal)" class="client-phone-row text-no-wrap">
+                      {{ dealClientPhone(deal) }}
+                      <button
+                        v-if="sections.visible('whatsapp')"
+                        class="td-phone-wa"
+                        title="Написать в WhatsApp"
+                        @click.stop="openWhatsApp($event, deal)"
+                      >
+                        <v-icon icon="mdi-whatsapp" size="13" />
+                      </button>
+                    </div>
+                  </div>
+                </template>
+
+                <template v-else-if="c.key === 'total'">{{ formatCurrency(deal.totalPrice) }}</template>
+                <template v-else-if="c.key === 'markup'">
+                  <span class="td-markup">+{{ formatCurrency(deal.markup) }}</span>
+                </template>
+                <template v-else-if="c.key === 'remaining'">{{ formatCurrency(deal.remainingAmount) }}</template>
+                <template v-else-if="c.key === 'monthly'">{{ formatCurrency(dealMonthly(deal)) }}</template>
+                <template v-else-if="c.key === 'downPayment'">{{ deal.downPayment ? formatCurrency(deal.downPayment) : '—' }}</template>
+                <template v-else-if="c.key === 'term'">{{ dealTermLabel(deal) }}</template>
+
+                <template v-else-if="c.key === 'progress'">
+                  <div class="d-flex align-center ga-2">
+                    <v-progress-linear
+                      :model-value="getDealProgress(deal)"
+                      color="primary"
+                      rounded
+                      height="4"
+                      style="width: 80px;"
+                    />
+                    <span class="text-caption text-medium-emphasis">{{ deal.paidPayments }}/{{ deal.numberOfPayments }}</span>
+                  </div>
+                </template>
+
+                <template v-else-if="c.key === 'status'">
+                  <div
+                    class="deal-status-chip"
+                    :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
+                  >
+                    {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
+                  </div>
+                </template>
+
+                <template v-else-if="c.key === 'createdAt'">{{ timeAgo(deal.createdAt) }}</template>
+                <template v-else-if="c.key === 'dealDate'">{{ deal.dealDate ? formatDateShort(deal.dealDate) : '—' }}</template>
+                <template v-else-if="c.key === 'lastPayment'">{{ dealLastPaymentLabel(deal) }}</template>
+
+                <!-- ── Договор ── -->
+                <template v-else-if="c.key === 'staff'">
+                  <span v-if="deal.assignedStaff" class="text-no-wrap">
+                    {{ deal.assignedStaff.firstName }} {{ deal.assignedStaff.lastName }}
+                  </span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'supplier'">
+                  <span v-if="deal.supplierName">{{ deal.supplierName }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'comment'">
+                  <span v-if="deal.comment" class="td-comment" :title="deal.comment">{{ deal.comment }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <!-- ── Клиент ── -->
+                <template v-else-if="c.key === 'clientBirthDate'">
+                  {{ deal.clientBirthDate ? formatDateShort(deal.clientBirthDate) : '—' }}
+                </template>
+                <template v-else-if="c.key === 'clientAddress'">
+                  <span v-if="deal.clientAddress" :title="deal.clientAddress">{{ deal.clientAddress }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'clientRegAddress'">
+                  <span v-if="deal.clientRegAddress" :title="deal.clientRegAddress">{{ deal.clientRegAddress }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <!-- ── Деньги ── -->
+                <template v-else-if="c.key === 'purchasePrice'">{{ formatCurrency(deal.purchasePrice) }}</template>
+                <template v-else-if="c.key === 'paidTotal'">
+                  {{ deal.paidTotal != null ? formatCurrency(deal.paidTotal) : '—' }}
+                </template>
+                <template v-else-if="c.key === 'overdueAmount'">
+                  <span v-if="deal.overdueAmount" class="td-overdue">{{ formatCurrency(deal.overdueAmount) }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'discount'">
+                  <span v-if="deal.discount">{{ formatCurrency(deal.discount) }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <!-- ── Платежи ── -->
+                <template v-else-if="c.key === 'paymentsTotal'">{{ deal.numberOfPayments }}</template>
+                <template v-else-if="c.key === 'paymentsLeft'">
+                  {{ Math.max(deal.numberOfPayments - deal.paidPayments, 0) }}
+                </template>
+                <template v-else-if="c.key === 'payDay'">{{ payDayLabel(deal) }}</template>
+                <template v-else-if="c.key === 'payStatus'">
+                  <span v-if="deal.overdueCount" class="td-overdue">
+                    Просрочено {{ deal.overdueCount }}
+                  </span>
+                  <span v-else-if="deal.remainingAmount <= 0" class="text-medium-emphasis">Погашен</span>
+                  <span v-else>По графику</span>
+                </template>
+
+                <!-- ── Поручители ── -->
+                <template v-else-if="c.key === 'guarantors'">
+                  <!-- Как у клиента: имя, под ним телефон и переход в чат. -->
+                  <div v-if="deal.guarantorsList?.length">
+                    <div v-for="(g, gi) in deal.guarantorsList" :key="gi" class="td-guarantor">
+                      <div class="text-no-wrap">{{ g.name }}</div>
+                      <div v-if="g.phone" class="client-phone-row text-no-wrap">
+                        {{ g.phone }}
+                        <button
+                          v-if="sections.visible('whatsapp')"
+                          class="td-phone-wa"
+                          title="Написать в WhatsApp"
+                          @click.stop="openWhatsAppPhone($event, g.phone)"
+                        >
+                          <v-icon icon="mdi-whatsapp" size="13" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'guarantorAddresses'">
+                  <span v-if="deal.guarantorsList?.some((g) => g.address)">
+                    {{ deal.guarantorsList.map((g) => g.address).filter(Boolean).join(', ') }}
+                  </span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
               </td>
 
-              <td v-if="isColVisible('total')" class="text-end font-weight-bold text-no-wrap">{{ formatCurrency(deal.totalPrice) }}</td>
-              <td v-if="isColVisible('markup')" class="text-end text-no-wrap" style="color: #047857;">+{{ formatCurrency(deal.markup) }}</td>
-              <td v-if="isColVisible('remaining')" class="text-end text-no-wrap text-medium-emphasis">{{ formatCurrency(deal.remainingAmount) }}</td>
-              <td v-if="isColVisible('monthly')" class="text-end text-no-wrap">{{ formatCurrency(dealMonthly(deal)) }}</td>
-              <td v-if="isColVisible('downPayment')" class="text-end text-no-wrap">{{ deal.downPayment ? formatCurrency(deal.downPayment) : '—' }}</td>
-              <td v-if="isColVisible('term')" class="text-center text-no-wrap">{{ dealTermLabel(deal) }}</td>
-
-              <td v-if="isColVisible('progress')" class="text-center" style="min-width: 140px;">
-                <div class="d-flex align-center ga-2">
-                  <v-progress-linear
-                    :model-value="getDealProgress(deal)"
-                    color="primary"
-                    rounded
-                    height="4"
-                    style="width: 80px;"
-                  />
-                  <span class="text-caption text-medium-emphasis">{{ deal.paidPayments }}/{{ deal.numberOfPayments }}</span>
-                </div>
-              </td>
-
-              <td v-if="isColVisible('status')">
-                <div
-                  class="deal-status-chip"
-                  :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
-                >
-                  {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
-                </div>
-              </td>
-
-              <td v-if="isColVisible('createdAt')" class="text-end text-medium-emphasis text-no-wrap">{{ timeAgo(deal.createdAt) }}</td>
-              <td v-if="isColVisible('dealDate')" class="text-end text-medium-emphasis text-no-wrap">{{ deal.dealDate ? formatDateShort(deal.dealDate) : '—' }}</td>
-              <td v-if="isColVisible('lastPayment')" class="text-end text-medium-emphasis text-no-wrap">{{ dealLastPaymentLabel(deal) }}</td>
-
-              <td v-if="isTrashTab" class="text-end text-no-wrap" @click.stop>
+              <td v-if="isTrashTab" class="text-end text-no-wrap col-actions" @click.stop>
                 <div class="row-actions">
                   <button class="row-action-btn row-action-btn--restore" title="Восстановить" @click="restoreOne(deal.id)">
                     <v-icon icon="mdi-restore" size="17" />
@@ -1468,6 +2198,66 @@ async function refreshSelectedDeal(dealId: string) {
                   <button class="row-action-btn row-action-btn--delete" title="Удалить навсегда" @click="permanentDeleteOne(deal.id)">
                     <v-icon icon="mdi-delete-forever-outline" size="17" />
                   </button>
+                </div>
+              </td>
+
+              <!-- Действия по сделке прямо в строке. Колонка закреплена справа:
+                   колонок можно включить много, и при прокрутке вбок кнопки
+                   иначе уезжали бы за край. В режиме выбора строк их не
+                   показываем — там клик по строке ставит галочку. -->
+              <td v-else-if="!selectMode" class="text-end text-no-wrap col-actions" @click.stop>
+                <div class="row-actions">
+                  <button
+                    v-if="canMarkPaid && !deal.locked && deal.nextPayment && deal.status === 'ACTIVE'"
+                    class="pay-btn"
+                    :class="{ 'pay-btn--overdue': isNextOverdue(deal) }"
+                    :title="payButtonTitle(deal)"
+                    @click="payFromRow($event, deal)"
+                  >
+                    Оплатить
+                  </button>
+                  <!-- Бывает, что все строки графика закрыты, а долг остался:
+                       клиент недоплачивал, и сервис сознательно не закрывает
+                       такую сделку. Писать «Оплачено» здесь нельзя. -->
+                  <span
+                    v-else-if="canMarkPaid && !deal.locked"
+                    class="pay-btn pay-btn--done"
+                    :title="deal.remainingAmount > 0 ? 'Строк графика не осталось, но долг не закрыт' : 'Все платежи закрыты'"
+                  >{{ deal.remainingAmount > 0 ? `Остаток ${formatCurrency(deal.remainingAmount)}` : 'Оплачено' }}</span>
+
+                  <button class="row-action-btn" title="Открыть сделку" @click="goToDeal(deal)">
+                    <v-icon icon="mdi-open-in-new" size="16" />
+                  </button>
+
+                  <v-menu location="bottom end">
+                    <template #activator="{ props: more }">
+                      <button class="row-action-btn" title="Ещё" v-bind="more">
+                        <v-icon icon="mdi-dots-horizontal" size="18" />
+                      </button>
+                    </template>
+                    <v-card rounded="lg" elevation="8" class="row-more-menu">
+                      <button
+                        v-if="dealClientPhone(deal)"
+                        class="row-more-item"
+                        @click="openWhatsApp($event, deal)"
+                      >
+                        <v-icon icon="mdi-whatsapp" size="17" />
+                        Написать в WhatsApp
+                      </button>
+                      <button
+                        v-if="deal.nextPayment && !deal.locked && authStore.can('payments.reschedule')"
+                        class="row-more-item"
+                        @click="rescheduleFromRow($event, deal)"
+                      >
+                        <v-icon icon="mdi-calendar-arrow-right" size="17" />
+                        Перенести срок платежа
+                      </button>
+                      <button class="row-more-item" @click="goToDeal(deal)">
+                        <v-icon icon="mdi-file-document-outline" size="17" />
+                        Договор и документы
+                      </button>
+                    </v-card>
+                  </v-menu>
                 </div>
               </td>
             </tr>
@@ -1498,6 +2288,10 @@ async function refreshSelectedDeal(dealId: string) {
         </div>
 
         <!-- Пагинация серверного списка — общий компонент разделов. -->
+        <!-- Метка конца списка: попала в поле зрения — грузим следующую
+             порцию. Стоит до панели, чтобы срабатывать чуть раньше края. -->
+        <div v-if="autoLoad.enabled.value" ref="autoLoadSentinel" class="auto-load-sentinel" />
+
         <ServerPager
           v-if="totalRows > 0"
           :page="page"
@@ -1505,8 +2299,14 @@ async function refreshSelectedDeal(dealId: string) {
           :per-page="perPage"
           :busy="listBusy"
           :per-page-options="PER_PAGE_OPTIONS"
+          :auto-load="autoLoad.enabled.value"
+          :loaded="loadedCount"
+          :has-more="hasMore"
+          :paused="autoLoad.paused.value"
           @update:page="page = $event"
           @update:per-page="perPage = $event"
+          @update:auto-load="autoLoad.enabled.value = $event"
+          @load-more="autoLoad.loadMoreManually()"
         />
       </div>
     </v-card>
@@ -1537,7 +2337,7 @@ async function refreshSelectedDeal(dealId: string) {
             <div class="dialog-title">{{ selectedDeal.productName }}</div>
             <div class="dialog-hero-meta">
               <v-icon icon="mdi-account" size="14" />
-              {{ dealClientName(selectedDeal) }}
+              <ClientLink :profile-id="selectedDeal.clientProfileId" :name="dealClientName(selectedDeal)" />
               <template v-if="dealClientPhone(selectedDeal)">
                 <span class="mx-1">·</span>
                 <v-icon icon="mdi-phone-outline" size="13" />
@@ -1738,6 +2538,7 @@ async function refreshSelectedDeal(dealId: string) {
          платежей и сделки (перерасчёт графика, фактическая дата, квитанция,
          скриншот). График уже загружен превью — передаём его, чтобы компонент
          не запрашивал его повторно. -->
+    <!-- Отметка оплаты из окна предпросмотра сделки — общий компонент. -->
     <MarkPaidDialog
       v-model="markPaidDialog"
       :payment="markPaidTarget"
@@ -1745,6 +2546,32 @@ async function refreshSelectedDeal(dealId: string) {
       :schedule="selectedDealPayments"
       :fullscreen="isMobile"
       @paid="onMarkPaidDone"
+    />
+
+    <!-- Панель расширенных фильтров -->
+    <DealsFilterPanel
+      v-model="filtersOpen"
+      :state="filters.state.value"
+      :active-count="filters.activeCount.value"
+      :presets="filters.saved.value"
+      :cash-boxes="cashBoxes"
+      :staff="authStore.isOwner && sections.visible('staff') ? staffList : []"
+      :folders="folders"
+      @preset="filters.applyPreset($event)"
+      @reset="filters.reset()"
+      @save-preset="filters.savePreset($event)"
+      @apply-preset="filters.applyPresetSaved($event)"
+      @remove-preset="filters.removePreset($event)"
+    />
+
+    <!-- Оплата из строки таблицы: сделка берётся из самой строки, окно
+         предпросмотра в этом случае не открывалось. -->
+    <QuickPayDialog
+      v-model="quickPayDialog"
+      :payment="quickPayTarget"
+      :deal="quickPayDeal"
+      :fullscreen="isMobile"
+      @paid="onQuickPayDone"
     />
 
     <!-- Перенос даты — общий компонент. Сделку не передаём: в превью и так
@@ -1759,6 +2586,53 @@ async function refreshSelectedDeal(dealId: string) {
 </template>
 
 <style scoped>
+/* Плашки включённых фильтров над списком. */
+.active-filters {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.af-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 8px 5px 11px; border-radius: 8px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.07);
+  color: rgb(var(--v-theme-primary));
+  font-size: 12.5px; font-weight: 500; cursor: pointer;
+  transition: all 0.12s;
+}
+.af-chip:hover { background: rgba(var(--v-theme-primary), 0.14); }
+.af-clear {
+  font-size: 12.5px; padding: 5px 8px; border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.5); cursor: pointer;
+}
+.af-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+
+/* Невидимая метка в конце списка — только якорь для автоподгрузки. */
+.auto-load-sentinel { height: 1px; }
+
+/* Строка, из которой вернулись: подсветка гаснет через пару секунд — она
+   нужна, чтобы взгляд нашёл нужное место в длинном списке. */
+.deal-row--returned td {
+  background: rgba(var(--v-theme-primary), 0.1);
+  transition: background 1.2s ease;
+}
+
+/* Подсветку строки при наведении Vuetify рисует накладкой внутри ячейки,
+   поэтому она работает и на закреплённой колонке — свой фон для hover не
+   нужен, иначе он бы её перекрывал. */
+.row-more-menu { padding: 6px; min-width: 220px; }
+.row-more-item {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 9px 10px;
+  border: none; border-radius: 8px;
+  background: transparent; color: rgb(var(--v-theme-on-surface));
+  font-size: 13.5px; text-align: left; cursor: pointer;
+}
+.row-more-item:hover { background: rgba(var(--v-theme-on-surface), 0.06); }
+
 /* Stats row */
 .stats-row {
   display: grid;
@@ -1837,7 +2711,7 @@ async function refreshSelectedDeal(dealId: string) {
 .filter-input {
   width: 100%; height: 40px; padding: 0 16px 0 38px;
   border: 1px solid #e4e4e7; border-radius: 10px;
-  background: #f4f4f5; font-size: 14px; color: inherit;
+  background: #fff; font-size: 14px; color: inherit;
   outline: none; transition: all 0.15s ease;
 }
 .filter-input::placeholder { color: #9ca3af; }
@@ -2009,18 +2883,127 @@ async function refreshSelectedDeal(dealId: string) {
   max-height: 380px; overflow-y: auto;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
 }
+.col-menu-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 10px 2px;
+}
 .col-menu-title {
   font-size: 11px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
   color: rgba(var(--v-theme-on-surface), 0.45);
-  padding: 6px 10px 8px;
+}
+.col-menu-reset {
+  font-size: 11.5px; color: rgb(var(--v-theme-primary));
+  padding: 2px 6px; border-radius: 6px; cursor: pointer;
+}
+.col-menu-reset:hover { background: rgba(var(--v-theme-primary), 0.1); }
+.col-menu-hint {
+  display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.45);
+  padding: 0 10px 8px;
+}
+.col-menu-presets {
+  display: flex; gap: 5px; flex-wrap: wrap;
+  padding: 0 10px 8px;
+}
+.col-menu-preset {
+  padding: 4px 9px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.12s;
+}
+.col-menu-preset:hover { border-color: rgba(var(--v-theme-primary), 0.5); color: rgb(var(--v-theme-primary)); }
+.col-menu-presets--own { padding-top: 2px; }
+.col-menu-own {
+  display: inline-flex; align-items: center;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.07);
+  border-radius: 7px; overflow: hidden;
+}
+.col-menu-own-apply {
+  padding: 4px 6px 4px 9px; font-size: 11.5px; font-weight: 500;
+  color: rgb(var(--v-theme-primary)); cursor: pointer;
+}
+.col-menu-own-del { padding: 4px 6px; color: rgba(var(--v-theme-primary), 0.6); cursor: pointer; }
+.col-menu-own-del:hover { color: #dc2626; }
+.col-menu-save {
+  display: flex; gap: 6px; margin: 0 10px 8px;
+}
+.col-menu-save input {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent; outline: none;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.col-menu-save button {
+  padding: 5px 10px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer;
+}
+.col-menu-save button:disabled { opacity: 0.5; cursor: default; }
+.col-menu-save button:not(:disabled):hover {
+  border-color: rgba(var(--v-theme-primary), 0.5);
+  color: rgb(var(--v-theme-primary));
+}
+.col-menu-search {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 10px 8px; padding: 6px 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.col-menu-search input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.col-menu-search-clear { display: flex; cursor: pointer; }
+/* Раздел колонок: при трёх десятках плоский список не читается. */
+.col-menu-group + .col-menu-group { margin-top: 6px; }
+.col-menu-group-title {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  padding: 6px 10px 4px;
+}
+.col-menu-empty {
+  padding: 10px; font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
 }
 .col-menu-item {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; border-radius: 8px; cursor: pointer;
   font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.85);
 }
 .col-menu-item:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+/* Строку, которую тащат, приглушаем — видно, что она «в руке». */
+.col-menu-item--dragging { opacity: 0.45; background: rgba(var(--v-theme-primary), 0.08); }
+.col-menu-grip {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: grab;
+}
+.col-menu-label {
+  display: flex; align-items: center; gap: 10px; flex: 1; cursor: pointer;
+}
 .col-menu-item input { width: 16px; height: 16px; accent-color: rgb(var(--v-theme-primary)); cursor: pointer; }
+
+/* Заголовок в момент перетаскивания. */
+.th-dragging { opacity: 0.45; }
+/* Цвет наценки — раньше стоял прямо на ячейке, теперь ячейка общая на все колонки. */
+.td-markup { color: #047857; }
+.td-overdue { color: #dc2626; font-weight: 600; }
+/* Комментарий бывает длинным: показываем одну строку, целиком — в подсказке. */
+.td-comment {
+  display: block; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Поручители идут списком: между ними воздух, иначе имена слипаются. */
+.td-guarantor + .td-guarantor { margin-top: 6px; }
+.td-phone-wa {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 6px;
+  color: #16a34a; background: rgba(37, 211, 102, 0.1);
+  cursor: pointer;
+}
+.td-phone-wa:hover { background: rgba(37, 211, 102, 0.2); }
 
 /* ── Тарифная блокировка сделок ── */
 .deal-card--locked { opacity: 0.72; }
@@ -2298,43 +3281,6 @@ async function refreshSelectedDeal(dealId: string) {
   background: rgb(var(--v-theme-surface));
 }
 
-/* ── Row action buttons ── */
-.row-actions {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.row-action-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.row-action-btn:hover {
-  border-color: rgba(var(--v-theme-on-surface), 0.1);
-}
-
-.row-action-btn--restore:hover {
-  background: rgba(4, 120, 87, 0.08);
-  border-color: rgba(4, 120, 87, 0.2);
-  color: #047857;
-}
-
-.row-action-btn--delete:hover {
-  background: rgba(239, 68, 68, 0.08);
-  border-color: rgba(239, 68, 68, 0.2);
-  color: #ef4444;
-}
-
 .select-bar-cancel {
   display: inline-flex;
   align-items: center;
@@ -2391,6 +3337,9 @@ async function refreshSelectedDeal(dealId: string) {
 .dialog-hero {
   position: relative;
   background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+  /* На зелёной подложке ссылка-имя должна быть белой, иначе сливается. */
+  --client-link-color: #fff;
+  --client-link-underline: rgba(255, 255, 255, 0.6);
   display: flex; gap: 16px; align-items: stretch;
   padding: 20px 24px;
   min-height: 160px;

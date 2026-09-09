@@ -1,3 +1,4 @@
+import { formatE164 } from './phone';
 export function formatCurrency(amount: number): string {
   const rounded = Math.round(amount);
   return rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' \u20BD';
@@ -20,26 +21,51 @@ export function formatPercent(value: number): string {
   return value.toFixed(1).replace('.0', '') + '%';
 }
 
-export function formatDate(dateString: string): string {
-  const date = new Date(dateString);
+/**
+ * Прочерк для незаполненных дат. Без него пустое значение превращалось в
+ * «1 января 1970 г.» (так JS трактует null) или в «Invalid Date»: у сделок,
+ * загруженных импортом, часть дат не заполнена — в файлах таких колонок нет.
+ */
+export const EMPTY_DATE = '—';
+
+function parseDate(value?: string | number | Date | null): Date | null {
+  // 0 — это не дата, а «пусто»: как строка-timestamp ноль дал бы 1970 год.
+  if (value === null || value === undefined || value === '' || value === 0) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+export function formatDate(dateString?: string | number | Date | null): string {
+  const date = parseDate(dateString);
+  if (!date) return EMPTY_DATE;
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
-export function formatDateShort(dateString: string): string {
-  const date = new Date(dateString);
+export function formatDateShort(dateString?: string | number | Date | null): string {
+  const date = parseDate(dateString);
+  if (!date) return EMPTY_DATE;
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 }
 
 export function formatPhone(phone: string): string {
-  const cleaned = phone.replace(/\D/g, '');
-  if (cleaned.length === 11) {
+  const raw = (phone || '').trim();
+  const cleaned = raw.replace(/\D/g, '');
+  // Российский номер показываем ровно как раньше — привычный вид не меняем.
+  // Ведущая «8» считается российской только без плюса: «+84912345678» — это
+  // Вьетнам, и выдавать его за московский номер нельзя.
+  const isRu =
+    cleaned.length === 11 && (cleaned.startsWith('7') || (!raw.startsWith('+') && cleaned.startsWith('8')));
+  if (isRu) {
     return `+7 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7, 9)}-${cleaned.slice(9)}`;
   }
+  // Иностранный — по маске его страны, иначе он читался бы сплошной цифрой.
+  if (raw.startsWith('+')) return formatE164(raw);
   return phone;
 }
 
 // ── Maska masks ──
 
+/** @deprecated Осталось для форм, которые ещё не перешли на PhoneField. */
 export const PHONE_MASK = '+7 (###) ###-##-##'
 
 export const CURRENCY_MASK = { number: { locale: 'ru-RU', fraction: 0, unsigned: true } }
@@ -54,9 +80,13 @@ export function formatMonths(months: number): string {
   return `${months} месяцев`;
 }
 
-export function timeAgo(dateString: string): string {
+export function timeAgo(dateString?: string | number | Date | null): string {
+  const date = parseDate(dateString);
+  // Пусто, а не прочерк: подписи вида «Удалена {{ timeAgo(...) }}» иначе
+  // читались бы как «Удалена —».
+  if (!date) return '';
   const now = Date.now();
-  const diff = now - new Date(dateString).getTime();
+  const diff = now - date.getTime();
   const minutes = Math.floor(diff / 60_000);
   const hours = Math.floor(diff / 3_600_000);
   const days = Math.floor(diff / 86_400_000);
@@ -66,5 +96,18 @@ export function timeAgo(dateString: string): string {
   if (hours < 24) return `${hours} ч назад`;
   if (days === 1) return 'Вчера';
   if (days < 7) return `${days} дн назад`;
-  return new Date(dateString).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+}
+
+/**
+ * Русская форма слова по числу: «1 платёж», «2 платежа», «5 платежей».
+ *
+ * Жила внутри страницы сделки, а нужна везде, где рядом с числом стоит слово.
+ */
+export function pluralizeRu(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return one
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few
+  return many
 }
