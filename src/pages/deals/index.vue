@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SearchInput from '@/components/SearchInput.vue'
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
@@ -8,6 +9,8 @@ import { type Deal, type DealFolder, type Payment, userName, clientProfileName }
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { PER_PAGE_OPTIONS, normalizePageSize, useListSort, usePageSize } from '@/composables/useListPrefs'
+import { useVirtualRows } from '@/composables/useVirtualRows'
 import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
@@ -450,8 +453,8 @@ const showDialog = ref(false)
 // Единое состояние сортировки: колонка + направление. Заголовки таблицы и
 // select «Сортировка» пишут в него; сетка тоже его использует.
 type SortDir = 'asc' | 'desc'
-const sortCol = ref<string>('createdAt')
-const sortDir = ref<SortDir>('desc')
+// Сортировка помнится между заходами — вместе с набором и порядком колонок.
+const { col: sortCol, dir: sortDir } = useListSort<string>('deals:table-sort', 'createdAt')
 // Совместимость со старым select «Сортировка» (маппинг на sortCol/sortDir).
 const sortBy = computed<string>({
   get() {
@@ -832,9 +835,8 @@ function dealTermLabel(deal: Deal): string {
 // Корзина осталась на клиенте: она мала, и её путь ниже не тронут.
 // ══════════════════════════════════════════════════════════════════
 
-const PER_PAGE_OPTIONS = [25, 50, 100, 200] // 200 — серверный максимум
 const page = ref(1)
-const perPage = ref(50)
+const perPage = usePageSize('deals:page-size')
 
 /** Ключи колонок → ключи сортировки сервера (DEALS_SORT_KEYS). */
 const SERVER_SORT_KEYS: Record<string, string> = {
@@ -949,7 +951,10 @@ function initFromQuery() {
 
   const t = int(q.tab, 0)
   tab.value = t >= 0 && t <= 3 ? t : 0
-  perPage.value = PER_PAGE_OPTIONS.includes(int(q.per, 50)) ? int(q.per, 50) : 50
+  // Размера в адресе может не быть — тогда остаётся выбор партнёра из
+  // прошлого захода, а не молчаливая полусотня.
+  const per = int(q.per, 0)
+  if (per > 0) perPage.value = normalizePageSize(per)
   page.value = int(q.page, 1)
   // Расширенные фильтры тоже живут в адресе: выборкой можно поделиться
   // ссылкой, и она переживает перезагрузку страницы.
@@ -986,7 +991,9 @@ watch(
     const q: Record<string, string> = {}
     if (tab.value) q.tab = String(tab.value)
     if (page.value > 1) q.page = String(page.value)
-    if (perPage.value !== 50) q.per = String(perPage.value)
+    // Размер пишем всегда: «полсотни по умолчанию» больше нет, а ссылка
+    // должна открывать ровно тот же вид, что видит отправитель.
+    q.per = String(perPage.value)
     if (debouncedSearch.value.trim()) q.q = debouncedSearch.value.trim()
     if (sortCol.value !== 'createdAt') q.sort = sortCol.value
     if (sortDir.value !== 'desc') q.dir = sortDir.value
@@ -1082,6 +1089,15 @@ watch(tab, (v) => {
   }
 })
 
+/**
+ * Виртуализация таблицы: в разметке живут только видимые строки.
+ *
+ * Строка сделки — это три десятка узлов и несколько компонентов Vuetify.
+ * Порция в тысячу строк давала 62 тысячи узлов и почти секунду на отрисовку,
+ * а дальше окно отвечало с задержкой на наведение и клик.
+ */
+const tableViewport = ref<HTMLElement | null>(null)
+
 const displayedDeals = computed(() => {
   // И обычные вкладки, и корзина: сервер уже отфильтровал, отсортировал и
   // нарезал страницу. Раньше корзина фильтровалась в браузере — она грузилась
@@ -1123,7 +1139,6 @@ const autoLoad = useAutoLoad({
   storageKey: 'deals:auto-load',
   hasMore,
   busy: listBusy,
-  loaded: loadedCount,
   loadMore: () => loadNextChunk(),
 })
 
@@ -1191,6 +1206,15 @@ watch(
 /** KPI считаются вместе со счётчиками: пока они в пути, показываем скелетон,
  *  а не старые цифры от предыдущей вкладки. */
 const statsBusy = computed(() => !isTrashTab.value && dealsStore.countsLoading)
+
+// Виртуализация таблицы: в разметке живут только видимые строки.
+const virtual = useVirtualRows(displayedDeals, { viewport: tableViewport, estimatedRowHeight: 56 })
+const markerRow = virtual.markerRow
+
+/** Колонок в строке — сколько занимать распоркам. */
+const columnCount = computed(
+  () => shownColumns.value.length + 1 + (selectMode.value ? 1 : 0) + (isTrashTab.value || !selectMode.value ? 1 : 0),
+)
 
 /** Сквозной номер строки: на 2-й странице по 50 счёт идёт с 51. */
 function rowNumber(idx: number): number {
@@ -1726,15 +1750,7 @@ async function refreshSelectedDeal(dealId: string) {
           </v-menu>
 
           <div class="d-flex flex-wrap ga-2 align-center">
-            <div class="filter-input-wrap" style="max-width: 620px; min-width: 380px; flex: 1 1 380px;">
-              <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-              <input
-                v-model="search"
-                type="text"
-                :placeholder="`Поиск по товару, клиенту, ${canSearchAddress ? 'адресу, ' : ''}номеру...`"
-                class="filter-input"
-              />
-            </div>
+            <SearchInput v-model="search" :placeholder="`Поиск по товару, клиенту, ${canSearchAddress ? 'адресу, ' : ''}номеру...`" style="max-width: 620px; min-width: 380px; flex: 1 1 380px;" />
 
             <!-- В табличном виде сортируют заголовки колонок; select — для сетки -->
             <v-select
@@ -1953,8 +1969,10 @@ async function refreshSelectedDeal(dealId: string) {
         </v-row>
 
         <!-- TABLE VIEW -->
+        <!-- Обёртка нужна виртуализации: по её положению на экране считается,
+             какие строки сейчас видны. -->
+        <div v-if="viewMode === 'table' && displayedDeals.length" ref="tableViewport">
         <v-table
-          v-if="viewMode === 'table' && displayedDeals.length"
           density="default"
           hover
           class="deals-table"
@@ -2003,9 +2021,21 @@ async function refreshSelectedDeal(dealId: string) {
             </tr>
           </thead>
           <tbody>
+            <!-- Верхняя распорка: место строк выше экрана и точка отсчёта
+                 списка — по ней считается, сколько прокручено до таблицы. -->
+            <tr ref="markerRow" class="virtual-pad" aria-hidden="true">
+              <!-- Высоту задаёт вложенный блок, а не сама ячейка: заданную
+                   высоту строки браузер в таблице не соблюдает — он
+                   перераспределяет её между строками, и на тысячах строк
+                   список разъезжался с прокруткой на сотни пикселей. -->
+              <td :colspan="columnCount"><div :style="{ height: virtual.padTop.value + 'px' }" /></td>
+            </tr>
+
             <tr
-              v-for="(deal, idx) in displayedDeals"
+              v-for="(deal, idx) in virtual.visibleRows.value"
               :key="deal.id"
+              :ref="virtual.rowRef(virtual.offset.value + idx)"
+              data-virtual-row
               class="cursor-pointer"
               :class="{ 'deal-row--locked': deal.locked, 'deal-row--returned': deal.id === highlightedDealId }"
               @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)"
@@ -2019,7 +2049,7 @@ async function refreshSelectedDeal(dealId: string) {
                 />
               </td>
               <!-- № п/п (перечисление, не номер договора) -->
-              <td class="td-index text-medium-emphasis">{{ rowNumber(idx) }}</td>
+              <td class="td-index text-medium-emphasis">{{ rowNumber(virtual.offset.value + idx) }}</td>
 
               <!-- Ячейки рисуются по текущему порядку колонок: партнёр
                    переставляет их сам, поэтому «зашить» последовательность в
@@ -2261,8 +2291,14 @@ async function refreshSelectedDeal(dealId: string) {
                 </div>
               </td>
             </tr>
+
+            <!-- Нижняя распорка: держит высоту неотрисованного хвоста. -->
+            <tr class="virtual-pad" aria-hidden="true">
+              <td :colspan="columnCount"><div :style="{ height: virtual.padBottom.value + 'px' }" /></td>
+            </tr>
           </tbody>
         </v-table>
+        </div>
 
         <!-- Empty state -->
         <div v-if="!displayedDeals.length" class="text-center pa-12">
@@ -2302,7 +2338,6 @@ async function refreshSelectedDeal(dealId: string) {
           :auto-load="autoLoad.enabled.value"
           :loaded="loadedCount"
           :has-more="hasMore"
-          :paused="autoLoad.paused.value"
           @update:page="page = $event"
           @update:per-page="perPage = $event"
           @update:auto-load="autoLoad.enabled.value = $event"
@@ -2586,6 +2621,27 @@ async function refreshSelectedDeal(dealId: string) {
 </template>
 
 <style scoped>
+
+/* Распорки виртуализации: занимают место неотрисованных строк и не должны
+   выглядеть как строка — ни рамки, ни подсветки при наведении. */
+/* Распорки виртуализации: держат место неотрисованных строк и сами строкой
+   выглядеть не должны.
+   `height: 0` обязателен: ячейкам таблицы Vuetify задаёт высоту строки, и
+   пустая распорка занимала бы 52 лишних пикселя — под шапкой висела пустая
+   полоса. Нужную высоту задаёт блок внутри ячейки.
+   `transition: none` тоже обязателен: Vuetify анимирует высоту ячеек, и
+   распорка меняла размер плавно — список продолжал ехать почти треть секунды
+   после каждого сдвига окна. */
+.virtual-pad td {
+  height: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  overflow-anchor: none;
+  transition: none !important;
+}
+.virtual-pad:hover td { background: transparent !important; }
+
 /* Плашки включённых фильтров над списком. */
 .active-filters {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -2762,6 +2818,14 @@ async function refreshSelectedDeal(dealId: string) {
 }
 
 /* Grid cards */
+/* Списки карточек бывают на тысячу элементов, а высота у них плавающая —
+   виртуализация здесь не подходит. Браузер сам пропускает отрисовку того,
+   что за экраном: карточка сделки в режиме сетки рисуется, когда до неё доходит прокрутка. */
+.deal-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
 .deal-card {
   border-radius: 12px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);

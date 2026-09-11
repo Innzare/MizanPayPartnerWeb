@@ -116,59 +116,68 @@
     </div>
 
     <!-- Entries list -->
-    <div v-else class="cfj-list">
-      <div
-        v-for="(group, i) in groupedByDate"
-        :key="i"
-        class="cfj-group"
-      >
-        <div class="cfj-group-date">{{ group.dateLabel }}</div>
-        <button
-          v-for="e in group.entries"
-          :key="e.id"
-          class="cfj-row"
-          :class="{ 'cfj-row--clickable': e.dealId, 'deal-locked-dim': isDealLocked({ dealNumber: e.dealNumber }) }"
-          @click="onRowClick(e)"
+    <div v-else ref="journalViewport" class="cfj-list">
+      <!-- Верхняя распорка: место записей выше экрана и точка отсчёта списка. -->
+      <div ref="markerRow" :style="{ height: virtual.padTop.value + 'px' }" aria-hidden="true" />
+
+      <template v-for="(row, idx) in virtual.visibleRows.value" :key="row.key">
+        <div
+          v-if="row.kind === 'date'"
+          :ref="virtual.rowRef(virtual.offset.value + idx)"
+          data-virtual-row
+          class="cfj-group-date"
         >
-          <div class="cfj-row-icon" :style="{ background: typeStyle(e.type).bg, color: typeStyle(e.type).fg }">
-            <v-icon :icon="typeStyle(e.type).icon" size="16" />
+          {{ row.label }}
+        </div>
+
+        <button
+          v-else
+          :ref="virtual.rowRef(virtual.offset.value + idx)"
+          data-virtual-row
+          class="cfj-row"
+          :class="{ 'cfj-row--clickable': row.entry.dealId, 'deal-locked-dim': isDealLocked({ dealNumber: row.entry.dealNumber }) }"
+          @click="onRowClick(row.entry)"
+        >
+          <div class="cfj-row-icon" :style="{ background: typeStyle(row.entry.type).bg, color: typeStyle(row.entry.type).fg }">
+            <v-icon :icon="typeStyle(row.entry.type).icon" size="16" />
           </div>
           <div class="cfj-row-main">
-            <div class="cfj-row-title">{{ e.note || typeStyle(e.type).label }}</div>
+            <div class="cfj-row-title">{{ row.entry.note || typeStyle(row.entry.type).label }}</div>
             <div class="cfj-row-meta">
-              <span class="cfj-row-type">{{ typeStyle(e.type).label }}</span>
-              <template v-if="e.dealNumber !== null">
+              <span class="cfj-row-type">{{ typeStyle(row.entry.type).label }}</span>
+              <template v-if="row.entry.dealNumber !== null">
                 <span class="cfj-row-dot">·</span>
-                <span class="cfj-row-deal">#{{ e.dealNumber }}</span>
-                <v-icon v-if="isDealLocked({ dealNumber: e.dealNumber })" icon="mdi-lock-outline" size="12" color="#b45309" class="ml-1" />
+                <span class="cfj-row-deal">#{{ row.entry.dealNumber }}</span>
+                <v-icon v-if="isDealLocked({ dealNumber: row.entry.dealNumber })" icon="mdi-lock-outline" size="12" color="#b45309" class="ml-1" />
               </template>
-              <template v-if="e.coInvestorName">
+              <template v-if="row.entry.coInvestorName">
                 <span class="cfj-row-dot">·</span>
-                <span>{{ e.coInvestorName }}</span>
+                <span>{{ row.entry.coInvestorName }}</span>
               </template>
               <span class="cfj-row-dot">·</span>
-              <span class="cfj-row-time">{{ formatTime(e.date) }}</span>
+              <span class="cfj-row-time">{{ formatTime(row.entry.date) }}</span>
             </div>
           </div>
-          <div class="cfj-row-amount" :class="{ 'cfj-row-amount--in': e.amount > 0, 'cfj-row-amount--out': e.amount < 0 }">
-            {{ e.amount > 0 ? '+' : '' }}{{ formatCurrency(e.amount) }}
+          <div class="cfj-row-amount" :class="{ 'cfj-row-amount--in': row.entry.amount > 0, 'cfj-row-amount--out': row.entry.amount < 0 }">
+            {{ row.entry.amount > 0 ? '+' : '' }}{{ formatCurrency(row.entry.amount) }}
           </div>
           <span
-            v-if="canCancelEntry(e)"
+            v-if="canCancelEntry(row.entry)"
             class="cfj-row-cancel"
-            :class="{ 'cfj-row-cancel--busy': cancellingId === e.id }"
+            :class="{ 'cfj-row-cancel--busy': cancellingId === row.entry.id }"
             role="button"
             tabindex="0"
             title="Отменить операцию"
-            @click.stop="cancelEntry(e)"
-            @keydown.enter.stop="cancelEntry(e)"
+            @click.stop="cancelEntry(row.entry)"
+            @keydown.enter.stop="cancelEntry(row.entry)"
           >
-            <v-progress-circular v-if="cancellingId === e.id" indeterminate size="13" width="2" />
+            <v-progress-circular v-if="cancellingId === row.entry.id" indeterminate size="13" width="2" />
             <v-icon v-else icon="mdi-undo" size="15" />
           </span>
         </button>
-      </div>
+      </template>
 
+      <div :style="{ height: virtual.padBottom.value + 'px' }" aria-hidden="true" />
     </div>
 
     <!-- Пагинация как в остальных разделах: страницы с прыжком по номеру,
@@ -185,7 +194,6 @@
       :auto-load="autoLoad.enabled.value"
       :loaded="entries.length"
       :has-more="hasMore"
-      :paused="autoLoad.paused.value"
       @update:page="page = $event"
       @update:per-page="perPage = $event"
       @update:auto-load="autoLoad.enabled.value = $event"
@@ -200,11 +208,13 @@ import { useRouter } from 'vue-router'
 import { useCashflow, type CashFlowEntry, type CashFlowEntryType } from '@/composables/useCashflow'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
+import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
 import { useDealLock } from '@/composables/useDealLock'
 import { useSections } from '@/composables/useSections'
 import { formatCurrency, formatCurrencyShort } from '@/utils/formatters'
 import ServerPager from '@/components/ServerPager.vue'
 import { useAutoLoad } from '@/composables/useAutoLoad'
+import { useVirtualRows } from '@/composables/useVirtualRows'
 
 const router = useRouter()
 const { isDealLocked } = useDealLock()
@@ -345,9 +355,8 @@ function onSearchInput() {
 }
 
 // ─── Постраничная загрузка ─────────────────────────────────────────────
-const PER_PAGE_OPTIONS = [25, 50, 100, 200]
 const page = ref(1)
-const perPage = ref(50)
+const perPage = usePageSize('cashflow:page-size')
 
 function currentFilters() {
   return {
@@ -391,7 +400,6 @@ const autoLoad = useAutoLoad({
   storageKey: 'cashflow-journal:auto-load',
   hasMore,
   busy: loading,
-  loaded: computed(() => entries.value.length),
   loadMore: () => load(true),
 })
 const autoLoadSentinel = autoLoad.sentinel
@@ -418,6 +426,33 @@ const totals = computed(() => {
 })
 
 interface DateGroup { dateLabel: string; entries: CashFlowEntry[] }
+/**
+ * Плоский список для виртуализации: заголовок дня и строки идут вперемешку.
+ *
+ * Вложенные группы виртуализировать нечем — рисовать по одной строке из
+ * группы не получится, а у крупного партнёра в журнале под тридцать тысяч
+ * записей.
+ */
+type JournalRow =
+  | { kind: 'date'; key: string; label: string }
+  | { kind: 'entry'; key: string; entry: CashFlowEntry }
+
+const journalRows = computed<JournalRow[]>(() => {
+  const out: JournalRow[] = []
+  for (const group of groupedByDate.value) {
+    out.push({ kind: 'date', key: `d:${group.dateLabel}`, label: group.dateLabel })
+    for (const e of group.entries) out.push({ kind: 'entry', key: e.id, entry: e })
+  }
+  return out
+})
+
+const journalViewport = ref<HTMLElement | null>(null)
+const virtual = useVirtualRows(journalRows, {
+  viewport: journalViewport,
+  estimatedRowHeight: 64,
+})
+const markerRow = virtual.markerRow
+
 const groupedByDate = computed<DateGroup[]>(() => {
   const groups: Map<string, CashFlowEntry[]> = new Map()
   for (const e of entries.value) {

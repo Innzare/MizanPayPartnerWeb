@@ -9,7 +9,7 @@
  * Прыжок по номеру обязателен: с сотней страниц добраться до 37-й кнопками
  * «вперёд» невозможно, а окно номеров показывает только соседние.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -28,12 +28,6 @@ const props = withDefaults(
     loaded?: number
     /** Есть ли что грузить дальше. */
     hasMore?: boolean
-    /**
-     * Автоподгрузка приостановлена после нескольких порций подряд: на слабой
-     * машине с двумя тысячами строк список начинает подтормаживать, поэтому
-     * дальше — только по кнопке.
-     */
-    paused?: boolean
   }>(),
   {
     busy: false,
@@ -41,7 +35,6 @@ const props = withDefaults(
     autoLoad: false,
     loaded: 0,
     hasMore: false,
-    paused: false,
   },
 )
 
@@ -78,8 +71,67 @@ function goToPage(p: number) {
   if (next === props.page) return
   emit('update:page', next)
   // Таблица длинная: после смены страницы читать начинают сверху.
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+  scrollToTop()
 }
+
+// ── Возврат к началу списка ──
+// На тысяче строк и при подгрузке по мере прокрутки дорога наверх занимает
+// десятки экранов. Панель прилипшая, поэтому кнопка всегда под рукой — и
+// появляется только когда действительно есть куда возвращаться.
+
+const root = ref<HTMLElement | null>(null)
+const scrolled = ref(false)
+
+/** Сколько нужно прокрутить, чтобы кнопка имела смысл. */
+const SHOW_AFTER_PX = 400
+
+/**
+ * Кто на самом деле прокручивается: окно или контейнер вокруг списка.
+ *
+ * Разделы устроены по-разному — где-то страница прокручивается целиком,
+ * где-то таблица живёт в своём блоке с прокруткой. Ищем ближайшего предка,
+ * который умеет прокручиваться по вертикали, и работаем с ним.
+ */
+function scrollParent(): HTMLElement | Window {
+  let el = root.value?.parentElement ?? null
+  // До <body> и <html> не доходим: прокрутку страницы слушает окно, а на сам
+  // элемент событие не приходит — кнопка просто не появлялась бы.
+  while (el && el !== document.body && el !== document.documentElement) {
+    const style = getComputedStyle(el)
+    const scrollable = /(auto|scroll|overlay)/.test(style.overflowY)
+    if (scrollable && el.scrollHeight > el.clientHeight + 1) return el
+    el = el.parentElement
+  }
+  return window
+}
+
+function currentOffset(target: HTMLElement | Window): number {
+  return target === window ? window.scrollY : (target as HTMLElement).scrollTop
+}
+
+function scrollToTop() {
+  const target = scrollParent()
+  // Плавно — но не тем, кто просил систему поменьше двигать картинку.
+  const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  target.scrollTo({ top: 0, behavior: calm ? 'auto' : 'smooth' })
+}
+
+let watched: HTMLElement | Window = window
+
+// Без откладывания на следующий кадр: обработчик читает одно число и
+// сравнивает его с порогом — дешевле, чем городить вокруг этого троттлинг,
+// и не зависит от того, рисует ли браузер кадры прямо сейчас.
+function onScroll() {
+  scrolled.value = currentOffset(watched) > SHOW_AFTER_PX
+}
+
+onMounted(() => {
+  watched = scrollParent()
+  watched.addEventListener('scroll', onScroll, { passive: true })
+  onScroll()
+})
+
+onBeforeUnmount(() => watched.removeEventListener('scroll', onScroll))
 
 // ── Активная страница как поле ввода ──
 // Отдельного блока «перейти к странице» нет: номер текущей страницы прямо в
@@ -140,7 +192,7 @@ function onJumpStep(delta: number) {
 </script>
 
 <template>
-  <div v-if="total > 0" class="sp-pager">
+  <div v-if="total > 0" ref="root" class="sp-pager">
     <div class="sp-info">
       <template v-if="autoLoad">
         Показано {{ loaded.toLocaleString('ru-RU') }} из {{ total.toLocaleString('ru-RU') }}
@@ -153,15 +205,9 @@ function onJumpStep(delta: number) {
     <!-- В режиме автоподгрузки номера страниц не нужны: список один длинный.
          Остаются кнопка ручной догрузки и размер порции. -->
     <div v-if="autoLoad" class="sp-nav">
-      <!-- Пауза объясняется словами: без подписи автоподгрузка выглядит
-           сломавшейся — она просто перестаёт работать посреди прокрутки. -->
-      <span v-if="hasMore && paused && !busy" class="sp-paused">
-        Список длинный — дальше по кнопке
-      </span>
       <button
         v-if="hasMore"
         class="sp-more"
-        :class="{ 'sp-more--accent': paused }"
         :disabled="busy"
         @click="emit('loadMore')"
       >
@@ -218,6 +264,19 @@ function onJumpStep(delta: number) {
     </div>
 
     <div class="sp-size">
+      <!-- Возврат к началу списка: на тысяче строк прокрутка наверх занимает
+           десятки экранов. Появляется, только когда есть куда возвращаться. -->
+      <button
+        v-if="scrolled"
+        type="button"
+        class="sp-top"
+        title="В начало списка"
+        @click="scrollToTop"
+      >
+        <v-icon icon="mdi-arrow-up" size="15" />
+        <span>Наверх</span>
+      </button>
+
       <!-- Переключатель режима: страницы или бесконечная лента. -->
       <label class="sp-auto" :title="autoLoad ? 'Списки грузятся порциями по мере прокрутки' : 'Включить подгрузку при прокрутке'">
         <input
@@ -247,6 +306,19 @@ function onJumpStep(delta: number) {
 </template>
 
 <style scoped>
+.sp-top {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 30px; padding: 0 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.18); border-radius: 8px;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.75);
+  font-size: 12.5px; cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.sp-top:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  border-color: rgba(var(--v-theme-on-surface), 0.3);
+}
+
 .sp-auto {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6);
@@ -277,11 +349,6 @@ function onJumpStep(delta: number) {
   background: rgba(var(--v-theme-primary), 0.08);
   color: rgb(var(--v-theme-primary));
 }
-.sp-paused {
-  font-size: 12.5px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-
 .sp-done { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.4); }
 
 .sp-pager {

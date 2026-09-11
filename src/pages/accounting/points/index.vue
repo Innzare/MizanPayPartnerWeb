@@ -10,6 +10,7 @@
  *
  * Ниже — инкассация: рейсы по этим же пунктам. Отдельного раздела у неё нет.
  */
+import SearchInput from '@/components/SearchInput.vue'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
@@ -215,15 +216,7 @@ function openPoint(p: PointRow) {
           </button>
         </div>
         <div class="d-flex align-center ga-2 flex-grow-1 justify-end">
-          <div class="filter-input-wrap" style="max-width: 520px; min-width: 300px; flex: 1 1 300px;">
-            <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-            <input
-              v-model="search"
-              type="text"
-              placeholder="Поиск по названию, адресу или оператору"
-              class="filter-input"
-            />
-          </div>
+          <SearchInput v-model="search" placeholder="Поиск по названию, адресу или оператору" style="max-width: 520px; min-width: 300px; flex: 1 1 300px;" />
         </div>
       </div>
 

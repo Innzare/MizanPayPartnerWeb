@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import SearchInput from '@/components/SearchInput.vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { dateToIso } from '@/utils/dateInput'
@@ -595,15 +596,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
         <div class="pa-4">
           <!-- Header row -->
           <div class="d-flex align-center ga-3 mb-4 flex-wrap ci-toolbar">
-            <div class="filter-input-wrap ci-toolbar-search" style="max-width: 360px;">
-              <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-              <input
-                v-model="search"
-                type="text"
-                placeholder="Поиск по имени или телефону..."
-                class="filter-input"
-              />
-            </div>
+            <SearchInput v-model="search" placeholder="Поиск по имени или телефону..." class="ci-toolbar-search" style="max-width: 360px;" />
             <v-spacer />
             <div class="text-caption text-medium-emphasis mr-2">
               {{ filteredPersons.length }} из {{ persons.length }}
@@ -797,10 +790,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
       <v-card v-else rounded="lg" elevation="0" border>
         <div class="pa-4">
           <div class="d-flex align-center ga-3 mb-4 flex-wrap ci-toolbar">
-            <div class="filter-input-wrap" style="max-width: 360px;">
-              <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-              <input v-model="search" type="text" placeholder="Поиск по имени или телефону..." class="filter-input" />
-            </div>
+            <SearchInput v-model="search" placeholder="Поиск по имени или телефону..." style="max-width: 360px;" />
             <v-spacer />
             <div class="text-caption text-medium-emphasis mr-2">
               {{ filteredPersons.length }} из {{ persons.length }}

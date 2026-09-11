@@ -11,12 +11,15 @@
  * Оформление — общее для разделов сервиса: KPI-плитки stats-row/stat-card,
  * поиск filter-input, кнопки fb-btn, таблица в карточке и ServerPager.
  */
+import SearchInput from '@/components/SearchInput.vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
+import { useVirtualRows } from '@/composables/useVirtualRows'
 import ServerPager from '@/components/ServerPager.vue'
 import { useAutoLoad } from '@/composables/useAutoLoad'
 import { formatCurrency, formatPhone } from '@/utils/formatters'
@@ -56,18 +59,23 @@ const router = useRouter()
 const { isDark } = useIsDark()
 
 const items = ref<GuarantorRow[]>([])
+
+// Виртуализация: поручителей у крупного партнёра тысячи, а строка списка —
+// это ещё и вложенные блоки с именем и подписью.
+const tableViewport = ref<HTMLElement | null>(null)
+const virtual = useVirtualRows(items, { viewport: tableViewport, estimatedRowHeight: 56 })
+const markerRow = virtual.markerRow
 const totals = ref<Totals | null>(null)
 const mutual = ref<MutualPair[]>([])
 const loading = ref(false)
 
 const q = ref('')
 const onlyOverdue = ref(false)
-const sort = ref('totalExposure')
+const { col: sort, dir: sortDir } = useListSort<string>('guarantors:table-sort', 'totalExposure')
 const dir = ref<'asc' | 'desc'>('desc')
 /** Страницы считаются от единицы: этого ждёт общий ServerPager. */
 const page = ref(1)
-const perPage = ref(50)
-const PER_PAGE_OPTIONS = [25, 50, 100, 200]
+const perPage = usePageSize('guarantors:page-size')
 
 const COLUMNS: Array<{ key: string; title: string; sortable?: boolean; align?: 'end' }> = [
   { key: 'name', title: 'Поручитель', sortable: true },
@@ -287,15 +295,7 @@ onMounted(() => {
         </button>
       </div>
       <div class="d-flex align-center ga-2 flex-grow-1 justify-end">
-        <div class="filter-input-wrap" style="max-width: 620px; min-width: 320px; flex: 1 1 320px;">
-          <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-          <input
-            v-model="q"
-            type="text"
-            placeholder="Поиск по имени или телефону"
-            class="filter-input"
-          />
-        </div>
+        <SearchInput v-model="q" placeholder="Поиск по имени или телефону" style="max-width: 620px; min-width: 320px; flex: 1 1 320px;" />
       </div>
     </div>
 
@@ -314,6 +314,8 @@ onMounted(() => {
         </div>
 
         <template v-else>
+          <!-- Обёртка для виртуализации: от её положения отсчитывается список. -->
+          <div ref="tableViewport">
           <v-table density="default" hover class="gp-table">
             <thead>
               <tr>
@@ -339,9 +341,16 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
+              <!-- Верхняя распорка: место строк выше экрана и точка отсчёта списка. -->
+              <tr ref="markerRow" class="virtual-pad" aria-hidden="true">
+                <td :colspan="COLUMNS.length + 1"><div :style="{ height: virtual.padTop.value + 'px' }" /></td>
+              </tr>
+
               <tr
-                v-for="r in items"
+                v-for="(r, idx) in virtual.visibleRows.value"
                 :key="r.id"
+                :ref="virtual.rowRef(virtual.offset.value + idx)"
+                data-virtual-row
                 class="cursor-pointer"
                 @click="router.push(`/clients/${r.id}`)"
               >
@@ -368,8 +377,12 @@ onMounted(() => {
                 </td>
                 <td class="text-end gp-strong">{{ formatCurrency(r.totalExposure) }}</td>
               </tr>
+              <tr class="virtual-pad" aria-hidden="true">
+                <td :colspan="COLUMNS.length + 1"><div :style="{ height: virtual.padBottom.value + 'px' }" /></td>
+              </tr>
             </tbody>
           </v-table>
+          </div>
 
           <!-- Метка конца списка для автоподгрузки. -->
           <div v-if="autoLoad.enabled.value" ref="autoLoadSentinel" class="auto-load-sentinel" />
@@ -384,7 +397,6 @@ onMounted(() => {
             :auto-load="autoLoad.enabled.value"
             :loaded="loadedCount"
             :has-more="hasMore"
-            :paused="autoLoad.paused.value"
             @update:page="page = $event"
             @update:per-page="perPage = $event"
             @update:auto-load="autoLoad.enabled.value = $event"
@@ -459,6 +471,19 @@ onMounted(() => {
 </template>
 
 <style scoped>
+
+/* Распорки виртуализации — см. комментарий в разделе сделок: высота задаётся
+   блоком внутри ячейки, а собственную высоту и анимацию ячейки снимаем. */
+.virtual-pad td {
+  height: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  overflow-anchor: none;
+  transition: none !important;
+}
+.virtual-pad:hover td { background: transparent !important; }
+
 /* ── KPI-плитки: канонический блок разделов (см. pages/deals/index.vue) ── */
 .stats-row {
   display: grid;

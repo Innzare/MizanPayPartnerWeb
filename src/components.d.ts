@@ -93,6 +93,7 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     RouteSheetFormDialog: typeof import('./components/RouteSheetFormDialog.vue')['default']
     RouteSheetsPanel: typeof import('./components/suppliers/RouteSheetsPanel.vue')['default']
+    SearchInput: typeof import('./components/SearchInput.vue')['default']
     SelectField: typeof import('./components/SelectField.vue')['default']
     ServerPager: typeof import('./components/ServerPager.vue')['default']
     SubscriptionStatusBanner: typeof import('./components/SubscriptionStatusBanner.vue')['default']

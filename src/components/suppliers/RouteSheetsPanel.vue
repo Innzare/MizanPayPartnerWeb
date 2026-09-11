@@ -109,6 +109,9 @@ onMounted(reload)
             <div class="sup-search">
               <v-icon icon="mdi-magnify" size="18" />
               <input v-model="search" type="text" placeholder="Поиск по номеру, сотруднику, заметке…" />
+              <button v-if="search" type="button" class="sup-search-clear" title="Очистить" @click="search = ''">
+                <v-icon icon="mdi-close" size="14" />
+              </button>
             </div>
             <v-btn v-if="canManage" class="mz-btn-text" color="primary" variant="flat" rounded="lg" prepend-icon="mdi-plus" @click="formOpen = true">Сформировать</v-btn>
           </div>
@@ -184,6 +187,17 @@ onMounted(reload)
 .sup-chip:hover { border-color: rgba(var(--v-theme-on-surface), 0.2); }
 .sup-chip.active { border-color: rgba(4,120,87,0.5); color: #047857; font-weight: 600; background: rgba(4,120,87,0.06); }
 .sup-search { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12); min-width: 360px; color: rgba(var(--v-theme-on-surface), 0.6); }
+/* Крестик очистки — как в остальных списках сервиса. */
+.sup-search-clear {
+  width: 22px; height: 22px; flex: none; border: none; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer;
+}
+.sup-search-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
 .sup-search input { flex: 1; border: none; background: none; outline: none; color: inherit; font-size: 14px; }
 @media (max-width: 600px) { .sup-search { min-width: 0; width: 100%; } }
 

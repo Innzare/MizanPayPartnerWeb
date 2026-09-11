@@ -67,6 +67,41 @@
         </div>
       </div>
 
+      <!-- Номера договоров из файла. Партнёр ищет сделку по номеру со своей
+           бумаги — здесь видно, у скольких он совпадёт. -->
+      <div v-if="contractNumbers && contractNumbers.rows > 0" class="contract-banner mb-4">
+        <div class="contract-banner-icon">
+          <v-icon icon="mdi-pound" size="20" />
+        </div>
+        <div class="contract-banner-body">
+          <div class="contract-banner-title">
+            {{ contractNumbers.applied }}
+            {{ pluralize(contractNumbers.applied, 'сделка получит', 'сделки получат', 'сделок получат') }}
+            номер из файла
+          </div>
+          <div class="contract-banner-sub">
+            Номер договора из таблицы становится номером сделки в системе — тем же,
+            что печатается в договоре. У существующих сделок номер не меняется.
+          </div>
+          <div v-if="contractNumbers.conflicts > 0" class="contract-warn">
+            <v-icon icon="mdi-alert-outline" size="15" />
+            <span>
+              У {{ contractNumbers.conflicts }}
+              {{ pluralize(contractNumbers.conflicts, 'строки', 'строк', 'строк') }}
+              номер уже занят другой сделкой — она получит следующий свободный.
+            </span>
+          </div>
+          <div v-if="contractNumbers.nonNumeric > 0" class="contract-warn">
+            <v-icon icon="mdi-alert-outline" size="15" />
+            <span>
+              У {{ contractNumbers.nonNumeric }}
+              {{ pluralize(contractNumbers.nonNumeric, 'строки', 'строк', 'строк') }}
+              номер записан не числом — такие сделки получат номер по порядку.
+            </span>
+          </div>
+        </div>
+      </div>
+
       <!-- Скидки в файле. Показываем до импорта: из-за них часть договоров
            закроется сразу, и партнёр должен видеть, сколько именно, прежде
            чем соглашаться. -->
@@ -566,6 +601,9 @@ const cashBoxLabel = computed(() => {
 const scaleReport = computed(() => draft.value?.stats?.unitScale)
 /** Сводка по скидкам из файла — считается сервером вместе с остальной статистикой. */
 const discounts = computed(() => draft.value?.stats?.discounts)
+
+/** Номера договоров из файла — сколько сделок получат номер из таблицы партнёра. */
+const contractNumbers = computed(() => draft.value?.stats?.contractNumbers)
 
 /**
  * Скидка уменьшает доход по сделке, а значит и долю со-инвесторов кассы.
@@ -1280,6 +1318,32 @@ watch(() => route.params.id, (id) => {
 
 <style scoped>
 /* Скидки в файле — синий, а не жёлтый: это не проблема, а важная информация. */
+.contract-banner {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 16px 18px; border-radius: 12px;
+  background: rgba(4, 120, 87, 0.06);
+  border: 1px solid rgba(4, 120, 87, 0.22);
+}
+.contract-banner-icon {
+  width: 38px; height: 38px; min-width: 38px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 120, 87, 0.12); color: #047857;
+}
+.contract-banner-body { flex: 1; min-width: 0; }
+.contract-banner-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.contract-banner-sub {
+  font-size: 13px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.contract-warn {
+  display: flex; align-items: flex-start; gap: 7px;
+  margin-top: 12px; padding: 9px 11px; border-radius: 9px;
+  background: rgba(245, 158, 11, 0.10);
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  font-size: 12.5px; line-height: 1.45;
+}
+
 .discount-banner {
   display: flex; align-items: flex-start; gap: 14px;
   padding: 16px 18px; border-radius: 12px;

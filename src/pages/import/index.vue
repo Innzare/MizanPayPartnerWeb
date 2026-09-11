@@ -84,7 +84,7 @@
                 <v-icon icon="mdi-file-delimited-outline" size="13" />
                 .csv
               </span>
-              <span class="upload-formats-note">до 10 МБ</span>
+              <span class="upload-formats-note">до 20 МБ</span>
             </div>
           </template>
           <input
@@ -346,8 +346,8 @@ async function handleFile(file: File) {
     uploadError.value = 'Допустимы только .xlsx, .xls или .csv'
     return
   }
-  if (file.size > 10 * 1024 * 1024) {
-    uploadError.value = 'Файл больше 10 МБ'
+  if (file.size > 20 * 1024 * 1024) {
+    uploadError.value = 'Файл больше 20 МБ'
     return
   }
 

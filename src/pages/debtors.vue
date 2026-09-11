@@ -11,6 +11,8 @@ import { useIsMobile } from '@/composables/useIsMobile'
 import { formatCurrency, formatDateShort } from '@/utils/formatters'
 import ServerPager from '@/components/ServerPager.vue'
 import { useAutoLoad } from '@/composables/useAutoLoad'
+import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
+import { useVirtualRows } from '@/composables/useVirtualRows'
 import { useDebtorsFilters } from '@/composables/useDebtorsFilters'
 import DebtorsFilterPanel from '@/components/DebtorsFilterPanel.vue'
 import { api } from '@/api/client'
@@ -91,24 +93,60 @@ function bindTableScroll() {
   updateScrollShadow()
 }
 
-// ── Настраиваемые колонки таблицы (как на странице сделок) ──
-interface Col { key: string; label: string; align: 'start' | 'end' | 'center'; sortable: boolean }
-const ALL_COLUMNS: Col[] = [
-  { key: 'dealNumber', label: '№', align: 'start', sortable: true },
-  { key: 'client', label: 'Клиент', align: 'start', sortable: true },
-  { key: 'product', label: 'Товар', align: 'start', sortable: true },
-  { key: 'overdueAmount', label: 'Сумма просрочки', align: 'end', sortable: true },
-  { key: 'overdueCount', label: 'Просрочек', align: 'center', sortable: true },
-  { key: 'overdueDays', label: 'Дней просрочки', align: 'end', sortable: true },
-  { key: 'remaining', label: 'Остаток', align: 'end', sortable: true },
-  { key: 'nextPayment', label: 'Следующий платёж', align: 'end', sortable: true },
-  { key: 'promised', label: 'Обещал оплатить', align: 'end', sortable: true },
-  { key: 'assignedStaff', label: 'Ответственный', align: 'start', sortable: true },
-  { key: 'lastActivity', label: 'Последний контакт', align: 'start', sortable: true },
-  { key: 'status', label: 'Статус', align: 'start', sortable: true },
-  { key: 'total', label: 'Сумма договора', align: 'end', sortable: true },
-  { key: 'progress', label: 'Прогресс', align: 'center', sortable: true },
+// ── Настраиваемые колонки таблицы ──
+/**
+ * Колонка таблицы. Оформление ячейки описано здесь, а не в разметке: ячейки
+ * рисуются циклом по текущему порядку колонок, и «прибить» классы к месту в
+ * шаблоне больше нельзя.
+ */
+interface Col {
+  key: string
+  label: string
+  align: 'start' | 'end' | 'center'
+  sortable: boolean
+  tdClass?: string
+  tdStyle?: string
+  /** Раздел в меню выбора: плоский список из двух десятков колонок неудобен. */
+  group: ColGroup
+}
+
+type ColGroup = 'debtor' | 'overdue' | 'payments' | 'work'
+
+const COLUMN_GROUPS: { key: ColGroup; label: string }[] = [
+  { key: 'debtor', label: 'Должник' },
+  { key: 'overdue', label: 'Просрочка' },
+  { key: 'payments', label: 'Платежи' },
+  { key: 'work', label: 'Работа с должником' },
 ]
+
+const ALL_COLUMNS: Col[] = [
+  // ── Должник ──
+  { key: 'dealNumber', label: '№', align: 'start', sortable: true, group: 'debtor', tdClass: 'text-start text-no-wrap' },
+  { key: 'client', label: 'Клиент', align: 'start', sortable: true, group: 'debtor', tdStyle: 'min-width: 220px;' },
+  { key: 'clientPhone', label: 'Телефон', align: 'start', sortable: false, group: 'debtor', tdClass: 'text-no-wrap' },
+  { key: 'product', label: 'Товар', align: 'start', sortable: true, group: 'debtor' },
+  { key: 'status', label: 'Статус договора', align: 'start', sortable: true, group: 'debtor', tdClass: 'text-start text-no-wrap' },
+  { key: 'total', label: 'Сумма договора', align: 'end', sortable: true, group: 'debtor', tdClass: 'text-end text-no-wrap' },
+
+  // ── Просрочка ──
+  { key: 'overdueAmount', label: 'Сумма просрочки', align: 'end', sortable: true, group: 'overdue', tdClass: 'text-end text-no-wrap font-weight-bold' },
+  { key: 'overdueCount', label: 'Просрочек', align: 'center', sortable: true, group: 'overdue', tdClass: 'text-center text-no-wrap' },
+  { key: 'overdueDays', label: 'Дней просрочки', align: 'end', sortable: true, group: 'overdue', tdClass: 'text-end text-no-wrap' },
+  { key: 'remaining', label: 'Остаток долга', align: 'end', sortable: true, group: 'overdue', tdClass: 'text-end text-no-wrap text-medium-emphasis' },
+
+  // ── Платежи ──
+  { key: 'nextPayment', label: 'Следующий платёж', align: 'end', sortable: true, group: 'payments', tdClass: 'text-end text-no-wrap' },
+  { key: 'paymentsProgress', label: 'Платежей оплачено', align: 'center', sortable: false, group: 'payments', tdClass: 'text-center text-no-wrap' },
+  { key: 'progress', label: 'Прогресс', align: 'center', sortable: true, group: 'payments', tdClass: 'text-center', tdStyle: 'min-width: 130px;' },
+
+  // ── Работа с должником ──
+  { key: 'assignedStaff', label: 'Ответственный', align: 'start', sortable: true, group: 'work', tdClass: 'text-start text-no-wrap' },
+  { key: 'promised', label: 'Обещал оплатить', align: 'end', sortable: true, group: 'work', tdClass: 'text-end text-no-wrap' },
+  { key: 'promisedAmount', label: 'Обещанная сумма', align: 'end', sortable: false, group: 'work', tdClass: 'text-end text-no-wrap' },
+  { key: 'lastActivity', label: 'Последний контакт', align: 'start', sortable: true, group: 'work', tdClass: 'text-start text-no-wrap' },
+  { key: 'lastActivityText', label: 'Что было в контакте', align: 'start', sortable: false, group: 'work', tdStyle: 'min-width: 220px;' },
+]
+
 const DEFAULT_VISIBLE = ['dealNumber', 'client', 'overdueAmount', 'overdueCount', 'overdueDays', 'nextPayment', 'promised', 'assignedStaff']
 const COLS_STORAGE_KEY = 'debtors:table-columns'
 
@@ -116,8 +154,12 @@ function loadVisibleCols(): Record<string, boolean> {
   const base: Record<string, boolean> = {}
   for (const c of ALL_COLUMNS) base[c.key] = DEFAULT_VISIBLE.includes(c.key)
   try {
-    const saved = localStorage.getItem(COLS_STORAGE_KEY)
-    if (saved) Object.assign(base, JSON.parse(saved))
+    const saved = JSON.parse(localStorage.getItem(COLS_STORAGE_KEY) || 'null')
+    if (saved && typeof saved === 'object') {
+      // Только известные ключи: набор колонок со временем меняется, и мусор из
+      // старой версии не должен ломать таблицу.
+      for (const c of ALL_COLUMNS) if (typeof saved[c.key] === 'boolean') base[c.key] = saved[c.key]
+    }
   } catch { /* ignore */ }
   return base
 }
@@ -125,15 +167,199 @@ const visibleCols = ref<Record<string, boolean>>(loadVisibleCols())
 watch(visibleCols, (v) => {
   try { localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(v)) } catch { /* ignore */ }
 }, { deep: true })
-const shownColumns = computed(() => ALL_COLUMNS.filter((c) => visibleCols.value[c.key]))
-function isColVisible(key: string) { return visibleCols.value[key] }
+
+// ── Порядок колонок ──
+// Одному важнее дни просрочки, другому — обещания. Порядок настраивается
+// перетаскиванием и хранится рядом с набором колонок.
+const COLS_ORDER_KEY = 'debtors:table-column-order'
+const DEFAULT_ORDER = ALL_COLUMNS.map((c) => c.key)
+
+function loadColumnOrder(): string[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLS_ORDER_KEY) || 'null')
+    if (Array.isArray(saved)) {
+      const known = saved.filter((k: unknown): k is string => typeof k === 'string' && DEFAULT_ORDER.includes(k))
+      // Колонки, появившиеся после сохранения порядка, встают на своё место из
+      // умолчания, а не сваливаются в конец.
+      DEFAULT_ORDER.forEach((key) => {
+        if (known.includes(key)) return
+        const at = DEFAULT_ORDER.indexOf(key)
+        const prev = DEFAULT_ORDER.slice(0, at).reverse().find((k) => known.includes(k))
+        known.splice(prev ? known.indexOf(prev) + 1 : 0, 0, key)
+      })
+      return known
+    }
+  } catch { /* ignore */ }
+  return [...DEFAULT_ORDER]
+}
+const columnOrder = ref<string[]>(loadColumnOrder())
+watch(columnOrder, (v) => {
+  try { localStorage.setItem(COLS_ORDER_KEY, JSON.stringify(v)) } catch { /* ignore */ }
+}, { deep: true })
+
+/** Все колонки в пользовательском порядке — для меню настройки. */
+const orderedColumns = computed(
+  () => columnOrder.value.map((k) => ALL_COLUMNS.find((c) => c.key === k)).filter(Boolean) as Col[],
+)
+/** Те же, но только включённые — по ним рисуется таблица. */
+const shownColumns = computed(() => orderedColumns.value.filter((c) => visibleCols.value[c.key]))
 function toggleColumn(key: string) { visibleCols.value[key] = !visibleCols.value[key] }
 
+// ── Поиск и наборы колонок ──
+const colSearch = ref('')
+
+/** Колонки для меню: в пользовательском порядке, отфильтрованные поиском. */
+const menuColumns = computed(() => {
+  const q = colSearch.value.trim().toLowerCase()
+  const list = orderedColumns.value
+  return q ? list.filter((c) => c.label.toLowerCase().includes(q)) : list
+})
+
+/** Колонки меню по разделам. Пустые разделы не показываем. */
+const menuGroups = computed(() =>
+  COLUMN_GROUPS.map((g) => ({
+    ...g,
+    columns: menuColumns.value.filter((c) => c.group === g.key),
+  })).filter((g) => g.columns.length),
+)
+
+/** Готовые наборы под частые задачи. */
+const COLUMN_PRESETS: { key: string; label: string; columns: string[] }[] = [
+  { key: 'min', label: 'Минимум', columns: ['dealNumber', 'client', 'overdueAmount', 'overdueDays'] },
+  {
+    key: 'calls',
+    label: 'Для обзвона',
+    columns: ['dealNumber', 'client', 'clientPhone', 'overdueAmount', 'overdueDays', 'promised', 'lastActivityText'],
+  },
+  {
+    key: 'money',
+    label: 'Деньги',
+    columns: ['dealNumber', 'client', 'total', 'remaining', 'overdueAmount', 'nextPayment', 'progress'],
+  },
+  {
+    key: 'work',
+    label: 'Работа с должником',
+    columns: ['dealNumber', 'client', 'assignedStaff', 'promised', 'promisedAmount', 'lastActivity', 'lastActivityText'],
+  },
+  { key: 'full', label: 'Полный', columns: ALL_COLUMNS.map((c) => c.key) },
+]
+
+// ── Свои наборы колонок ──
+// Готовых не хватает: у каждого партнёра свой привычный набор. Хранятся в
+// браузере — это личная привычка, а не настройка компании.
+const COL_PRESETS_KEY = 'debtors:column-presets'
+const savedColPresets = ref<Array<{ id: string; name: string; columns: string[]; order: string[] }>>(
+  loadColPresets(),
+)
+const colPresetName = ref('')
+
+function loadColPresets(): Array<{ id: string; name: string; columns: string[]; order: string[] }> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COL_PRESETS_KEY) || 'null')
+    if (!raw || !Array.isArray(raw.items)) return []
+    return raw.items.filter((x: any) => x && typeof x.name === 'string' && Array.isArray(x.columns))
+  } catch {
+    return []
+  }
+}
+
+function persistColPresets() {
+  try {
+    localStorage.setItem(COL_PRESETS_KEY, JSON.stringify({ v: 1, items: savedColPresets.value }))
+  } catch { /* ignore */ }
+}
+
+function saveColPreset() {
+  const name = colPresetName.value.trim()
+  if (!name) return
+  const columns = shownColumns.value.map((c) => c.key)
+  const order = columnOrder.value.slice()
+  const existing = savedColPresets.value.find((p) => p.name.toLowerCase() === name.toLowerCase())
+  if (existing) Object.assign(existing, { columns, order })
+  else savedColPresets.value.push({ id: `c${Date.now()}`, name, columns, order })
+  persistColPresets()
+  colPresetName.value = ''
+}
+
+function applySavedColPreset(p: { columns: string[]; order: string[] }) {
+  const next: Record<string, boolean> = {}
+  ALL_COLUMNS.forEach((c) => { next[c.key] = p.columns.includes(c.key) })
+  visibleCols.value = next
+  // Незнакомые ключи из старого набора отбрасываем, пропавшие — дописываем.
+  const known = p.order.filter((k) => DEFAULT_ORDER.includes(k))
+  columnOrder.value = [...known, ...DEFAULT_ORDER.filter((k) => !known.includes(k))]
+}
+
+function removeColPreset(p: { id: string; name: string }) {
+  if (!confirm(`Удалить набор колонок «${p.name}»?`)) return
+  savedColPresets.value = savedColPresets.value.filter((x) => x.id !== p.id)
+  persistColPresets()
+}
+
+function applyColumnPreset(preset: { columns: string[] }) {
+  const next: Record<string, boolean> = {}
+  ALL_COLUMNS.forEach((c) => { next[c.key] = preset.columns.includes(c.key) })
+  visibleCols.value = next
+  // Порядок ставим как в наборе, остальные — следом: иначе «Для обзвона»
+  // показал бы нужные колонки в случайных местах таблицы.
+  const rest = DEFAULT_ORDER.filter((k) => !preset.columns.includes(k))
+  columnOrder.value = [...preset.columns.filter((k) => DEFAULT_ORDER.includes(k)), ...rest]
+}
+
+function resetColumns() {
+  columnOrder.value = [...DEFAULT_ORDER]
+  const base: Record<string, boolean> = {}
+  ALL_COLUMNS.forEach((c) => { base[c.key] = DEFAULT_VISIBLE.includes(c.key) })
+  visibleCols.value = base
+}
+
+// ── Перетаскивание колонок ──
+// Тащить можно и строку в меню, и сам заголовок в таблице — состояние одно.
+const dragColKey = ref<string | null>(null)
+
+function moveColumn(fromKey: string, toKey: string) {
+  if (fromKey === toKey) return
+  const next = columnOrder.value.slice()
+  const from = next.indexOf(fromKey)
+  const to = next.indexOf(toKey)
+  if (from < 0 || to < 0) return
+  const [moved] = next.splice(from, 1)
+  if (!moved) return
+  next.splice(to, 0, moved)
+  columnOrder.value = next
+}
+
+function onColDragStart(key: string, e: DragEvent) {
+  dragColKey.value = key
+  // Без данных Firefox не начинает перетаскивание вовсе.
+  e.dataTransfer?.setData('text/plain', key)
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+/** Переставляем прямо во время перетаскивания — видно, куда встанет колонка. */
+function onColDragOver(key: string, e: DragEvent) {
+  e.preventDefault()
+  if (!dragColKey.value || dragColKey.value === key) return
+  moveColumn(dragColKey.value, key)
+}
+// Отпустили колонку — сортировку не трогаем: у части браузеров следом за
+// перетаскиванием прилетает обычный клик по заголовку.
+let justDraggedCol = false
+function onColDragEnd() {
+  dragColKey.value = null
+  justDraggedCol = true
+  setTimeout(() => { justDraggedCol = false }, 0)
+}
+
 // ── Сортировка ──
-const sortCol = ref('overdueDays')
-const sortDir = ref<'asc' | 'desc'>('desc')
+// Сортировка запоминается наравне с колонками: партнёр настроил список под
+// себя, ушёл в сделку и вернулся — порядок должен быть тем же.
+const { col: sortCol, dir: sortDir } = useListSort<string>('debtors:table-sort', 'overdueDays')
+/** Текстовые колонки логичнее сортировать по возрастанию — от «А». */
 const TEXT_COLS = new Set(['client', 'product', 'assignedStaff'])
+
 function toggleSort(key: string) {
+  // Отпустили колонку после перетаскивания — это не клик по сортировке.
+  if (dragColKey.value || justDraggedCol) return
   if (sortCol.value === key) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
   } else {
@@ -182,15 +408,20 @@ const assigneeFilterLabel = computed(() => {
 // на каждый заход в раздел.
 // ══════════════════════════════════════════════════════════════════
 
-const PER_PAGE_OPTIONS = [25, 50, 100, 200]
 const PAGE_SIZE_KEY = 'debtors:page-size'
-const perPage = ref(Number(localStorage.getItem(PAGE_SIZE_KEY)) || 50)
+const perPage = usePageSize(PAGE_SIZE_KEY)
 const page = ref(1)
-watch(perPage, (v) => {
-  try { localStorage.setItem(PAGE_SIZE_KEY, String(v)) } catch { /* ignore */ }
-})
 
 const displayedRows = computed(() => (isArchive.value ? store.archiveRows : store.rows))
+
+// Виртуализация: в разметке живут только видимые строки — иначе тысяча
+// должников по два десятка колонок кладёт страницу ещё до первого клика.
+const tableViewport = ref<HTMLElement | null>(null)
+const virtual = useVirtualRows(displayedRows, { viewport: tableViewport, estimatedRowHeight: 56 })
+const markerRow = virtual.markerRow
+
+/** Колонок в строке — сколько занимать распоркам. */
+const columnCount = computed(() => shownColumns.value.length + 2 + (selectMode.value ? 1 : 0))
 const totalRows = computed(() => (isArchive.value ? store.archiveTotal : store.total))
 const listLoading = computed(() => (isArchive.value ? store.archiveLoading : store.loading))
 
@@ -627,11 +858,78 @@ onUnmounted(() => {
                 </button>
               </template>
               <div class="col-menu">
-                <div class="col-menu-title">Колонки таблицы</div>
-                <label v-for="c in ALL_COLUMNS" :key="c.key" class="col-menu-item">
-                  <input type="checkbox" :checked="visibleCols[c.key]" @change="toggleColumn(c.key)" />
-                  <span>{{ c.label }}</span>
-                </label>
+                <div class="col-menu-head">
+                  <span class="col-menu-title">Колонки таблицы</span>
+                  <button class="col-menu-reset" @click="resetColumns">Сбросить</button>
+                </div>
+
+                <!-- Готовые наборы под частые задачи: обзвон, деньги, работа. -->
+                <div class="col-menu-presets">
+                  <button
+                    v-for="p in COLUMN_PRESETS"
+                    :key="p.key"
+                    type="button"
+                    class="col-menu-preset"
+                    @click="applyColumnPreset(p)"
+                  >{{ p.label }}</button>
+                </div>
+
+                <!-- Свои наборы: сохранённый состав и порядок колонок. -->
+                <div v-if="savedColPresets.length" class="col-menu-presets col-menu-presets--own">
+                  <span v-for="p in savedColPresets" :key="p.id" class="col-menu-own">
+                    <button type="button" class="col-menu-own-apply" @click="applySavedColPreset(p)">
+                      {{ p.name }}
+                    </button>
+                    <button type="button" class="col-menu-own-del" title="Удалить набор" @click="removeColPreset(p)">
+                      <v-icon icon="mdi-close" size="11" />
+                    </button>
+                  </span>
+                </div>
+
+                <div class="col-menu-save">
+                  <input
+                    v-model="colPresetName"
+                    type="text"
+                    placeholder="Сохранить набор как…"
+                    @keyup.enter="saveColPreset"
+                  />
+                  <button :disabled="!colPresetName.trim()" @click="saveColPreset">Сохранить</button>
+                </div>
+
+                <div class="col-menu-search">
+                  <v-icon icon="mdi-magnify" size="15" />
+                  <input v-model="colSearch" type="text" placeholder="Найти колонку" />
+                  <button v-if="colSearch" class="col-menu-search-clear" @click="colSearch = ''">
+                    <v-icon icon="mdi-close" size="13" />
+                  </button>
+                </div>
+
+                <div class="col-menu-hint">
+                  Потяните за <v-icon icon="mdi-drag-horizontal-variant" size="13" />, чтобы поменять порядок
+                </div>
+
+                <div v-for="g in menuGroups" :key="g.key" class="col-menu-group">
+                  <div class="col-menu-group-title">{{ g.label }}</div>
+                  <div
+                    v-for="c in g.columns"
+                    :key="c.key"
+                    class="col-menu-item"
+                    :class="{ 'col-menu-item--dragging': dragColKey === c.key }"
+                    draggable="true"
+                    @dragstart="onColDragStart(c.key, $event)"
+                    @dragover="onColDragOver(c.key, $event)"
+                    @dragend="onColDragEnd"
+                    @drop.prevent="onColDragEnd"
+                  >
+                    <v-icon icon="mdi-drag-horizontal-variant" size="16" class="col-menu-grip" />
+                    <label class="col-menu-label">
+                      <input type="checkbox" :checked="visibleCols[c.key]" @change="toggleColumn(c.key)" />
+                      <span>{{ c.label }}</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div v-if="!menuGroups.length" class="col-menu-empty">Ничего не найдено</div>
               </div>
             </v-menu>
 
@@ -703,6 +1001,9 @@ onUnmounted(() => {
             <div class="dbt-search">
               <v-icon icon="mdi-magnify" size="18" />
               <input v-model="search" type="text" :placeholder="`Поиск по клиенту, товару${canSearchAddress ? ', адресу' : ''}, номеру…`" />
+              <button v-if="search" type="button" class="dbt-search-clear" title="Очистить" @click="search = ''">
+                <v-icon icon="mdi-close" size="14" />
+              </button>
             </div>
             <!-- Включить режим выбора (скрыт по умолчанию — как на сделках) -->
             <button v-if="canAssign && !isArchive && !selectMode" class="fb-btn" title="Выбрать сделки" @click="selectMode = true">
@@ -770,8 +1071,10 @@ onUnmounted(() => {
           <button type="button" class="af-clear" @click="filters.reset()">Сбросить всё</button>
         </div>
 
+        <!-- Обёртка для виртуализации: по её положению считается, какие
+             строки сейчас видны. -->
+        <div v-else-if="displayedRows.length" ref="tableViewport">
         <v-table
-          v-else-if="displayedRows.length"
           density="default"
           hover
           class="dbt-table"
@@ -792,8 +1095,16 @@ onUnmounted(() => {
               <th
                 v-for="c in shownColumns"
                 :key="c.key"
-                :class="[`text-${c.align === 'end' ? 'end' : c.align === 'center' ? 'center' : 'start'}`, { 'th-sortable': c.sortable, 'th-sorted': sortCol === c.key }]"
+                draggable="true"
+                :class="[
+                  `text-${c.align === 'end' ? 'end' : c.align === 'center' ? 'center' : 'start'}`,
+                  { 'th-sortable': c.sortable, 'th-sorted': sortCol === c.key, 'th-dragging': dragColKey === c.key },
+                ]"
                 @click="c.sortable && toggleSort(c.key)"
+                @dragstart="onColDragStart(c.key, $event)"
+                @dragover="onColDragOver(c.key, $event)"
+                @dragend="onColDragEnd"
+                @drop.prevent="onColDragEnd"
               >
                 <span class="th-inner">
                   {{ c.label }}
@@ -811,7 +1122,16 @@ onUnmounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, idx) in displayedRows" :key="row.dealId" class="cursor-pointer" :class="{ 'dbt-row--sel': isRowSelected(row.dealId) }" @click="selectMode ? toggleSelect(row.dealId) : openRow(row)">
+            <!-- Верхняя распорка: место строк выше экрана и точка отсчёта списка. -->
+            <tr ref="markerRow" class="virtual-pad" aria-hidden="true">
+              <!-- Высоту задаёт вложенный блок, а не сама ячейка: заданную
+                   высоту строки браузер в таблице не соблюдает — он
+                   перераспределяет её между строками, и на тысячах строк
+                   список разъезжался с прокруткой на сотни пикселей. -->
+              <td :colspan="columnCount"><div :style="{ height: virtual.padTop.value + 'px' }" /></td>
+            </tr>
+
+            <tr v-for="(row, idx) in virtual.visibleRows.value" :key="row.dealId" :ref="virtual.rowRef(virtual.offset.value + idx)" data-virtual-row class="cursor-pointer" :class="{ 'dbt-row--sel': isRowSelected(row.dealId) }" @click="selectMode ? toggleSelect(row.dealId) : openRow(row)">
               <td v-if="selectMode" @click.stop>
                 <v-checkbox-btn
                   :model-value="isRowSelected(row.dealId)"
@@ -820,80 +1140,118 @@ onUnmounted(() => {
                   @update:model-value="toggleSelect(row.dealId)"
                 />
               </td>
-              <td class="td-index text-medium-emphasis">{{ (page - 1) * perPage + idx + 1 }}</td>
+              <td class="td-index text-medium-emphasis">{{ (page - 1) * perPage + virtual.offset.value + idx + 1 }}</td>
 
-              <td v-if="isColVisible('dealNumber')" class="text-start text-no-wrap"><span class="dbt-deal-num">#{{ row.dealNumber }}</span></td>
+              <!-- Ячейки рисуются циклом по текущему порядку колонок: партнёр
+                   переставляет их перетаскиванием, и порядок в разметке уже
+                   ничего не определяет. -->
+              <td
+                v-for="c in shownColumns"
+                :key="c.key"
+                :class="c.tdClass"
+                :style="[c.tdStyle, c.key === 'overdueAmount' && row.overdueAmount ? 'color: #ef4444;' : '']"
+              >
+                <template v-if="c.key === 'dealNumber'">
+                  <span class="dbt-deal-num">#{{ row.dealNumber }}</span>
+                </template>
 
-              <td v-if="isColVisible('client')" style="min-width: 220px;">
-                <div>
+                <template v-else-if="c.key === 'client'">
                   <div class="text-no-wrap font-weight-medium">
                     <ClientLink :profile-id="row.clientProfileId" :name="row.clientName" :disabled="selectMode" />
                   </div>
                   <div v-if="row.clientPhone" class="dbt-phone text-no-wrap">{{ row.clientPhone }}</div>
-                </div>
-              </td>
-
-              <td v-if="isColVisible('product')">
-                <span class="dbt-product">{{ row.productName }}</span>
-              </td>
-
-              <td v-if="isColVisible('overdueAmount')" class="text-end text-no-wrap font-weight-bold" :style="row.overdueAmount ? 'color: #ef4444;' : ''">
-                <span v-if="row.overdueAmount">{{ formatCurrency(row.overdueAmount) }}</span>
-                <span v-else class="text-medium-emphasis">—</span>
-              </td>
-              <td v-if="isColVisible('overdueCount')" class="text-center text-no-wrap">{{ row.overdueCount || '—' }}</td>
-              <td v-if="isColVisible('overdueDays')" class="text-end text-no-wrap">
-                <span v-if="row.overdueDays" class="dbt-days">{{ daysLabel(row.overdueDays) }}</span>
-                <span v-else class="text-medium-emphasis">—</span>
-              </td>
-              <td v-if="isColVisible('remaining')" class="text-end text-no-wrap text-medium-emphasis">{{ formatCurrency(row.remainingAmount) }}</td>
-
-              <td v-if="isColVisible('nextPayment')" class="text-end text-no-wrap">
-                <template v-if="row.nextDueDate">
-                  <div>{{ fmtDate(row.nextDueDate) }}</div>
-                  <div class="dbt-sub">{{ formatCurrency(row.nextDueAmount) }}</div>
                 </template>
-                <template v-else>—</template>
-              </td>
 
-              <td v-if="isColVisible('promised')" class="text-end text-no-wrap">
-                <template v-if="row.promisedDate">
-                  <div>{{ fmtDate(row.promisedDate) }}</div>
-                  <span v-if="row.promiseStatus && row.promiseStatus !== 'PENDING'" class="dbt-ps" :class="PROMISE_STATUS_META[row.promiseStatus].cls">
-                    {{ PROMISE_STATUS_META[row.promiseStatus].label }}
+                <template v-else-if="c.key === 'clientPhone'">
+                  <span v-if="row.clientPhone">{{ row.clientPhone }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <template v-else-if="c.key === 'product'">
+                  <span class="dbt-product">{{ row.productName }}</span>
+                </template>
+
+                <template v-else-if="c.key === 'status'">
+                  <span class="dbt-dealstatus" :class="'dbt-dealstatus--' + row.dealStatus.toLowerCase()">
+                    {{ DEAL_STATUS_LABEL[row.dealStatus] || row.dealStatus }}
                   </span>
+                  <div v-if="row.resolvedAt" class="dbt-sub">{{ fmtDate(row.resolvedAt) }}</div>
                 </template>
-                <span v-else class="text-medium-emphasis">—</span>
-              </td>
 
-              <td v-if="isColVisible('assignedStaff')" class="text-start text-no-wrap">
-                <span v-if="row.assignedStaffName" class="dbt-staff">{{ row.assignedStaffName }}</span>
-                <span v-else class="dbt-unassigned">Не назначен</span>
-              </td>
+                <template v-else-if="c.key === 'total'">{{ formatCurrency(row.totalPrice) }}</template>
 
-              <td v-if="isColVisible('lastActivity')" class="text-start text-no-wrap">
-                <span v-if="row.lastActivityAt">{{ fmtDate(row.lastActivityAt) }}</span>
-                <span v-else class="text-medium-emphasis">—</span>
-              </td>
+                <template v-else-if="c.key === 'overdueAmount'">
+                  <span v-if="row.overdueAmount">{{ formatCurrency(row.overdueAmount) }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
 
-              <td v-if="isColVisible('status')" class="text-start text-no-wrap">
-                <span class="dbt-dealstatus" :class="'dbt-dealstatus--' + row.dealStatus.toLowerCase()">{{ DEAL_STATUS_LABEL[row.dealStatus] || row.dealStatus }}</span>
-                <div v-if="row.resolvedAt" class="dbt-sub">{{ fmtDate(row.resolvedAt) }}</div>
-              </td>
+                <template v-else-if="c.key === 'overdueCount'">{{ row.overdueCount || '—' }}</template>
 
-              <td v-if="isColVisible('total')" class="text-end text-no-wrap">{{ formatCurrency(row.totalPrice) }}</td>
+                <template v-else-if="c.key === 'overdueDays'">
+                  <span v-if="row.overdueDays" class="dbt-days">{{ daysLabel(row.overdueDays) }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
 
-              <td v-if="isColVisible('progress')" class="text-center" style="min-width: 130px;">
-                <div class="d-flex align-center ga-2">
-                  <v-progress-linear
-                    :model-value="row.numberOfPayments ? (row.paidPayments / row.numberOfPayments) * 100 : 0"
-                    color="primary"
-                    rounded
-                    height="4"
-                    style="width: 70px;"
-                  />
-                  <span class="text-caption text-medium-emphasis">{{ row.paidPayments }}/{{ row.numberOfPayments }}</span>
-                </div>
+                <template v-else-if="c.key === 'remaining'">{{ formatCurrency(row.remainingAmount) }}</template>
+
+                <template v-else-if="c.key === 'nextPayment'">
+                  <template v-if="row.nextDueDate">
+                    <div>{{ fmtDate(row.nextDueDate) }}</div>
+                    <div class="dbt-sub">{{ formatCurrency(row.nextDueAmount) }}</div>
+                  </template>
+                  <template v-else>—</template>
+                </template>
+
+                <template v-else-if="c.key === 'paymentsProgress'">
+                  {{ row.paidPayments }} из {{ row.numberOfPayments }}
+                </template>
+
+                <template v-else-if="c.key === 'progress'">
+                  <div class="d-flex align-center ga-2">
+                    <v-progress-linear
+                      :model-value="row.numberOfPayments ? (row.paidPayments / row.numberOfPayments) * 100 : 0"
+                      color="primary"
+                      rounded
+                      height="4"
+                      style="width: 70px;"
+                    />
+                    <span class="text-caption text-medium-emphasis">{{ row.paidPayments }}/{{ row.numberOfPayments }}</span>
+                  </div>
+                </template>
+
+                <template v-else-if="c.key === 'assignedStaff'">
+                  <span v-if="row.assignedStaffName" class="dbt-staff">{{ row.assignedStaffName }}</span>
+                  <span v-else class="dbt-unassigned">Не назначен</span>
+                </template>
+
+                <template v-else-if="c.key === 'promised'">
+                  <template v-if="row.promisedDate">
+                    <div>{{ fmtDate(row.promisedDate) }}</div>
+                    <span
+                      v-if="row.promiseStatus && row.promiseStatus !== 'PENDING'"
+                      class="dbt-ps"
+                      :class="PROMISE_STATUS_META[row.promiseStatus].cls"
+                    >
+                      {{ PROMISE_STATUS_META[row.promiseStatus].label }}
+                    </span>
+                  </template>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <template v-else-if="c.key === 'promisedAmount'">
+                  <span v-if="row.promisedAmount">{{ formatCurrency(row.promisedAmount) }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <template v-else-if="c.key === 'lastActivity'">
+                  <span v-if="row.lastActivityAt">{{ fmtDate(row.lastActivityAt) }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <template v-else-if="c.key === 'lastActivityText'">
+                  <span v-if="row.lastActivityText" class="dbt-lastact">{{ row.lastActivityText }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
               </td>
 
               <td v-if="!selectMode" class="text-end text-no-wrap col-actions" @click.stop>
@@ -920,8 +1278,12 @@ onUnmounted(() => {
                 </div>
               </td>
             </tr>
+            <tr class="virtual-pad" aria-hidden="true">
+              <td :colspan="columnCount"><div :style="{ height: virtual.padBottom.value + 'px' }" /></td>
+            </tr>
           </tbody>
         </v-table>
+        </div>
 
         <!-- Пусто -->
         <div v-else class="text-center pa-12">
@@ -947,7 +1309,6 @@ onUnmounted(() => {
           :auto-load="autoLoad.enabled.value"
           :loaded="loadedCount"
           :has-more="hasMore"
-          :paused="autoLoad.paused.value"
           @update:page="page = $event"
           @update:per-page="perPage = $event"
           @update:auto-load="autoLoad.enabled.value = $event"
@@ -1180,6 +1541,27 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+
+/* Распорки виртуализации: держат место неотрисованных строк и сами строкой
+   выглядеть не должны. */
+/* Распорки виртуализации: держат место неотрисованных строк и сами строкой
+   выглядеть не должны.
+   `height: 0` обязателен: ячейкам таблицы Vuetify задаёт высоту строки, и
+   пустая распорка занимала бы 52 лишних пикселя — под шапкой висела пустая
+   полоса. Нужную высоту задаёт блок внутри ячейки.
+   `transition: none` тоже обязателен: Vuetify анимирует высоту ячеек, и
+   распорка меняла размер плавно — список продолжал ехать почти треть секунды
+   после каждого сдвига окна. */
+.virtual-pad td {
+  height: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  overflow-anchor: none;
+  transition: none !important;
+}
+.virtual-pad:hover td { background: transparent !important; }
+
 /* Плашки включённых фильтров над списком. */
 .active-filters {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -1306,15 +1688,120 @@ onUnmounted(() => {
 .ps--superseded { background: rgba(148, 163, 184, 0.18); color: #64748b; }
 
 /* Меню колонок */
+/* Меню колонок — тот же вид, что в списке сделок: разделы, поиск, наборы и
+   перетаскивание. Разные экраны с одинаковой задачей не должны настраиваться
+   по-разному. */
 .col-menu {
-  background: rgb(var(--v-theme-surface)); border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  border-radius: 12px; padding: 8px; min-width: 220px; max-height: 380px; overflow-y: auto;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px; padding: 8px; min-width: 220px;
+  max-height: 380px; overflow-y: auto;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
 }
-.col-menu-title { font-size: 11px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase; color: rgba(var(--v-theme-on-surface), 0.45); padding: 6px 10px 8px; }
-.col-menu-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.85); }
+.col-menu-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 10px 2px;
+}
+.col-menu-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.col-menu-reset {
+  font-size: 11.5px; color: rgb(var(--v-theme-primary));
+  padding: 2px 6px; border-radius: 6px; cursor: pointer;
+}
+.col-menu-reset:hover { background: rgba(var(--v-theme-primary), 0.1); }
+.col-menu-hint {
+  display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.45);
+  padding: 0 10px 8px;
+}
+.col-menu-presets {
+  display: flex; gap: 5px; flex-wrap: wrap;
+  padding: 0 10px 8px;
+}
+.col-menu-preset {
+  padding: 4px 9px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.12s;
+}
+.col-menu-preset:hover { border-color: rgba(var(--v-theme-primary), 0.5); color: rgb(var(--v-theme-primary)); }
+.col-menu-presets--own { padding-top: 2px; }
+.col-menu-own {
+  display: inline-flex; align-items: center;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.07);
+  border-radius: 7px; overflow: hidden;
+}
+.col-menu-own-apply {
+  padding: 4px 6px 4px 9px; font-size: 11.5px; font-weight: 500;
+  color: rgb(var(--v-theme-primary)); cursor: pointer;
+}
+.col-menu-own-del { padding: 4px 6px; color: rgba(var(--v-theme-primary), 0.6); cursor: pointer; }
+.col-menu-own-del:hover { color: #dc2626; }
+.col-menu-save {
+  display: flex; gap: 6px; margin: 0 10px 8px;
+}
+.col-menu-save input {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent; outline: none;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.col-menu-save button {
+  padding: 5px 10px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer;
+}
+.col-menu-save button:disabled { opacity: 0.5; cursor: default; }
+.col-menu-save button:not(:disabled):hover {
+  border-color: rgba(var(--v-theme-primary), 0.5);
+  color: rgb(var(--v-theme-primary));
+}
+.col-menu-search {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 10px 8px; padding: 6px 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.col-menu-search input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.col-menu-search-clear { display: flex; cursor: pointer; }
+/* Раздел колонок: при трёх десятках плоский список не читается. */
+.col-menu-group + .col-menu-group { margin-top: 6px; }
+.col-menu-group-title {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  padding: 6px 10px 4px;
+}
+.col-menu-empty {
+  padding: 10px; font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.col-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
 .col-menu-item:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+/* Строку, которую тащат, приглушаем — видно, что она «в руке». */
+.col-menu-item--dragging { opacity: 0.45; background: rgba(var(--v-theme-primary), 0.08); }
+.col-menu-grip {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: grab;
+}
+.col-menu-label {
+  display: flex; align-items: center; gap: 10px; flex: 1; cursor: pointer;
+}
 .col-menu-item input { width: 16px; height: 16px; accent-color: rgb(var(--v-theme-primary)); cursor: pointer; }
+
+/* Заголовок в момент перетаскивания. */
+.th-dragging { opacity: 0.45; }
 
 /* Поиск */
 .dbt-search {
@@ -1325,6 +1812,18 @@ onUnmounted(() => {
   flex: 1 1 340px; min-width: 300px; max-width: 460px;
   background: rgb(var(--v-theme-surface));
   color: rgba(var(--v-theme-on-surface), 0.6);
+}
+/* Крестик очистки: вернуть полный список одним нажатием, а не стирать
+   запрос по букве. */
+.dbt-search-clear {
+  width: 22px; height: 22px; flex: none; border: none; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer;
+}
+.dbt-search-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.75);
 }
 .dbt-search input { flex: 1; border: none; background: none; outline: none; color: inherit; font-size: 14px; }
 
@@ -1344,6 +1843,13 @@ onUnmounted(() => {
 .dbt-table th.text-end .th-inner { flex-direction: row-reverse; }
 
 .dbt-deal-num { font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.7); }
+/* Текст последнего контакта — длинный, поэтому в одну строку с обрезкой:
+   иначе колонка растягивает всю таблицу. Полностью виден в карточке должника. */
+.dbt-lastact {
+  display: block; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
 .dbt-phone { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
 .dbt-product { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; display: inline-block; vertical-align: bottom; }
 .dbt-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); }

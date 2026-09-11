@@ -170,7 +170,12 @@ function dateStr(iso: string) {
         <div class="rp-block-sub">{{ totals.count }} · сделки, выданные в выбранном периоде</div>
       </div>
       <div class="d-flex align-center ga-2 flex-wrap">
-        <input v-model="search" class="rt-search" placeholder="Товар или клиент…" >
+        <div class="rt-search-wrap">
+          <input v-model="search" class="rt-search" placeholder="Товар или клиент…" >
+          <button v-if="search" type="button" class="rt-search-wrap-clear" title="Очистить" @click="search = ''">
+            <v-icon icon="mdi-close" size="14" />
+          </button>
+        </div>
         <button
           class="rt-chip"
           :class="{ 'rt-chip--active': overdueOnly }"
@@ -406,6 +411,20 @@ function dateStr(iso: string) {
   border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
   background: transparent; color: rgb(var(--v-theme-on-surface));
   font-size: 13px; min-width: 180px;
+}
+/* Поле с крестиком: обёртка нужна, чтобы позиционировать кнопку внутри поля. */
+.rt-search-wrap { position: relative; display: inline-flex; align-items: center; }
+.rt-search-wrap .rt-search { padding-right: 30px; }
+.rt-search-wrap-clear {
+  position: absolute; right: 5px;
+  width: 22px; height: 22px; border: none; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer;
+}
+.rt-search-wrap-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.75);
 }
 .rt-chip {
   display: inline-flex; align-items: center; gap: 5px;

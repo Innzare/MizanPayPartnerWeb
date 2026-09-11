@@ -11,20 +11,6 @@
  */
 import { computed, onUnmounted, ref, watch, type Ref } from 'vue'
 
-/**
- * После скольких строк автоподгрузка просит подтверждения.
- *
- * Тысяча строк по четырнадцать колонок — это уже десятки тысяч ячеек, и на
- * слабой машине список начинает подтормаживать. Порог считается в строках, а
- * не в порциях: при порции по 20 строк прежний счёт останавливал подгрузку
- * уже на двухстах строках, а при порции по 100 — только на тысяче.
- *
- * Пауза срабатывает ОДИН раз за выборку: партнёр, нажавший «Загрузить ещё»,
- * уже ответил, что готов ждать, и переспрашивать его на каждой следующей
- * тысяче — то самое «подгрузка сама по себе перестала работать».
- */
-const MAX_AUTO_ROWS = 1000
-
 export function useAutoLoad(options: {
   /** Ключ хранения настройки, например `deals:auto-load`. */
   storageKey: string
@@ -32,25 +18,12 @@ export function useAutoLoad(options: {
   hasMore: Ref<boolean>
   /** Идёт ли запрос сейчас. */
   busy: Ref<boolean>
-  /** Сколько строк уже показано — по ним считается порог паузы. */
-  loaded?: Ref<number>
   /** Загрузить следующую порцию. */
   loadMore: () => void | Promise<void>
 }) {
   const enabled = ref(loadEnabled(options.storageKey))
   /** Сколько порций подряд подгрузилось само — на случай, если строк не знаем. */
   const autoBatches = ref(0)
-  /** Партнёр подтвердил кнопкой, что готов грузить дальше. */
-  const confirmed = ref(false)
-
-  /** Сколько строк уже на экране: из страницы, иначе по числу порций. */
-  const loadedRows = computed(() =>
-    options.loaded ? options.loaded.value : autoBatches.value * 50,
-  )
-
-  /** Пауза: список стал длинным, дальше — по кнопке. */
-  const paused = computed(() => !confirmed.value && loadedRows.value >= MAX_AUTO_ROWS)
-
   watch(enabled, (v) => {
     try { localStorage.setItem(options.storageKey, v ? '1' : '0') } catch { /* ignore */ }
     autoBatches.value = 0
@@ -72,7 +45,6 @@ export function useAutoLoad(options: {
   function shouldLoad(): boolean {
     return (
       enabled.value &&
-      !paused.value &&
       !inFlight &&
       !options.busy.value &&
       options.hasMore.value
@@ -160,7 +132,7 @@ export function useAutoLoad(options: {
   })
 
   /**
-   * Ручная догрузка снимает паузу: партнёр подтвердил, что готов ждать.
+   * Догрузка по кнопке — для тех, кто не включил подгрузку при прокрутке.
    *
    * Пока порция грузится, повторные нажатия игнорируются: по кнопке жмут
    * несколько раз подряд, и каждый клик уходил отдельным запросом — сервер
@@ -168,8 +140,6 @@ export function useAutoLoad(options: {
    */
   function loadMoreManually() {
     if (inFlight || options.busy.value || !options.hasMore.value) return
-    // Нажали кнопку — значит согласны листать дальше: больше не тормозим.
-    confirmed.value = true
     autoBatches.value = 0
     inFlight = true
     void Promise.resolve(options.loadMore()).finally(() => {
@@ -177,13 +147,12 @@ export function useAutoLoad(options: {
     })
   }
 
-  /** Смена фильтров — новая выборка, и подтверждение спрашиваем заново. */
+  /** Смена фильтров — новая выборка, счёт порций начинается заново. */
   function reset() {
     autoBatches.value = 0
-    confirmed.value = false
   }
 
-  return { enabled, paused, sentinel, loadMoreManually, reset }
+  return { enabled, sentinel, loadMoreManually, reset }
 }
 
 function loadEnabled(key: string): boolean {

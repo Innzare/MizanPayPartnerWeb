@@ -80,7 +80,7 @@ export const chTools: HelpChapter = {
         {
           kind: 'steps',
           items: [
-            { title: 'Загрузите файл', text: 'Форматы .xlsx, .xls, .csv, размер до 10 МБ.' },
+            { title: 'Загрузите файл', text: 'Форматы .xlsx, .xls, .csv, размер до 20 МБ.' },
             {
               title: 'Проверьте в редакторе',
               text:

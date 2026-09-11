@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import SearchInput from '@/components/SearchInput.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import { usePaymentsStore } from '@/stores/payments'
@@ -9,6 +10,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
 import { useAutoLoad } from '@/composables/useAutoLoad'
+import { useVirtualRows } from '@/composables/useVirtualRows'
 import { useIsDark } from '@/composables/useIsDark'
 import { useClientCities } from '@/composables/useClientCities'
 import { useToast } from '@/composables/useToast'
@@ -237,6 +239,15 @@ const filteredClients = computed(() => rows.value)
 // ── Автоподгрузка ────────────────────────────────────────────────────
 const hasMore = computed(() => rows.value.length < total.value)
 
+// Виртуализация списка: у крупного партнёра клиентов под девять тысяч, а
+// карточка — это ещё и раскрывающийся блок со сделками.
+const listViewport = ref<HTMLElement | null>(null)
+const virtual = useVirtualRows(filteredClients, {
+  viewport: listViewport,
+  estimatedRowHeight: 72,
+})
+const markerRow = virtual.markerRow
+
 const autoLoad = useAutoLoad({
   storageKey: 'clients:auto-load',
   hasMore,
@@ -432,15 +443,7 @@ const selectedDealPaidTotal = computed(() =>
       <div class="pa-4">
         <!-- Search -->
         <div class="clients-search-row">
-          <div class="filter-input-wrap clients-search-input">
-            <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-            <input
-              v-model="search"
-              type="text"
-              placeholder="Поиск по имени, городу, адресу, телефону..."
-              class="filter-input"
-            />
-          </div>
+          <SearchInput v-model="search" placeholder="Поиск по имени, городу, адресу, телефону..." class="clients-search-input" />
           <!-- Фильтр по городу: список наполняется фактическими городами
                партнёра, поэтому пустых пунктов в нём не бывает. -->
           <v-select
@@ -491,10 +494,17 @@ const selectedDealPaidTotal = computed(() =>
         </div>
 
         <!-- Client list -->
-        <div v-if="filteredClients.length" class="clients-list">
+        <div v-if="filteredClients.length" ref="listViewport" class="clients-list">
+          <!-- Верхняя распорка: место карточек выше экрана и точка отсчёта
+               списка. Карточки раскрываются, поэтому высоты у них разные —
+               виртуализация меряет каждую и держит их в своей карте. -->
+          <div ref="markerRow" :style="{ height: virtual.padTop.value + 'px' }" aria-hidden="true" />
+
           <div
-            v-for="client in filteredClients"
+            v-for="(client, idx) in virtual.visibleRows.value"
             :key="client.key"
+            :ref="virtual.rowRef(virtual.offset.value + idx)"
+            data-virtual-row
             class="client-card"
             :class="{ 'client-card--expanded': isExpanded(client.key) }"
           >
@@ -672,6 +682,8 @@ const selectedDealPaidTotal = computed(() =>
               </div>
             </v-expand-transition>
           </div>
+
+          <div :style="{ height: virtual.padBottom.value + 'px' }" aria-hidden="true" />
         </div>
 
         <!-- Empty state -->
@@ -696,7 +708,6 @@ const selectedDealPaidTotal = computed(() =>
           :auto-load="autoLoad.enabled.value"
           :loaded="rows.length"
           :has-more="hasMore"
-          :paused="autoLoad.paused.value"
           @update:page="page = $event"
           @update:auto-load="autoLoad.enabled.value = $event"
           @load-more="autoLoad.loadMoreManually()"

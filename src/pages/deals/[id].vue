@@ -630,7 +630,11 @@ const extraPaymentsCount = computed(() => {
 
 const uncoveredByPlan = computed(() => {
   if (!deal.value) return 0
-  const balance = (deal.value.totalPrice ?? 0) - (deal.value.downPayment ?? 0)
+  // Прощённая часть долга платежом не закрывается — её не нужно «добирать»
+  // строками графика. Без этого сделка со скидкой просила добавить платёж
+  // ровно на ту сумму, которую партнёр только что простил.
+  const balance =
+    (deal.value.totalPrice ?? 0) - (deal.value.downPayment ?? 0) - (deal.value.discount ?? 0)
   const sumExisting = payments.value.reduce((s, p) => s + (p.amount ?? 0), 0)
   return Math.max(0, balance - sumExisting)
 })

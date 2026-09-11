@@ -1906,7 +1906,17 @@ const plans = [
       { key: 'journal', label: 'Записи в журнале кассы' },
       { key: 'staff', label: 'Сотрудники' },
     ]"
-    note="Перед очисткой сервис сам соберёт полную резервную копию. Она останется в разделе «Резервные копии» — из неё можно вернуть всю работу целиком."
+    note="Копия останется в разделе «Резервные копии» — из неё можно вернуть всю работу целиком."
+    backup-option
+    result-title="Личный кабинет очищен"
+    :result-rows="[
+      { key: 'deal', label: 'Сделки' },
+      { key: 'payment', label: 'Платежи' },
+      { key: 'clientProfile', label: 'Клиенты' },
+      { key: 'cashFlowEntry', label: 'Записи журнала кассы' },
+      { key: 'account', label: 'Счета' },
+      { key: 'investorStaff', label: 'Сотрудники' },
+    ]"
     @done="reloadAfterReset"
   />
 

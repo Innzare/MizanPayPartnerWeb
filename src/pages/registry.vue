@@ -5,6 +5,7 @@ import PhoneField from '@/components/PhoneField.vue'
 import { formatPhone, formatDate } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -174,17 +175,9 @@ const registryMode = ref<'my' | 'global'>('my')
 
 // ── Постраничная загрузка ──
 
-const PAGE_SIZE_KEY = 'registry:perPage'
-const PER_PAGE_OPTIONS = [25, 50, 100, 200] // 200 — серверный максимум
-
 const page = ref(1)
-const perPage = ref(
-  PER_PAGE_OPTIONS.includes(Number(localStorage.getItem(PAGE_SIZE_KEY)))
-    ? Number(localStorage.getItem(PAGE_SIZE_KEY))
-    : 50,
-)
+const perPage = usePageSize('registry:perPage')
 const total = ref(0)
-watch(perPage, (v) => localStorage.setItem(PAGE_SIZE_KEY, String(v)))
 
 /** Счётчики шапки и вкладок — приходят с сервера по всей выборке. */
 const counts = ref({
@@ -609,6 +602,17 @@ function renderStars(rating: number): string[] {
             placeholder="Поиск по имени или номеру телефона..."
             @input="onSearchInput"
           />
+          <!-- Крестик очистки: поиск здесь ходит на сервер, и вернуть полный
+               список стиранием по букве — это ещё десяток запросов. -->
+          <button
+            v-if="search && !searchLoading"
+            type="button"
+            class="rg-search-clear"
+            title="Очистить"
+            @click="search = ''; onSearchInput()"
+          >
+            <v-icon icon="mdi-close" size="16" />
+          </button>
           <v-progress-circular
             v-if="searchLoading"
             indeterminate
@@ -1542,6 +1546,17 @@ function renderStars(rating: number): string[] {
   outline: none;
   transition: all 0.2s;
 }
+.rg-search-clear {
+  position: absolute; right: 46px; top: 50%; transform: translateY(-50%);
+  width: 26px; height: 26px; border: none; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer;
+}
+.rg-search-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
 .rg-search-input::placeholder {
   color: rgba(255, 255, 255, 0.5);
 }
@@ -1675,6 +1690,14 @@ function renderStars(rating: number): string[] {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* Списки карточек бывают на тысячу элементов, а высота у них плавающая —
+   виртуализация здесь не подходит. Браузер сам пропускает отрисовку того,
+   что за экраном: карточка клиента в реестре рисуется, когда до неё доходит прокрутка. */
+.rg-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
 }
 
 .rg-card {

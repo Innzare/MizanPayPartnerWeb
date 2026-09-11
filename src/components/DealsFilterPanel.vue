@@ -209,7 +209,7 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
        внутри страницы — и падали с ошибкой раскладки. -->
   <v-dialog
     v-model="open"
-    transition="dialog-right-transition"
+    transition="fp-slide"
     width="380"
     class="fp-dialog"
     scrim="rgba(0,0,0,0.3)"

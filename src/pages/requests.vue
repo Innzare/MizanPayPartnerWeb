@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import SearchInput from '@/components/SearchInput.vue'
 import { useRequestsStore } from '@/stores/requests'
 import { formatCurrency, formatMonths, timeAgo, formatDate } from '@/utils/formatters'
 import { CATEGORIES, getCategoryLabel } from '@/constants/categories'
@@ -382,15 +383,7 @@ const investorTimelineSteps = computed(() => {
       <div class="pa-4">
         <!-- Toolbar -->
         <div class="d-flex flex-wrap ga-2 align-center mb-4">
-          <div class="filter-input-wrap" style="max-width: 280px; min-width: 180px">
-            <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-            <input
-              v-model="search"
-              type="text"
-              placeholder="Поиск..."
-              class="filter-input"
-            />
-          </div>
+          <SearchInput v-model="search" placeholder="Поиск..." style="max-width: 280px; min-width: 180px" />
 
           <v-select
             v-model="selectedCity"

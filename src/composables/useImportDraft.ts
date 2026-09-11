@@ -132,6 +132,16 @@ export interface DraftStats {
     /** Насколько уменьшится доля со-инвесторов. */
     coInvestor?: { deals: number; shareLoss: number; byCapital?: boolean }
   }
+  /** Номера договоров из файла — сколько сделок получат номер из таблицы партнёра. */
+  contractNumbers?: {
+    /** Строк с номером договора среди тех, что заведут новые сделки. */
+    rows: number
+    applied: number
+    /** Номер занят другой сделкой — эта получит следующий свободный. */
+    conflicts: number
+    /** Номер не число («А-1047») — как номер сделки не подходит. */
+    nonNumeric: number
+  }
 }
 
 export interface ImportDraft {

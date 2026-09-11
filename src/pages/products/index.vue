@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import SearchInput from '@/components/SearchInput.vue'
 import { useProductsStore } from '@/stores/products'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { getCategoryLabel, CATEGORIES } from '@/constants/categories'
@@ -150,15 +151,7 @@ function openProduct(productId: string) {
 
       <v-spacer class="d-none d-md-block" />
 
-      <div class="filter-input-wrap" style="max-width: 260px; min-width: 140px;">
-        <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-        <input
-          v-model="search"
-          type="text"
-          placeholder="Поиск..."
-          class="filter-input"
-        />
-      </div>
+      <SearchInput v-model="search" placeholder="Поиск..." style="max-width: 260px; min-width: 140px;" />
 
       <button class="btn-primary" @click="router.push('/create-product')">
         <v-icon icon="mdi-plus" size="16" />

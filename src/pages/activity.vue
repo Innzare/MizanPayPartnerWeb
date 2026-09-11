@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import SearchInput from '@/components/SearchInput.vue'
 import { useActivityStore } from '@/stores/activity'
 import { useDealsStore } from '@/stores/deals'
 import { useIsDark } from '@/composables/useIsDark'
@@ -307,15 +308,7 @@ function navigateToEntity(item: ActivityLog) {
 
           <!-- Search + actor filter -->
           <div class="toolbar">
-            <div class="filter-input-wrap" style="flex: 1; max-width: 360px;">
-              <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-              <input
-                v-model="search"
-                type="text"
-                class="filter-input"
-                placeholder="Поиск по истории..."
-              />
-            </div>
+            <SearchInput v-model="search" placeholder="Поиск по истории..." style="flex: 1; max-width: 360px;" />
 
             <v-select
               v-model="actorFilter"

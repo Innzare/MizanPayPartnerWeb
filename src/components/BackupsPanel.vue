@@ -9,6 +9,7 @@
  * Восстановление разрешено только в пустой аккаунт: поверх существующих данных
  * оно задвоило бы деньги.
  */
+import { useOperationProgress } from '@/composables/useOperationProgress'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
@@ -71,6 +72,14 @@ const schedule = ref<Schedule | null>(null)
 const usage = ref<{ files: number; limit: number; bytes: number } | null>(null)
 const files = ref<BackupFile[]>([])
 const loading = ref(true)
+/**
+ * Полоса хода: сборка копии и восстановление идут минутами.
+ *
+ * Объявлена здесь, до первого использования: ниже она нужна и в `runNow`, и в
+ * наблюдателе за готовящейся копией, а `const` до объявления недоступна —
+ * панель падала с «Cannot access 'progress' before initialization».
+ */
+const progress = useOperationProgress()
 const saving = ref(false)
 const running = ref(false)
 
@@ -163,6 +172,9 @@ async function save() {
 async function runNow() {
   if (running.value) return
   running.value = true
+  // Копия крупного партнёра собирается минутами: список обновляется по
+  // статусу, но всё это время непонятно, идёт ли работа. Полоса показывает ход.
+  progress.start()
   try {
     await api.post('/backups/run', {})
     toast.success('Копия готовится — файл появится в списке через минуту')
@@ -170,10 +182,27 @@ async function runNow() {
     pollWhilePending()
   } catch (e: any) {
     toast.error(e?.message || 'Не удалось запустить копию')
+    progress.stop()
   } finally {
+    // Кнопку отпускаем сразу — сборка идёт в фоне, и ход её видно по полосе.
     running.value = false
   }
 }
+
+/**
+ * Полоса сборки живёт, пока копия собирается.
+ *
+ * Запрос «создать копию» отвечает мгновенно, а работа продолжается на сервере:
+ * останавливать опрос по ответу нельзя — полоса исчезла бы через секунду после
+ * появления.
+ */
+watch(
+  [pending, () => progress.finished.value],
+  ([isPending, done]) => {
+    if (!progress.active.value) return
+    if (done || (!isPending && !running.value)) progress.stop()
+  },
+)
 
 /**
  * Скачивание идёт через авторизованный запрос: файл лежит в приватном
@@ -242,8 +271,8 @@ const restorePreview = ref<RestorePreview | null>(null)
 const restoring = ref(false)
 
 /** Сколько записей вернётся — по крупным разделам, а не по всем таблицам. */
-const restoreRows = computed(() => {
-  const c = restorePreview.value?.meta.counts ?? {}
+function previewRows(p: RestorePreview | null) {
+  const c = p?.meta.counts ?? {}
   return [
     { label: 'Сделок', value: c.deal ?? 0 },
     { label: 'Платежей', value: c.payment ?? 0 },
@@ -251,7 +280,8 @@ const restoreRows = computed(() => {
     { label: 'Записей журнала кассы', value: c.cashFlowEntry ?? 0 },
     { label: 'Счетов', value: c.account ?? 0 },
   ].filter((r) => r.value > 0)
-})
+}
+const restoreRows = computed(() => previewRows(restorePreview.value))
 
 async function pickRestoreFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
@@ -279,6 +309,7 @@ async function runRestore() {
   if (!restoreFile.value || !restorePreview.value?.canRestore || restoring.value) return
   if (!confirm('Восстановить данные из этого файла? Текущий аккаунт пуст, данные будут загружены целиком.')) return
   restoring.value = true
+  progress.start()
   const form = new FormData()
   form.append('file', restoreFile.value)
   try {
@@ -289,14 +320,109 @@ async function runRestore() {
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data?.message || 'Не удалось восстановить')
-    toast.success('Данные восстановлены — обновите страницу')
+    // Не тост: восстановление идёт минутами, и всплывшая на три секунды
+    // плашка легко проходит мимо глаз. После такой операции партнёр должен
+    // увидеть, что именно вернулось, и осознанно вернуться к работе.
+    restoreResult.value = data?.restored ?? {}
+    restoreSkipped.value = data?.skipped ?? {}
+    restoreDone.value = true
     restoreFile.value = null
     restorePreview.value = null
   } catch (e: any) {
     toast.error(e?.message || 'Не удалось восстановить')
   } finally {
     restoring.value = false
+    progress.stop()
   }
+}
+
+// ── Восстановление прямо из копии ──
+// Раньше путь был один: скачать файл, потом загрузить его обратно. Файл уже
+// лежит у нас, поэтому браузеру достаточно сказать «эту».
+const restoringFromId = ref<string | null>(null)
+/** Копия, для которой показан предпросмотр: что вернётся и можно ли вообще. */
+const restoreCopy = ref<BackupFile | null>(null)
+const restoreCopyPreview = ref<RestorePreview | null>(null)
+
+async function restoreFromCopy(f: BackupFile) {
+  if (restoringFromId.value) return
+  restoringFromId.value = f.id
+  try {
+    // Сначала предпросмотр — тот же шаг, что и при загрузке файла руками:
+    // восстановление необратимо, и сначала надо увидеть, во что оно превратит
+    // кабинет.
+    restoreCopyPreview.value = await api.post<RestorePreview>(`/backups/${f.id}/restore/preview`, {})
+    restoreCopy.value = f
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось прочитать копию')
+  } finally {
+    restoringFromId.value = null
+  }
+}
+
+/** Подтвердили в окне — запускаем. Дальше показывается общий итог. */
+async function confirmRestoreFromCopy() {
+  const f = restoreCopy.value
+  if (!f || !restoreCopyPreview.value?.canRestore || restoring.value) return
+  restoring.value = true
+  progress.start()
+  try {
+    const data = await api.post<{ restored: Record<string, number>; skipped: Record<string, number> }>(
+      `/backups/${f.id}/restore`,
+      {},
+    )
+    restoreResult.value = data?.restored ?? {}
+    restoreSkipped.value = data?.skipped ?? {}
+    restoreCopy.value = null
+    restoreCopyPreview.value = null
+    restoreDone.value = true
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось восстановить')
+  } finally {
+    restoring.value = false
+    progress.stop()
+  }
+}
+
+// ── Итог восстановления ──
+// Показываем окном, а не тостом: операция необратимая и долгая.
+const restoreDone = ref(false)
+const restoreResult = ref<Record<string, number>>({})
+const restoreSkipped = ref<Record<string, number>>({})
+
+/** Крупные разделы — в том же порядке, что и в предпросмотре файла. */
+const RESTORE_SECTIONS: Array<{ key: string; label: string }> = [
+  { key: 'deal', label: 'Сделки' },
+  { key: 'payment', label: 'Платежи' },
+  { key: 'clientProfile', label: 'Клиенты' },
+  { key: 'cashFlowEntry', label: 'Записи журнала кассы' },
+  { key: 'account', label: 'Счета' },
+]
+
+const restoredRows = computed(() =>
+  RESTORE_SECTIONS.map((s) => ({ ...s, value: restoreResult.value[s.key] ?? 0 })).filter(
+    (r) => r.value > 0,
+  ),
+)
+
+/** Всего строк — включая справочники, которые отдельной строкой не показываем. */
+const restoredTotal = computed(() =>
+  Object.values(restoreResult.value).reduce((sum, n) => sum + n, 0),
+)
+
+/**
+ * Сколько записей копия не отдала.
+ *
+ * Обычно ноль. Если не ноль — это не ошибка восстановления, но партнёр должен
+ * знать: часть данных в файле оказалась несовместимой с текущей версией.
+ */
+const restoredSkippedTotal = computed(() =>
+  Object.values(restoreSkipped.value).reduce((sum, n) => sum + n, 0),
+)
+
+/** Кабинет перечитывает всё с нуля: половина разделов уже в памяти браузера. */
+function finishRestore() {
+  window.location.reload()
 }
 
 /**
@@ -533,6 +659,21 @@ function toggleWeekday(day: number) {
         </template>
       </div>
 
+      <!-- Сборка идёт в фоне: полоса — единственный признак, что работа
+           началась и сколько ещё осталось. -->
+      <div
+        v-if="progress.active.value && progress.stages.value === 1 && !restoring"
+        class="bk-progress bk-progress--card"
+      >
+        <div class="bk-progress-head">
+          <span>{{ progress.phase.value || 'Готовим копию…' }}</span>
+          <span class="bk-progress-pct">{{ progress.percent.value }} %</span>
+        </div>
+        <div class="bk-progress-bar">
+          <div class="bk-progress-fill" :style="{ width: progress.percent.value + '%' }" />
+        </div>
+      </div>
+
       <div v-if="usage && usage.files >= usage.limit" class="bk-limit-note">
         <v-icon icon="mdi-information-outline" size="14" />
         Хранится последние {{ usage.limit }} копий — при создании новой самая старая
@@ -629,6 +770,19 @@ function toggleWeekday(day: number) {
                   <span class="bk-fileline-meta">{{ fullName(f) }}</span>
                 </span>
                 <v-icon class="bk-fileline-dl" icon="mdi-tray-arrow-down" size="17" />
+                <!-- Восстановление прямо отсюда: файл уже лежит у нас, и
+                     возить его через браузер туда-обратно незачем. Доступно
+                     только владельцу — операция переписывает весь кабинет. -->
+                <span
+                  v-if="canManage"
+                  class="bk-fileline-dl bk-fileline-restore"
+                  :class="{ 'bk-fileline-restore--busy': restoringFromId === f.id }"
+                  title="Восстановить данные из этой копии"
+                  @click.stop="restoreFromCopy(f)"
+                >
+                  <v-progress-circular v-if="restoringFromId === f.id" indeterminate size="14" width="2" />
+                  <v-icon v-else icon="mdi-backup-restore" size="17" />
+                </span>
               </button>
 
               <!-- Копии, снятые до появления восстановления, содержат только
@@ -691,7 +845,7 @@ function toggleWeekday(day: number) {
         <div class="bk-restore-preview-title">
           Копия от {{ whenLabel(restorePreview.meta.createdAt) }}
         </div>
-        <div class="bk-restore-list">
+        <div v-if="restoreRows.length" class="bk-restore-list">
           <span v-for="r in restoreRows" :key="r.label" class="bk-restore-item">
             {{ r.label }}: <b>{{ r.value.toLocaleString('ru-RU') }}</b>
           </span>
@@ -704,9 +858,131 @@ function toggleWeekday(day: number) {
         <button v-else class="bk-btn" :disabled="restoring" @click="runRestore">
           {{ restoring ? 'Восстанавливаю…' : 'Восстановить данные' }}
         </button>
+
+        <!-- Ход восстановления: крупная копия разворачивается минутами, и без
+             полосы окно выглядит зависшим. Проценты честные — сервер считает их
+             от того же числа записей, что показано выше. -->
+        <div v-if="restoring" class="bk-progress">
+          <div class="bk-progress-head">
+            <span>{{ progress.phase.value || 'Начинаем…' }}</span>
+            <span class="bk-progress-pct">{{ progress.percent.value }} %</span>
+          </div>
+          <div class="bk-progress-bar">
+            <div class="bk-progress-fill" :style="{ width: progress.percent.value + '%' }" />
+          </div>
+          <div class="bk-progress-note">
+            <template v-if="progress.total.value">
+                {{ progress.done.value.toLocaleString('ru-RU') }} из
+                {{ progress.total.value.toLocaleString('ru-RU') }} записей ·
+            </template>
+            не закрывайте вкладку
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
+
+  <!-- Подтверждение восстановления из копии в списке. Тот же разговор, что и
+       при загрузке файла: сначала показываем, что внутри и можно ли, и только
+       потом кнопка. -->
+  <v-dialog :model-value="!!restoreCopy" max-width="460" @update:model-value="v => { if (!v) restoreCopy = null }">
+    <v-card v-if="restoreCopy" rounded="lg" class="bk-confirm">
+      <div class="bk-confirm-title">Восстановить из этой копии?</div>
+      <div class="bk-confirm-sub">
+        Копия от {{ whenLabel(restoreCopy.createdAt) }}
+      </div>
+
+      <!-- Список показываем, только когда в копии есть что перечислить: у
+           файлов старого формата счётчиков нет, и рамка оставалась пустой. -->
+      <div v-if="previewRows(restoreCopyPreview).length" class="bk-done-list">
+        <div v-for="r in previewRows(restoreCopyPreview)" :key="r.label" class="bk-done-row">
+          <span>{{ r.label }}</span>
+          <b>{{ r.value.toLocaleString('ru-RU') }}</b>
+        </div>
+      </div>
+
+      <div v-if="restoreCopyPreview && !restoreCopyPreview.canRestore" class="bk-done-warn">
+        <v-icon icon="mdi-alert-outline" size="16" />
+        <span>{{ restoreCopyPreview.blockedReason }}</span>
+      </div>
+      <div v-else class="bk-confirm-note">
+        Данные из копии загрузятся целиком. Отменить восстановление нельзя.
+      </div>
+
+      <!-- Ход восстановления: крупная копия разворачивается минутами, и без
+           полосы окно выглядит зависшим. Проценты честные — сервер считает их
+           от того же числа записей, что показано выше. -->
+      <div v-if="restoring" class="bk-progress">
+        <div class="bk-progress-head">
+          <span>
+            <span v-if="progress.stages.value > 1" class="bk-progress-stage">
+              Шаг {{ progress.stage.value }} из {{ progress.stages.value }} ·
+            </span>
+            {{ progress.phase.value || 'Начинаем…' }}
+          </span>
+          <span class="bk-progress-pct">{{ progress.percent.value }} %</span>
+        </div>
+        <div class="bk-progress-bar">
+          <div class="bk-progress-fill" :style="{ width: progress.percent.value + '%' }" />
+        </div>
+        <div class="bk-progress-note">
+          <!-- Записи считаем только на том этапе, где идут записи: чтение
+               файла измеряется шагами. -->
+          <template v-if="progress.unit.value === 'rows' && progress.total.value">
+            {{ progress.done.value.toLocaleString('ru-RU') }} из
+            {{ progress.total.value.toLocaleString('ru-RU') }} записей ·
+          </template>
+          не закрывайте вкладку
+        </div>
+      </div>
+
+      <div class="bk-confirm-actions">
+        <button class="bk-btn bk-btn--ghost" :disabled="restoring" @click="restoreCopy = null">Отмена</button>
+        <button
+          v-if="restoreCopyPreview?.canRestore"
+          class="bk-btn"
+          :disabled="restoring"
+          @click="confirmRestoreFromCopy"
+        >
+          {{ restoring ? 'Восстанавливаю…' : 'Восстановить' }}
+        </button>
+      </div>
+    </v-card>
+  </v-dialog>
+
+  <!-- Итог восстановления. Закрыть мимо нельзя: единственный выход отсюда —
+       перезагрузить кабинет, иначе половина разделов останется со старыми
+       (пустыми) данными в памяти браузера. -->
+  <v-dialog v-model="restoreDone" max-width="460" persistent>
+    <v-card rounded="lg" class="bk-done">
+      <div class="bk-done-icon">
+        <v-icon icon="mdi-check" size="30" />
+      </div>
+      <div class="bk-done-title">Данные восстановлены</div>
+      <div class="bk-done-sub">
+        Из копии вернулось {{ restoredTotal.toLocaleString('ru-RU') }}
+        {{ restoredTotal === 1 ? 'запись' : restoredTotal % 10 >= 2 && restoredTotal % 10 <= 4 && (restoredTotal % 100 < 10 || restoredTotal % 100 >= 20) ? 'записи' : 'записей' }}.
+      </div>
+
+      <div v-if="restoredRows.length" class="bk-done-list">
+        <div v-for="r in restoredRows" :key="r.key" class="bk-done-row">
+          <span>{{ r.label }}</span>
+          <b>{{ r.value.toLocaleString('ru-RU') }}</b>
+        </div>
+      </div>
+
+      <div v-if="restoredSkippedTotal" class="bk-done-warn">
+        <v-icon icon="mdi-alert-outline" size="16" />
+        <span>
+          {{ restoredSkippedTotal.toLocaleString('ru-RU') }} записей файл не отдал —
+          напишите нам, посмотрим, что это было.
+        </span>
+      </div>
+
+      <button class="bk-btn bk-done-btn" @click="finishRestore">Начать работу</button>
+    </v-card>
+  </v-dialog>
 </template>
 
 <style scoped>
@@ -852,7 +1128,7 @@ function toggleWeekday(day: number) {
 .bk-thead,
 .bk-tr {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 290px 290px minmax(100px, 0.7fr) 34px;
+  grid-template-columns: minmax(170px, 1fr) 280px 330px minmax(100px, 0.6fr) 34px;
   gap: 12px;
   align-items: center;
 }
@@ -892,7 +1168,21 @@ function toggleWeekday(day: number) {
    строки читаются сверху вниз столбиком, а не парами внутри строки. */
 .bk-td--file { min-width: 0; }
 .bk-td--file > .bk-fileline { width: 100%; }
+/* Название файла не переносим: у слепка справа три действия, и перенос
+   превращал одну строку в две. */
+.bk-fileline-name { white-space: nowrap; }
+/* Название файла не переносим: у слепка три действия справа, и перенос
+   превращал одну строку в две. */
+.bk-fileline-name { white-space: nowrap; }
 .bk-td--state { grid-column: span 2; }
+
+/* Восстановление — третье действие у файла слепка. */
+.bk-fileline-restore {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+}
+.bk-fileline-restore:hover { color: #b45309; }
+.bk-fileline-restore--busy { color: #b45309; }
 
 /* Отправка на почту стоит рядом со скачиванием — два действия одного файла. */
 .bk-fileline-mail {
@@ -980,6 +1270,89 @@ function toggleWeekday(day: number) {
   .bk-td--keep { text-align: left; }
   .bk-td--keep .bk-keep::before { content: 'хранится до '; }
 }
+
+/* Полоса хода восстановления. */
+/* Внутри окна полоса идёт следом за текстом — ей хватает воздуха сверху. */
+.bk-progress { margin-top: 16px; }
+/*
+ * На странице копий она живёт между шапкой списка и таблицей, поэтому
+ * оформлена плашкой: без неё строка липла к соседним блокам и читалась как
+ * часть таблицы.
+ */
+.bk-progress--card {
+  margin: 4px 0 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(4, 120, 87, 0.2);
+  border-radius: 12px;
+  background: rgba(4, 120, 87, 0.04);
+}
+.bk-progress-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.bk-progress-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+.bk-progress-stage { color: rgba(var(--v-theme-on-surface), 0.45); }
+.bk-progress-bar {
+  margin-top: 6px; height: 6px; border-radius: 4px; overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.bk-progress-fill {
+  height: 100%; border-radius: 4px; background: #047857;
+  transition: width 0.4s ease;
+}
+.bk-progress-note {
+  margin-top: 6px; font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Окно подтверждения восстановления из копии ── */
+.bk-confirm { padding: 22px 22px 18px; }
+.bk-confirm-title { font-size: 17px; font-weight: 700; }
+.bk-confirm-sub {
+  margin-top: 3px; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.bk-confirm-note {
+  margin-top: 12px; font-size: 12.5px; line-height: 1.45;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.bk-confirm-actions {
+  display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px;
+}
+
+/* ── Окно «данные восстановлены» ── */
+.bk-done { padding: 26px 24px 22px; text-align: center; }
+.bk-done-icon {
+  width: 56px; height: 56px; margin: 0 auto 14px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 120, 87, 0.1); color: #047857;
+}
+.bk-done-title { font-size: 18px; font-weight: 700; }
+.bk-done-sub {
+  margin-top: 5px; font-size: 13px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.bk-done-list {
+  margin: 16px 0 4px; padding: 10px 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px; text-align: left;
+}
+.bk-done-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 0; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.bk-done-row:last-child { border-bottom: none; }
+.bk-done-row b { color: rgba(var(--v-theme-on-surface), 0.9); font-variant-numeric: tabular-nums; }
+.bk-done-warn {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 12px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(245, 158, 11, 0.1); color: #b45309;
+  font-size: 12.5px; line-height: 1.45; text-align: left;
+}
+.bk-done-btn { width: 100%; margin-top: 18px; justify-content: center; }
 
 .bk-restore {
   margin-top: 18px; padding-top: 16px;

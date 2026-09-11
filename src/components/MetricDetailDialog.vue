@@ -115,7 +115,12 @@ function openDeal(id: string) {
             </template>
           </div>
         </div>
-        <input v-model="search" class="md-search" placeholder="Найти товар или клиента…" >
+        <div class="md-search-wrap">
+          <input v-model="search" class="md-search" placeholder="Найти товар или клиента…" >
+          <button v-if="search" type="button" class="md-search-wrap-clear" title="Очистить" @click="search = ''">
+            <v-icon icon="mdi-close" size="14" />
+          </button>
+        </div>
       </div>
 
       <!-- Список сделок -->
@@ -206,6 +211,20 @@ function openDeal(id: string) {
   background: rgb(var(--v-theme-surface));
   color: rgb(var(--v-theme-on-surface));
   font-size: 13px;
+}
+/* Поле с крестиком: обёртка нужна, чтобы позиционировать кнопку внутри поля. */
+.md-search-wrap { position: relative; display: inline-flex; align-items: center; }
+.md-search-wrap .md-search { padding-right: 30px; }
+.md-search-wrap-clear {
+  position: absolute; right: 5px;
+  width: 22px; height: 22px; border: none; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer;
+}
+.md-search-wrap-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.75);
 }
 
 .md-list { overflow-y: auto; padding: 8px 16px 4px; flex: 1 1 auto; min-height: 0; }

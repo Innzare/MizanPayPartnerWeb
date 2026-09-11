@@ -14,7 +14,7 @@ import {
   type ProgramRounding,
   type ProgramRule,
 } from '@/utils/programMath'
-import { formatCurrency, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { formatCurrency, CURRENCY_MASK, PERCENT_MASK, parseMasked, maskedMoney, maskedPercent } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter, useRoute } from 'vue-router'
@@ -938,7 +938,7 @@ watch([purchasePrice, termMonths], () => {
 // Cleared automatically as soon as the partner edits any other related field.
 const manualTotalPrice = ref<number | null>(null)
 
-const totalPriceInput = computed(() => totalPrice.value || '')
+const totalPriceInput = computed(() => maskedMoney(totalPrice.value))
 
 function onTotalPriceInput(value: number) {
   const purchase = purchasePrice.value || 0
@@ -1896,12 +1896,23 @@ async function submitDeal(acknowledgedOverdraft = false) {
         <div class="form-grid">
           <div class="form-field full-width">
             <label class="field-label">Название товара <span class="required">*</span></label>
-            <input
-              v-model="productName"
-              type="text"
-              class="field-input"
-              placeholder="Например: iPhone 15 Pro Max 256GB"
-            />
+            <div class="input-clearable">
+              <input
+                v-model="productName"
+                type="text"
+                class="field-input"
+                placeholder="Например: iPhone 15 Pro Max 256GB"
+              />
+              <button
+                v-if="productName"
+                type="button"
+                class="input-clear"
+                title="Очистить"
+                @click="productName = ''"
+              >
+                <v-icon icon="mdi-close" size="15" />
+              </button>
+            </div>
           </div>
 
           <div class="form-field full-width">
@@ -2047,7 +2058,16 @@ async function submitDeal(acknowledgedOverdraft = false) {
               <div class="form-field full-width">
                 <label class="field-label">Закупочная цена <span class="required">*</span></label>
                 <div class="input-with-suffix">
-                  <input :value="purchasePrice || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => purchasePrice = parseMasked(e)" type="text" inputmode="numeric" class="field-input" :class="{ 'field-input--error': capitalInsufficient }" placeholder="0" />
+                  <input :value="maskedMoney(purchasePrice)" v-maska="CURRENCY_MASK" @maska="(e: any) => purchasePrice = parseMasked(e)" type="text" inputmode="numeric" class="field-input" :class="{ 'field-input--error': capitalInsufficient }" placeholder="0" />
+                  <button
+                    v-if="purchasePrice"
+                    type="button"
+                    class="input-clear input-clear--suffixed"
+                    title="Очистить"
+                    @click="purchasePrice = null"
+                  >
+                    <v-icon icon="mdi-close" size="15" />
+                  </button>
                   <span class="input-suffix">₽</span>
                 </div>
                 <!-- Capital hint — shows the SELECTED cashbox's available capital.
@@ -2081,7 +2101,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   <label class="field-label mt-3">Оптовая цена закупки</label>
                   <div class="input-with-suffix">
                     <input
-                      :value="wholesalePrice || ''"
+                      :value="maskedMoney(wholesalePrice)"
                       v-maska="CURRENCY_MASK"
                       @maska="(e: any) => wholesalePrice = parseMasked(e)"
                       type="text"
@@ -2089,6 +2109,15 @@ async function submitDeal(acknowledgedOverdraft = false) {
                       class="field-input"
                       placeholder="0"
                     />
+                    <button
+                      v-if="wholesalePrice"
+                      type="button"
+                      class="input-clear input-clear--suffixed"
+                      title="Очистить"
+                      @click="wholesalePrice = null"
+                    >
+                      <v-icon icon="mdi-close" size="15" />
+                    </button>
                     <span class="input-suffix">₽</span>
                   </div>
 
@@ -2227,8 +2256,53 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   >{{ opt }}%</button>
                 </div>
                 <div class="input-with-suffix mt-2">
-                  <input v-model.number="markupValue" type="number" class="field-input" :placeholder="markupType === 'percent' ? '15' : '15000'" min="0" />
+                  <!-- В рублях наценка — деньги, и читается так же, как все
+                       остальные суммы в форме: «15 000», а не «15000».
+                       В процентах маска не нужна — там две-три цифры. -->
+                  <input
+                    v-if="markupType === 'fixed'"
+                    :value="maskedMoney(markupValue)"
+                    v-maska="CURRENCY_MASK"
+                    type="text"
+                    inputmode="numeric"
+                    class="field-input"
+                    placeholder="15 000"
+                    @maska="(e: any) => markupValue = parseMasked(e)"
+                  />
+                  <!-- Текстовое поле с маской, а не `type=number`: браузер не
+                       умеет показывать разряды в числовом поле, и «88815»
+                       читалось как сплошная лента цифр. -->
+                  <input
+                    v-else
+                    :value="maskedPercent(markupValue)"
+                    v-maska="PERCENT_MASK"
+                    type="text"
+                    inputmode="decimal"
+                    class="field-input"
+                    placeholder="15"
+                    @maska="(e: any) => markupValue = parseMasked(e)"
+                  />
+                  <button
+                    v-if="markupValue"
+                    type="button"
+                    class="input-clear input-clear--suffixed"
+                    title="Очистить"
+                    @click="markupValue = 0"
+                  >
+                    <v-icon icon="mdi-close" size="15" />
+                  </button>
                   <span class="input-suffix">{{ markupType === 'percent' ? '%' : '₽' }}</span>
+                </div>
+
+                <!-- В процентах на экране одни проценты, а решение принимают по
+                     деньгам: сколько это в рублях и во что обойдётся клиенту.
+                     Суммы — с разделением разрядов, как везде в форме. -->
+                <div
+                  v-if="markupType === 'percent' && (purchasePrice || 0) > 0 && markupValue > 0"
+                  class="field-hint-styled"
+                >
+                  <v-icon icon="mdi-information-outline" size="14" />
+                  Наценка {{ formatCurrency(markup) }} · итоговая цена {{ formatCurrency(totalPrice) }}
                 </div>
               </div>
 
@@ -2265,7 +2339,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <template v-if="downPaymentType === 'fixed'">
                   <div class="input-with-suffix" :class="{ 'input-with-suffix--error': downPaymentError }">
                     <input
-                      :value="downPayment || ''"
+                      :value="maskedMoney(downPayment)"
                       v-maska="CURRENCY_MASK"
                       @maska="(e: any) => setDownPaymentFixed(parseMasked(e))"
                       type="text"
@@ -2273,6 +2347,15 @@ async function submitDeal(acknowledgedOverdraft = false) {
                       class="field-input"
                       placeholder="0"
                     />
+                    <button
+                      v-if="downPayment"
+                      type="button"
+                      class="input-clear input-clear--suffixed"
+                      title="Очистить"
+                      @click="setDownPaymentFixed(0)"
+                    >
+                      <v-icon icon="mdi-close" size="15" />
+                    </button>
                     <span class="input-suffix">₽</span>
                   </div>
                   <div v-if="downPaymentAmount > 0 && totalPrice > 0 && !downPaymentError" class="field-hint-styled">
@@ -2292,21 +2375,29 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   </div>
                   <div class="input-with-suffix mt-2" :class="{ 'input-with-suffix--error': downPaymentError }">
                     <input
-                      :value="downPaymentPercent ?? ''"
-                      @input="(e: any) => downPaymentPercentModel = e.target.value === '' ? null : Number(e.target.value)"
-                      type="number"
+                      :value="maskedPercent(downPaymentPercent)"
+                      v-maska="PERCENT_MASK"
+                      type="text"
                       inputmode="decimal"
                       class="field-input"
                       placeholder="10"
-                      min="0"
-                      max="100"
+                      @maska="(e: any) => downPaymentPercentModel = e.detail.unmasked === '' ? null : parseMasked(e)"
                     />
+                    <button
+                      v-if="downPaymentPercent"
+                      type="button"
+                      class="input-clear input-clear--suffixed"
+                      title="Очистить"
+                      @click="downPaymentPercentModel = null"
+                    >
+                      <v-icon icon="mdi-close" size="15" />
+                    </button>
                     <span class="input-suffix">%</span>
                   </div>
                   <label class="field-label mt-3 d-block">Сумма взноса</label>
                   <div class="input-with-suffix">
                     <input
-                      :value="downPaymentRublesModel || ''"
+                      :value="maskedMoney(downPaymentRublesModel)"
                       v-maska="CURRENCY_MASK"
                       @maska="(e: any) => downPaymentRublesModel = parseMasked(e)"
                       type="text"
@@ -2314,6 +2405,15 @@ async function submitDeal(acknowledgedOverdraft = false) {
                       class="field-input"
                       placeholder="0"
                     />
+                    <button
+                      v-if="downPaymentRublesModel"
+                      type="button"
+                      class="input-clear input-clear--suffixed"
+                      title="Очистить"
+                      @click="downPaymentRublesModel = 0"
+                    >
+                      <v-icon icon="mdi-close" size="15" />
+                    </button>
                     <span class="input-suffix">₽</span>
                   </div>
                   <div class="field-hint-styled">
@@ -3022,6 +3122,20 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .terms-card--tariff .terms-card-title { color: #fff; }
 .terms-card--tariff .field-label,
 .terms-card--tariff .field-hint-styled { color: rgba(255, 255, 255, 0.7); }
+
+/* Поля внутри зелёной карточки — белые, и текст в них должен быть тёмным.
+   `.field-input` наследует цвет (`color: inherit`), а карточка задаёт белый —
+   набранное становилось белым по белому и пропадало из виду. */
+.terms-card--tariff .field-input,
+.terms-card--tariff .field-select,
+.terms-card--tariff .input-with-suffix input {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.terms-card--tariff .field-input::placeholder {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
+/* Подпись единицы (₽, %) живёт поверх белого поля, а не поверх градиента. */
+.terms-card--tariff .input-suffix { color: rgba(var(--v-theme-on-surface), 0.45); }
 
 /* Пояснение и сводка — на полупрозрачной подложке поверх зелёного. */
 .terms-card--tariff .tariff-note {
@@ -4167,6 +4281,26 @@ async function submitDeal(acknowledgedOverdraft = false) {
   pointer-events: none;
 }
 .input-with-suffix .field-input { padding-right: 36px; }
+
+/* Крестик очистки поля.
+   В полях с подписью единицы (₽, %) он встаёт левее неё, иначе они наезжают
+   друг на друга; в обычных — у самого края. */
+.input-clear {
+  position: absolute; right: 10px; top: 22px; transform: translateY(-50%);
+  width: 24px; height: 24px; border: none; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: pointer; z-index: 1;
+}
+.input-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.input-clear--suffixed { right: 34px; }
+.input-with-suffix:has(.input-clear) .field-input { padding-right: 62px; }
+/* Поле без подписи единицы: место под крестик всё равно нужно. */
+.input-clearable { position: relative; }
+.input-clearable .field-input { padding-right: 40px; }
 
 /* First payment hint */
 .first-payment-hint {

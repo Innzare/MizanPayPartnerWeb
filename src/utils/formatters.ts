@@ -70,8 +70,44 @@ export const PHONE_MASK = '+7 (###) ###-##-##'
 
 export const CURRENCY_MASK = { number: { locale: 'ru-RU', fraction: 0, unsigned: true } }
 
+/**
+ * Маска для процентов: те же разряды, но с дробной частью.
+ *
+ * Обычная наценка — две цифры, и разделять там нечего. Но в поле попадают и
+ * большие числа (перепутали режим «%» и «₽», ввели 88815), и без разрядов их
+ * не прочитать. Дробь нужна для «15,5 %».
+ */
+export const PERCENT_MASK = { number: { locale: 'ru-RU', fraction: 2, unsigned: true } }
+
 export function parseMasked(e: any): number {
   return Number(e.detail?.unmasked) || 0
+}
+
+/**
+ * Число для поля с денежной маской.
+ *
+ * Маска форматирует то, что набирают руками, но значение, подставленное кодом
+ * (пришло из сделки, посчиталось из процента), она не трогает — и в поле
+ * оказывалось «138500» вместо «138 500». Здесь то же разделение разрядов, что
+ * и в `formatCurrency`, только без знака рубля: он у этих полей нарисован
+ * отдельной подписью справа.
+ */
+export function maskedMoney(v: number | null | undefined): string {
+  if (v === null || v === undefined || v === 0 || Number.isNaN(v)) return ''
+  return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+}
+
+/**
+ * Число для поля с процентной маской: разряды пробелом, дробь запятой.
+ *
+ * Ноль здесь — значимое значение (наценка 0 %), поэтому, в отличие от денег,
+ * он не превращается в пустую строку.
+ */
+export function maskedPercent(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return ''
+  const [int, frac] = String(v).split('.')
+  const withSpaces = (int ?? '0').replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+  return frac ? `${withSpaces},${frac}` : withSpaces
 }
 
 export function formatMonths(months: number): string {

@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import SearchInput from '@/components/SearchInput.vue'
 import { usePaymentsStore } from '@/stores/payments'
 import { useDealsStore } from '@/stores/deals'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
@@ -8,6 +9,8 @@ import { attributionMonthStr, offMonthKind, monthPrepositional, dueYearMonth, is
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
+import { PER_PAGE_OPTIONS, normalizePageSize, useListSort, usePageSize } from '@/composables/useListPrefs'
+import { useVirtualRows } from '@/composables/useVirtualRows'
 import { useSubscription } from '@/composables/useSubscription'
 import { useDealLock } from '@/composables/useDealLock'
 import { useFolders } from '@/composables/useFolders'
@@ -233,11 +236,51 @@ type CalendarDay = {
   isToday: boolean
   count: number
   totalAmount: number
+  /** Уже получено: количество и сумма оплаченных платежей дня. */
+  paidCount: number
+  paidSum: number
+  /**
+   * Ещё ждём: не оплаченные платежи дня — срок и наступивший, и пропущенный.
+   * Для человека это одно и то же «деньги пока не пришли», поэтому в ячейке
+   * они идут одной строкой, а просрочка отмечается цветом.
+   */
+  dueCount: number
+  dueSum: number
+  overdueCount: number
+  overdueSum: number
   /** До трёх точек — по наличию статусов, а не по первым платежам дня. */
   dots: ('OVERDUE' | 'PENDING' | 'PAID')[]
   hasOverdue: boolean
   hasPending: boolean
   hasPaid: boolean
+}
+
+/**
+ * «1 платёж», «2 платежа», «5 платежей».
+ *
+ * Слово рядом с числом обязательно: две цифры подряд («4 · 214к») читаются как
+ * одно число, и приходится догадываться, где количество, а где деньги.
+ */
+function plural(n: number): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return 'платёж'
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'платежа'
+  return 'платежей'
+}
+
+/**
+ * Деньги в ячейке календаря — сокращённо.
+ *
+ * В клетку дня помещается около десяти знаков, а суммы у партнёра шестизначные:
+ * «120 000 ₽» вытесняет всё остальное, «120к» — нет. Полные суммы видны в
+ * подсказке и в окне дня.
+ */
+function shortMoney(v: number): string {
+  const abs = Math.abs(v)
+  if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace('.', ',').replace(',0', '')}М`
+  if (abs >= 1000) return `${Math.round(v / 1000)}к`
+  return String(Math.round(v))
 }
 
 /** Собирает ячейку дня из агрегата сервера (пустой день — нули). */
@@ -250,13 +293,23 @@ function buildDay(key: string, day: number, isCurrentMonth: boolean, todayKey: s
   if (hasOverdue) dots.push('OVERDUE')
   if (hasPending) dots.push('PENDING')
   if (hasPaid) dots.push('PAID')
+  const paidCount = a?.paidCount ?? 0
+  const paidSum = a?.paidSum ?? 0
+  const dueCount = (a?.pendingCount ?? 0) + (a?.overdueCount ?? 0)
+  const dueSum = (a?.pendingSum ?? 0) + (a?.overdueSum ?? 0)
   return {
     day,
     dateKey: key,
     isCurrentMonth,
     isToday: key === todayKey,
-    count: (a?.pendingCount ?? 0) + (a?.overdueCount ?? 0) + (a?.paidCount ?? 0),
-    totalAmount: (a?.pendingSum ?? 0) + (a?.overdueSum ?? 0) + (a?.paidSum ?? 0),
+    count: dueCount + paidCount,
+    totalAmount: dueSum + paidSum,
+    paidCount,
+    paidSum,
+    dueCount,
+    dueSum,
+    overdueCount: a?.overdueCount ?? 0,
+    overdueSum: a?.overdueSum ?? 0,
     dots,
     hasOverdue,
     hasPending,
@@ -301,6 +354,32 @@ const calendarDays = computed((): CalendarDay[] => {
   }
 
   return days
+})
+
+/**
+ * Итоги выбранного дня — из агрегата сервера, а не из загруженных строк.
+ *
+ * В окне дня показывается первая сотня платежей, и сумма по ней у крупного
+ * партнёра меньше настоящей. Агрегат считает весь день целиком, поэтому
+ * «всего / получено / ждём» в шапке окна не зависят от того, сколько строк
+ * успело подгрузиться.
+ */
+const selectedDayAgg = computed(() => {
+  const a = selectedCalendarDate.value ? paymentsStore.calendarAgg[selectedCalendarDate.value] : null
+  const paidCount = a?.paidCount ?? 0
+  const paidSum = a?.paidSum ?? 0
+  const dueCount = (a?.pendingCount ?? 0) + (a?.overdueCount ?? 0)
+  const dueSum = (a?.pendingSum ?? 0) + (a?.overdueSum ?? 0)
+  return {
+    count: paidCount + dueCount,
+    total: paidSum + dueSum,
+    paidCount,
+    paidSum,
+    dueCount,
+    dueSum,
+    overdueCount: a?.overdueCount ?? 0,
+    overdueSum: a?.overdueSum ?? 0,
+  }
 })
 
 /**
@@ -377,15 +456,19 @@ watch(selectedCalendarDate, (key) => {
 const monthSummary = computed(() => {
   const prefix = `${calendarYear.value}-${String(calendarMonth.value + 1).padStart(2, '0')}`
   let total = 0, pending = 0, overdue = 0, paid = 0, count = 0
+  let pendingCount = 0, overdueCount = 0, paidCount = 0
   for (const [key, a] of Object.entries(paymentsStore.calendarAgg)) {
     if (!key.startsWith(prefix)) continue
     count += a.pendingCount + a.overdueCount + a.paidCount
+    pendingCount += a.pendingCount
+    overdueCount += a.overdueCount
+    paidCount += a.paidCount
     pending += a.pendingSum
     overdue += a.overdueSum
     paid += a.paidSum
     total += a.pendingSum + a.overdueSum + a.paidSum
   }
-  return { total, pending, overdue, paid, count }
+  return { total, pending, overdue, paid, count, pendingCount, overdueCount, paidCount }
 })
 
 function prevYear() {
@@ -482,15 +565,21 @@ const yearMonths = computed((): YearMonthData[] => {
 const yearSummary = computed(() => {
   const prefix = `${calendarYear.value}-`
   let total = 0, pending = 0, overdue = 0, paid = 0, count = 0
+  let pendingCount = 0, overdueCount = 0, paidCount = 0
   for (const [key, a] of Object.entries(paymentsStore.calendarAgg)) {
     if (!key.startsWith(prefix)) continue
     count += a.pendingCount + a.overdueCount + a.paidCount
+    pendingCount += a.pendingCount
+    overdueCount += a.overdueCount
+    paidCount += a.paidCount
     pending += a.pendingSum
     overdue += a.overdueSum
     paid += a.paidSum
     total += a.pendingSum + a.overdueSum + a.paidSum
   }
-  return { total, pending, overdue, paid, count }
+  // Суммы без числа платежей не отвечают на вопрос «из чего это сложилось»:
+  // миллион одним платежом и миллион сотней — разная работа.
+  return { total, pending, overdue, paid, count, pendingCount, overdueCount, paidCount }
 })
 
 function selectYearDay(day: YearMonthData['days'][0]) {
@@ -512,8 +601,12 @@ function formatSelectedDate(key: string) {
 
 // Sorting
 type SortField = 'dueDate' | 'amount' | 'number' | 'deal' | 'client' | 'status'
-const sortField = ref<SortField>('dueDate')
-const sortAsc = ref(true)
+// Сортировка списка платежей помнится между заходами.
+const { col: sortField, dir: sortDir } = useListSort<SortField>('payments:table-sort', 'dueDate', 'asc')
+const sortAsc = computed({
+  get: () => sortDir.value === 'asc',
+  set: (v: boolean) => { sortDir.value = v ? 'asc' : 'desc' },
+})
 
 function toggleSort(field: SortField) {
   if (sortField.value === field) {
@@ -536,9 +629,8 @@ function toggleSort(field: SortField) {
 // состояния из адреса было бы принято за действие партнёра.
 // ══════════════════════════════════════════════════════════════════
 
-const PER_PAGE_OPTIONS = [25, 50, 100, 200] // 200 — серверный максимум
 const page = ref(1)
-const perPage = ref(50)
+const perPage = usePageSize('payments:page-size')
 
 /** Часовой пояс: от него зависит, в какой месяц и день попадёт платёж. */
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow'
@@ -635,7 +727,10 @@ function initFromQuery() {
 
   const t = int(q.tab, 0)
   tab.value = t >= 0 && t <= 4 ? t : 0
-  perPage.value = PER_PAGE_OPTIONS.includes(int(q.per, 50)) ? int(q.per, 50) : 50
+  // Размера в адресе может не быть — тогда остаётся выбор партнёра из
+  // прошлого захода, а не молчаливая полусотня.
+  const per = int(q.per, 0)
+  if (per > 0) perPage.value = normalizePageSize(per)
   page.value = int(q.page, 1)
   // Фильтры панели тоже живут в адресе — выборкой можно поделиться ссылкой.
   filters.fromQuery(q as Record<string, unknown>)
@@ -689,7 +784,9 @@ watch(
     const q: Record<string, string> = {}
     if (tab.value) q.tab = String(tab.value)
     if (page.value > 1) q.page = String(page.value)
-    if (perPage.value !== 50) q.per = String(perPage.value)
+    // Размер пишем всегда: «полсотни по умолчанию» больше нет, а ссылка
+    // должна открывать ровно тот же вид, что видит отправитель.
+    q.per = String(perPage.value)
     if (debouncedSearch.value.trim()) q.q = debouncedSearch.value.trim()
     if (sortField.value !== 'dueDate') q.sort = sortField.value
     if (!sortAsc.value) q.dir = 'desc'
@@ -842,6 +939,15 @@ type PaymentRow =
 
 const groupedByDay = computed(() => sortField.value === 'dueDate')
 
+/**
+ * Виртуализация списка: в разметке живут только видимые строки.
+ *
+ * Строки здесь неоднородны — между платежами встречаются разделители дней,
+ * поэтому высота считается по строке платежа: разделителей мало, и их вклад
+ * в общую высоту в пределах процента.
+ */
+const tableViewport = ref<HTMLElement | null>(null)
+
 const paymentRows = computed<PaymentRow[]>(() => {
   const list = displayedPayments.value
   if (!groupedByDay.value) {
@@ -871,6 +977,9 @@ const paymentRows = computed<PaymentRow[]>(() => {
   })
   return out
 })
+
+const virtual = useVirtualRows(paymentRows, { viewport: tableViewport, estimatedRowHeight: 56 })
+const markerRow = virtual.markerRow
 
 /** «Сегодня», «Завтра», «1 августа» — год добавляем, только если он не текущий. */
 function dayLabel(value: string | Date): string {
@@ -911,9 +1020,6 @@ const autoLoad = useAutoLoad({
   storageKey: 'payments:auto-load',
   hasMore,
   busy: listBusy,
-  // По числу строк считается порог, после которого подгрузка просит
-  // подтверждения: он зависит от длины списка, а не от размера порции.
-  loaded: loadedCount,
   loadMore: loadNextChunk,
 })
 /** Метка конца списка — её отслеживает автоподгрузка. */
@@ -1055,9 +1161,17 @@ async function onRescheduled() {
           <v-icon icon="mdi-cash-multiple" size="20" />
         </div>
         <div>
-          <div v-if="statsBusy" class="stat-skel stat-skel--sm" />
-          <div v-else class="stat-value">{{ paymentsStore.facets?.tabs.active ?? 0 }}</div>
-          <div class="stat-label">Текущих платежей</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--md" />
+          <!-- Во всех четырёх карточках крупно деньги, под ними — из скольких
+               платежей они сложились. Раньше в двух карточках главным было
+               число платежей, в двух — сумма, и сравнивать их было нельзя. -->
+          <div v-else class="stat-value">
+            {{ formatCurrency((paymentsStore.facets?.sums.pending ?? 0) + (paymentsStore.facets?.sums.overdue ?? 0)) }}
+          </div>
+          <div class="stat-label">В работе</div>
+          <div v-if="!statsBusy" class="stat-sub">
+            {{ paymentsStore.facets?.tabs.active ?? 0 }} {{ plural(paymentsStore.facets?.tabs.active ?? 0) }}
+          </div>
         </div>
       </div>
       <div class="stat-card">
@@ -1068,6 +1182,9 @@ async function onRescheduled() {
           <div v-if="statsBusy" class="stat-skel stat-skel--md" />
           <div v-else class="stat-value">{{ formatCurrency(paymentsStore.facets?.sums.pending ?? 0) }}</div>
           <div class="stat-label">Ожидается</div>
+          <div v-if="!statsBusy" class="stat-sub">
+            {{ paymentsStore.facets?.tabs.pending ?? 0 }} {{ plural(paymentsStore.facets?.tabs.pending ?? 0) }}
+          </div>
         </div>
       </div>
       <div class="stat-card">
@@ -1075,9 +1192,12 @@ async function onRescheduled() {
           <v-icon icon="mdi-alert-circle-outline" size="20" />
         </div>
         <div>
-          <div v-if="statsBusy" class="stat-skel stat-skel--sm" />
-          <div v-else class="stat-value">{{ paymentsStore.facets?.tabs.overdue ?? 0 }}</div>
+          <div v-if="statsBusy" class="stat-skel stat-skel--md" />
+          <div v-else class="stat-value">{{ formatCurrency(paymentsStore.facets?.sums.overdue ?? 0) }}</div>
           <div class="stat-label">Просрочено</div>
+          <div v-if="!statsBusy" class="stat-sub">
+            {{ paymentsStore.facets?.tabs.overdue ?? 0 }} {{ plural(paymentsStore.facets?.tabs.overdue ?? 0) }}
+          </div>
         </div>
       </div>
       <div class="stat-card">
@@ -1088,6 +1208,9 @@ async function onRescheduled() {
           <div v-if="statsBusy" class="stat-skel stat-skel--md" />
           <div v-else class="stat-value">{{ formatCurrency(paymentsStore.facets?.sums.paid ?? 0) }}</div>
           <div class="stat-label">Получено</div>
+          <div v-if="!statsBusy" class="stat-sub">
+            {{ paymentsStore.facets?.tabs.paid ?? 0 }} {{ plural(paymentsStore.facets?.tabs.paid ?? 0) }}
+          </div>
         </div>
       </div>
     </div>
@@ -1115,15 +1238,7 @@ async function onRescheduled() {
       <!-- Поиск наверху: в нижней панели фильтров ему доставалось 280px, и
            подсказка не помещалась целиком. Здесь строка тянется по свободному
            месту. -->
-      <div class="filter-input-wrap payments-search">
-        <v-icon icon="mdi-magnify" size="18" class="filter-input-icon" />
-        <input
-          v-model="search"
-          type="text"
-          :placeholder="`Поиск по сделке, клиенту${canSearchAddress ? ', адресу' : ''}...`"
-          class="filter-input"
-        />
-      </div>
+      <SearchInput v-model="search" :placeholder="`Поиск по сделке, клиенту${canSearchAddress ? ', адресу' : ''}...`" class="payments-search" />
 
       <v-spacer />
       <!-- Filter group (cashbox + staff + folder).
@@ -1220,22 +1335,22 @@ async function onRescheduled() {
                   <div class="cal-month-stat">
                     <span class="cal-month-stat-dot" style="background: #3b82f6;" />
                     <span class="cal-month-stat-label">Всего</span>
-                    <span class="cal-month-stat-value">{{ monthSummary.count }} · {{ formatCurrency(monthSummary.total) }}</span>
+                    <span class="cal-month-stat-value">{{ formatCurrency(monthSummary.total) }} <span class="cal-month-stat-count">{{ monthSummary.count }} {{ plural(monthSummary.count) }}</span></span>
                   </div>
                   <div class="cal-month-stat">
                     <span class="cal-month-stat-dot" style="background: #f59e0b;" />
                     <span class="cal-month-stat-label">Ожидается</span>
-                    <span class="cal-month-stat-value">{{ formatCurrency(monthSummary.pending) }}</span>
+                    <span class="cal-month-stat-value">{{ formatCurrency(monthSummary.pending) }} <span class="cal-month-stat-count">{{ monthSummary.pendingCount }} {{ plural(monthSummary.pendingCount) }}</span></span>
                   </div>
                   <div class="cal-month-stat">
                     <span class="cal-month-stat-dot" style="background: #ef4444;" />
                     <span class="cal-month-stat-label">Просрочено</span>
-                    <span class="cal-month-stat-value" :style="{ color: monthSummary.overdue ? '#ef4444' : undefined }">{{ formatCurrency(monthSummary.overdue) }}</span>
+                    <span class="cal-month-stat-value" :style="{ color: monthSummary.overdue ? '#ef4444' : undefined }">{{ formatCurrency(monthSummary.overdue) }} <span class="cal-month-stat-count">{{ monthSummary.overdueCount }} {{ plural(monthSummary.overdueCount) }}</span></span>
                   </div>
                   <div class="cal-month-stat">
                     <span class="cal-month-stat-dot" style="background: #047857;" />
                     <span class="cal-month-stat-label">Оплачено</span>
-                    <span class="cal-month-stat-value" style="color: #047857;">{{ formatCurrency(monthSummary.paid) }}</span>
+                    <span class="cal-month-stat-value" style="color: #047857;">{{ formatCurrency(monthSummary.paid) }} <span class="cal-month-stat-count">{{ monthSummary.paidCount }} {{ plural(monthSummary.paidCount) }}</span></span>
                   </div>
                 </div>
 
@@ -1260,18 +1375,49 @@ async function onRescheduled() {
                     @click="selectDay(day)"
                   >
                     <span class="cal-day-num">{{ day.day }}</span>
-                    <!-- Точка на каждый статус, присутствующий в дне (до трёх):
-                         сервер отдаёт счётчики по статусам, а не сами платежи. -->
-                    <div v-if="day.count && day.isCurrentMonth" class="cal-day-dots">
-                      <span
-                        v-for="st in day.dots"
-                        :key="st"
-                        class="cal-dot"
-                        :style="{ background: st === 'OVERDUE' ? '#ef4444' : st === 'PAID' ? '#047857' : '#f59e0b' }"
-                      />
-                    </div>
-                    <div v-if="day.count && day.isCurrentMonth" class="cal-day-amount">
-                      {{ day.totalAmount >= 1000 ? Math.round(day.totalAmount / 1000) + 'k' : day.totalAmount }}
+                    <!-- Разбивка дня: сколько всего, сколько уже получили и
+                         сколько ещё ждём — с числом платежей, а не одной
+                         суммой: по сумме не понять, пришли деньги или только
+                         должны прийти. -->
+                    <div
+                      v-if="day.count && day.isCurrentMonth"
+                      class="cal-day-lines"
+                      :title="`Всего ${day.count} на ${formatCurrency(day.totalAmount)}`
+                        + (day.paidCount ? ` · получено ${day.paidCount} на ${formatCurrency(day.paidSum)}` : '')
+                        + (day.dueCount ? ` · ждём ${day.dueCount} на ${formatCurrency(day.dueSum)}` : '')
+                        + (day.overdueCount ? ` · из них просрочено ${day.overdueCount}` : '')"
+                    >
+                      <div class="cal-day-line cal-day-line--total">
+                        <span class="cal-day-line-dot" style="background: #3b82f6;" />
+                        <span class="cal-day-line-sum">{{ shortMoney(day.totalAmount) }} ₽</span>
+                        <span class="cal-day-line-n">
+                          <span class="cal-day-line-n-full">{{ day.count }} {{ plural(day.count) }}</span>
+                          <span class="cal-day-line-n-short">{{ day.count }} шт</span>
+                        </span>
+                      </div>
+                      <div v-if="day.paidCount" class="cal-day-line cal-day-line--paid">
+                        <span class="cal-day-line-dot" style="background: #047857;" />
+                        <span class="cal-day-line-sum">{{ shortMoney(day.paidSum) }} ₽</span>
+                        <span class="cal-day-line-n">
+                          <span class="cal-day-line-n-full">{{ day.paidCount }} {{ plural(day.paidCount) }}</span>
+                          <span class="cal-day-line-n-short">{{ day.paidCount }} шт</span>
+                        </span>
+                      </div>
+                      <div
+                        v-if="day.dueCount"
+                        class="cal-day-line"
+                        :class="day.overdueCount ? 'cal-day-line--overdue' : 'cal-day-line--due'"
+                      >
+                        <span
+                          class="cal-day-line-dot"
+                          :style="{ background: day.overdueCount ? '#ef4444' : '#f59e0b' }"
+                        />
+                        <span class="cal-day-line-sum">{{ shortMoney(day.dueSum) }} ₽</span>
+                        <span class="cal-day-line-n">
+                          <span class="cal-day-line-n-full">{{ day.dueCount }} {{ plural(day.dueCount) }}</span>
+                          <span class="cal-day-line-n-short">{{ day.dueCount }} шт</span>
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1284,22 +1430,22 @@ async function onRescheduled() {
                   <div class="cal-month-stat">
                     <span class="cal-month-stat-dot" style="background: #3b82f6;" />
                     <span class="cal-month-stat-label">Всего за год</span>
-                    <span class="cal-month-stat-value">{{ yearSummary.count }} · {{ formatCurrency(yearSummary.total) }}</span>
+                    <span class="cal-month-stat-value">{{ formatCurrency(yearSummary.total) }} <span class="cal-month-stat-count">{{ yearSummary.count }} {{ plural(yearSummary.count) }}</span></span>
                   </div>
                   <div class="cal-month-stat">
                     <span class="cal-month-stat-dot" style="background: #f59e0b;" />
                     <span class="cal-month-stat-label">Ожидается</span>
-                    <span class="cal-month-stat-value">{{ formatCurrency(yearSummary.pending) }}</span>
+                    <span class="cal-month-stat-value">{{ formatCurrency(yearSummary.pending) }} <span class="cal-month-stat-count">{{ yearSummary.pendingCount }} {{ plural(yearSummary.pendingCount) }}</span></span>
                   </div>
                   <div class="cal-month-stat">
                     <span class="cal-month-stat-dot" style="background: #ef4444;" />
                     <span class="cal-month-stat-label">Просрочено</span>
-                    <span class="cal-month-stat-value" :style="{ color: yearSummary.overdue ? '#ef4444' : undefined }">{{ formatCurrency(yearSummary.overdue) }}</span>
+                    <span class="cal-month-stat-value" :style="{ color: yearSummary.overdue ? '#ef4444' : undefined }">{{ formatCurrency(yearSummary.overdue) }} <span class="cal-month-stat-count">{{ yearSummary.overdueCount }} {{ plural(yearSummary.overdueCount) }}</span></span>
                   </div>
                   <div class="cal-month-stat">
                     <span class="cal-month-stat-dot" style="background: #047857;" />
                     <span class="cal-month-stat-label">Оплачено</span>
-                    <span class="cal-month-stat-value" style="color: #047857;">{{ formatCurrency(yearSummary.paid) }}</span>
+                    <span class="cal-month-stat-value" style="color: #047857;">{{ formatCurrency(yearSummary.paid) }} <span class="cal-month-stat-count">{{ yearSummary.paidCount }} {{ plural(yearSummary.paidCount) }}</span></span>
                   </div>
                 </div>
 
@@ -1313,12 +1459,13 @@ async function onRescheduled() {
                   >
                     <div class="year-month-header" @click="goToMonthFromYear(m.monthIndex)">
                       <span class="year-month-name">{{ m.name }}</span>
-                      <span v-if="m.paymentCount" class="year-month-badge">
-                        {{ m.paymentCount }}
-                      </span>
                     </div>
+                    <!-- Сумма месяца и из скольких платежей она сложилась.
+                         Раньше в шапке висел бейдж с одним числом, и что это
+                         за число — деньги или платежи — приходилось гадать. -->
                     <div v-if="m.totalAmount" class="year-month-total">
                       {{ formatCurrency(m.totalAmount) }}
+                      <span class="year-month-count">{{ m.paymentCount }} {{ plural(m.paymentCount) }}</span>
                     </div>
                     <!-- Mini weekday headers -->
                     <div class="mini-cal-grid mini-cal-header">
@@ -1369,17 +1516,65 @@ async function onRescheduled() {
           <div class="day-dialog-head">
             <div>
               <div class="day-dialog-title">{{ formatSelectedDate(selectedCalendarDate) }}</div>
-              <div class="day-dialog-sub">
-                {{ dayPaymentsTotal.toLocaleString('ru-RU') }}
-                {{ dayPaymentsTotal === 1 ? 'платёж' : dayPaymentsTotal < 5 ? 'платежа' : 'платежей' }}
-                <template v-if="dayTotalAmount">
-                  · {{ formatCurrency(dayTotalAmount) }}
-                </template>
-              </div>
             </div>
             <button class="dialog-close-sm" @click="selectedCalendarDate = null">
               <v-icon icon="mdi-close" size="16" />
             </button>
+          </div>
+          <!-- Итоги дня отдельным рядом под шапкой, а не рядом с заголовком:
+               в шапке ячейки делили ширину с кнопкой закрытия и не доходили до
+               правого края. Считаются по агрегату сервера — в таблице ниже
+               видна только первая сотня платежей, и сумма по ней была бы
+               меньше настоящей. -->
+          <div class="day-dialog-stats">
+            <div class="day-stat">
+              <div class="day-stat-head">
+                <span class="day-stat-dot" style="background: #3b82f6;" />
+                Всего
+              </div>
+              <div class="day-stat-sum">{{ formatCurrency(selectedDayAgg.total) }}</div>
+              <div class="day-stat-count">
+                {{ selectedDayAgg.count }} {{ plural(selectedDayAgg.count) }}
+              </div>
+            </div>
+            <div class="day-stat">
+              <div class="day-stat-head">
+                <span class="day-stat-dot" style="background: #047857;" />
+                Получено
+              </div>
+              <div class="day-stat-sum day-stat-sum--paid">
+                {{ formatCurrency(selectedDayAgg.paidSum) }}
+              </div>
+              <div class="day-stat-count">
+                {{ selectedDayAgg.paidCount }} {{ plural(selectedDayAgg.paidCount) }}
+              </div>
+            </div>
+            <div class="day-stat">
+              <div class="day-stat-head">
+                <span class="day-stat-dot" style="background: #f59e0b;" />
+                Ожидается
+              </div>
+              <div class="day-stat-sum day-stat-sum--due">
+                {{ formatCurrency(selectedDayAgg.dueSum) }}
+              </div>
+              <div class="day-stat-count">
+                {{ selectedDayAgg.dueCount }} {{ plural(selectedDayAgg.dueCount) }}
+              </div>
+            </div>
+            <!-- Просрочка — часть «ожидается», поэтому ячейка появляется
+                 только когда она есть, и подписана как уточнение. -->
+            <div v-if="selectedDayAgg.overdueCount" class="day-stat day-stat--overdue">
+              <div class="day-stat-head">
+                <span class="day-stat-dot" style="background: #ef4444;" />
+                Из них просрочено
+              </div>
+              <div class="day-stat-sum day-stat-sum--overdue">
+                {{ formatCurrency(selectedDayAgg.overdueSum) }}
+              </div>
+              <div class="day-stat-count">
+                {{ selectedDayAgg.overdueCount }} {{ plural(selectedDayAgg.overdueCount) }}
+              </div>
+            </div>
           </div>
 
           <div class="day-dialog-body">
@@ -1594,7 +1789,9 @@ async function onRescheduled() {
             <v-progress-circular indeterminate size="30" width="3" color="primary" />
           </div>
 
-        <v-table v-if="displayedPayments.length" density="comfortable" hover class="payments-table payments-table--desktop">
+        <!-- Обёртка для виртуализации: по её положению считаются видимые строки. -->
+        <div v-if="displayedPayments.length" ref="tableViewport">
+        <v-table density="comfortable" hover class="payments-table payments-table--desktop">
           <thead>
             <tr>
               <th class="th-index">№</th>
@@ -1623,10 +1820,19 @@ async function onRescheduled() {
             </tr>
           </thead>
           <tbody>
-            <template v-for="row in paymentRows" :key="row.key">
+            <!-- Верхняя распорка: место строк выше экрана и точка отсчёта списка. -->
+            <tr ref="markerRow" class="virtual-pad" aria-hidden="true">
+              <!-- Высоту задаёт вложенный блок, а не сама ячейка: заданную
+                   высоту строки браузер в таблице не соблюдает — он
+                   перераспределяет её между строками, и на тысячах строк
+                   список разъезжался с прокруткой на сотни пикселей. -->
+              <td colspan="8"><div :style="{ height: virtual.padTop.value + 'px' }" /></td>
+            </tr>
+
+            <template v-for="(row, idx) in virtual.visibleRows.value" :key="row.key">
               <!-- Граница дня: дальше идут платежи одной даты, и сразу видно,
                    сколько их и на какую сумму. -->
-              <tr v-if="row.kind === 'day'" class="pl-day-row">
+              <tr v-if="row.kind === 'day'" :ref="virtual.rowRef(virtual.offset.value + idx)" data-virtual-row class="pl-day-row">
                 <td :colspan="8">
                   <div class="pl-day" :class="{ 'pl-day--overdue': row.overdue }">
                     <span class="pl-day-label">{{ row.label }}</span>
@@ -1638,7 +1844,7 @@ async function onRescheduled() {
                 </td>
               </tr>
 
-              <tr v-else class="clickable-row" :class="{ 'deal-locked-dim': isPaymentLocked(row.payment) }" @click="openDealFromPayment(row.payment)">
+              <tr v-else :ref="virtual.rowRef(virtual.offset.value + idx)" data-virtual-row class="clickable-row" :class="{ 'deal-locked-dim': isPaymentLocked(row.payment) }" @click="openDealFromPayment(row.payment)">
               <td class="td-index">{{ rowNumber(row.idx) }}</td>
               <td>
                 <span class="font-weight-medium">{{ getDealName(row.payment) }}</span>
@@ -1717,8 +1923,13 @@ async function onRescheduled() {
               </td>
             </tr>
             </template>
+
+            <tr class="virtual-pad" aria-hidden="true">
+              <td colspan="8"><div :style="{ height: virtual.padBottom.value + 'px' }" /></td>
+            </tr>
           </tbody>
         </v-table>
+        </div>
 
         <!-- Mobile card view (shown only on <768px via CSS) -->
         <div v-if="displayedPayments.length" class="payments-cards">
@@ -1830,7 +2041,6 @@ async function onRescheduled() {
           :auto-load="autoLoad.enabled.value"
           :loaded="loadedCount"
           :has-more="hasMore"
-          :paused="autoLoad.paused.value"
           @update:page="page = $event"
           @update:per-page="perPage = $event"
           @update:auto-load="autoLoad.enabled.value = $event"
@@ -2002,6 +2212,26 @@ async function onRescheduled() {
 </template>
 
 <style scoped>
+
+/* Распорки виртуализации: держат место неотрисованных строк. */
+/* Распорки виртуализации: держат место неотрисованных строк и сами строкой
+   выглядеть не должны.
+   `height: 0` обязателен: ячейкам таблицы Vuetify задаёт высоту строки, и
+   пустая распорка занимала бы 52 лишних пикселя — под шапкой висела пустая
+   полоса. Нужную высоту задаёт блок внутри ячейки.
+   `transition: none` тоже обязателен: Vuetify анимирует высоту ячеек, и
+   распорка меняла размер плавно — список продолжал ехать почти треть секунды
+   после каждого сдвига окна. */
+.virtual-pad td {
+  height: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  overflow-anchor: none;
+  transition: none !important;
+}
+.virtual-pad:hover td { background: transparent !important; }
+
 /* Плашки включённых фильтров над списком. */
 .active-filters {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -2056,6 +2286,13 @@ async function onRescheduled() {
 }
 .stat-label {
   font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
+}
+/* Вторая величина карточки: к числу платежей — сумма, к сумме — число. */
+.stat-sub {
+  margin-top: 3px;
+  font-size: 12px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Tab buttons */
@@ -2675,20 +2912,78 @@ async function onRescheduled() {
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
 
-.cal-day-dots {
-  display: flex; gap: 4px; margin-top: 8px;
+/* Разбивка дня: три строки «сколько платежей · сколько денег». Прижаты к
+   низу ячейки, чтобы номер дня оставался на своём месте во всех клетках. */
+/*
+ * Разбивка дня — маленькой таблицей, а не набором строк.
+ *
+ * Суммы разной длины («62к» и «1,2М») при обычном потоке уводили за собой
+ * количество, и три строки выглядели рваными. Здесь у каждой строки одни и те
+ * же три колонки: цветная точка, сумма слева, количество прижато к правому
+ * краю клетки. Тонкие линейки между строками отделяют «получено» от «ждём».
+ */
+.cal-day-lines {
+  margin-top: auto;
+  display: flex; flex-direction: column;
+  font-variant-numeric: tabular-nums;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
 }
-.cal-dot {
-  width: 7px; height: 7px; border-radius: 50%;
+.cal-day-line {
+  display: grid;
+  grid-template-columns: 6px minmax(0, auto) 1fr;
+  align-items: center; gap: 6px;
+  padding: 3px 0;
+  font-size: 12px; line-height: 1.25;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.cal-day-line:last-child { border-bottom: none; }
+/* Строка «всего» — шапка этой маленькой таблицы: та же сетка, но заметнее. */
+.cal-day-line--total {
+  padding-left: 2px; padding-right: 2px;
+  margin-left: -2px; margin-right: -2px;
+  background: rgba(var(--v-theme-on-surface), 0.025);
+}
+.dark .cal-day-lines { border-top-color: rgba(255, 255, 255, 0.14); }
+.dark .cal-day-line { border-bottom-color: rgba(255, 255, 255, 0.1); }
+.dark .cal-day-line--total { background: rgba(255, 255, 255, 0.05); }
+
+/*
+ * Деньги — главное в строке, число платежей — пояснение к ним. Поэтому сумма
+ * набрана жирным, а количество идёт следом словом и приглушённым цветом: два
+ * числа подряд без подписи глаз читает как одно.
+ */
+.cal-day-line-sum { font-weight: 700; white-space: nowrap; }
+.cal-day-line-n {
+  justify-self: end;
+  font-size: 10.5px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.42);
+  white-space: nowrap;
+}
+/* Точка того же цвета, что в легенде над календарём. */
+.cal-day-line-dot { width: 6px; height: 6px; border-radius: 50%; }
+.cal-day-line--total { color: rgba(var(--v-theme-on-surface), 0.75); font-size: 12.5px; }
+.cal-day-line--paid { color: #047857; }
+.cal-day-line--due { color: #b45309; }
+.cal-day-line--overdue { color: #dc2626; }
+
+/* Узкая клетка: слово «платежа» вытесняет сумму, поэтому количество
+   сжимается до «×4», а разбивка по статусам убирается совсем — она есть в
+   окне дня. Не «×4»: рядом с суммой это читается как «412к четыре раза». */
+.cal-day-line-n-short { display: none; }
+@media (max-width: 1279px) {
+  .cal-day-line-n-full { display: none; }
+  .cal-day-line-n-short { display: inline; }
+}
+@media (max-width: 959px) {
+  .cal-day-line--paid,
+  .cal-day-line--due,
+  .cal-day-line--overdue { display: none; }
 }
 
-.cal-day-amount {
-  font-size: 13px; font-weight: 700; margin-top: auto;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.cal-day--has-payments .cal-day-amount {
-  color: rgba(var(--v-theme-on-surface), 0.65);
-}
+.dark .cal-day-line--due { color: #fbbf24; }
+.dark .cal-day-line--paid { color: #34d399; }
+.dark .cal-day-line--overdue { color: #f87171; }
 
 /* Calendar sidebar */
 
@@ -2751,16 +3046,16 @@ async function onRescheduled() {
   color: rgba(var(--v-theme-on-surface), 0.75);
   transition: color 0.15s;
 }
-.year-month-badge {
-  font-size: 10px; font-weight: 700;
-  padding: 1px 6px; border-radius: 8px;
-  background: rgba(var(--v-theme-primary), 0.1);
-  color: rgb(var(--v-theme-primary));
-}
 .year-month-total {
-  font-size: 11px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.45);
+  font-size: 12px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.7);
   margin-bottom: 6px;
+}
+/* Количество — подписью к сумме, как и везде в календаре. */
+.year-month-count {
+  margin-left: 6px;
+  font-size: 10.5px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.42);
 }
 
 /* Mini calendar grid */
@@ -3090,6 +3385,14 @@ async function onRescheduled() {
   .stat-icon { width: 32px; height: 32px; }
 }
 
+/* Списки карточек бывают на тысячу элементов, а высота у них плавающая —
+   виртуализация здесь не подходит. Браузер сам пропускает отрисовку того,
+   что за экраном: карточка платежа на телефоне рисуется, когда до неё доходит прокрутка. */
+.pay-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 150px;
+}
+
 .pay-card {
   display: flex; flex-direction: column; gap: 6px;
   padding: 14px;
@@ -3263,8 +3566,7 @@ async function onRescheduled() {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 20px 14px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  padding: 18px 20px 12px;
 }
 .day-dialog-title { font-size: 16px; font-weight: 700; }
 .day-dialog-sub {
@@ -3273,7 +3575,64 @@ async function onRescheduled() {
   color: rgba(var(--v-theme-on-surface), 0.55);
 }
 
-.day-dialog-body { padding: 4px 8px 12px; overflow-y: auto; }
+/* Итоги дня в шапке окна — теми же плашками, что и сводка года: одинаковые
+   показатели должны выглядеть одинаково в обоих масштабах календаря. */
+/* Итоги дня — ячейками одинаковой ширины, как в клетке календаря: подпись,
+   под ней сумма, под ней число платежей. Строкой через разделители они
+   сливались в одну длинную фразу, и глаз не находил, где кончается один
+   показатель и начинается следующий. */
+.day-dialog-stats {
+  padding: 0 20px 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+.day-stat {
+  padding: 8px 12px 9px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.015);
+}
+.day-stat--overdue {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.04);
+}
+.day-stat-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.day-stat-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.day-stat-sum {
+  margin-top: 3px;
+  font-size: 16px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  font-variant-numeric: tabular-nums;
+}
+.day-stat-sum--paid { color: #047857; }
+.day-stat-sum--due { color: #b45309; }
+.day-stat-sum--overdue { color: #dc2626; }
+.day-stat-count {
+  font-size: 11.5px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.dark .day-stat { background: rgba(255, 255, 255, 0.03); }
+.dark .day-stat-sum--paid { color: #34d399; }
+.dark .day-stat-sum--due { color: #fbbf24; }
+.dark .day-stat-sum--overdue { color: #f87171; }
+
+/* Количество платежей в сводках месяца и года — пояснение к сумме. */
+.cal-month-stat-count {
+  margin-left: 7px;
+  font-size: 11.5px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+.day-dialog-body {
+  padding: 4px 8px 12px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
 .day-dialog-body .cal-day-more { margin: 12px 12px 0; width: calc(100% - 24px); }
 
 @media (max-width: 767px) {

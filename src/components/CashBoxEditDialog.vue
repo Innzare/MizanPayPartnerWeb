@@ -390,11 +390,31 @@ async function handleSave() {
 </template>
 
 <style scoped>
-.cb-dialog { background: #fff; }
+/*
+ * Окно скроллится внутри себя, а не целиком.
+ *
+ * Полей здесь много — название, капитал, участие, цвет, иконка, — и при
+ * прокрутке всего окна кнопки «Отмена» и «Сохранить» уезжали за нижний край:
+ * чтобы сохранить кассу, приходилось доматывать до конца. Теперь прокручивается
+ * только середина, а шапка и кнопки остаются на месте.
+ */
+.cb-dialog {
+  background: #fff;
+  display: flex; flex-direction: column;
+  max-height: 88vh;
+}
 .cb-dialog.dark { background: rgb(var(--v-theme-surface-elevated)); }
 
+/* На весь экран (мобильный) ограничение по высоте не нужно — окно и так во
+   весь экран, а 88vh оставили бы под ним пустую полосу. */
+@media (max-width: 599px) {
+  .cb-dialog { max-height: 100%; height: 100%; }
+}
+
 /* Header */
+/* Шапка не уезжает вместе с содержимым. */
 .cb-header {
+  flex: none;
   display: flex; align-items: center; gap: 14px;
   padding: 18px 20px;
   border-bottom: 1px solid #f0f0f0;
@@ -425,6 +445,8 @@ async function handleSave() {
 .cb-body {
   padding: 20px;
   display: flex; flex-direction: column; gap: 18px;
+  /* Прокручивается только эта часть — шапка и кнопки закреплены. */
+  flex: 1 1 auto; overflow-y: auto; min-height: 0;
 }
 
 .cb-preview {
@@ -540,6 +562,13 @@ async function handleSave() {
   display: flex; gap: 10px; justify-content: flex-end;
   padding: 14px 20px;
   border-top: 1px solid #f0f0f0;
+  /* Кнопки всегда на виду: sticky держит их у нижнего края и в тех браузерах,
+     где flex-раскладка окна ведёт себя иначе. */
+  position: sticky; bottom: 0; z-index: 1;
+  flex: none;
+  background: inherit;
+  /* Мягкая тень вверх: видно, что под кнопками содержимое продолжается. */
+  box-shadow: 0 -6px 14px rgba(15, 23, 42, 0.05);
 }
 .cb-dialog.dark .cb-footer { border-top-color: rgb(var(--v-theme-surface-elevated)); }
 
