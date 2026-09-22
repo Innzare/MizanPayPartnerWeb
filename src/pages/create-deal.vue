@@ -6,12 +6,18 @@ import { todayIso } from '@/utils/dateInput'
 import { useAuthStore } from '@/stores/auth'
 import {
   availableTerms,
+  curveMarkupForDown,
   matchRule,
   minDownPaymentFor,
+  pickRuleForDown,
   scheduleShape,
   totalFor,
+  totalForEqualPayments,
+  totalWithMinMarkup,
   type MarkupBase,
+  type ProgramDownMode,
   type ProgramRounding,
+  type ProgramRoundingTarget,
   type ProgramRule,
 } from '@/utils/programMath'
 import { formatCurrency, CURRENCY_MASK, PERCENT_MASK, parseMasked, maskedMoney, maskedPercent } from '@/utils/formatters'
@@ -221,6 +227,14 @@ const markupValue = ref(15)
 const downPaymentType = ref<'fixed' | 'percent'>('fixed')
 const downPayment = ref<number | null>(null)
 const downPaymentPercent = ref<number | null>(null)
+// Точная сумма в рублях, введённая в поле «Сумма взноса» (в процентном режиме).
+// null — сумма выводится из процента. Тот же приём, что у ручной цены договора:
+// без него округление процента уводило бы показанные рубли от набранных
+// (10 000 → 11 500), а поле с маской возвращалось бы к выведенному значению.
+//
+// Объявлено здесь, вместе с остальными полями взноса: от них зависит подбор
+// условий тарифа (ступень наценки), а он описан ниже по файлу.
+const manualDownPayment = ref<number | null>(null)
 const termMonths = ref(6)
 const paymentType = ref<PaymentType>('EQUAL')
 const paymentInterval = ref('MONTHLY')
@@ -767,6 +781,14 @@ interface ProgramItem {
   markupBase: MarkupBase
   paymentInterval: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
   rounding: ProgramRounding
+  /** Ступенями или кривой считается зависимость наценки от взноса. */
+  downMode?: ProgramDownMode
+  /** Куда уходит расхождение от округления платежа. */
+  roundingTarget?: ProgramRoundingTarget
+  /** Наценка не меньше этой суммы в рублях. */
+  minMarkupAmount?: number | null
+  /** Взнос, подставляемый в форму сразу при выборе тарифа. */
+  defaultDownPaymentPercent?: number | null
   minAmount: number | null
   maxAmount: number | null
   strict: boolean
@@ -798,11 +820,57 @@ const availablePrograms = computed(() => {
   })
 })
 
-/** Условия под текущую стоимость и срок. */
+/**
+ * Условия под текущую стоимость, срок и первоначальный взнос.
+ *
+ * Ступень взноса ищется по ВВЕДЁННОМУ значению, а не по итоговой сумме взноса:
+ * та выводится из цены договора, цена — из наценки, а наценка теперь зависит от
+ * ступени. Опора на ввод разрывает этот круг. В процентном режиме доля известна
+ * сразу; когда сумма задана в рублях, ступень подбирает та же функция, что и
+ * сервер, — перебором согласованных ступеней.
+ */
 const programRule = computed(() => {
   const p = selectedProgram.value
   if (!p) return null
-  return matchRule(p.rules, purchasePrice.value || 0, termMonths.value)
+  const price = purchasePrice.value || 0
+  if (p.downMode === 'CURVE') {
+    return curveMarkupForDown(p.rules, price, termMonths.value, typedDownPayment.value, p.markupBase)?.rule ?? null
+  }
+  if (downPaymentType.value === 'percent' && manualDownPayment.value === null) {
+    return matchRule(p.rules, price, termMonths.value, downPaymentPercent.value || 0)
+  }
+  return pickRuleForDown(p.rules, price, termMonths.value, typedDownPayment.value, p.markupBase)
+})
+
+/**
+ * Взнос, набранный руками, в рублях.
+ *
+ * Именно он участвует в подборе условий: вычисленная сумма взноса выводится из
+ * цены договора, а та теперь сама зависит от взноса — подписка на неё
+ * закольцевала бы пересчёт. В процентном режиме без явной суммы рубли пока
+ * неизвестны, и подбор идёт по проценту.
+ */
+const typedDownPayment = computed(() =>
+  downPaymentType.value === 'percent'
+    ? (manualDownPayment.value ?? 0)
+    : (downPayment.value || 0),
+)
+
+/** Наценка по тарифу с учётом кривой: на ней процент лежит между точками. */
+const programMarkupPercent = computed(() => {
+  const p = selectedProgram.value
+  if (!p) return null
+  if (p.downMode === 'CURVE') {
+    const got = curveMarkupForDown(
+      p.rules,
+      purchasePrice.value || 0,
+      termMonths.value,
+      typedDownPayment.value,
+      p.markupBase,
+    )
+    return got?.markupPercent ?? null
+  }
+  return programRule.value?.markupPercent ?? null
 })
 
 /** Сроки, которые программа допускает для этой стоимости. */
@@ -832,9 +900,18 @@ const programMinDownPayment = computed(() => {
  */
 const programTotalPrice = computed(() => {
   const p = selectedProgram.value
-  const rule = programRule.value
-  if (!p || !rule) return null
-  const total = totalFor(purchasePrice.value || 0, rule.markupPercent, p.markupBase)
+  const percent = programMarkupPercent.value
+  if (!p || percent == null) return null
+  // Тот же порядок, что на сервере: процент → минимальная наценка → подгонка
+  // под равные платежи, если тариф округляет «в цену».
+  let total = totalWithMinMarkup(
+    purchasePrice.value || 0,
+    totalFor(purchasePrice.value || 0, percent, p.markupBase),
+    p.minMarkupAmount,
+  )
+  if (p.roundingTarget === 'TOTAL') {
+    total = totalForEqualPayments(total, typedDownPayment.value, termMonths.value, p.rounding)
+  }
   return total > 0 ? total : null
 })
 
@@ -915,6 +992,17 @@ function applyProgram() {
   // Периодичность платежей — тоже условие программы: у недельной программы
   // месячный график был бы отклонён сервером без всякой подсказки.
   if (paymentInterval.value !== p.paymentInterval) paymentInterval.value = p.paymentInterval
+  // Взнос по умолчанию подставляем только в пустое поле: набранное продавцом
+  // значение важнее тарифа, затирать его нельзя.
+  if (
+    p.defaultDownPaymentPercent != null &&
+    downPayment.value === null &&
+    downPaymentPercent.value === null &&
+    manualDownPayment.value === null
+  ) {
+    downPaymentType.value = 'percent'
+    downPaymentPercent.value = p.defaultDownPaymentPercent
+  }
   const rule = programRule.value
   if (!rule) return
   const total = totalFor(purchasePrice.value || 0, rule.markupPercent, p.markupBase)
@@ -929,9 +1017,16 @@ watch(availablePrograms, (list) => {
     selectedProgramId.value = null
   }
 })
-watch([purchasePrice, termMonths], () => {
-  if (selectedProgramId.value) applyProgram()
-})
+// Взнос в этом списке наравне со стоимостью и сроком: от него зависит ступень
+// наценки, а значит и цена договора. Следим за ВВЕДЁННЫМИ полями, а не за
+// вычисленной суммой взноса — та сама считается от цены, и подписка на неё
+// закольцевала бы пересчёт.
+watch(
+  [purchasePrice, termMonths, downPaymentType, downPayment, downPaymentPercent, manualDownPayment],
+  () => {
+    if (selectedProgramId.value) applyProgram()
+  },
+)
 
 // `manualTotalPrice` keeps the exact value the partner typed into the totalPrice
 // field — without it, percent rounding would drop kopecks (e.g. 99 250 → 99 246).
@@ -989,12 +1084,6 @@ const totalPrice = computed(() =>
     ? manualTotalPrice.value
     : (purchasePrice.value || 0) + markup.value,
 )
-// Exact ₽ amount the partner typed into the "Сумма взноса" field (percent mode).
-// null = derive the amount from the percent. Mirrors the `manualTotalPrice`
-// override used by the markup field: without it, percent rounding would make
-// the displayed ₽ drift away from what was typed (10 000 → 11 500), and the
-// maska-bound input would snap back to the derived value.
-const manualDownPayment = ref<number | null>(null)
 // Set when the partner tries to enter more than the total price. The value is
 // clamped to the max; this flag keeps the error visible until they enter a
 // valid amount.
@@ -1024,6 +1113,7 @@ const remainingAmount = computed(() => totalPrice.value - downPaymentAmount.valu
  */
 const ROUNDING_LABEL: Record<ProgramRounding, string> = {
   NONE: 'без округления',
+  TO_50: 'до 50 ₽',
   TO_100: 'до 100 ₽',
   TO_500: 'до 500 ₽',
   TO_1000: 'до 1000 ₽',

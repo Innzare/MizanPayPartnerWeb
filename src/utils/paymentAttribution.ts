@@ -93,6 +93,45 @@ export function offMonthKind(p: AttributablePayment): 'early' | 'late' | null {
 }
 
 /**
+ * Своевременность платежа в днях.
+ *
+ * Один ответ на два вопроса, которые в интерфейсе всегда идут парой: с какой
+ * задержкой платёж оплатили и сколько дней он уже висит неоплаченным.
+ *   PAID            → задержка от планового срока до фактической оплаты;
+ *   OVERDUE/PENDING → сколько дней прошло с планового срока (будущий срок → 0).
+ *
+ * PENDING считаем наравне с OVERDUE: статус проставляет крон, и до его прохода
+ * вчерашний платёж ещё числится ожидаемым — но человек уже опоздал.
+ *
+ * Обе даты приводим к местной полуночи: dueDate — календарный день, а paidAt
+ * бывает и полуночью UTC, и местным полднем ([[paymentAttribution]] выше), и
+ * без округления «оплачен в срок» превращался бы в задержку на день.
+ */
+export function overdueDays(p: AttributablePayment): number {
+  const due = new Date(p.dueDate)
+  if (Number.isNaN(due.getTime())) return 0
+  due.setHours(0, 0, 0, 0)
+
+  let reference: Date | null = null
+  if (p.status === 'OVERDUE' || p.status === 'PENDING') {
+    reference = new Date()
+  } else if (p.status === 'PAID' && p.paidAt) {
+    reference = new Date(p.paidAt)
+  }
+  if (!reference || Number.isNaN(reference.getTime())) return 0
+  reference.setHours(0, 0, 0, 0)
+
+  return Math.max(Math.floor((reference.getTime() - due.getTime()) / 86400000), 0)
+}
+
+/** «1 день / 2 дня / 5 дней» — склонение при числе. */
+export function pluralDays(n: number): string {
+  if (n % 10 === 1 && n % 100 !== 11) return 'день'
+  if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return 'дня'
+  return 'дней'
+}
+
+/**
  * Учитывать ли платёж в деньгах вообще.
  *
  * Отсекает то, что деньгами не является или уже не станет:

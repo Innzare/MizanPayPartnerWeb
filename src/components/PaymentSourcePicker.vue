@@ -47,16 +47,28 @@ onMounted(async () => {
   if (!auth.can('accounting.view')) return
   try {
     if (!store.accounts.length) await store.fetchAccounts()
+    // Обороты по лимитам — чтобы пометить карту, у которой лимит уже выбран.
+    // Принять на неё деньги можно (банк перевод проведёт), но человек должен
+    // видеть это до выбора, а не узнавать из отчёта.
+    if (!store.limits.length) await store.fetchLimits().catch(() => {})
   } catch {
     /* счета не критичны для оплаты: не срываем её из-за них */
   }
   loaded.value = true
 })
 
-/** Счета, на которые сейчас можно принимать деньги. */
-const usable = computed(() =>
-  store.accounts.filter((a) => !a.disabledAt),
-)
+/**
+ * Счета в выборе.
+ *
+ * Отключённые и упёршиеся в лимит показываем тоже — с пометкой. Эти признаки
+ * говорят «сама система сюда деньги не кладёт», но не отменяют перевода,
+ * который клиент уже сделал: раньше такую карту нельзя было даже выбрать, и
+ * оплата записывалась не туда, где деньги лежат на самом деле.
+ */
+const usable = computed(() => store.accounts)
+
+/** Куда система подставит счёт сама — отключённые для этого не годятся. */
+const autoUsable = computed(() => store.accounts.filter((a) => !a.disabledAt))
 
 /**
  * Тот же порядок, что на сервере: счёт кассы → счёт по умолчанию для этого
@@ -65,7 +77,7 @@ const usable = computed(() =>
  */
 const suggested = computed<AccountView | null>(() => {
   const cash = props.method === 'CASH'
-  const fit = usable.value.filter((a) => (cash ? a.type === 'CASH' : a.type === 'BANK_CARD'))
+  const fit = autoUsable.value.filter((a) => (cash ? a.type === 'CASH' : a.type === 'BANK_CARD'))
   // Деньги кассы ложатся на счета этой кассы — и только на них. Счёт чужой
   // кассы не подставляем, даже если он отмечен «по умолчанию».
   const own = props.cashBoxId ? fit.filter((a) => a.cashBoxId === props.cashBoxId) : fit
@@ -77,6 +89,17 @@ const suggested = computed<AccountView | null>(() => {
 const chosen = computed<AccountView | null>(
   () => usable.value.find((a) => a.id === props.modelValue) ?? suggested.value,
 )
+
+/**
+ * Выбран счёт, которым система сама не пользуется: отключён или лимит выбран.
+ * Деньги на него записать можно — но сказать об этом надо.
+ */
+const chosenUnavailable = computed<null | 'off' | 'full'>(() => {
+  const a = chosen.value
+  if (!a) return null
+  if (a.disabledAt) return 'off'
+  return store.limits.find((l) => l.id === a.id)?.limits.full ? 'full' : null
+})
 
 /**
  * Смешанная оплата: клиент принёс часть наличными, часть перевёл.
@@ -94,7 +117,7 @@ function startSplit() {
   split.value = true
   // Первая строка — счёт, который и так был выбран, на всю сумму: чаще всего
   // достаточно поправить её и добавить вторую.
-  parts.value = [{ accountId: chosen.value?.id ?? usable.value[0]?.id ?? '', amount: props.total ?? null }]
+  parts.value = [{ accountId: chosen.value?.id ?? autoUsable.value[0]?.id ?? '', amount: props.total ?? null }]
   emitParts()
 }
 
@@ -106,7 +129,7 @@ function stopSplit() {
 
 function addPart() {
   const used = new Set(parts.value.map((p) => p.accountId))
-  const next = usable.value.find((a) => !used.has(a.id))
+  const next = autoUsable.value.find((a) => !used.has(a.id))
   if (!next) return
   parts.value.push({ accountId: next.id, amount: splitLeft.value > 0 ? splitLeft.value : null })
   emitParts()
@@ -160,6 +183,20 @@ watch(
       @update:model-value="pick"
     />
 
+    <!-- Лимит выбран — деньги принять можно, но пусть это будет сказано
+         вслух: потом по такой карте разбираться сложнее. -->
+    <div v-if="!split && chosenUnavailable" class="psp-limit">
+      <v-icon icon="mdi-alert-circle-outline" size="15" />
+      <span v-if="chosenUnavailable === 'off'">
+        Счёт отключён. Деньги всё равно запишутся на него — если клиент
+        перевёл именно сюда, так и должно быть.
+      </span>
+      <span v-else>
+        Лимит по счёту выбран. Принять деньги можно — операция запишется на
+        него, но следующий перевод банк может не пропустить.
+      </span>
+    </div>
+
     <!-- Смешанная оплата нужна редко — прячем за ссылкой, а не за полем. -->
     <button v-if="!split && usable.length > 1 && (total ?? 0) > 0" class="psp-split-on" @click="startSplit">
       Платили с нескольких счетов?
@@ -211,6 +248,11 @@ watch(
 }
 
 /* ── Смешанная оплата ── */
+.psp-limit {
+  display: flex; align-items: flex-start; gap: 7px; margin-top: 8px;
+  padding: 8px 10px; border-radius: 9px; font-size: 12.5px; line-height: 1.45;
+  background: rgba(239, 68, 68, 0.09); color: #b91c1c;
+}
 .psp-split-on {
   margin-top: 6px; font-size: 12px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.5); cursor: pointer;

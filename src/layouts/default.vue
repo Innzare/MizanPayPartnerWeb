@@ -9,6 +9,7 @@ import { usePageHeaderStore } from "@/stores/pageHeader";
 import { useSubscription } from "@/composables/useSubscription";
 import { useSections } from '@/composables/useSections';
 import { useThemeMode } from '@/composables/useThemeMode';
+import { MAIN_NAV, SECONDARY_NAV } from '@/utils/navSections';
 import { useChats } from "@/composables/useChats";
 import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
@@ -50,9 +51,10 @@ const showDigest = ref(false);
 const digestAttention = ref(0);
 // Точка на кнопке: за период что-то происходило, даже если ничего не горит.
 const digestActivity = ref(false);
-// Сотруднику без доступа к сделкам сводку и открыть нечем: сервер ответит
-// отказом, а кнопка в шапке обещала бы раздел, которого у него нет.
-const canSeeDigest = computed(() => authStore.can('deals.view'));
+// Сводка дня — инструмент владельца: это обзор всего кабинета, от заявок до
+// обещаний должников. Сотрудник работает в своих разделах и в «Моём профиле»,
+// поэтому кнопку «События» и саму панель ему не показываем.
+const canSeeDigest = computed(() => authStore.isOwner && authStore.can('deals.view'));
 
 async function loadDigestBadge() {
   if (!canSeeDigest.value) return;
@@ -165,37 +167,9 @@ const activeTheme = computed(
   () => themeOptions.find((o) => o.id === themeMode.value) ?? themeOptions[0]!,
 );
 
-// Navigation
-const allMainNavRoutes: { path: string; title: string; icon: string; ownerOnly?: boolean; staffOnly?: boolean; permission?: string; requiredFeature?: keyof PlanFeatures }[] = [
-  { path: "/", title: "Главная", icon: "mdi-view-dashboard" },
-  { path: "/analytics", title: "Аналитика и отчёты", icon: "mdi-chart-line", requiredFeature: "analytics" },
-  { path: "/deals", title: "Сделки", icon: "mdi-briefcase" },
-  { path: "/clients", title: "Клиенты", icon: "mdi-account-group" },
-  { path: "/payments", title: "Платежи", icon: "mdi-cash-multiple" },
-  // Рассылки идут сразу за платежами: обзвон должников начинается там же, где
-  // видно, кто не заплатил.
-  { path: "/broadcasts", title: "Чаты и рассылки", icon: "mdi-whatsapp", requiredFeature: "whatsapp" },
-  { path: "/debtors", title: "Должники", icon: "mdi-account-alert-outline", requiredFeature: "debtors" },
-  // Поручители — рядом с должниками: оба раздела про риск невозврата.
-  { path: "/suppliers", title: "Партнёры", icon: "mdi-handshake-outline", requiredFeature: "suppliers" },
-  { path: "/messages", title: "Сообщения", icon: "mdi-message-text-outline", staffOnly: true },
-  { path: "/co-investors", title: "Инвесторы", icon: "mdi-account-group-outline", requiredFeature: "coInvestors" },
-  // Сотрудники — рядом с инвесторами: оба раздела про людей и их доступ.
-  { path: "/staff", title: "Сотрудники", icon: "mdi-account-key", ownerOnly: true, requiredFeature: "staff" },
-  { path: "/accounting", title: "Бухгалтерия", icon: "mdi-bank-outline", requiredFeature: "finance" },
-  // Инкассация — рядом с бухгалтерией: это её продолжение «в поле».
-  { path: "/cashboxes", title: "Кассы", icon: "mdi-wallet-outline", requiredFeature: "finance" },
-  { path: "/registry", title: "Реестр клиентов", icon: "mdi-shield-account", requiredFeature: "registry" },
-];
-
-const allSecondaryNavRoutes = [
-  { path: "/backups", title: "Резервные копии", icon: "mdi-content-save-outline" },
-  { path: "/help", title: "Справка", icon: "mdi-help-circle-outline" },
-  { path: "/settings", title: "Настройки", icon: "mdi-cog" },
-];
-
+// Навигация: список разделов общий со страницей «Мой профиль».
 const mainNavRoutes = computed(() =>
-  allMainNavRoutes
+  MAIN_NAV
     .filter((r) => {
       // Скрытый владельцем раздел исчезает ПОЛНОСТЬЮ — без короны и апселла.
       // Это принципиально отличается от тарифной блокировки ниже: там пункт
@@ -213,7 +187,7 @@ const mainNavRoutes = computed(() =>
 );
 
 const secondaryNavRoutes = computed(() =>
-  allSecondaryNavRoutes.filter((r) => {
+  SECONDARY_NAV.filter((r) => {
     if (r.path === "/help" && sections.isHidden("help")) return false;
     if ((r as any).ownerOnly && !authStore.isOwner) return false;
     return authStore.canAccess(r.path);
@@ -222,6 +196,7 @@ const secondaryNavRoutes = computed(() =>
 
 // Route titles for header
 const routeTitles: Record<string, string> = {
+  "/me": "Мой профиль",
   "/": "Главная",
   "/backups": "Резервные копии",
   "/analytics": "Аналитика и отчёты",
@@ -263,6 +238,7 @@ const routeTitles: Record<string, string> = {
 };
 
 const routeSubtitles: Record<string, string> = {
+  "/me": "Показатели работы и доступы",
   "/": "Обзор вашего портфеля",
   "/analytics": "Доход, поступления и прогнозы",
   "/help": "Как работать с MizanPay",
@@ -445,7 +421,15 @@ const confirmLogout = async () => {
                     >
                       {{ chats.totalUnread.value > 99 ? '99+' : chats.totalUnread.value }}
                     </span>
-                    <v-icon v-if="item.locked" icon="mdi-crown" size="16" class="lyt-nav-crown" />
+                    <!-- Свёрнутому пункту корона в строке мешает: она сдвигает
+                         иконку с центра. Там она уходит в правый нижний угол. -->
+                    <v-icon
+                      v-if="item.locked"
+                      icon="mdi-crown"
+                      :size="collapsed ? 11 : 16"
+                      class="lyt-nav-crown"
+                      :class="{ 'lyt-nav-crown--corner': collapsed }"
+                    />
                   </div>
                 </component>
               </template>
@@ -519,9 +503,21 @@ const confirmLogout = async () => {
           </div>
         </v-menu>
 
+        <!-- Сотруднику вместо карточки профиля — только выход: его имя, роль и
+             показатели живут в разделе «Мой профиль», первом в меню, а внизу
+             нужна одна понятная кнопка. -->
+        <v-tooltip v-if="authStore.isStaff" text="Выйти" location="end" :disabled="!collapsed">
+          <template #activator="{ props: tip }">
+            <button class="lyt-sidebar-exit" v-bind="tip" @click="logoutDialog = true">
+              <v-icon icon="mdi-logout" size="18" />
+              <span class="lyt-nav-text">Выйти</span>
+            </button>
+          </template>
+        </v-tooltip>
+
         <!-- Карточка профиля. В свёрнутом меню от неё остаётся только аватар:
              рамка вокруг одного кружка выглядит лишней коробкой. -->
-        <div class="lyt-sidebar-user">
+        <div v-else class="lyt-sidebar-user">
           <div :style="{ display: 'flex', gap: collapsed ? '0' : '12px' }">
             <!-- Сотрудник открывает отсюда свою страницу с показателями:
                  раздел «Сотрудники» ему закрыт, а собственная работа — нет. -->
@@ -900,6 +896,26 @@ const confirmLogout = async () => {
   padding: 8px;
 }
 
+/* Выход сотрудника: одна строка во всю ширину, как пункт меню. */
+.lyt-sidebar-exit {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.lyt-sidebar-exit:hover { background: #fdecec; color: #dc2626; }
+/* В свёрнутой панели от кнопки остаётся иконка по центру — как у пунктов меню. */
+.lyt-sidebar--collapsed .lyt-sidebar-exit { justify-content: center; padding: 10px 0; }
+
 /* Свёрнутое меню: от карточки профиля остаётся один аватар — фон и рамку
    убираем, иначе кружок сидит в пустой коробке. */
 .lyt-sidebar--collapsed .lyt-sidebar-user {
@@ -972,6 +988,7 @@ const confirmLogout = async () => {
 }
 
 .lyt-nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   padding: 10px 12px;
@@ -1015,6 +1032,15 @@ const confirmLogout = async () => {
 .lyt-nav-crown {
   margin-left: auto;
   color: #e8b931;
+}
+
+/* Свёрнутая панель: корона не в строке, а в углу — иконка раздела остаётся
+   ровно по центру, как у доступных разделов. */
+.lyt-nav-crown--corner {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  margin-left: 0;
 }
 
 .lyt-nav-badge {

@@ -373,7 +373,8 @@ const promiseByPayment = computed(() => {
           >
             <div class="dm-promise-item-main">
               <v-icon icon="mdi-calendar-check" size="15" />
-              <span>Обещал на <b>{{ fmtWords(a.promisedDate) }}</b></span>
+              <span v-if="a.promisedDate">Обещал на <b>{{ fmtWords(a.promisedDate) }}</b></span>
+              <span v-else>Обещал оплатить, <b>дата пока не указана</b></span>
               <span v-if="a.promisedAmount" class="dm-promise-item-amt">· {{ formatCurrency(a.promisedAmount) }}</span>
               <span v-if="a.promiseStatus" class="dm-ps" :class="promiseView(a).cls">{{ promiseView(a).label }}</span>
               <div v-if="canActivity" class="dm-promise-item-acts">
@@ -493,7 +494,8 @@ const promiseByPayment = computed(() => {
                 <div v-if="a.type === 'PROMISE'" class="dm-promise-card">
                   <div class="dm-promise-line">
                     <v-icon icon="mdi-calendar-check" size="15" />
-                    <span>Обещал на <b>{{ fmtWords(a.promisedDate) }}</b></span>
+                    <span v-if="a.promisedDate">Обещал на <b>{{ fmtWords(a.promisedDate) }}</b></span>
+                    <span v-else>Обещал оплатить, <b>дата пока не указана</b></span>
                     <span v-if="a.promisedAmount">· {{ formatCurrency(a.promisedAmount) }}</span>
                     <span v-if="a.promiseStatus" class="dm-ps" :class="promiseView(a).cls">{{ promiseView(a).label }}</span>
                   </div>

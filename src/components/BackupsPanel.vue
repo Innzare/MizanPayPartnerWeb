@@ -70,6 +70,19 @@ const canDownload = computed(() => auth.can('backups.download'))
 const schedule = ref<Schedule | null>(null)
 /** Сколько места занимают копии и сколько их из положенных. */
 const usage = ref<{ files: number; limit: number; bytes: number } | null>(null)
+/**
+ * Подсказка о потолке. Число копий зависит от тарифа (Премиум 5, Бизнес 1),
+ * поэтому фраза строится по числу, а не пишется как «последние N копий»: на
+ * Бизнесе получалось «последние 1 копий».
+ */
+const limitNote = computed(() => {
+  const n = usage.value?.limit ?? 0
+  if (n === 1) {
+    return 'Хранится одна последняя копия — при создании новой предыдущая удаляется автоматически.'
+  }
+  const word = n % 10 === 1 && n % 100 !== 11 ? 'копия' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'копии' : 'копий'
+  return `Хранится ${n} ${word} — при создании новой самая старая удаляется автоматически.`
+})
 const files = ref<BackupFile[]>([])
 const loading = ref(true)
 /**
@@ -186,6 +199,29 @@ async function runNow() {
   } finally {
     // Кнопку отпускаем сразу — сборка идёт в фоне, и ход её видно по полосе.
     running.value = false
+  }
+}
+
+/**
+ * Остановить сборку.
+ *
+ * Сервер помечает копию отменённой, а сама сборка прекращается на ближайшем
+ * шаге — мгновенного обрыва посреди записи файла не бывает, поэтому после
+ * ответа перечитываем список: запись уже будет со статусом «отменена».
+ */
+const cancelling = ref(false)
+async function cancelRun() {
+  if (cancelling.value) return
+  cancelling.value = true
+  try {
+    await api.post('/backups/cancel', {})
+    progress.stop()
+    toast.success('Сборка копии отменена')
+    await load()
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось отменить сборку')
+  } finally {
+    cancelling.value = false
   }
 }
 
@@ -668,6 +704,18 @@ function toggleWeekday(day: number) {
         <div class="bk-progress-head">
           <span>{{ progress.phase.value || 'Готовим копию…' }}</span>
           <span class="bk-progress-pct">{{ progress.percent.value }} %</span>
+          <!-- Пока копия собирается, партнёр не может ни запустить новую, ни
+               очистить кабинет: выход из этого ожидания должен быть. -->
+          <button
+            v-if="canManage"
+            class="bk-cancel"
+            :disabled="cancelling"
+            title="Остановить сборку копии"
+            @click="cancelRun"
+          >
+            <v-icon icon="mdi-close" size="14" />
+            {{ cancelling ? 'Останавливаем…' : 'Отменить' }}
+          </button>
         </div>
         <div class="bk-progress-bar">
           <div class="bk-progress-fill" :style="{ width: progress.percent.value + '%' }" />
@@ -676,8 +724,7 @@ function toggleWeekday(day: number) {
 
       <div v-if="usage && usage.files >= usage.limit" class="bk-limit-note">
         <v-icon icon="mdi-information-outline" size="14" />
-        Хранится последние {{ usage.limit }} копий — при создании новой самая старая
-        удаляется автоматически.
+        {{ limitNote }}
       </div>
 
       <div v-if="!files.length" class="bk-empty">
@@ -812,8 +859,21 @@ function toggleWeekday(day: number) {
           </div>
 
           <div class="bk-td bk-td--act">
+            <!-- У копии, которая собирается, удалять нечего — но остановить
+                 сборку нужно: страницу могли открыть уже во время работы, и
+                 тогда полосы с кнопкой отмены на ней нет. -->
             <button
-              v-if="canManage && f.status !== 'PENDING'"
+              v-if="canManage && f.status === 'PENDING'"
+              class="bk-cancel"
+              :disabled="cancelling"
+              title="Остановить сборку копии"
+              @click="cancelRun"
+            >
+              <v-icon icon="mdi-close" size="14" />
+              {{ cancelling ? 'Останавливаем…' : 'Отменить' }}
+            </button>
+            <button
+              v-else-if="canManage"
               class="bk-file-del"
               title="Удалить копию"
               @click="removeBackup(f)"
@@ -1287,10 +1347,23 @@ function toggleWeekday(day: number) {
   background: rgba(4, 120, 87, 0.04);
 }
 .bk-progress-head {
-  display: flex; align-items: baseline; justify-content: space-between;
+  display: flex; align-items: center; gap: 10px;
   font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.7);
 }
+.bk-progress-head > span:first-child { flex: 1; }
 .bk-progress-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+/* Отмена сборки — рядом с процентами, но тише их: это запасной выход, а не
+   основное действие. */
+.bk-cancel {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  padding: 3px 9px; border-radius: 7px; border: none; cursor: pointer;
+  font-size: 12px; font-weight: 600; line-height: 1.2;
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  transition: background .15s, color .15s;
+}
+.bk-cancel:hover:not(:disabled) { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+.bk-cancel:disabled { opacity: 0.5; cursor: default; }
 .bk-progress-stage { color: rgba(var(--v-theme-on-surface), 0.45); }
 .bk-progress-bar {
   margin-top: 6px; height: 6px; border-radius: 4px; overflow: hidden;

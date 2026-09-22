@@ -1,4 +1,11 @@
 <script setup lang="ts">
+/**
+ * Окно клиента: создание и правка.
+ *
+ * Форма одна на оба случая — поля, порядок и подписи у нового клиента и у
+ * существующего совпадают, а две копии неизбежно разъезжались бы. Режим
+ * определяется пропом `profile`: пусто — создаём, передан — правим.
+ */
 import { useClientProfilesStore } from '@/stores/clientProfiles'
 import CityInput from '@/components/CityInput.vue'
 import PhoneListField, { type PhoneDraft } from '@/components/PhoneListField.vue'
@@ -11,11 +18,15 @@ import { useIsMobile } from '@/composables/useIsMobile'
 
 const props = defineProps<{
   modelValue: boolean
+  /** Профиль для правки. Пусто — окно создаёт нового клиента. */
+  profile?: ClientProfile | null
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [val: boolean]
   'created': [profile: ClientProfile]
+  /** Профиль сохранён — владелец окна перечитывает карточку. */
+  'saved': [profile: ClientProfile]
 }>()
 
 const store = useClientProfilesStore()
@@ -28,6 +39,8 @@ const show = computed({
   set: (v) => emit('update:modelValue', v),
 })
 
+const isEdit = computed(() => !!props.profile)
+
 const saving = ref(false)
 const form = ref(emptyForm())
 /**
@@ -36,50 +49,148 @@ const form = ref(emptyForm())
  * ровно в тот момент, когда записывают человека.
  */
 const extraPhones = ref<PhoneDraft[]>([])
+/** Номера, какими они лежат на сервере, — чтобы вычислить правки. */
+const originalPhones = ref<PhoneDraft[]>([])
 
 function emptyForm() {
   return {
     phone: '', firstName: '', lastName: '', patronymic: '',
     birthDate: '', passportSeries: '', passportNumber: '',
     passportIssuedBy: '', passportIssuedAt: '',
-    city: '', registrationAddress: '', residentialAddress: '', inn: '',
+    city: '', registrationAddress: '', residentialAddress: '',
   }
 }
 
+function formFromProfile(p: ClientProfile) {
+  return {
+    phone: p.phone || '',
+    firstName: p.firstName || '',
+    lastName: p.lastName || '',
+    patronymic: p.patronymic || '',
+    birthDate: p.birthDate || '',
+    passportSeries: p.passportSeries || '',
+    passportNumber: p.passportNumber || '',
+    passportIssuedBy: p.passportIssuedBy || '',
+    passportIssuedAt: p.passportIssuedAt || '',
+    city: p.city || '',
+    registrationAddress: p.registrationAddress || '',
+    residentialAddress: p.residentialAddress || '',
+  }
+}
+
+// Каждое открытие начинается с актуальных данных: иначе в окно протекает
+// предыдущий клиент. `immediate` обязателен: окно может быть смонтировано уже
+// открытым, и тогда наблюдатель сам по себе не сработает — форма осталась бы
+// пустой при живом профиле.
 watch(show, (v) => {
-  if (v) {
+  if (!v) return
+  const p = props.profile
+  if (p) {
+    form.value = formFromProfile(p)
+    const saved = (p.extraPhones ?? []).map((x) => ({
+      id: x.id,
+      phone: x.phone,
+      label: x.label ?? '',
+      hasWhatsapp: !!x.hasWhatsapp,
+    }))
+    originalPhones.value = saved.map((x) => ({ ...x }))
+    extraPhones.value = saved.map((x) => ({ ...x }))
+  } else {
     form.value = emptyForm()
+    originalPhones.value = []
     extraPhones.value = []
   }
-})
+}, { immediate: true })
 
 const canSave = computed(() =>
   form.value.phone.trim() && form.value.firstName.trim() && form.value.lastName.trim()
 )
 
+/** Поля профиля в том виде, в каком их ждёт сервер. */
+function payload() {
+  const f = form.value
+  return {
+    phone: f.phone,
+    firstName: f.firstName,
+    lastName: f.lastName,
+    patronymic: f.patronymic || undefined,
+    birthDate: f.birthDate || undefined,
+    passportSeries: f.passportSeries || undefined,
+    passportNumber: f.passportNumber || undefined,
+    passportIssuedBy: f.passportIssuedBy || undefined,
+    passportIssuedAt: f.passportIssuedAt || undefined,
+    city: f.city || undefined,
+    registrationAddress: f.registrationAddress || undefined,
+    residentialAddress: f.residentialAddress || undefined,
+  }
+}
+
+/**
+ * Разложить правку списка номеров на операции сервера.
+ *
+ * Порядок важен: сначала удаления, потом правки, потом добавления — иначе
+ * перестановка двух номеров упирается в проверку «такой номер уже записан».
+ * Сбой на одном номере не отменяет сохранённый профиль.
+ */
+async function saveExtraPhones(profileId: string) {
+  const kept = extraPhones.value.filter((p) => p.phone.trim())
+  const keptIds = new Set(kept.map((p) => p.id).filter(Boolean))
+  const failed: string[] = []
+
+  for (const was of originalPhones.value) {
+    if (was.id && !keptIds.has(was.id)) {
+      try {
+        await api.delete(`/client-profiles/${profileId}/phones/${was.id}`)
+      } catch {
+        failed.push(was.phone)
+      }
+    }
+  }
+
+  for (const row of kept) {
+    const body = {
+      phone: row.phone,
+      label: row.label.trim() || null,
+      hasWhatsapp: !!row.hasWhatsapp,
+    }
+    const was = row.id ? originalPhones.value.find((p) => p.id === row.id) : null
+    try {
+      if (!row.id) {
+        await api.post(`/client-profiles/${profileId}/phones`, body)
+      } else if (
+        was &&
+        (was.phone !== row.phone || (was.label || '') !== row.label.trim() || !!was.hasWhatsapp !== !!row.hasWhatsapp)
+      ) {
+        await api.patch(`/client-profiles/${profileId}/phones/${row.id}`, body)
+      }
+    } catch {
+      failed.push(row.phone)
+    }
+  }
+
+  if (failed.length) toast.warning(`Не удалось сохранить номера: ${failed.join(', ')}`)
+}
+
 async function save() {
   if (!canSave.value) return
   saving.value = true
   try {
-    const f = form.value
-    const profile = await store.create({
-      phone: f.phone,
-      firstName: f.firstName,
-      lastName: f.lastName,
-      patronymic: f.patronymic || undefined,
-      birthDate: f.birthDate || undefined,
-      passportSeries: f.passportSeries || undefined,
-      passportNumber: f.passportNumber || undefined,
-      passportIssuedBy: f.passportIssuedBy || undefined,
-      passportIssuedAt: f.passportIssuedAt || undefined,
-      city: f.city || undefined,
-      registrationAddress: f.registrationAddress || undefined,
-      residentialAddress: f.residentialAddress || undefined,
-      inn: f.inn || undefined,
-    })
+    if (isEdit.value) {
+      const id = props.profile!.id
+      const updated = await store.update(id, payload())
+      // Номера сохраняем ПОСЛЕ профиля: если основной номер поменялся местами
+      // с дополнительным, сервер справедливо не даст записать прежний
+      // основной, пока он ещё числится основным в профиле.
+      await saveExtraPhones(id)
+      if (form.value.city) void refreshCities()
+      emit('saved', updated)
+      show.value = false
+      toast.success('Профиль обновлён')
+      return
+    }
+
+    const profile = await store.create(payload())
     // Номера заводим после клиента: до создания профиля их не к чему привязать.
-    // Сбой на одном номере не отменяет клиента — он уже создан; поэтому просто
-    // говорим, какие номера не сохранились, чтобы их дописали в карточке.
     const failed: string[] = []
     for (const extra of extraPhones.value) {
       if (!extra.phone.trim()) continue
@@ -97,11 +208,11 @@ async function save() {
 
     emit('created', profile)
     // Новый город должен сразу попасть в подсказки и фильтр.
-    if (f.city) void refreshCities()
+    if (form.value.city) void refreshCities()
     show.value = false
     toast.success('Клиент создан')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка создания клиента')
+    toast.error(e.message || (isEdit.value ? 'Ошибка сохранения' : 'Ошибка создания клиента'))
   } finally {
     saving.value = false
   }
@@ -112,7 +223,7 @@ async function save() {
   <v-dialog v-model="show" max-width="600" scrollable persistent :fullscreen="isMobile">
     <v-card rounded="lg">
       <v-card-title class="d-flex align-center justify-space-between pa-5 pb-3">
-        <span class="text-h6">Новый клиент</span>
+        <span class="text-h6">{{ isEdit ? 'Данные клиента' : 'Новый клиент' }}</span>
         <v-btn icon variant="text" size="small" @click="show = false">
           <v-icon icon="mdi-close" />
         </v-btn>
@@ -182,16 +293,12 @@ async function save() {
           <label class="field-label">Адрес проживания</label>
           <input v-model="form.residentialAddress" type="text" class="field-input" placeholder="г. Москва, ул. Тверская 10, кв 20" />
         </div>
-        <div class="form-field">
-          <label class="field-label">ИНН</label>
-          <input v-model="form.inn" type="text" class="field-input" placeholder="500100123456" maxlength="12" />
-        </div>
       </v-card-text>
       <v-divider />
       <div class="d-flex justify-end ga-2 pa-4">
         <v-btn variant="text" @click="show = false">Отмена</v-btn>
         <v-btn color="primary" variant="flat" :loading="saving" :disabled="!canSave" @click="save">
-          Создать клиента
+          {{ isEdit ? 'Сохранить' : 'Создать клиента' }}
         </v-btn>
       </div>
     </v-card>

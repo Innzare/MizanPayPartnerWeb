@@ -85,7 +85,14 @@ export interface DebtorAnalytics {
     collectedAmount: number
     collectedCount: number
   }
-  aging: { d1_7: AgingBucket; d8_30: AgingBucket; d31_60: AgingBucket; d60p: AgingBucket }
+  aging: {
+    d1_7: AgingBucket
+    d8_30: AgingBucket
+    d31_60: AgingBucket
+    d61_90: AgingBucket
+    d91_180: AgingBucket
+    d180p: AgingBucket
+  }
   promises: { made: number; kept: number; broken: number; pending: number }
   byStaff: {
     staffId: string

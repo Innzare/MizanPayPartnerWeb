@@ -7,6 +7,7 @@
 </route>
 
 <script lang="ts" setup>
+import { onMounted, ref } from "vue";
 import { useAuthStore } from "@/stores/auth";
 import logo from "@/assets/images/logo.svg";
 import logoText from "@/assets/images/logo-text.svg";
@@ -23,6 +24,21 @@ const password = ref("");
 const showPassword = ref(false);
 const isLoading = ref(false);
 const error = ref("");
+
+/**
+ * Причина, по которой человека выкинуло из кабинета.
+ *
+ * Её оставляет api-клиент — например, когда у компании кончилась подписка и
+ * доступ сотрудников приостановлен. Без этого экран входа молчит, и человек
+ * думает, что «просто разлогинило».
+ */
+onMounted(() => {
+  const notice = localStorage.getItem("auth_notice");
+  if (notice) {
+    error.value = notice;
+    localStorage.removeItem("auth_notice");
+  }
+});
 
 const handleLogin = async () => {
   if (!email.value || !password.value) {

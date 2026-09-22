@@ -58,6 +58,7 @@ declare module 'vue-router/auto-routes' {
     '/import/drafts/[id]': RouteRecordInfo<'/import/drafts/[id]', '/import/drafts/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/investor/[token]': RouteRecordInfo<'/investor/[token]', '/investor/:token', { token: ParamValue<true> }, { token: ParamValue<false> }>,
     '/login': RouteRecordInfo<'/login', '/login', Record<never, never>, Record<never, never>>,
+    '/me': RouteRecordInfo<'/me', '/me', Record<never, never>, Record<never, never>>,
     '/messages': RouteRecordInfo<'/messages', '/messages', Record<never, never>, Record<never, never>>,
     '/payments': RouteRecordInfo<'/payments', '/payments', Record<never, never>, Record<never, never>>,
     '/point/': RouteRecordInfo<'/point/', '/point', Record<never, never>, Record<never, never>>,
@@ -251,6 +252,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/login.vue': {
       routes: '/login'
+      views: never
+    }
+    'src/pages/me.vue': {
+      routes: '/me'
       views: never
     }
     'src/pages/messages.vue': {

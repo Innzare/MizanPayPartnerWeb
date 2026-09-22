@@ -278,29 +278,30 @@ onMounted(() => {
       </div>
     </v-card>
 
-    <!-- Панель инструментов: слева фильтры, справа поиск — как в «Сделках». -->
-    <div class="d-flex justify-space-between align-center ga-2 mb-3 flex-wrap">
-      <div class="d-flex align-center ga-2 flex-wrap">
-        <button
-          class="fb-btn"
-          :class="{ 'fb-btn--active': onlyOverdue }"
-          @click="onlyOverdue = !onlyOverdue"
-        >
-          <v-icon icon="mdi-alert-outline" size="16" />
-          <span>Только с просрочкой</span>
-        </button>
-        <button v-if="auth.can('guarantors.settings')" class="fb-btn" @click="openSettings">
-          <v-icon icon="mdi-tune" size="16" />
-          <span>Пороги предупреждений</span>
-        </button>
-      </div>
-      <div class="d-flex align-center ga-2 flex-grow-1 justify-end">
-        <SearchInput v-model="q" placeholder="Поиск по имени или телефону" style="max-width: 620px; min-width: 320px; flex: 1 1 320px;" />
-      </div>
-    </div>
-
     <v-card rounded="lg" elevation="0" border class="gp-card">
       <div class="pa-4">
+        <!-- Поиск и фильтры внутри карточки — как в остальных разделах:
+             отдельно стоящая панель читалась как чужая. -->
+        <div class="d-flex align-center ga-2 mb-3 flex-wrap gp-toolbar">
+          <button
+            class="fb-btn"
+            :class="{ 'fb-btn--active': onlyOverdue }"
+            @click="onlyOverdue = !onlyOverdue"
+          >
+            <v-icon icon="mdi-alert-outline" size="16" />
+            <span>Только с просрочкой</span>
+          </button>
+          <button v-if="auth.can('guarantors.settings')" class="fb-btn" @click="openSettings">
+            <v-icon icon="mdi-tune" size="16" />
+            <span>Пороги предупреждений</span>
+          </button>
+          <SearchInput
+            v-model="q"
+            placeholder="Поиск по имени или телефону"
+            class="gp-search"
+          />
+        </div>
+
         <div v-if="loading && !items.length" class="d-flex justify-center pa-12">
           <v-progress-circular indeterminate color="primary" size="32" />
         </div>
@@ -471,6 +472,10 @@ onMounted(() => {
 </template>
 
 <style scoped>
+
+.gp-toolbar { gap: 8px; }
+.gp-search { flex: 1 1 260px; min-width: 220px; max-width: 620px; }
+
 
 /* Распорки виртуализации — см. комментарий в разделе сделок: высота задаётся
    блоком внутри ячейки, а собственную высоту и анимацию ячейки снимаем. */

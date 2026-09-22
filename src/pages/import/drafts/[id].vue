@@ -102,6 +102,51 @@
         </div>
       </div>
 
+      <!-- Недоплаты в файле: месяцы, оплаченные меньше плана. Партнёр решает,
+           что с ними делать, до импорта — потом график придётся править
+           руками по каждой сделке. -->
+      <div
+        v-if="underpayments && underpayments.deals > 0"
+        class="underpay-banner mb-4"
+      >
+        <div class="underpay-banner-icon">
+          <v-icon icon="mdi-account-clock-outline" size="20" />
+        </div>
+        <div class="underpay-banner-body">
+          <div class="underpay-banner-title">
+            Недоплаты — {{ underpayments.deals }}
+            {{ pluralize(underpayments.deals, 'сделка', 'сделки', 'сделок') }}
+            на {{ formatCurrency(underpayments.openAmount) }}
+          </div>
+          <div class="underpay-banner-sub">
+            В этих сделках клиент внёс за месяц меньше плана и так и не доплатил.
+          </div>
+          <label class="underpay-toggle">
+            <input
+              type="checkbox"
+              :checked="!!draft.stats.underpaymentAsDebt"
+              :disabled="saving"
+              @change="toggleUnderpaymentAsDebt(($event.target as HTMLInputElement).checked)"
+            />
+            <span>
+              <strong>Недоплату считать долгом</strong>
+              <span class="underpay-toggle-hint">
+                <template v-if="draft.stats.underpaymentAsDebt">
+                  Любая недоплата, даже в несколько рублей, станет строкой-долгом своего
+                  месяца, а следующие платежи останутся как по договору. В «Должники»
+                  клиент попадёт по порогам из настроек этого раздела; если недоплачен
+                  последний платёж — при любой сумме.
+                </template>
+                <template v-else>
+                  Сейчас недоплата переносится на последние платежи графика — клиент
+                  выглядит без долгов до конца договора.
+                </template>
+              </span>
+            </span>
+          </label>
+        </div>
+      </div>
+
       <!-- Скидки в файле. Показываем до импорта: из-за них часть договоров
            закроется сразу, и партнёр должен видеть, сколько именно, прежде
            чем соглашаться. -->
@@ -505,7 +550,7 @@ import 'ag-grid-community/styles/ag-theme-quartz.css'
 
 const route = useRoute()
 const router = useRouter()
-const { draft, loading, saving, fetchDraft, savePatches, commit, fetchProgress, cancel, addRow, deleteRow, confirmUnits } = useImportDraft()
+const { draft, loading, saving, fetchDraft, savePatches, commit, fetchProgress, cancel, addRow, deleteRow, confirmUnits, setOptions } = useImportDraft()
 const { show: showToast } = useToast()
 const { isDark } = useIsDark()
 const { folders, fetchFolders } = useFolders()
@@ -604,6 +649,8 @@ const discounts = computed(() => draft.value?.stats?.discounts)
 
 /** Номера договоров из файла — сколько сделок получат номер из таблицы партнёра. */
 const contractNumbers = computed(() => draft.value?.stats?.contractNumbers)
+/** Недоплаты в файле — что даст настройка «недоплату считать долгом». */
+const underpayments = computed(() => draft.value?.stats?.underpayments)
 
 /**
  * Скидка уменьшает доход по сделке, а значит и долю со-инвесторов кассы.
@@ -668,6 +715,15 @@ async function onConfirmUnits() {
     await confirmUnits(draftId.value, true)
   } catch (e: any) {
     showToast(e.message || 'Не удалось сохранить решение', 'error')
+  }
+}
+
+/** «Недоплату считать долгом» — сохраняется в черновике на сервере. */
+async function toggleUnderpaymentAsDebt(on: boolean) {
+  try {
+    await setOptions(draftId.value, { underpaymentAsDebt: on })
+  } catch (e: any) {
+    showToast(e.message || 'Не удалось сохранить настройку', 'error')
   }
 }
 
@@ -1342,6 +1398,39 @@ watch(() => route.params.id, (id) => {
   background: rgba(245, 158, 11, 0.10);
   color: rgba(var(--v-theme-on-surface), 0.85);
   font-size: 12.5px; line-height: 1.45;
+}
+
+.underpay-banner {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 16px 18px; border-radius: 12px;
+  background: rgba(217, 119, 6, 0.06);
+  border: 1px solid rgba(217, 119, 6, 0.28);
+}
+.underpay-banner-icon {
+  width: 38px; height: 38px; min-width: 38px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(217, 119, 6, 0.12); color: #b45309;
+}
+.underpay-banner-body { flex: 1; min-width: 0; }
+.underpay-banner-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.underpay-banner-sub {
+  font-size: 13px; line-height: 1.5;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.underpay-toggle {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-top: 12px; padding: 10px 12px; border-radius: 9px;
+  background: rgba(var(--v-theme-surface), 0.7);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  cursor: pointer;
+  font-size: 13px; line-height: 1.45;
+}
+.underpay-toggle input { margin-top: 3px; accent-color: #b45309; width: 16px; height: 16px; flex-shrink: 0; }
+.underpay-toggle-hint {
+  display: block;
+  margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
 }
 
 .discount-banner {

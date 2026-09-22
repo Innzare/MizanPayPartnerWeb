@@ -43,6 +43,11 @@ const props = defineProps<{
   count?: number
   /** Есть ли что догружать. */
   hasMore?: boolean
+  /**
+   * Что перечисляет список. За показателем стоят сделки, за полосой возраста
+   * платежей — платежи; подпись «5 сделок» под списком из пяти платежей врёт.
+   */
+  unit?: 'deals' | 'payments'
 }>()
 
 const emit = defineEmits<{
@@ -73,6 +78,19 @@ const filtered = computed(() => rows.value.length !== props.items.length)
 
 function fmt(item: MetricDetailItem) {
   return item.suffix ? `${item.value}${item.suffix}` : formatCurrency(item.value)
+}
+
+const UNIT_WORDS = {
+  deals: ['сделка', 'сделки', 'сделок'],
+  payments: ['платёж', 'платежа', 'платежей'],
+}
+
+/** «1 платёж / 2 платежа / 5 платежей» — под то, что перечисляет список. */
+function unitWord(n: number): string {
+  const [one, few, many] = UNIT_WORDS[props.unit ?? 'deals']
+  if (n % 10 === 1 && n % 100 !== 11) return one!
+  if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return few!
+  return many!
 }
 
 function openDeal(id: string) {
@@ -111,7 +129,7 @@ function openDeal(id: string) {
               показано {{ items.length }} из {{ count.toLocaleString('ru-RU') }}
             </template>
             <template v-else>
-              {{ items.length }} {{ items.length === 1 ? 'сделка' : items.length < 5 ? 'сделки' : 'сделок' }}
+              {{ items.length }} {{ unitWord(items.length) }}
             </template>
           </div>
         </div>
@@ -130,7 +148,9 @@ function openDeal(id: string) {
         </div>
 
         <div v-else-if="!rows.length" class="md-empty">
-          {{ items.length ? 'Ничего не найдено' : 'Нет сделок для этого показателя' }}
+          {{ items.length
+            ? 'Ничего не найдено'
+            : unit === 'payments' ? 'Нет платежей в этой выборке' : 'Нет сделок для этого показателя' }}
         </div>
 
         <div v-for="r in rows" :key="r.id" class="md-row" @click="openDeal(r.id)">

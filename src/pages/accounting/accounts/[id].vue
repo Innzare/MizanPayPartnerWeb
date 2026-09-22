@@ -49,7 +49,7 @@ const canTransfer = computed(() => auth.can('accounting.transfer'))
 const canReconcile = computed(() => auth.can('accounting.reconcile'))
 /** Кому вообще доступен ввод денег: капитал, финансы или переводы. */
 const canOperate = computed(
-  () => auth.can('finance.capital') || auth.can('finance.manage') || auth.can('accounting.transfer'),
+  () => auth.can('finance.capital') || auth.can('finance.transactions') || auth.can('accounting.transfer'),
 )
 
 /** Операция по этому счёту: счёт в форме уже выбран, менять его не нужно. */

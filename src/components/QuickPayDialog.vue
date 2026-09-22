@@ -2,14 +2,14 @@
 /**
  * Быстрая оплата из строки списка сделок.
  *
- * Отличие от `MarkPaidDialog`: платёж выбирать не надо — он уже известен из
- * строки, — а весь график виден сразу и меняется на глазах по мере ввода суммы.
+ * Единственное окно приёма оплаты. Платёж выбирать не надо: клиент гасит
+ * договор, а строку система берёт сама — самую раннюю открытую, сначала
+ * недоплаты. Весь график виден сразу и меняется на глазах по мере ввода суммы.
  * Здесь же досрочное погашение: партнёр вводит сумму меньше остатка и решает,
  * перенести недостачу в график или простить её.
  *
- * Все денежные расчёты — из общего слоя `utils/paymentMath`, того же, на
- * котором работает `MarkPaidDialog`. Два окна не могут посчитать по-разному:
- * расходиться может только оформление, что и требовалось.
+ * Все денежные расчёты — из общего слоя `utils/paymentMath`: окно обязано
+ * показывать ровно то, что сделает сервер.
  */
 import { computed, ref, watch } from 'vue'
 import { usePaymentsStore } from '@/stores/payments'
@@ -74,7 +74,22 @@ const open = computed({
   set: (v: boolean) => emit('update:modelValue', v),
 })
 
-const target = computed(() => props.payment)
+/**
+ * Отмеченные строки графика — за что вносят деньги.
+ *
+ * Клиент гасит договор, а не конкретный месяц: партнёр отмечает галочками,
+ * сколько месяцев закрывает эта оплата, и сумма считается сама.
+ */
+const selectedIds = ref<string[]>([])
+
+/**
+ * Оплачиваемая строка — первая из отмеченных по порядку графика. Именно на
+ * неё ляжет оплата, а переплата закроет следующие отмеченные.
+ */
+const target = computed(() => {
+  const open = pickSchedule.value.filter((p) => selectedIds.value.includes(p.id))
+  return open[0] ?? props.payment
+})
 
 /**
  * График сделки. В списке его нет — грузим сам.
@@ -85,6 +100,46 @@ const target = computed(() => props.payment)
 const schedule = computed<Payment[]>(() =>
   props.payment ? paymentsStore.getPaymentsForDeal(props.payment.dealId) : [],
 )
+/**
+ * Учитывать ли недоплаты прошлых месяцев.
+ *
+ * По умолчанию да: старый долг закрывают первым. Но клиент может принести
+ * деньги именно за следующий месяц — тогда недоплаты убираются из очереди и
+ * остаются висеть, а оплата идёт с ближайшего планового платежа.
+ */
+const includeDebts = ref(true)
+
+/** Открытые строки графика по порядку — из них и выбирают. */
+const openSchedule = computed<Payment[]>(() =>
+  schedule.value
+    .filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE')
+    .slice()
+    .sort((a, b) => {
+      const byDate = new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()
+      if (byDate !== 0) return byDate
+      // При равном сроке недоплата идёт первой: она за уже прошедший месяц.
+      const byDebt = Number(!!b.shortfallOfPaymentId) - Number(!!a.shortfallOfPaymentId)
+      return byDebt !== 0 ? byDebt : a.number - b.number
+    }),
+)
+
+/**
+ * Есть ли впереди обычные платежи графика. Если остались только недоплаты,
+ * пропускать их некуда: очередь без них была бы пустой.
+ */
+const hasPlannedOpen = computed(() => openSchedule.value.some((p) => !p.shortfallOfPaymentId))
+
+/** Очередь оплаты: строки, между которыми выбирает партнёр. */
+const pickSchedule = computed(() =>
+  includeDebts.value || !hasPlannedOpen.value
+    ? openSchedule.value
+    : openSchedule.value.filter((p) => !p.shortfallOfPaymentId),
+)
+
+/** Открытые недоплаты — их сумма показывается в переключателе. */
+const debtRows = computed(() => openSchedule.value.filter((p) => p.shortfallOfPaymentId))
+const debtRowsSum = computed(() => debtRows.value.reduce((s, p) => s + Math.round(p.amount), 0))
+
 const scheduleLoading = ref(false)
 /**
  * Свёрнут ли график. По умолчанию да: в большинстве случаев человек просто
@@ -99,7 +154,7 @@ const scheduleOpen = ref(false)
  * Квитанция со скриншотом нужны не каждый раз, а места занимали столько же,
  * сколько сама оплата, — из-за них кнопка подтверждения уходила за прокрутку.
  */
-const payTab = ref<'pay' | 'docs'>('pay')
+const payTab = ref<'pay' | 'docs' | 'note'>('pay')
 
 // ── Состояние формы ─────────────────────────────────────────────────────────
 type PayMode = 'MONTH' | 'EARLY'
@@ -107,11 +162,25 @@ const payMode = ref<PayMode>('MONTH')
 const enteredAmount = ref<number | null>(null)
 const paidAt = ref('')
 const shortfallAction = ref<'REDISTRIBUTE' | 'FORGIVE'>('REDISTRIBUTE')
+/**
+ * Недоплата остаётся долгом за этот же месяц: не раскладывается по графику и
+ * не прощается. В должники клиент попадает по порогам раздела «Должники».
+ */
+const leaveDebt = ref(false)
+/** Когда клиент обещал доплатить. Необязательно — мог и не назвать. */
+const debtPromisedDate = ref('')
+const debtNote = ref('')
 // «Закрыть ближайшие» по умолчанию: так деньги гасят месяцы подряд, а не
 // размазываются по всему графику — этого партнёр и ждёт от досрочной оплаты.
 const redistributeMode = ref<RedistributeMode>('NEXT')
 const manualSchedule = ref<Record<string, number>>({})
 const createTailPayment = ref(false)
+/**
+ * Комментарий к платежу. Уходит вместе с отметкой оплаты: отдельного запроса
+ * не нужно, платёж всё равно сохраняется этим же действием. Потом его можно
+ * поправить в карточке платежа.
+ */
+const payNote = ref('')
 const submitting = ref(false)
 const proofFile = ref<File | null>(null)
 /** Куда легли деньги. Пусто — сервис подставит счёт сам. */
@@ -122,6 +191,13 @@ const proofPreview = ref('')
 const proofInputRef = ref<HTMLInputElement | null>(null)
 
 const todayYmd = computed(() => money.toDateInput(new Date()))
+
+/** «2 платежа», «5 платежей» — сводка в шапке читается как фраза. */
+function pluralPayments(n: number): string {
+  if (n % 10 === 1 && n % 100 !== 11) return 'платёж'
+  if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return 'платежа'
+  return 'платежей'
+}
 
 function shortDate(d: string | Date): string {
   return new Date(d).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
@@ -134,12 +210,18 @@ watch(
   async ([isOpen]) => {
     if (!isOpen || !props.payment) return
     payMode.value = 'MONTH'
+    includeDebts.value = true
+    selectedIds.value = [props.payment.id]
     enteredAmount.value = Math.round(props.payment.amount)
     paidAt.value = todayYmd.value
     shortfallAction.value = 'REDISTRIBUTE'
     redistributeMode.value = 'NEXT'
     manualSchedule.value = {}
     createTailPayment.value = false
+    payNote.value = ''
+    leaveDebt.value = false
+    debtPromisedDate.value = ''
+    debtNote.value = ''
     proofFile.value = null
     accountId.value = null
     allocations.value = null
@@ -169,17 +251,30 @@ const forgiveState = computed(() =>
   money.forgiveInfo(props.deal, schedule.value, target.value, enteredAmount.value),
 )
 
-/** Остаток к распределению по графику (то же, что считает сервер). */
-const outstanding = computed(() =>
-  props.deal && target.value
-    ? money.outstandingAfter(props.deal, schedule.value, target.value.id, enteredAmount.value ?? 0)
-    : 0,
-)
+/**
+ * Остаток к распределению по обычным строкам графика (то же, что считает
+ * сервер): долги-недоплаты держат свою сумму и в раскладку не входят.
+ */
+const outstanding = computed(() => {
+  if (!props.deal || !target.value) return 0
+  // Остаток по договору после этой оплаты.
+  const left = money.outstandingAfter(props.deal, schedule.value, target.value.id, enteredAmount.value ?? 0)
+  // Из него держат свою сумму только те недоплаты, что остаются висеть:
+  // закрытые этой оплатой больше ничего не занимают.
+  return Math.max(left - debtCover.value.notCovered, 0)
+})
 
 /** Сколько ждали по этой строке или по остатку — зависит от режима. */
 const expected = computed(() =>
   payMode.value === 'EARLY' ? forgiveState.value.outstandingNet : Math.round(target.value?.amount ?? 0),
 )
+
+/**
+ * Сумма введена. Пустое поле и ноль — не «оплата на ноль рублей», а ещё не
+ * заполненная форма: считать по ней график нельзя, иначе выходило, что
+ * остаток по договору закрыт и все платежи закроются.
+ */
+const hasAmount = computed(() => Math.round(enteredAmount.value ?? 0) > 0)
 
 const shortfall = computed(() => Math.max(expected.value - Math.round(enteredAmount.value ?? 0), 0))
 const overpay = computed(() => Math.max(Math.round(enteredAmount.value ?? 0) - expected.value, 0))
@@ -200,23 +295,65 @@ const forgiving = computed(
 /** Прощать остаток разрешено не всем — это списание заработка. */
 const canForgive = computed(() => authStore.can('payments.forgive'))
 
+/**
+ * Можно ли оставить недоплату долгом: только за месяц — при досрочном
+ * погашении клиент гасит весь договор, долга «за месяц» там не бывает.
+ */
+const canLeaveDebt = computed(
+  () => payMode.value === 'MONTH' && shortfall.value > 0 && Math.round(enteredAmount.value ?? 0) > 0,
+)
+
+/** Долг выбран и применим при текущей сумме. */
+const debtChosen = computed(() => leaveDebt.value && canLeaveDebt.value)
+
+/** Открытые недоплаты прошлых месяцев — их может закрыть переплата. */
+const openDebts = computed(() => money.openDebtRows(schedule.value, target.value?.id))
+
+/**
+ * Что произойдёт с недоплатами — считаем тем же правилом, что и сервер:
+ * сначала закрываются отмеченные галочками, затем остальные, если остатка по
+ * договору на них уже не хватает (так гасятся долги при досрочном погашении).
+ */
+const debtCover = computed(() => {
+  const debts = openDebts.value.filter((d) => d.id !== target.value?.id)
+  if (!hasAmount.value || !debts.length || !props.deal || !target.value) {
+    return { closedIds: [] as string[], reduced: [] as Array<{ id: string; amount: number }>, notCovered: 0 }
+  }
+  return money.debtsAfterPayment({
+    debts,
+    picked: debts.filter((d) => selectedIds.value.includes(d.id)).map((d) => d.id),
+    overpay: overpay.value,
+    left: money.outstandingAfter(props.deal, schedule.value, target.value.id, enteredAmount.value ?? 0),
+  })
+})
+
 /** Перерасчёт применяется, когда сумма ≠ плановой и есть что распределять. */
 const applyRedistribute = computed(() => {
-  if (forgiving.value) return false
+  if (forgiving.value || debtChosen.value || !hasAmount.value) return false
   const entered = enteredAmount.value
   const t = target.value
   if (!entered || !t) return false
   return openRows.value.length > 0 && Math.round(entered) !== Math.round(t.amount)
 })
 
-const preview = computed(() =>
-  money.redistPreview(
+const preview = computed(() => {
+  if (!hasAmount.value) return { rows: [], closedIds: [], error: '' }
+  const base = money.redistPreview(
     openRows.value,
     outstanding.value,
     redistributeMode.value,
     manualSchedule.value,
-  ),
-)
+  )
+  // Недоплаты в раскладку не входят, поэтому их судьбу добавляем к превью
+  // отдельно: закрытые помечаются «закроется», частично покрытые меняют сумму.
+  const cover = debtCover.value
+  if (!cover.closedIds.length && !cover.reduced.length) return base
+  return {
+    ...base,
+    rows: [...base.rows, ...cover.reduced],
+    closedIds: [...base.closedIds, ...cover.closedIds],
+  }
+})
 
 const earlyClose = computed(() =>
   money.earlyCloseInfo(props.deal, schedule.value, target.value, enteredAmount.value),
@@ -239,6 +376,29 @@ const remainingAfter = computed(() =>
     ? 0
     : Math.max(forgiveState.value.outstandingNet - Math.round(enteredAmount.value ?? 0), 0),
 )
+
+/**
+ * Сводка по договору для шапки: сколько уже внесено и сколько осталось.
+ *
+ * Номер конкретного платежа партнёру ничего не решает — он и так виден в
+ * графике. Важнее, на каком месте сделка целиком.
+ */
+const dealSummary = computed(() => {
+  const rows = schedule.value
+  const settled = rows.filter((p) => p.status === 'PAID' || p.status === 'CLOSED_EARLY')
+  const open = rows.filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE')
+  return {
+    // Строки-остатки — не отдельные платежи графика, иначе выходило бы
+    // «оплачено 7 из 6».
+    paidCount: settled.filter((p) => !p.shortfallOfPaymentId).length,
+    paidSum: settled.reduce((sum, p) => sum + Math.round(p.amount), 0),
+    total: props.deal?.numberOfPayments ?? rows.filter((p) => !p.shortfallOfPaymentId).length,
+    leftCount: open.filter((p) => !p.shortfallOfPaymentId).length,
+    leftSum: open.reduce((sum, p) => sum + Math.round(p.amount), 0),
+    debtCount: open.filter((p) => p.shortfallOfPaymentId).length,
+    debtSum: open.filter((p) => p.shortfallOfPaymentId).reduce((sum, p) => sum + Math.round(p.amount), 0),
+  }
+})
 
 // ── Шапка ───────────────────────────────────────────────────────────────────
 const headerMonth = computed(() => {
@@ -301,17 +461,118 @@ const manualSum = computed(() =>
   openRows.value.reduce((sum, r) => sum + Math.round(manualSchedule.value[r.id] ?? 0), 0),
 )
 
+/**
+ * «Оставить как долг» стоит в одном ряду с вариантами раскладки: выбор один.
+ * Когда раскладывать некуда (последняя строка графика), кнопка работает как
+ * переключатель — иначе её было бы не снять.
+ */
+function pickDebt() {
+  const hasModes = openRows.value.length > 0 && outstanding.value > 0
+  leaveDebt.value = hasModes ? true : !leaveDebt.value
+  if (leaveDebt.value) createTailPayment.value = false
+}
+
+function pickTail() {
+  leaveDebt.value = false
+  createTailPayment.value = !createTailPayment.value
+}
+
 function pickMode(m: RedistributeMode) {
+  leaveDebt.value = false
   redistributeMode.value = m
   // В «Вручную» заполняем поля равномерным вариантом — понятная точка отсчёта.
   if (m === 'MANUAL') manualSchedule.value = money.equalSplitMap(openRows.value, outstanding.value)
 }
+
+/**
+ * Отмечать можно только по порядку: следующий месяц открывается, когда
+ * отмечен предыдущий. Пропустить месяц в середине нельзя — деньги всё равно
+ * гасят график подряд, и «дырка» в выборе означала бы не то, что произойдёт.
+ *
+ * Снять можно только последнюю отмеченную строку — тем же правилом.
+ */
+const pickableIds = computed(() => {
+  const rows = pickSchedule.value
+  const chosen = selectedIds.value
+  const ids: string[] = []
+  const firstFree = rows.find((p) => !chosen.includes(p.id))
+  if (firstFree) ids.push(firstFree.id)
+  const lastChosen = [...rows].reverse().find((p) => chosen.includes(p.id))
+  if (lastChosen) ids.push(lastChosen.id)
+  return ids
+})
+
+/** Сумма отмеченных строк — она же сумма к оплате. */
+function selectedSum(ids: string[]): number {
+  return pickSchedule.value
+    .filter((p) => ids.includes(p.id))
+    .reduce((acc, p) => acc + Math.round(p.amount), 0)
+}
+
+/** Правка суммы из-за выбора не должна тут же переписать сам выбор. */
+let syncingFromRows = false
+
+function toggleRow(id: string) {
+  if (!pickableIds.value.includes(id)) return
+  const rows = pickSchedule.value
+  const at = rows.findIndex((p) => p.id === id)
+  if (at < 0) return
+
+  // Отметили — берём всё до этой строки включительно; сняли — отрезаем её и
+  // всё после: выбор всегда остаётся непрерывным.
+  const next = selectedIds.value.includes(id)
+    ? rows.slice(0, at).map((p) => p.id)
+    : rows.slice(0, at + 1).map((p) => p.id)
+  selectedIds.value = next
+
+  syncingFromRows = true
+  enteredAmount.value = selectedSum(next) || null
+}
+
+/** Отмечена ли хоть одна недоплата, кроме самой оплачиваемой строки. */
+const coversDebts = computed(() =>
+  pickSchedule.value.some(
+    (p) => p.shortfallOfPaymentId && p.id !== target.value?.id && selectedIds.value.includes(p.id),
+  ),
+)
+
+/**
+ * Сумму правят руками — подстраиваем галочки: отмечаем столько месяцев
+ * подряд, сколько эта сумма закрывает. Меньше первого платежа — не отмечено
+ * ничего: это недоплата, и закрывать ею нечего.
+ */
+watch(enteredAmount, (value) => {
+  if (syncingFromRows) {
+    syncingFromRows = false
+    return
+  }
+  if (payMode.value !== 'MONTH') return
+  const entered = Math.round(value ?? 0)
+  const ids: string[] = []
+  let sum = 0
+  for (const row of pickSchedule.value) {
+    sum += Math.round(row.amount)
+    if (sum > entered) break
+    ids.push(row.id)
+  }
+  selectedIds.value = ids
+})
+
+// Переключили учёт недоплат — очередь стала другой, начинаем выбор с её
+// первой строки: старый выбор мог ссылаться на строки, которых в очереди нет.
+watch(includeDebts, () => {
+  const first = pickSchedule.value[0]
+  selectedIds.value = first ? [first.id] : []
+  syncingFromRows = true
+  enteredAmount.value = first ? Math.round(first.amount) : null
+})
 
 /** Переключение режима подставляет ожидаемую сумму — иначе поле врёт. */
 function setPayMode(m: PayMode) {
   if (m === payMode.value) return
   payMode.value = m
   shortfallAction.value = 'REDISTRIBUTE'
+  leaveDebt.value = false
   redistributeMode.value = 'NEXT'
   manualSchedule.value = {}
   enteredAmount.value =
@@ -369,12 +630,32 @@ const forgiveBlocked = computed(() => forgiving.value && forgiveState.value.exce
  */
 const forgivingValid = computed(() => forgiving.value && !forgiveState.value.exceedsIncome)
 
+/**
+ * Недостаче негде осесть: открытых строк графика не осталось, а остаток по
+ * договору больше нуля — и партнёр не выбрал ни «Дописать платёж», ни
+ * «Оставить как долг», ни прощение. Без этой проверки подтверждение проходило,
+ * а разница просто исчезала: строки на неё не появлялось нигде.
+ *
+ * Считаем по `tail.applicable`, а не по самому факту недоплаты: когда
+ * недостающее покрывают открытые долги-недоплаты, деньги никуда не деваются и
+ * мешать оплате незачем.
+ */
+const shortfallUnhandled = computed(
+  () =>
+    hasAmount.value &&
+    tail.value.applicable &&
+    !createTailPayment.value &&
+    !debtChosen.value &&
+    !forgivingValid.value,
+)
+
 const confirmDisabled = computed(
   () =>
     submitting.value ||
     !enteredAmount.value ||
     enteredAmount.value <= 0 ||
     forgiveBlocked.value ||
+    shortfallUnhandled.value ||
     (applyRedistribute.value && redistributeMode.value === 'MANUAL' && !!preview.value.error),
 )
 
@@ -397,14 +678,21 @@ async function confirm_() {
       entered: enteredAmount.value,
       paidAtYmd: paidAt.value,
       proofScreenshot,
+      note: payNote.value,
       mode: redistributeMode.value,
       manualMap: manualSchedule.value,
       rows: openRows.value,
       applyRedistribute: applyRedistribute.value,
       payMode: payMode.value,
       // Прощение отправляем только когда оно реально применяется: на сервере
-      // FORGIVE допустим лишь в досрочном режиме и при недоплате.
-      shortfallAction: forgiving.value ? 'FORGIVE' : 'REDISTRIBUTE',
+      // FORGIVE допустим лишь в досрочном режиме и при недоплате. С долгом
+      // так же — только за месяц и при недоплате.
+      shortfallAction: forgiving.value ? 'FORGIVE' : debtChosen.value ? 'DEBT' : 'REDISTRIBUTE',
+      shortfallPromisedDate: debtPromisedDate.value || undefined,
+      shortfallNote: debtNote.value,
+      // Отмеченные недоплаты гасятся деньгами этой оплаты; если ни одной не
+      // отмечено — переплата уходит вперёд по графику.
+      coverDebts: coversDebts.value || debtCover.value.closedIds.length > 0,
     })
     // Счёт добавляем поверх расчёта: он не влияет на суммы, только на то,
     // где деньги окажутся.
@@ -416,7 +704,8 @@ async function confirm_() {
 
     // Намерение фиксируем ДО отметки: после неё график меняется и расчёт
     // хвоста устаревает.
-    const tailToAdd = createTailPayment.value && tail.value.applicable ? { ...tail.value } : null
+    const tailToAdd =
+      createTailPayment.value && tail.value.applicable && !debtChosen.value ? { ...tail.value } : null
 
     await paymentsStore.markAsPaid(t.id, dealId, payload)
 
@@ -438,7 +727,8 @@ async function confirm_() {
     // кнопку не показываем: снятие отметки её не удалит, откат вышел бы неполным.
     if (authStore.can('payments.unmarkPaid') && !tailToAdd) {
       const paidId = t.id
-      toast.showWithAction(`Платёж на ${formatCurrency(paidAmount ?? t.amount)} отмечен`, {
+      const debtSuffix = debtChosen.value ? `, долг ${formatCurrency(shortfall.value)}` : ''
+      toast.showWithAction(`Платёж на ${formatCurrency(paidAmount ?? t.amount)} отмечен${debtSuffix}`, {
         label: 'Отменить',
         handler: async () => {
           try {
@@ -468,7 +758,7 @@ async function confirm_() {
        обрезало бы содержимое. -->
   <v-dialog
     v-model="open"
-    :max-width="fullscreen ? undefined : 520"
+    :max-width="fullscreen ? undefined : 680"
     :fullscreen="fullscreen"
     scrollable
   >
@@ -480,11 +770,39 @@ async function confirm_() {
       <!-- Шапка: что именно оплачивается, без поиска по графику -->
       <div v-if="target" class="qp-head">
         <div class="qp-title">
-          Платёж {{ headerMonth ? `за ${headerMonth}` : '' }}
-          <span v-if="overdueDays" class="qp-overdue">просрочен на {{ overdueDays }} дн.</span>
+          Приём оплаты
+          <span v-if="overdueDays" class="qp-overdue">просрочка {{ overdueDays }} дн.</span>
         </div>
         <div class="qp-sub">
-          {{ target.number }}-й из {{ deal?.numberOfPayments ?? '?' }} · до {{ formatDate(target.dueDate) }}
+          <span class="qp-sub-item">
+            Оплачено <strong>{{ dealSummary.paidCount }} из {{ dealSummary.total }}</strong>
+            — {{ formatCurrency(dealSummary.paidSum) }}
+          </span>
+          <!-- Строки-остатки не считаются платежами графика, поэтому при
+               «осталось 0» их сумму нельзя подписывать счётчиком платежей:
+               выходило «Осталось 0 платежей — 600 ₽». -->
+          <span class="qp-sub-item">
+            <template v-if="dealSummary.leftCount">
+              Осталось
+              <strong>
+                {{ dealSummary.leftCount }}
+                {{ pluralPayments(dealSummary.leftCount) }}
+              </strong>
+              — {{ formatCurrency(dealSummary.leftSum) }}
+            </template>
+            <template v-else-if="dealSummary.debtSum > 0">
+              График закрыт,
+              <template v-if="dealSummary.debtCount > 1">
+                остались <strong>{{ dealSummary.debtCount }} недоплаты</strong>
+              </template>
+              <template v-else>осталась <strong>недоплата</strong></template>
+              — {{ formatCurrency(dealSummary.debtSum) }}
+            </template>
+            <template v-else>Осталось <strong>0 платежей</strong></template>
+          </span>
+          <span v-if="dealSummary.debtSum > 0 && dealSummary.leftCount" class="qp-sub-debt">
+            в том числе недоплаты {{ formatCurrency(dealSummary.debtSum) }}
+          </span>
         </div>
       </div>
 
@@ -506,6 +824,17 @@ async function confirm_() {
           Документы
           <span v-if="proofPreview" class="qp-tab-dot" />
         </button>
+        <!-- Комментарий к платежу: о чём договорились, чем платили, кто принёс.
+             Сохраняется вместе с оплатой. -->
+        <button
+          type="button"
+          class="qp-tab"
+          :class="{ 'qp-tab--active': payTab === 'note' }"
+          @click="payTab = 'note'"
+        >
+          Комментарий
+          <span v-if="payNote.trim()" class="qp-tab-dot" />
+        </button>
       </div>
 
       <div class="qp-body">
@@ -520,7 +849,7 @@ async function confirm_() {
              занимал место, ничего не добавляя. -->
         <div class="mb-4">
           <div class="qp-amount-row">
-            <div class="input-with-suffix qp-amount-input">
+            <div class="input-with-suffix qp-amount-input" :class="{ 'qp-amount-input--empty': !hasAmount }">
               <input
                 :value="enteredAmount || ''"
                 v-maska="CURRENCY_MASK"
@@ -552,15 +881,24 @@ async function confirm_() {
               </button>
             </div>
           </div>
-          <div v-if="shortfall > 0" class="qp-delta qp-delta--under">
+          <div v-if="!hasAmount" class="qp-delta qp-delta--empty">
+            Введите сумму оплаты
+          </div>
+          <div v-else-if="shortfall > 0" class="qp-delta qp-delta--under">
             Меньше {{ payMode === 'EARLY' ? 'остатка' : 'плановой' }} на {{ formatCurrency(shortfall) }}
           </div>
-          <div v-else-if="overpay > 0" class="qp-delta qp-delta--over">
+          <div v-else-if="overpay > 0 && hasAmount" class="qp-delta qp-delta--over">
             <!-- В досрочном режиме сумма уже покрывает весь договор: писать
                  «уйдёт в счёт следующих платежей» нельзя — следующих нет. -->
             <template v-if="payMode === 'EARLY'">
               Больше остатка по договору на {{ formatCurrency(overpay) }} — договор закроется,
               лишнее платить не нужно
+            </template>
+            <!-- Денег хватает на весь остаток договора: «пойдёт в счёт
+                 следующих платежей» тут врёт — следующих не останется. -->
+            <template v-else-if="earlyClose.willClose">
+              Сделка будет закрыта досрочно<template v-if="earlyClose.excess">
+                — переплата {{ formatCurrency(earlyClose.excess) }}</template>
             </template>
             <template v-else-if="openRows.length">
               Больше на {{ formatCurrency(overpay) }} — пойдёт в счёт следующих платежей
@@ -604,24 +942,97 @@ async function confirm_() {
              размазывание по умолчанию. -->
         <!-- Когда денег хватает на весь остаток, выбирать нечего: график
              закроется целиком при любом варианте. -->
-        <div v-if="applyRedistribute && outstanding > 0" class="qp-short mb-4">
+        <!-- Недоплату можно и не раскладывать: «Оставить как долг» — рядом с
+             вариантами раскладки, выбор один на всё. -->
+        <!-- `tail.applicable` держит блок и в досрочном режиме: там долгом
+             оставить нельзя, и без «Дописать платёж» выбора не осталось бы
+             вовсе, а подтверждение заблокировано. -->
+        <div
+          v-if="(applyRedistribute && outstanding > 0) || canLeaveDebt || tail.applicable"
+          class="qp-short mb-4"
+        >
           <div class="qp-short-head">
-            {{ overpay > 0 ? 'Как зачесть внесённые деньги' : 'Как разложить разницу по графику' }}
+            {{
+              overpay > 0
+                ? 'Как зачесть внесённые деньги'
+                : `Что сделать с недостающими ${formatCurrency(shortfall)}`
+            }}
           </div>
           <div class="qp-short-opts">
+            <template v-if="openRows.length && outstanding > 0">
+              <button
+                v-for="m in REDIST_MODES"
+                :key="m.key"
+                type="button"
+                class="qp-short-opt"
+                :class="{ 'qp-short-opt--active': !debtChosen && redistributeMode === m.key }"
+                @click="pickMode(m.key)"
+              >{{ m.label }}</button>
+            </template>
+            <!-- Последняя строка графика: разложить некуда — дописать платёж
+                 или оставить долгом. -->
             <button
-              v-for="m in REDIST_MODES"
-              :key="m.key"
+              v-else-if="tail.applicable"
               type="button"
               class="qp-short-opt"
-              :class="{ 'qp-short-opt--active': redistributeMode === m.key }"
-              @click="pickMode(m.key)"
-            >{{ m.label }}</button>
+              :class="{ 'qp-short-opt--active': !debtChosen && createTailPayment }"
+              @click="pickTail"
+            >Дописать платёж</button>
+            <button
+              v-if="canLeaveDebt"
+              type="button"
+              class="qp-short-opt qp-short-opt--debt"
+              :class="{ 'qp-short-opt--active': debtChosen }"
+              @click="pickDebt"
+            >Оставить как долг</button>
           </div>
-          <div class="qp-mode-hint">{{ modeHint }}</div>
+
+          <!-- Долг: график не меняется, долг виден по этому платежу -->
+          <template v-if="debtChosen">
+            <div class="qp-mode-hint">
+              {{ formatCurrency(shortfall) }} останутся долгом за этот месяц — он виден в графике,
+              остальные платежи не изменятся. В «Должники» клиент попадёт по порогам раздела,
+              а если это последний платёж — при любой сумме.
+            </div>
+            <div class="qp-debt-fields">
+              <div class="qp-debt-field">
+                <label class="field-label">
+                  Обещал доплатить <span class="qp-sect-note">необязательно</span>
+                </label>
+                <DateField v-model="debtPromisedDate" :min="todayYmd" plain />
+                <div v-if="!debtPromisedDate" class="qp-debt-nodate">
+                  Без даты — «обещал оплатить, дата пока не указана»
+                </div>
+              </div>
+              <div class="qp-debt-field">
+                <label class="field-label">
+                  Комментарий <span class="qp-sect-note">необязательно</span>
+                </label>
+                <textarea
+                  v-model="debtNote"
+                  class="field-input qp-debt-note"
+                  rows="2"
+                  maxlength="2000"
+                  placeholder="Например: доплатит после зарплаты"
+                />
+              </div>
+            </div>
+          </template>
+
+          <div v-else-if="openRows.length && outstanding > 0" class="qp-mode-hint">{{ modeHint }}</div>
+          <div v-else-if="tail.applicable" class="qp-mode-hint">
+            <template v-if="createTailPayment">
+              Появится платёж на {{ formatCurrency(tail.deficit) }} с датой {{ shortDate(tail.suggestedDate) }}.
+            </template>
+            <template v-else>
+              Это последняя строка графика: разложить недостачу некуда. Выберите «Дописать
+              платёж» или «Оставить как долг» — иначе {{ formatCurrency(tail.deficit) }}
+              повиснут без платежа.
+            </template>
+          </div>
 
           <!-- Ручные суммы: тот же порядок работы, что в основном окне оплаты -->
-          <template v-if="redistributeMode === 'MANUAL'">
+          <template v-if="!debtChosen && openRows.length && outstanding > 0 && redistributeMode === 'MANUAL'">
             <div v-if="preview.error" class="qp-manual-error">{{ preview.error }}</div>
             <div class="qp-manual-list">
               <div v-for="row in openRows" :key="row.id" class="qp-manual-row">
@@ -665,6 +1076,28 @@ async function confirm_() {
           </div>
         </div>
 
+        <!-- Недоплаты прошлых месяцев: закрывать их сейчас или оставить.
+             Когда впереди нет обычных платежей, выбирать не из чего — платить
+             всё равно нечего, кроме недоплат, и переключатель только сбивал:
+             снятый, он обнулял сумму, ничего при этом не исключая. -->
+        <label
+          v-if="debtRows.length && hasPlannedOpen && payMode === 'MONTH' && !forgiving"
+          class="qp-cover mb-4"
+        >
+          <input v-model="includeDebts" type="checkbox" class="qp-cover-cb" />
+          <span>
+            <strong>Учитывать недоплаты — {{ formatCurrency(debtRowsSum) }}</strong>
+            <span class="qp-cover-hint">
+              <template v-if="includeDebts">
+                Старый долг закрывается первым: недоплаты стоят в начале очереди.
+              </template>
+              <template v-else>
+                Недоплаты останутся висеть, оплата идёт с ближайшего планового платежа.
+              </template>
+            </span>
+          </span>
+        </label>
+
         <!-- Живой график: видно, каким станет расписание.
              По умолчанию свёрнут — в большинстве случаев человек просто
              отмечает оплату, а раскрытый график занимал почти всё окно. -->
@@ -673,13 +1106,15 @@ async function confirm_() {
           <span>Загружаем график…</span>
         </div>
         <div v-else-if="target && schedule.length" class="qp-schedule mb-4">
+          <!-- Раскрытие графика раньше подписывалось бледной строчкой и не
+               читалось как кнопка. Теперь это явное действие с фоном. -->
           <button class="qp-schedule-toggle" @click="scheduleOpen = !scheduleOpen">
             <v-icon icon="mdi-calendar-check-outline" size="17" />
             <span class="qp-schedule-title">График платежей</span>
-            <span class="qp-schedule-hint">
-              {{ scheduleOpen ? 'скрыть' : 'посмотреть, каким станет' }}
+            <span class="qp-schedule-action">
+              {{ scheduleOpen ? 'Скрыть график' : 'Открыть график' }}
+              <v-icon :icon="scheduleOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="16" />
             </span>
-            <v-icon :icon="scheduleOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="18" />
           </button>
           <PaymentSchedulePreview
             v-if="scheduleOpen"
@@ -690,11 +1125,26 @@ async function confirm_() {
             :preview="preview"
             :forgive="forgivingValid"
             :redistributing="applyRedistribute"
+            :debt="debtChosen ? shortfall : 0"
+            :selected="selectedIds"
+            :pickable="pickableIds"
+            :queue="pickSchedule.map((p) => p.id)"
+            :selectable="payMode === 'MONTH' && !forgiving"
+            @toggle="toggleRow"
           />
+          <!-- Итог живёт в подвале этого же блока и виден всегда — и когда
+               график свёрнут, и когда раскрыт: это ответ на главный вопрос
+               окна, ради него график и открывают. -->
+          <div class="qp-after">
+            <span>После оплаты останется</span>
+            <strong>{{ formatCurrency(remainingAfter) }}</strong>
+          </div>
         </div>
 
-        <!-- Дописать платёж на остаток: график кончился раньше долга -->
-        <div v-if="tail.applicable" class="qp-tail mb-4">
+        <!-- Дописать платёж на остаток: график кончился раньше долга. Когда
+             недоплату можно оставить долгом, этот выбор — кнопкой в блоке
+             выше, рядом с «Оставить как долг». -->
+        <div v-if="tail.applicable && !canLeaveDebt" class="qp-tail mb-4">
           <label class="qp-tail-row">
             <input v-model="createTailPayment" type="checkbox" class="qp-tail-cb" />
             <span>
@@ -705,11 +1155,6 @@ async function confirm_() {
           </label>
         </div>
 
-        <!-- Итог по договору -->
-        <div class="qp-total mb-4">
-          <span>Остаток по договору после оплаты</span>
-          <strong>{{ formatCurrency(remainingAfter) }}</strong>
-        </div>
         <div v-if="earlyClose.willClose && !forgivingValid" class="qp-close-note mb-4">
           <v-icon icon="mdi-flag-checkered" size="16" />
           <span>
@@ -789,6 +1234,22 @@ async function confirm_() {
 
         <!-- Документы держим смонтированными: скриншот, выбранный до перехода
              на оплату, не должен теряться при переключении вкладок. -->
+        <div v-show="payTab === 'note'" class="qp-sect qp-sect--last">
+          <div class="qp-sect-label">
+            Комментарий к платежу <span class="qp-sect-note">необязательно</span>
+          </div>
+          <textarea
+            v-model="payNote"
+            class="field-input qp-note-input"
+            rows="4"
+            maxlength="2000"
+            placeholder="Например: принёс наличными в офис, остаток обещал в пятницу"
+          />
+          <div class="qp-note-hint">
+            Виден только вам и вашим сотрудникам. Потом его можно поправить в карточке платежа.
+          </div>
+        </div>
+
         <div v-show="payTab === 'docs'" class="qp-sect qp-sect--last">
           <div class="qp-sect-label">Квитанция и скриншот <span class="qp-sect-note">необязательно</span></div>
 
@@ -838,11 +1299,19 @@ async function confirm_() {
         </div>
       </div>
 
+      <!-- Причина блокировки — у самой кнопки: блок выбора легко уходит за
+           прокрутку, и «Подтвердить» выглядел бы просто сломанным. -->
+      <div v-if="shortfallUnhandled" class="qp-block-note">
+        Выберите, что делать с {{ formatCurrency(tail.deficit) }}: «Дописать платёж»
+        или «Оставить как долг»
+      </div>
       <div class="qp-actions">
         <button class="btn-secondary flex-grow-1" @click="open = false">Отмена</button>
         <button class="btn-primary flex-grow-1" :disabled="confirmDisabled" @click="confirm_">
           <v-progress-circular v-if="submitting" indeterminate size="18" width="2" />
-          <span v-else>{{ forgiving ? 'Принять и простить остаток' : 'Подтвердить оплату' }}</span>
+          <span v-else>{{
+            forgiving ? 'Принять и простить остаток' : debtChosen ? 'Принять, остаток — в долг' : 'Подтвердить оплату'
+          }}</span>
         </button>
       </div>
     </v-card>
@@ -850,6 +1319,17 @@ async function confirm_() {
 </template>
 
 <style scoped>
+/* Почему кнопка подтверждения заблокирована — читается у самой кнопки. */
+.qp-block-note {
+  margin: 0 24px 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(217, 119, 6, 0.1);
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* Две вкладки вместо одного длинного списка: документы нужны не каждый раз,
    а занимали столько же места, сколько сама оплата. */
 .qp-tabs {
@@ -933,6 +1413,8 @@ async function confirm_() {
   flex: 1;
   min-width: 0;
 }
+/* Пустое поле подсвечиваем: без суммы подтвердить оплату всё равно нельзя. */
+.qp-amount-input--empty .field-input { border-color: rgba(220, 38, 38, 0.5); }
 .qp-modes {
   display: flex;
   gap: 6px;
@@ -960,12 +1442,15 @@ async function confirm_() {
   color: #047857;
 }
 
-/* Сворачиваемый график: раскрытым он занимал почти всё окно. */
+/* Сворачиваемый график: раскрытым он занимает почти всё окно, поэтому по
+   умолчанию свёрнут — и тем заметнее должен быть способ его раскрыть. */
 .qp-schedule {
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 12px;
   padding: 10px 12px;
+  transition: border-color 0.15s, background 0.15s;
 }
+.qp-schedule:hover { border-color: rgba(4, 120, 87, 0.35); }
 .qp-schedule-toggle {
   display: flex;
   align-items: center;
@@ -975,18 +1460,26 @@ async function confirm_() {
   border: none;
   padding: 2px 0;
   cursor: pointer;
-  color: rgba(var(--v-theme-on-surface), 0.75);
+  color: rgba(var(--v-theme-on-surface), 0.8);
 }
 .qp-schedule-title {
   font-size: 13px;
   font-weight: 600;
 }
-.qp-schedule-hint {
-  flex: 1;
-  text-align: right;
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
+/* Явное действие вместо бледной подписи: раньше «посмотреть, каким станет»
+   читалось как пояснение, и график никто не раскрывал. */
+.qp-schedule-action {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: rgba(4, 120, 87, 0.09);
+  color: #047857;
+  font-size: 12.5px; font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s;
 }
+.qp-schedule-toggle:hover .qp-schedule-action { background: rgba(4, 120, 87, 0.18); }
 
 /* Квитанция и скриншот — правила из основного окна отметки оплаты: два окна
    оплаты должны выглядеть одинаково. Там они в scoped-стилях, поэтому
@@ -1055,16 +1548,17 @@ async function confirm_() {
 /* Поля, кнопки и крестик — те же, что в основном окне отметки оплаты. Там они
    лежат в scoped-стилях компонента, поэтому сюда не попадают: два окна оплаты
    должны выглядеть одинаково, и правила продублированы дословно. */
+/* Крестик лежит поверх зелёной шапки — светлый, иначе тонет в фоне. */
 .dialog-close-sm {
   position: absolute; top: 16px; right: 16px;
   width: 32px; height: 32px; border-radius: 8px; border: none;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  color: rgba(var(--v-theme-on-surface), 0.5);
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; transition: all 0.15s;
   z-index: 1;
 }
-.dialog-close-sm:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
+.dialog-close-sm:hover { background: rgba(255, 255, 255, 0.28); }
 .field-label {
   display: block; font-size: 13px; font-weight: 500;
   color: rgba(var(--v-theme-on-surface), 0.6); margin-bottom: 6px;
@@ -1105,21 +1599,50 @@ async function confirm_() {
 
 .qp-card { display: flex; flex-direction: column; max-height: 88vh; width: 100%; min-width: 0; }
 .qp-card--full { max-height: 100%; height: 100%; }
+/* Шапка на фирменном зелёном: раньше окно было сплошной белой простынёй, и
+   заголовок со сводкой сливались с формой под ними. Градиент — по диагонали,
+   от основного зелёного к тёмному, чтобы белый текст читался на всей ширине. */
 .qp-head {
   /* Справа место под крестик — иначе длинный заголовок уезжает под него. */
-  padding: 20px 56px 14px 24px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  padding: 20px 56px 16px 24px;
+  background: linear-gradient(135deg, #047857 0%, #065f46 58%, #064e3b 100%);
+  color: #fff;
 }
 .qp-title {
   font-size: 17px; font-weight: 700;
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  color: #fff;
 }
+/* Просрочка обязана остаться тревожной и на зелёном — сохраняем красный,
+   но плотный: полупрозрачный на тёмном фоне выцветал. */
 .qp-overdue {
   font-size: 11.5px; font-weight: 600;
-  color: #dc2626; background: rgba(220, 38, 38, 0.1);
+  color: #fff; background: rgba(239, 68, 68, 0.9);
   padding: 2px 8px; border-radius: 6px;
 }
-.qp-sub { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.55); margin-top: 2px; }
+.qp-sub {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px;
+  font-size: 13px; color: rgba(255, 255, 255, 0.72); margin-top: 5px;
+}
+.qp-sub strong { color: #fff; font-weight: 600; }
+.qp-sub-debt {
+  font-size: 12px; font-weight: 600; color: #fde68a;
+  background: rgba(255, 255, 255, 0.14);
+  padding: 2px 8px; border-radius: 6px;
+}
+/* Подвал блока графика: подпись слева, сумма справа, отделены чертой — это
+   итоговая строка, а не ещё один пункт списка. */
+.qp-after {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.qp-after strong {
+  font-size: 16px; font-weight: 700;
+  color: rgb(var(--v-theme-primary));
+  white-space: nowrap;
+}
 /* Отступ живёт в секциях, а не в теле окна: иначе разделители не доходят до
    краёв и выглядят обрубленными. */
 .qp-body { padding: 0 0 4px; overflow-y: auto; overflow-x: hidden; flex: 1; min-width: 0; }
@@ -1129,8 +1652,22 @@ async function confirm_() {
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 
+/* Комментарий к платежу: поле во всю ширину секции, тянется по вертикали. */
+.qp-note-input {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.45;
+}
+.qp-note-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
 .qp-delta { font-size: 12px; margin-top: 5px; }
 .qp-delta--under { color: #d97706; }
+.qp-delta--empty { color: #dc2626; }
 .qp-delta--over { color: #10b981; }
 
 .qp-short {
@@ -1156,9 +1693,42 @@ async function confirm_() {
   color: rgb(var(--v-theme-primary));
 }
 
+/* Долг — янтарный, как недоплата и просрочка: это не раскладка графика, а
+   деньги, которые клиент остался должен. */
+.qp-short-opt--debt.qp-short-opt--active {
+  border-color: #d97706;
+  background: rgba(217, 119, 6, 0.08);
+  color: #b45309;
+}
+
 .qp-mode-hint {
   font-size: 11.5px; margin-top: 7px;
   color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.qp-cover {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border-radius: 10px;
+  border: 1px solid rgba(217, 119, 6, 0.28);
+  background: rgba(217, 119, 6, 0.05);
+  font-size: 13px; line-height: 1.45; cursor: pointer;
+}
+.qp-cover-cb { margin-top: 2px; accent-color: #b45309; width: 16px; height: 16px; flex-shrink: 0; }
+.qp-cover-hint {
+  display: block; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.qp-debt-fields {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: 10px;
+}
+.qp-debt-nodate {
+  font-size: 11.5px; margin-top: 4px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.qp-debt-note {
+  resize: vertical;
+  min-height: 56px;
+  font-family: inherit;
 }
 .qp-manual-error {
   font-size: 11.5px; color: #dc2626; margin-top: 8px;
@@ -1218,13 +1788,6 @@ async function confirm_() {
   font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.55);
   padding: 14px 0;
 }
-.qp-total {
-  display: flex; justify-content: space-between; align-items: center;
-  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.65);
-  padding: 10px 12px; border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-.qp-total strong { font-size: 15px; color: rgba(var(--v-theme-on-surface), 0.9); }
 .qp-close-note {
   display: flex; align-items: flex-start; gap: 8px;
   font-size: 12.5px; color: #0369a1;

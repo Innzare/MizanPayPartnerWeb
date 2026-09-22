@@ -4,6 +4,15 @@ import type { CapitalSummary } from '@/types'
 
 const capital = ref<CapitalSummary | null>(null)
 const loading = ref(false)
+/**
+ * Ответ по капиталу получен хотя бы раз.
+ *
+ * Раздел «Финансы» закрыт тарифом, и на бесплатном плане запрос отвечает 403.
+ * Без этого признака «не смогли узнать» было неотличимо от «капитал не
+ * настроен» — и на главной всплывала подсказка завести капитал у партнёра, у
+ * которого он давно заведён.
+ */
+const loaded = ref(false)
 
 export function useCapital() {
   const isCapitalSet = computed(() =>
@@ -14,8 +23,9 @@ export function useCapital() {
     loading.value = true
     try {
       capital.value = await api.get<CapitalSummary>('/finance/capital')
+      loaded.value = true
     } catch {
-      // silent
+      // Молча: раздел может быть закрыт тарифом или правами.
     } finally {
       loading.value = false
     }
@@ -31,5 +41,5 @@ export function useCapital() {
     }
   }
 
-  return { capital, loading, isCapitalSet, fetchCapital, setInitialCapital }
+  return { capital, loading, loaded, isCapitalSet, fetchCapital, setInitialCapital }
 }

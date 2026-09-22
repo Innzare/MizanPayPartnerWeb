@@ -20,10 +20,17 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
-import { formatCurrency } from '@/utils/formatters'
+import { formatCurrency, pluralizeRu } from '@/utils/formatters'
 import ProgramEditDialog from '@/components/ProgramEditDialog.vue'
-import type { MarkupBase, ProgramRounding, ProgramRule } from '@/utils/programMath'
-import { rulesToGrid, stepLabels } from '@/utils/programGrid'
+import ProgramCalculator from '@/components/ProgramCalculator.vue'
+import CardDisclosure from '@/components/CardDisclosure.vue'
+import type {
+  MarkupBase,
+  ProgramDownMode,
+  ProgramRounding,
+  ProgramRoundingTarget,
+  ProgramRule,
+} from '@/utils/programMath'
 
 interface Program {
   id: string
@@ -33,6 +40,10 @@ interface Program {
   markupBase: MarkupBase
   paymentInterval: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
   rounding: ProgramRounding
+  downMode?: ProgramDownMode
+  roundingTarget?: ProgramRoundingTarget
+  minMarkupAmount?: number | null
+  defaultDownPaymentPercent?: number | null
   minAmount: number | null
   maxAmount: number | null
   strict: boolean
@@ -74,6 +85,7 @@ const INTERVAL_LABEL: Record<string, string> = {
 }
 const ROUNDING_LABEL: Record<ProgramRounding, string> = {
   NONE: 'без округления',
+  TO_50: 'до 50 ₽',
   TO_100: 'до 100 ₽',
   TO_500: 'до 500 ₽',
   TO_1000: 'до 1000 ₽',
@@ -131,15 +143,100 @@ async function remove(p: Program) {
   }
 }
 
-/** Раскладка условий тарифа для карточки. `null` — условия нестандартные. */
-function cardGrid(p: Program) {
-  return rulesToGrid(p.rules)
+/**
+ * Условия тарифа строками — как они и заданы: одно правило = одна строка.
+ *
+ * Прежняя сетка «срок × ступени» показывала проценты без подписей, к чему они
+ * относятся, и на тарифе с двумя осями читалась как выгрузка. В таблице у
+ * каждого числа есть свой столбец, а лишние столбцы просто не выводятся.
+ */
+interface RuleRow {
+  term: number
+  amount: string
+  down: string
+  minDown: number
+  markup: number
 }
+
+function amountLabel(r: ProgramRule): string {
+  if (r.amountFrom == null && r.amountTo == null) return 'любая'
+  if (r.amountFrom == null) return `до ${formatCurrency(r.amountTo!)}`
+  if (r.amountTo == null) return `от ${formatCurrency(r.amountFrom)}`
+  return `${formatCurrency(r.amountFrom)} — ${formatCurrency(r.amountTo)}`
+}
+
+function downLabel(r: ProgramRule): string {
+  if (r.downFromPercent == null && r.downToPercent == null) return 'любой'
+  if (r.downFromPercent == null) return `до ${r.downToPercent}%`
+  if (r.downToPercent == null) return `от ${r.downFromPercent}%`
+  return `${r.downFromPercent}—${r.downToPercent}%`
+}
+
+function ruleRows(p: Program): RuleRow[] {
+  return [...p.rules]
+    .sort(
+      (a, b) =>
+        a.termPayments - b.termPayments ||
+        (a.amountFrom ?? 0) - (b.amountFrom ?? 0) ||
+        (a.downFromPercent ?? 0) - (b.downFromPercent ?? 0),
+    )
+    .map((r) => ({
+      term: r.termPayments,
+      amount: amountLabel(r),
+      down: downLabel(r),
+      minDown: r.minDownPaymentPercent ?? 0,
+      markup: r.markupPercent,
+    }))
+}
+
+/** Столбец показываем, только если тариф по этой оси вообще различается. */
+function hasAmountAxis(p: Program): boolean {
+  return p.rules.some((r) => r.amountFrom != null || r.amountTo != null)
+}
+function hasDownAxis(p: Program): boolean {
+  return p.rules.some((r) => r.downFromPercent != null || r.downToPercent != null)
+}
+function hasMinDownAxis(p: Program): boolean {
+  return p.rules.some((r) => (r.minDownPaymentPercent ?? 0) > 0)
+}
+
+/**
+ * Условия одного срока идут вместе одной группой.
+ *
+ * На тарифе со ступенями взноса срок повторялся в каждой строке — «6 платежей»
+ * подряд четыре раза, — и таблица читалась как список несвязанных условий.
+ * Теперь срок указан один раз на всю группу.
+ */
+interface RuleGroup {
+  term: number
+  rows: RuleRow[]
+}
+
+const groupsByProgram = computed(() => {
+  const map: Record<string, RuleGroup[]> = {}
+  for (const p of items.value) {
+    const byTerm = new Map<number, RuleRow[]>()
+    for (const row of ruleRows(p)) {
+      const list = byTerm.get(row.term) ?? []
+      list.push(row)
+      byTerm.set(row.term, list)
+    }
+    map[p.id] = [...byTerm.entries()].map(([term, rows]) => ({ term, rows }))
+  }
+  return map
+})
 
 /** Минимальный первый взнос тарифа: 0 — можно без взноса. */
 function downPaymentOf(p: Program): number {
   return Math.max(0, ...p.rules.map((r) => r.minDownPaymentPercent ?? 0))
 }
+
+/** Сколько условий у тарифа — видно на кнопке, не раскрывая блок. */
+const rulesCount = computed(() => {
+  const map: Record<string, number> = {}
+  for (const p of items.value) map[p.id] = p.rules.length
+  return map
+})
 
 </script>
 
@@ -209,43 +306,77 @@ function downPaymentOf(p: Program): number {
           </div>
         </div>
 
-        <!-- Условия: сроки и наценки сеткой. Таблица со строками «от … до …»
-             читалась как выгрузка из базы; здесь видно главное — на сколько
-             платежей и под какой процент. -->
-        <div class="ip-card-terms">
-          <template v-if="cardGrid(p)">
-            <div v-if="cardGrid(p)!.steps.length" class="ip-card-steps">
-              <span class="ip-card-steps-label">Стоимость товара</span>
-              <span v-for="(label, i) in stepLabels(cardGrid(p)!.steps)" :key="i" class="ip-card-step">
-                {{ label }}
-              </span>
-            </div>
-            <div v-for="t in cardGrid(p)!.terms" :key="t" class="ip-card-term">
-              <span class="ip-card-term-name">{{ t }} платежей</span>
-              <span
-                v-for="(pct, i) in cardGrid(p)!.markup[t]"
-                :key="i"
-                class="ip-card-pct"
-              >
-                {{ pct }}%
-              </span>
-            </div>
-          </template>
+        <!-- Проверка тарифа на живых суммах: цена, взнос и срок — и сразу
+             видно, что получит клиент. Раньше здесь стояла таблица процентов,
+             но она не отвечала на главный вопрос партнёра. -->
+        <ProgramCalculator
+          :program="p"
+          :title="`Тариф «${p.name}»`"
+          :seller="sellerName.label"
+        />
 
-          <!-- Нестандартные условия показываем построчно: выпрямлять их нельзя. -->
-          <template v-else>
-            <div v-for="(r, i) in p.rules" :key="r.id ?? i" class="ip-card-term">
-              <span class="ip-card-term-name">
-                <template v-if="r.amountFrom == null && r.amountTo == null">любая стоимость</template>
-                <template v-else-if="r.amountFrom == null">до {{ formatCurrency(r.amountTo!) }}</template>
-                <template v-else-if="r.amountTo == null">от {{ formatCurrency(r.amountFrom) }}</template>
-                <template v-else>{{ formatCurrency(r.amountFrom) }} — {{ formatCurrency(r.amountTo) }}</template>
-                · {{ r.termPayments }} платежей
-              </span>
-              <span class="ip-card-pct">{{ r.markupPercent }}%</span>
+
+        <!-- Условия целиком: одно правило — одна строка, у каждого числа свой
+             столбец с подписью. Оси, по которым тариф не различается, не
+             выводим: столбец «Стоимость товара» из одного значения «любая»
+             только занимал бы место. -->
+        <CardDisclosure
+          title="Все условия тарифа"
+          icon="mdi-format-list-bulleted"
+          :note="`${(rulesCount[p.id] ?? 0)} ${pluralizeRu(rulesCount[p.id] ?? 0, 'условие', 'условия', 'условий')}`"
+        >
+          <div class="ip-rules">
+          <table class="ip-rules-table">
+            <thead>
+              <tr>
+                <th>Срок</th>
+                <th v-if="hasAmountAxis(p)">Стоимость товара</th>
+                <th v-if="hasDownAxis(p)">Первый взнос</th>
+                <th v-if="hasMinDownAxis(p)" class="ip-rules-num">Минимум взноса</th>
+                <th class="ip-rules-num">Наценка</th>
+              </tr>
+            </thead>
+            <!-- Группа = срок. Отдельный tbody держит строки вместе и рисует
+                 черту между сроками. -->
+            <tbody v-for="g in groupsByProgram[p.id] ?? []" :key="g.term">
+              <tr v-for="(row, i) in g.rows" :key="i">
+                <td v-if="i === 0" :rowspan="g.rows.length" class="ip-rules-term">
+                  {{ g.term }} {{ pluralizeRu(g.term, 'платёж', 'платежа', 'платежей') }}
+                </td>
+                <td v-if="hasAmountAxis(p)">{{ row.amount }}</td>
+                <td v-if="hasDownAxis(p)">{{ row.down }}</td>
+                <td v-if="hasMinDownAxis(p)" class="ip-rules-num">{{ row.minDown }}%</td>
+                <td class="ip-rules-num ip-rules-markup">{{ row.markup }}%</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- Правила границ словами: по самой таблице не видно, куда попадёт
+               товар ровно на границе и от чего считается доля взноса. -->
+          <div class="ip-rules-notes">
+            <p>
+              Наценка — {{ p.markupBase === 'OF_COST' ? 'от закупочной цены' : 'от цены продажи' }},
+              платежи {{ INTERVAL_LABEL[p.paymentInterval] }}<template
+                v-if="p.rounding !== 'NONE'"
+              >, платёж округляется {{ ROUNDING_LABEL[p.rounding] }}<template
+                v-if="p.roundingTarget === 'TOTAL'"
+              > с уходом остатка в цену договора</template></template>.
+            </p>
+            <p v-if="hasAmountAxis(p)">
+              Товар ровно на границе идёт в верхнюю ступень: за 100 000 ₽ — уже «от 100 000».
+            </p>
+            <p v-if="hasDownAxis(p)">
+              Доля взноса считается от цены договора; взнос ровно на границе идёт в
+              верхнюю ступень.<template v-if="p.downMode === 'CURVE'">
+              Между границами наценка меняется плавно, а не скачком.</template>
+            </p>
+            <p v-if="p.minMarkupAmount">
+              Наценка не бывает меньше {{ formatCurrency(p.minMarkupAmount) }} — на дешёвом
+              товаре берётся эта сумма, а не процент.
+            </p>
             </div>
-          </template>
-        </div>
+          </div>
+        </CardDisclosure>
 
         <div class="ip-card-foot">
           <span class="ip-card-fact">
@@ -260,9 +391,23 @@ function downPaymentOf(p: Program): number {
             <v-icon :icon="downPaymentOf(p) ? 'mdi-wallet-outline' : 'mdi-wallet-plus-outline'" size="14" />
             {{ downPaymentOf(p) ? `Первый взнос от ${downPaymentOf(p)}%` : 'Можно без первого взноса' }}
           </span>
+          <span v-if="p.downMode === 'CURVE'" class="ip-card-fact">
+            <v-icon icon="mdi-chart-bell-curve-cumulative" size="14" />
+            Наценка меняется плавно по взносу
+          </span>
+          <span v-if="p.minMarkupAmount" class="ip-card-fact">
+            <v-icon icon="mdi-shield-check-outline" size="14" />
+            Наценка не меньше {{ formatCurrency(p.minMarkupAmount) }}
+          </span>
+          <span v-if="p.defaultDownPaymentPercent" class="ip-card-fact">
+            <v-icon icon="mdi-wallet-plus-outline" size="14" />
+            Взнос по умолчанию {{ p.defaultDownPaymentPercent }}%
+          </span>
           <span v-if="p.rounding !== 'NONE'" class="ip-card-fact">
             <v-icon icon="mdi-decimal-decrease" size="14" />
-            Платёж округляется {{ ROUNDING_LABEL[p.rounding] }}
+            Платёж округляется {{ ROUNDING_LABEL[p.rounding] }}<template
+              v-if="p.roundingTarget === 'TOTAL'"
+            >, остаток уходит в цену</template>
           </span>
           <span v-if="p.dealsCount" class="ip-card-fact ip-card-fact--deals">
             <v-icon icon="mdi-file-document-outline" size="14" />
@@ -322,6 +467,9 @@ function downPaymentOf(p: Program): number {
 .ip-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(400px, 480px));
+  /* Каждая карточка по своему содержимому: иначе соседняя с раскрытыми
+     условиями растягивала бы весь ряд. */
+  align-items: start;
   gap: 14px;
 }
 
@@ -360,36 +508,63 @@ function downPaymentOf(p: Program): number {
 .ip-badge--default { background: rgba(255, 255, 255, 0.9); color: #047857; }
 .ip-badge--strict { background: rgba(251, 191, 36, 0.28); color: #fde68a; }
 
-/* Условия внутри карточки: строка на срок, ячейка на ступень стоимости. */
-.ip-card-terms {
-  margin-top: 14px; padding: 10px 12px; border-radius: 12px;
-  background: rgba(0, 0, 0, 0.16);
+/* Условия таблицей: у каждого числа свой столбец с подписью. Подложку и
+   отступы даёт сам сворачиваемый блок, поэтому здесь их нет. */
+.ip-rules { min-width: 0; }
+/* Колонки фиксированной ширины: срок и наценка короткие, всё остальное место
+   достаётся средней колонке — иначе браузер растягивал «СРОК» на полтаблицы. */
+.ip-rules-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.ip-rules-table th {
+  padding: 0 12px 8px; text-align: left; white-space: nowrap;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
 }
-.ip-card-steps, .ip-card-term {
-  display: grid;
-  grid-template-columns: minmax(96px, 1.2fr) repeat(auto-fit, minmax(72px, 1fr));
-  gap: 8px; align-items: center;
+/* Заголовок числовой колонки тоже вправо: иначе он висел над значениями со
+   сдвигом, и было неясно, к какой колонке относится. */
+.ip-rules-table th.ip-rules-num { text-align: right; }
+.ip-rules-table td {
+  padding: 9px 12px; font-size: 13px; color: rgba(255, 255, 255, 0.82);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  vertical-align: middle;
 }
-.ip-card-steps {
-  padding-bottom: 6px; margin-bottom: 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+/* Подложка колонки срока начинается от края таблицы, поэтому у первой колонки
+   свой отступ — иначе текст лип бы к границе подложки. */
+.ip-rules-table th:first-child, .ip-rules-table td:first-child { padding-left: 12px; width: 130px; }
+.ip-rules-table th:last-child, .ip-rules-table td:last-child { padding-right: 0; width: 86px; }
+/* Границу между сроками держит последняя строка группы: раньше к ней
+   добавлялась ещё и верхняя граница следующей — линия выходила двойной. */
+.ip-rules-table tbody:not(:last-child) > tr:last-child > td {
+  border-bottom-color: rgba(255, 255, 255, 0.2);
 }
-.ip-card-steps-label, .ip-card-step {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
+.ip-rules-table tbody:last-child > tr:last-child > td { border-bottom: none; }
+/* Селектор с элементом: правило `.ip-rules-table td` иначе перебивает класс.
+   Группу держит не вертикальная линия, а лёгкая подложка: при схлопнутых
+   границах линия рвалась на каждом стыке строк и выглядела неопрятно. */
+.ip-rules-table td.ip-rules-term {
+  font-weight: 600; color: #fff; white-space: nowrap; vertical-align: middle;
+  background: rgba(255, 255, 255, 0.05);
+  padding-left: 12px;
 }
-.ip-card-step { text-align: center; }
-.ip-card-term { padding: 5px 0; }
-.ip-card-term-name { font-size: 13.5px; font-weight: 600; color: rgba(255, 255, 255, 0.9); }
-.ip-card-pct {
-  text-align: center; font-size: 15px; font-weight: 700;
-  font-variant-numeric: tabular-nums;
+.ip-rules-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ip-rules-markup { font-size: 14px; font-weight: 700; color: #fff; }
+
+.ip-rules-notes { display: flex; flex-direction: column; gap: 5px; margin-top: 11px; }
+.ip-rules-notes p {
+  margin: 0; font-size: 11.5px; line-height: 1.5; color: rgba(255, 255, 255, 0.55);
 }
 
-.ip-card-foot { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; }
+/* Справка о тарифе — ровная сетка в две колонки: вразнобой по ширине строки
+   выглядели как обрывки, а не как список свойств. */
+.ip-card-foot {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
 .ip-card-fact {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 12px; color: rgba(255, 255, 255, 0.72);
+  display: flex; align-items: flex-start; gap: 6px; min-width: 0;
+  font-size: 12px; line-height: 1.35; color: rgba(255, 255, 255, 0.72);
 }
 .ip-card-fact--deals { color: rgba(255, 255, 255, 0.55); }
 
@@ -397,8 +572,7 @@ function downPaymentOf(p: Program): number {
   .ip-list { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 700px) {
-  .ip-card-steps, .ip-card-term { grid-template-columns: 1fr; gap: 2px; }
-  .ip-card-step, .ip-card-pct { text-align: left; }
-  .ip-card-steps { display: none; }
+  .ip-rules { padding: 10px; }
+  .ip-rules-table th, .ip-rules-table td { padding-right: 8px; font-size: 12px; }
 }
 </style>

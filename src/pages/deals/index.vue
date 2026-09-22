@@ -4,7 +4,7 @@ import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { todayIso } from '@/utils/dateInput'
-import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
+import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type DealFolder, type Payment, userName, clientProfileName } from '@/types'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
@@ -19,8 +19,10 @@ import ClientLink from '@/components/ClientLink.vue'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
-import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
 import QuickPayDialog from '@/components/QuickPayDialog.vue'
+import DealScheduleTable from '@/components/DealScheduleTable.vue'
+import DealPreviewDialog from '@/components/DealPreviewDialog.vue'
+import * as money from '@/utils/paymentMath'
 import { useAutoLoad } from '@/composables/useAutoLoad'
 import { useDealsFilters } from '@/composables/useDealsFilters'
 import { useCoInvestors } from '@/composables/useCoInvestors'
@@ -1202,7 +1204,6 @@ watch(
   },
 )
 
-
 /** KPI считаются вместе со счётчиками: пока они в пути, показываем скелетон,
  *  а не старые цифры от предыдущей вкладки. */
 const statsBusy = computed(() => !isTrashTab.value && dealsStore.countsLoading)
@@ -1355,14 +1356,34 @@ const selectedDealPaidTotal = computed(() =>
 // странице платежей (перерасчёт графика, фактическая дата, квитанция,
 // скриншот). Раньше из превью можно было только уйти на полную страницу
 // сделки, чтобы поставить одну галочку.
-const markPaidDialog = ref(false)
-const markPaidTarget = ref<Payment | null>(null)
+
+/**
+ * Принять оплату по сделке из превью.
+ *
+ * Месяц не выбирается: клиент гасит договор, строку берём самую раннюю
+ * открытую (сначала недоплаты) — график сделки здесь уже загружен.
+ */
+/** Приём оплаты из окна предпросмотра: событие оттуда не приходит. */
+function onPreviewPay(payment: Payment) {
+  handleMarkPaid(new Event('click'), payment)
+}
 
 function handleMarkPaid(e: Event, payment: Payment) {
   e.stopPropagation()
-  markPaidTarget.value = payment
-  markPaidDialog.value = true
+  quickPayDeal.value = selectedDeal.value ?? null
+  quickPayTarget.value = money.paymentToPay(selectedDealPayments.value) ?? payment
+  quickPayDialog.value = true
 }
+
+/**
+ * Строка, с которой начнётся оплата: самая ранняя открытая, сначала недоплаты.
+ *
+ * Кнопку «Оплатить» показываем только у неё: платят договор, а не выбранный
+ * месяц, и кнопка у каждой строки обещала бы обратное — ровно от этого ушли в
+ * графике на странице сделки.
+ */
+const payTargetPayment = computed(() => money.paymentToPay(selectedDealPayments.value) ?? null)
+
 
 // ─── Кнопки действий прямо в строке таблицы ───────────────────────────────
 // Раньше, чтобы отметить оплату, надо было нажать строку, дождаться окна
@@ -1382,7 +1403,7 @@ const canMarkPaid = computed(() => authStore.can('payments.markPaid'))
 
 // Оплата из строки идёт через своё окно: платёж уже выбран, весь график виден
 // сразу, и там же досрочное погашение с прощением остатка. Окно предпросмотра
-// сделки продолжает работать через общий MarkPaidDialog.
+// сделки продолжает работать через общий QuickPayDialog.
 const quickPayDialog = ref(false)
 const quickPayTarget = ref<Payment | null>(null)
 const quickPayDeal = ref<Deal | null>(null)
@@ -1468,16 +1489,6 @@ function rescheduleFromRow(e: Event, deal: Deal) {
   rescheduleDialog.value = true
 }
 
-/**
- * Платёж отмечен. График сделки стор перечитал сам, а вот шапка превью и
- * строка в списке (оплачено, остаток, прогресс, статус) считаются на сервере —
- * их перезапрашиваем отдельно.
- */
-async function onMarkPaidDone(dealId: string) {
-  markPaidTarget.value = null
-  await refreshSelectedDeal(dealId)
-}
-
 /** Оплатили из строки — обновляем и строку, и превью, если оно открыто. */
 async function onQuickPayDone(dealId: string) {
   quickPayTarget.value = null
@@ -1486,7 +1497,6 @@ async function onQuickPayDone(dealId: string) {
 
 // Окно закрыли, не отметив, — сбрасываем цель. Иначе следующая оплата
 // получила бы данные предыдущей: чужой остаток, чужую квитанцию.
-watch(markPaidDialog, (open) => { if (!open) markPaidTarget.value = null })
 watch(quickPayDialog, (open) => {
   if (!open) {
     quickPayDeal.value = null
@@ -1498,12 +1508,6 @@ watch(quickPayDialog, (open) => {
 // в превью не хватало только его, галочка оплаты уже была.
 const rescheduleDialog = ref(false)
 const rescheduleTarget = ref<Payment | null>(null)
-
-function handleReschedule(e: Event, payment: Payment) {
-  e.stopPropagation()
-  rescheduleTarget.value = payment
-  rescheduleDialog.value = true
-}
 
 async function onRescheduled(dealId: string) {
   rescheduleTarget.value = null
@@ -2346,149 +2350,17 @@ async function refreshSelectedDeal(dealId: string) {
       </div>
     </v-card>
 
-    <!-- Deal Detail Dialog -->
-    <v-dialog v-model="showDialog" max-width="680" scrollable :fullscreen="isMobile">
-      <v-card v-if="selectedDeal" rounded="lg">
-        <!-- Header with photo on the left -->
-        <div class="dialog-hero">
-          <button class="dialog-close" @click="showDialog = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-          <div class="dialog-hero-photo" :class="{ 'dialog-hero-photo--empty': !selectedDeal.productPhotos?.length }">
-            <img v-if="selectedDeal.productPhotos?.[0]" :src="selectedDeal.productPhotos[0]" alt="" />
-            <div v-else class="dialog-hero-photo-placeholder">
-              <v-icon icon="mdi-image-off-outline" size="28" />
-              <span>Нет фото</span>
-            </div>
-          </div>
-          <div class="dialog-hero-content">
-            <div
-              class="dialog-status"
-              :style="{ color: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }"
-            >
-              <span class="dialog-status-dot" :style="{ background: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }" />
-              {{ DEAL_STATUS_CONFIG[selectedDeal.status]?.label }}
-            </div>
-            <div class="dialog-title">{{ selectedDeal.productName }}</div>
-            <div class="dialog-hero-meta">
-              <v-icon icon="mdi-account" size="14" />
-              <ClientLink :profile-id="selectedDeal.clientProfileId" :name="dealClientName(selectedDeal)" />
-              <template v-if="dealClientPhone(selectedDeal)">
-                <span class="mx-1">·</span>
-                <v-icon icon="mdi-phone-outline" size="13" />
-                {{ dealClientPhone(selectedDeal) }}
-              </template>
-              <span class="mx-1">·</span>
-              Создано {{ formatDate(selectedDeal.createdAt) }}
-            </div>
-          </div>
-        </div>
-
-        <v-card-text class="pa-5">
-
-          <!-- Financial grid -->
-          <div class="dialog-finance-grid mb-5">
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Закупочная</div>
-              <div class="dialog-finance-value">{{ formatCurrency(selectedDeal.purchasePrice) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Итого</div>
-              <div class="dialog-finance-value font-weight-bold">{{ formatCurrency(selectedDeal.totalPrice) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Наценка</div>
-              <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ formatPercent(selectedDeal.markupPercent) }})</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Оплачено</div>
-              <div class="dialog-finance-value" style="color: #047857;">{{ formatCurrency(selectedDealPaidTotal) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Остаток</div>
-              <div class="dialog-finance-value" style="color: #f59e0b;">{{ formatCurrency(selectedDeal.remainingAmount) }}</div>
-            </div>
-          </div>
-
-          <!-- Progress -->
-          <div class="mb-5">
-            <div class="d-flex justify-space-between align-center mb-2">
-              <span class="text-body-2 font-weight-medium">Прогресс платежей</span>
-              <span class="text-caption text-medium-emphasis">{{ selectedDeal.paidPayments }} из {{ selectedDeal.numberOfPayments }}</span>
-            </div>
-            <v-progress-linear
-              :model-value="getDealProgress(selectedDeal)"
-              color="primary"
-              rounded
-              height="8"
-            />
-          </div>
-
-          <!-- Link to full page -->
-          <button class="detail-link-btn mb-5" @click="showDialog = false; goToDeal(selectedDeal!)">
-            <v-icon icon="mdi-open-in-new" size="16" />
-            Открыть полную страницу сделки
-          </button>
-
-          <!-- Payment schedule -->
-          <div v-if="selectedDealPayments.length">
-            <div class="text-body-2 font-weight-bold mb-3">График платежей</div>
-            <!-- График грузится на открытие диалога: все платежи партнёра в
-                 памяти больше не лежат. -->
-            <div v-if="dealPaymentsLoading && !selectedDealPayments.length" class="d-flex justify-center py-4">
-              <v-progress-circular indeterminate size="22" width="2" color="primary" />
-            </div>
-            <div v-else class="schedule-list">
-              <div
-                v-for="p in selectedDealPayments"
-                :key="p.id"
-                class="schedule-item"
-                :class="{ 'schedule-item--paid': p.status === 'PAID', 'schedule-item--overdue': p.status === 'OVERDUE' }"
-              >
-                <div class="schedule-num">{{ p.number }}</div>
-                <div class="schedule-info">
-                  <div class="schedule-date">{{ formatDateShort(p.dueDate) }}</div>
-                  <div v-if="p.paidAt" class="schedule-paid-at">Оплачено {{ formatDateShort(p.paidAt) }}</div>
-                  <!-- След переноса — как на странице платежей. -->
-                  <div v-if="p.rescheduledFrom" class="schedule-rescheduled">
-                    <v-icon icon="mdi-calendar-arrow-right" size="11" />
-                    с {{ formatDateShort(p.rescheduledFrom) }}
-                  </div>
-                </div>
-                <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
-                <div
-                  class="schedule-status"
-                  :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
-                >
-                  {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                </div>
-                <!-- Отметить оплату и перенести дату, не уходя на страницу
-                     сделки — тот же набор действий, что на «Платежах». Место
-                     под кнопки держим всегда, иначе строки разъезжаются. -->
-                <div class="schedule-action">
-                  <template v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
-                    <v-tooltip text="Отметить оплаченным" location="top">
-                      <template #activator="{ props: tipProps }">
-                        <button v-bind="tipProps" class="action-btn action-btn--success" @click.stop="handleMarkPaid($event, p)">
-                          <v-icon icon="mdi-check" size="16" />
-                        </button>
-                      </template>
-                    </v-tooltip>
-                    <v-tooltip text="Перенести дату" location="top">
-                      <template #activator="{ props: tipProps }">
-                        <button v-bind="tipProps" class="action-btn action-btn--warning" @click.stop="handleReschedule($event, p)">
-                          <v-icon icon="mdi-calendar-arrow-right" size="16" />
-                        </button>
-                      </template>
-                    </v-tooltip>
-                  </template>
-                </div>
-              </div>
-            </div>
-          </div>
-        </v-card-text>
-      </v-card>
-    </v-dialog>
+    <!-- Предпросмотр сделки — общий компонент со страницей платежей: там
+         была почти такая же разметка, только со старым графиком. -->
+    <DealPreviewDialog
+      v-model="showDialog"
+      :deal="selectedDeal"
+      :payments="selectedDealPayments"
+      :loading="dealPaymentsLoading"
+      :fullscreen="isMobile"
+      @pay="onPreviewPay"
+      @open="goToDeal"
+    />
     </template>
 
     <!-- Folder dialog -->
@@ -2574,15 +2446,6 @@ async function refreshSelectedDeal(dealId: string) {
          скриншот). График уже загружен превью — передаём его, чтобы компонент
          не запрашивал его повторно. -->
     <!-- Отметка оплаты из окна предпросмотра сделки — общий компонент. -->
-    <MarkPaidDialog
-      v-model="markPaidDialog"
-      :payment="markPaidTarget"
-      :deal="selectedDeal"
-      :schedule="selectedDealPayments"
-      :fullscreen="isMobile"
-      @paid="onMarkPaidDone"
-    />
-
     <!-- Панель расширенных фильтров -->
     <DealsFilterPanel
       v-model="filtersOpen"
@@ -3495,49 +3358,9 @@ async function refreshSelectedDeal(dealId: string) {
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
 
-/* Schedule */
-.schedule-list { display: flex; flex-direction: column; gap: 4px; }
-.schedule-item {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px; border-radius: 8px;
-  transition: background 0.15s;
-}
-.schedule-item:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
-.schedule-item--paid { opacity: 0.65; }
-.schedule-item--overdue { background: rgba(239, 68, 68, 0.04); }
-.schedule-num {
-  width: 24px; height: 24px; min-width: 24px;
-  border-radius: 6px; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 600;
-  background: rgba(var(--v-theme-on-surface), 0.06);
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-.schedule-info { flex: 1; min-width: 0; }
-.schedule-date {
-  font-size: 14px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.schedule-paid-at {
-  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
-}
-.schedule-amount {
-  font-size: 14px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap;
-}
-.schedule-status {
-  font-size: 11px; font-weight: 600;
-  padding: 3px 10px; border-radius: 6px; white-space: nowrap;
-}
-.schedule-rescheduled {
-  display: flex; align-items: center; gap: 3px;
-  font-size: 11px; color: #f59e0b;
-}
-/* Колонка действий: ширина держится и у оплаченных строк, где кнопок нет. */
-.schedule-action {
-  width: 66px; min-width: 66px;
-  display: flex; align-items: center; justify-content: flex-end; gap: 6px;
-}
+/* Колонка действий: ширина держится и у оплаченных строк, где кнопок нет.
+   Под текстовую кнопку «Оплатить» рядом с переносом даты нужно больше места,
+   чем под две иконки. */
 .action-btn {
   width: 30px; height: 30px; border-radius: 8px; border: none;
   display: inline-flex; align-items: center; justify-content: center;
@@ -3548,6 +3371,10 @@ async function refreshSelectedDeal(dealId: string) {
 .action-btn--warning { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
 .action-btn--warning:hover { background: rgba(245, 158, 11, 0.2); }
 
+/* Две кнопки в ряд: приём оплаты — основное действие, переход на страницу —
+   вспомогательное. */
+.dialog-actions-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.dialog-actions-row .detail-link-btn { flex: 1 1 200px; margin-bottom: 0; }
 /* Detail link */
 .detail-link-btn {
   display: flex; align-items: center; gap: 6px;
@@ -3562,6 +3389,21 @@ async function refreshSelectedDeal(dealId: string) {
 .detail-link-btn:hover {
   background: rgba(var(--v-theme-primary), 0.1);
   border-color: rgba(var(--v-theme-primary), 0.5);
+}
+
+/* Приём оплаты — основное действие окна: сплошная фирменная заливка, чтобы
+   не путался со ссылкой на страницу сделки. Идёт СТРОГО после базового
+   правила: специфичность у них одинаковая, выигрывает тот, кто ниже. */
+.detail-link-btn--pay {
+  border: 1px solid rgb(var(--v-theme-primary));
+  background: rgb(var(--v-theme-primary));
+  color: #fff;
+  font-weight: 600;
+}
+.detail-link-btn--pay:hover {
+  background: rgb(var(--v-theme-primary));
+  border-color: rgb(var(--v-theme-primary));
+  filter: brightness(1.12);
 }
 
 /* Dark mode */

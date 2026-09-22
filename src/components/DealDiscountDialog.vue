@@ -92,9 +92,17 @@ const outstandingAfter = computed(() =>
   valid.value ? Math.max(outstandingNow.value - entered.value, 0) : outstandingNow.value,
 )
 
+/**
+ * Сколько ложится на обычные строки: долги-недоплаты держат свою сумму, и
+ * скидка доходит до них, только когда обычных строк не хватило.
+ */
+const regularTarget = computed(() =>
+  Math.max(outstandingAfter.value - money.openDebtSum(props.schedule), 0),
+)
+
 /** Живое превью: как перестроится график. */
 const preview = computed(() =>
-  money.redistPreview(openRows.value, outstandingAfter.value, mode.value, manualSchedule.value),
+  money.redistPreview(openRows.value, regularTarget.value, mode.value, manualSchedule.value),
 )
 
 const manualSum = computed(() =>
@@ -112,7 +120,7 @@ function pickMode(m: RedistributeMode) {
   mode.value = m
   if (m === 'MANUAL') {
     try {
-      const eq = redistribute({ rows: openRows.value, target: outstandingAfter.value, mode: 'EQUAL' })
+      const eq = redistribute({ rows: openRows.value, target: regularTarget.value, mode: 'EQUAL' })
       const map: Record<string, number> = {}
       for (const r of eq.rows) map[r.id] = r.amount
       manualSchedule.value = map
@@ -239,9 +247,9 @@ async function submit() {
                 </div>
               </div>
             </div>
-            <div class="dd-manual-total" :class="{ 'dd-manual-total--bad': manualSum !== outstandingAfter }">
+            <div class="dd-manual-total" :class="{ 'dd-manual-total--bad': manualSum !== regularTarget }">
               <span>Распределено</span>
-              <span>{{ formatCurrency(manualSum) }} / {{ formatCurrency(outstandingAfter) }}</span>
+              <span>{{ formatCurrency(manualSum) }} / {{ formatCurrency(regularTarget) }}</span>
             </div>
           </template>
         </div>

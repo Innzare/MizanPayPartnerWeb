@@ -1,0 +1,166 @@
+/**
+ * Меню настройки колонок и заголовки таблицы — общее оформление для больших
+ * списков (сделки, должники, клиенты).
+ *
+ * Классы глобальные, имена конкретные: `col-menu-*` и `th-*`. Стили жили
+ * внутри страниц; третий список означал бы третью копию, которая разъедется
+ * после первой правки.
+ */
+
+.col-menu {
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 12px; padding: 8px; min-width: 220px;
+  max-height: 380px; overflow-y: auto;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+}
+.col-menu-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 10px 2px;
+}
+.col-menu-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.col-menu-reset {
+  font-size: 11.5px; color: rgb(var(--v-theme-primary));
+  padding: 2px 6px; border-radius: 6px; cursor: pointer;
+}
+.col-menu-reset:hover { background: rgba(var(--v-theme-primary), 0.1); }
+.col-menu-hint {
+  display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.45);
+  padding: 0 10px 8px;
+}
+.col-menu-presets {
+  display: flex; gap: 5px; flex-wrap: wrap;
+  padding: 0 10px 8px;
+}
+.col-menu-preset {
+  padding: 4px 9px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer; transition: all 0.12s;
+}
+.col-menu-preset:hover { border-color: rgba(var(--v-theme-primary), 0.5); color: rgb(var(--v-theme-primary)); }
+.col-menu-presets--own { padding-top: 2px; }
+.col-menu-own {
+  display: inline-flex; align-items: center;
+  border: 1px solid rgba(var(--v-theme-primary), 0.3);
+  background: rgba(var(--v-theme-primary), 0.07);
+  border-radius: 7px; overflow: hidden;
+}
+.col-menu-own-apply {
+  padding: 4px 6px 4px 9px; font-size: 11.5px; font-weight: 500;
+  color: rgb(var(--v-theme-primary)); cursor: pointer;
+}
+.col-menu-own-del { padding: 4px 6px; color: rgba(var(--v-theme-primary), 0.6); cursor: pointer; }
+.col-menu-own-del:hover { color: #dc2626; }
+.col-menu-save {
+  display: flex; gap: 6px; margin: 0 10px 8px;
+}
+.col-menu-save input {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: transparent; outline: none;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.col-menu-save button {
+  padding: 5px 10px; border-radius: 7px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+  cursor: pointer;
+}
+.col-menu-save button:disabled { opacity: 0.5; cursor: default; }
+.col-menu-save button:not(:disabled):hover {
+  border-color: rgba(var(--v-theme-primary), 0.5);
+  color: rgb(var(--v-theme-primary));
+}
+.col-menu-search {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 10px 8px; padding: 6px 8px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.col-menu-search input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.col-menu-search-clear { display: flex; cursor: pointer; }
+/* Раздел колонок: при трёх десятках плоский список не читается. */
+.col-menu-group + .col-menu-group { margin-top: 6px; }
+.col-menu-group-title {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  padding: 6px 10px 4px;
+}
+.col-menu-empty {
+  padding: 10px; font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.col-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.col-menu-item:hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+/* Строку, которую тащат, приглушаем — видно, что она «в руке». */
+.col-menu-item--dragging { opacity: 0.45; background: rgba(var(--v-theme-primary), 0.08); }
+.col-menu-grip {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: grab;
+}
+.col-menu-label {
+  display: flex; align-items: center; gap: 10px; flex: 1; cursor: pointer;
+}
+.col-menu-item input { width: 16px; height: 16px; accent-color: rgb(var(--v-theme-primary)); cursor: pointer; }
+
+/* Заголовок в момент перетаскивания. */
+.th-dragging { opacity: 0.45; }
+
+/* Поиск */
+.dbt-search {
+  display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+  border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  /* Минимум подобран под самую длинную подсказку («…товару, адресу, номеру…»),
+     иначе текст обрезается на полуслове. */
+  flex: 1 1 340px; min-width: 300px; max-width: 460px;
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+/* Крестик очистки: вернуть полный список одним нажатием, а не стирать
+   запрос по букве. */
+.dbt-search-clear {
+  width: 22px; height: 22px; flex: none; border: none; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(var(--v-theme-on-surface), 0.4);
+  cursor: pointer;
+}
+.dbt-search-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.dbt-search input { flex: 1; border: none; background: none; outline: none; color: inherit; font-size: 14px; }
+
+/* Таблица */
+
+/* ── Заголовки таблицы ── */
+.at-table :deep(td) { font-size: 14px; }
+.at-table :deep(th) {
+  font-size: 12px !important; text-transform: uppercase; letter-spacing: 0.03em;
+  color: rgba(var(--v-theme-on-surface), 0.5) !important; white-space: nowrap;
+}
+.th-index, .td-index {
+  width: 24px; min-width: 24px; padding-left: 2px; padding-right: 2px;
+  text-align: center; font-variant-numeric: tabular-nums;
+}
+.th-inner { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.th-sortable { cursor: pointer; user-select: none; }
+.th-sortable .th-sort-ico { opacity: 0.35; transition: opacity 0.15s; }
+.th-sortable:hover .th-sort-ico { opacity: 0.7; }
+.th-sorted { color: rgb(var(--v-theme-primary)); }
+.th-sorted .th-sort-ico { opacity: 1; color: rgb(var(--v-theme-primary)); }
+.at-table th.text-end .th-inner { flex-direction: row-reverse; }
+.th-dragging { opacity: 0.45; }
+

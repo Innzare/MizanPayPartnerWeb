@@ -2,7 +2,13 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
-import type { PermissionRegistry, StaffRoleTemplate, RolePreset } from '@/types'
+import type {
+  PermissionRegistry,
+  PermissionDef,
+  PermissionSection,
+  StaffRoleTemplate,
+  RolePreset,
+} from '@/types'
 
 const toast = useToast()
 
@@ -70,20 +76,90 @@ function sectionKeys(sectionKey: string): string[] {
   const sec = registry.value.sections.find((s) => s.key === sectionKey)
   return sec ? sec.permissions.map((p) => p.key) : []
 }
-function togglePerm(sectionKey: string, key: string) {
+/**
+ * Включение/выключение права — зеркалит серверный normalizePermissions.
+ *
+ * Считаем по префиксу ключа, а не по секции: секция — это раскладка окна
+ * («Что видно внутри сделки» — отдельная карточка, но права там всё те же
+ * `deals.*`). Если считать по секции, интерфейс добавлял бы ключ вида
+ * `dealCard.view`, которого не существует, и показывал бы состояние, которое
+ * сервер потом выбросит.
+ */
+function viewKeyFor(key: string): string {
+  return `${key.split('.')[0]}.view`
+}
+function togglePerm(_sectionKey: string, key: string) {
   if (!draft.value) return
   const perms = draft.value.perms
-  const viewKey = `${sectionKey}.view`
-  const hasView = sectionKey !== 'settings'
+  const viewKey = viewKeyFor(key)
   if (perms.has(key)) {
     perms.delete(key)
-    if (key === viewKey) for (const p of sectionKeys(sectionKey)) perms.delete(p)
+    // Сняли «доступ к области» — снимаем и всё, что без него бессмысленно,
+    // где бы эти права ни показывались.
+    if (key === viewKey) for (const k of allKeys.value) if (viewKeyFor(k) === viewKey) perms.delete(k)
   } else {
     perms.add(key)
-    if (hasView && key !== viewKey) perms.add(viewKey)
+    if (key !== viewKey && allKeys.value.includes(viewKey)) perms.add(viewKey)
   }
   dirty.value = true
 }
+/** Секции, разложенные по группам реестра (порядок групп — как в реестре). */
+interface SectionGroup { title: string; sections: PermissionSection[] }
+const groupedSections = computed<SectionGroup[]>(() => {
+  const out: SectionGroup[] = []
+  for (const sec of registry.value.sections) {
+    const title = sec.group ?? ''
+    const last = out[out.length - 1]
+    if (last && last.title === title) last.sections.push(sec)
+    else out.push({ title, sections: [sec] })
+  }
+  return out
+})
+/**
+ * Права секции, разложенные по подблокам («Оформление», «Необратимое»…).
+ *
+ * Полтора десятка одинаковых чекбоксов подряд человек читает перебором —
+ * подзаголовок и линия дают глазу, за что зацепиться. У коротких секций блоков
+ * в реестре нет: там делить нечего, и заголовок только мешал бы.
+ */
+interface PermBlock { title: string; permissions: PermissionDef[] }
+function blocksOf(sec: PermissionSection): PermBlock[] {
+  const out: PermBlock[] = []
+  for (const p of sec.permissions) {
+    const title = p.block ?? ''
+    const last = out[out.length - 1]
+    if (last && last.title === title) last.permissions.push(p)
+    else out.push({ title, permissions: [p] })
+  }
+  return out
+}
+function blockOnCount(b: PermBlock): number {
+  return b.permissions.filter((p) => hasPerm(p.key)).length
+}
+/** Включить/снять весь подблок разом. */
+function toggleBlock(b: PermBlock) {
+  if (!draft.value) return
+  const perms = draft.value.perms
+  const allOn = blockOnCount(b) === b.permissions.length
+  for (const p of b.permissions) {
+    if (allOn) {
+      perms.delete(p.key)
+    } else {
+      perms.add(p.key)
+      const viewKey = viewKeyFor(p.key)
+      if (p.key !== viewKey && allKeys.value.includes(viewKey)) perms.add(viewKey)
+    }
+  }
+  dirty.value = true
+}
+
+function groupTotal(g: SectionGroup): number {
+  return g.sections.reduce((n, s) => n + s.permissions.length, 0)
+}
+function groupOnCount(g: SectionGroup): number {
+  return g.sections.reduce((n, s) => n + sectionOnCount(s.key), 0)
+}
+
 function sectionState(sectionKey: string): 'none' | 'partial' | 'all' {
   const keys = sectionKeys(sectionKey)
   const on = keys.filter((k) => hasPerm(k)).length
@@ -95,8 +171,19 @@ function sectionOnCount(sectionKey: string): number {
 function toggleSection(sectionKey: string) {
   if (!draft.value) return
   const keys = sectionKeys(sectionKey)
-  if (sectionState(sectionKey) === 'all') for (const k of keys) draft.value.perms.delete(k)
-  else for (const k of keys) draft.value.perms.add(k)
+  const perms = draft.value.perms
+  if (sectionState(sectionKey) === 'all') {
+    for (const k of keys) perms.delete(k)
+  } else {
+    for (const k of keys) {
+      perms.add(k)
+      // Та же добавка «доступа к области», что и при отдельном чекбоксе:
+      // иначе, включив всю секцию «Что видно внутри сделки», человек не
+      // увидел бы галку на доступе к сделкам, а сервер бы её проставил.
+      const viewKey = viewKeyFor(k)
+      if (k !== viewKey && allKeys.value.includes(viewKey)) perms.add(viewKey)
+    }
+  }
   dirty.value = true
 }
 function toggleExpand(sectionKey: string) {
@@ -238,6 +325,13 @@ async function removeRole() {
           </div>
         </div>
 
+        <!-- Роль без сотрудников легко принять за действующую: названия ролей
+             совпадают со старыми, и правка «Менеджера» ни на кого не влияет. -->
+        <div v-if="draft.id && draft.staffCount === 0" class="rm-unused">
+          <v-icon icon="mdi-alert-outline" size="15" />
+          <span>Роль никому не назначена — изменения прав ни на кого не подействуют. Назначьте её сотруднику в окне «Доступы и роль».</span>
+        </div>
+
         <!-- Быстрый старт из пресета -->
         <div v-if="registry.presets.length" class="rm-presets">
           <span class="rm-presets-label">Быстрый старт:</span>
@@ -256,9 +350,23 @@ async function removeRole() {
           </div>
         </div>
 
-        <!-- Секции -->
-        <div class="rm-sections">
-          <div v-for="sec in registry.sections" :key="sec.key" class="rm-section" :class="{ 'rm-section--on': sectionState(sec.key) !== 'none' }">
+        <!-- Секции, разложенные по смысловым группам: полтора десятка
+             одинаковых плашек подряд читались как сплошная стена. -->
+        <div v-for="g in groupedSections" :key="g.title || 'no-group'" class="rm-group">
+          <div v-if="g.title" class="rm-group-head">
+            <span class="rm-group-title">{{ g.title }}</span>
+            <span class="rm-group-count">{{ groupOnCount(g) }}/{{ groupTotal(g) }}</span>
+          </div>
+          <div class="rm-sections">
+            <div
+              v-for="sec in g.sections"
+              :key="sec.key"
+              class="rm-section"
+              :class="{
+                'rm-section--on': sectionState(sec.key) !== 'none',
+                'rm-section--open': expanded.has(sec.key),
+              }"
+            >
             <div class="rm-section-head">
               <!-- Мастер-чекбокс секции (tri-state) -->
               <button
@@ -278,19 +386,44 @@ async function removeRole() {
                 <v-icon icon="mdi-chevron-down" size="20" class="rm-chevron" :class="{ 'rm-chevron--open': expanded.has(sec.key) }" />
               </button>
             </div>
-            <div v-show="expanded.has(sec.key)" class="rm-perms">
-              <label
-                v-for="p in sec.permissions"
-                :key="p.key"
-                class="rm-perm"
-                :class="{ 'rm-perm--on': hasPerm(p.key) }"
-                @click.prevent="togglePerm(sec.key, p.key)"
-              >
-                <span class="rm-check" :class="{ 'rm-check--on': hasPerm(p.key) }">
-                  <v-icon v-if="hasPerm(p.key)" icon="mdi-check" size="13" />
-                </span>
-                <span class="rm-perm-label">{{ p.label }}</span>
-              </label>
+            <div v-show="expanded.has(sec.key)" class="rm-blocks">
+              <!-- Внутри раздела права разложены по смыслу: доступ, обычная
+                   работа, необратимое, показатели. -->
+              <div v-for="(b, bi) in blocksOf(sec)" :key="b.title || bi" class="rm-block">
+                <button
+                  v-if="b.title"
+                  class="rm-block-head"
+                  :class="{ 'rm-block-head--on': blockOnCount(b) > 0 }"
+                  :title="blockOnCount(b) === b.permissions.length ? 'Снять всё в блоке' : 'Выбрать всё в блоке'"
+                  @click="toggleBlock(b)"
+                >
+                  <span class="rm-block-mark" />
+                  <span class="rm-block-title">{{ b.title }}</span>
+                  <span class="rm-block-count" :class="{ 'rm-block-count--on': blockOnCount(b) > 0 }">
+                    {{ blockOnCount(b) }}/{{ b.permissions.length }}
+                  </span>
+                </button>
+                <div class="rm-perms">
+                  <label
+                    v-for="p in b.permissions"
+                    :key="p.key"
+                    class="rm-perm"
+                    :class="{ 'rm-perm--on': hasPerm(p.key) }"
+                    @click.prevent="togglePerm(sec.key, p.key)"
+                  >
+                    <span class="rm-check" :class="{ 'rm-check--on': hasPerm(p.key) }">
+                      <v-icon v-if="hasPerm(p.key)" icon="mdi-check" size="13" />
+                    </span>
+                    <!-- Пояснение там, где цена ошибки выше обычной: реестр даёт
+                         его не всем правам, и раньше оно просто терялось. -->
+                    <span class="rm-perm-text">
+                      <span class="rm-perm-label">{{ p.label }}</span>
+                      <span v-if="p.hint" class="rm-perm-hint">{{ p.hint }}</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
             </div>
           </div>
         </div>
@@ -435,6 +568,13 @@ async function removeRole() {
 .btn-text--muted { color: rgba(var(--v-theme-on-surface), 0.5); }
 .btn-text--muted:hover { background: rgba(var(--v-theme-on-surface), 0.06); }
 
+/* Роль без назначенных сотрудников */
+.rm-unused {
+  display: flex; align-items: flex-start; gap: 8px; margin-bottom: 14px;
+  padding: 10px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+  background: rgba(245, 158, 11, 0.09); border: 1px solid rgba(245, 158, 11, 0.26); color: #92400e;
+}
+
 /* Пресеты */
 .rm-presets { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .rm-presets-label { font-size: 12px; opacity: 0.5; }
@@ -455,15 +595,33 @@ async function removeRole() {
 .rm-sep { opacity: 0.3; }
 
 /* Секции */
+/* Смысловая группа секций */
+.rm-group + .rm-group { margin-top: 20px; }
+.rm-group-head {
+  display: flex; align-items: baseline; gap: 8px; margin: 0 2px 8px;
+}
+.rm-group-title {
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  opacity: 0.55;
+}
+.rm-group-count { font-size: 11px; opacity: 0.4; }
+
 .rm-sections { display: flex; flex-direction: column; gap: 8px; }
 .rm-section { border: 1px solid rgba(var(--v-theme-on-surface), 0.08); border-radius: 12px; overflow: hidden; transition: border-color .15s; }
 .rm-section--on { border-color: rgba(4, 120, 87, 0.25); }
-.rm-section-head { display: flex; align-items: center; gap: 10px; padding: 4px 12px 4px 12px; }
+/* Шапка раздела: своя подложка и отбивка снизу — у раскрытого раздела внутри
+   ещё свои заголовки, и без этого шапка терялась среди них. */
+.rm-section-head {
+  display: flex; align-items: center; gap: 10px; padding: 4px 12px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.rm-section--open .rm-section-head { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07); }
+.rm-section--on .rm-section-head { background: rgba(4, 120, 87, 0.035); }
 .rm-section-main {
-  flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 0;
+  flex: 1; display: flex; align-items: center; gap: 10px; padding: 11px 0;
   background: none; border: none; cursor: pointer; color: inherit; text-align: left;
 }
-.rm-section-title { font-weight: 600; font-size: 14px; flex: 1; }
+.rm-section-title { font-weight: 700; font-size: 14.5px; flex: 1; letter-spacing: -0.01em; }
 .rm-section-count {
   font-size: 12px; opacity: 0.45; font-variant-numeric: tabular-nums;
   padding: 1px 8px; border-radius: 20px;
@@ -472,14 +630,49 @@ async function removeRole() {
 .rm-chevron { opacity: 0.4; transition: transform .18s; }
 .rm-chevron--open { transform: rotate(180deg); }
 
+/* Подблоки внутри секции.
+   Заголовок блока намеренно не похож на шапку раздела: у раздела — крупное
+   название с чекбоксом и «галочкой» раскрытия, у блока — плашка с отбивкой
+   сверху и вертикальной меткой слева. Иначе внутри раскрытого раздела два
+   одинаковых по весу заголовка спорили друг с другом. */
+.rm-blocks { padding: 6px 10px 12px; }
+.rm-block + .rm-block {
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+.rm-block-head {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 10px; margin-bottom: 2px; border: none; border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.035); color: inherit;
+  cursor: pointer; text-align: left; transition: background .12s;
+}
+/* Подложка блока всегда нейтральная: зелёным залита шапка раздела, и если
+   красить блоки тем же цветом, два уровня заголовков сливаются. Состояние
+   блока показывают метка слева и счётчик справа. */
+.rm-block-head:hover { background: rgba(var(--v-theme-on-surface), 0.07); }
+.rm-block-mark {
+  width: 3px; height: 13px; border-radius: 2px; flex: none;
+  background: rgba(var(--v-theme-on-surface), 0.25); transition: background .12s;
+}
+.rm-block-head--on .rm-block-mark { background: #047857; }
+.rm-block-head:hover .rm-block-mark { background: #047857; }
+.rm-block-title {
+  flex: 1; font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  opacity: 0.72;
+}
+.rm-block-head--on .rm-block-title { opacity: 0.85; }
+.rm-block-count { font-size: 11px; opacity: 0.4; font-variant-numeric: tabular-nums; }
+.rm-block-count--on { opacity: 1; color: #047857; font-weight: 600; }
+
 .rm-perms {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 2px;
-  padding: 4px 8px 10px; border-top: 1px solid rgba(var(--v-theme-on-surface), 0.05);
 }
-.rm-perm { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; transition: background .12s; }
+.rm-perm { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; transition: background .12s; }
 .rm-perm:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
-.rm-perm-label { font-size: 13px; }
+.rm-perm-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rm-perm-label { font-size: 13px; line-height: 20px; }
 .rm-perm--on .rm-perm-label { font-weight: 500; }
+.rm-perm-hint { font-size: 11.5px; line-height: 1.35; opacity: 0.55; }
 
 .rm-check {
   width: 20px; height: 20px; min-width: 20px; border-radius: 6px;

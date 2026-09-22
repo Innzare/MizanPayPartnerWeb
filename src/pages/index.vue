@@ -24,7 +24,19 @@ const { isDealLocked } = useDealLock()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
 const { isMobile } = useIsMobile()
-const { capital, isCapitalSet, fetchCapital } = useCapital()
+const { capital, loaded: capitalLoaded, isCapitalSet, fetchCapital } = useCapital()
+
+/**
+ * Подсказка про учёт капитала.
+ *
+ * Показываем, только когда точно знаем, что капитал не заведён: ответ получен
+ * и раздел «Финансы» открыт тарифом. На бесплатном плане `/finance/capital`
+ * отвечает 403, и подсказка выскакивала у партнёров с давно заполненными
+ * кассами — предлагая настроить то, что настроено, и уводя в закрытый раздел.
+ */
+const showCapitalHint = computed(
+  () => capitalLoaded.value && !isCapitalSet.value && subscription.canAccess('finance'),
+)
 
 
 
@@ -405,7 +417,7 @@ function getAvatarColor(name?: string) {
 
     <template v-else>
     <!-- Capital banner -->
-    <div v-if="!isCapitalSet" class="dash-capital-banner mb-4" @click="router.push('/cashboxes')">
+    <div v-if="showCapitalHint" class="dash-capital-banner mb-4" @click="router.push('/cashboxes')">
       <div class="dash-capital-banner-icon">
         <v-icon icon="mdi-wallet-outline" size="20" />
       </div>
@@ -698,6 +710,36 @@ function getAvatarColor(name?: string) {
 </template>
 
 <style scoped>
+/* ── Подсказка про учёт капитала ──
+   Стилей у этого блока не было вовсе: на странице он выглядел как голый текст
+   посреди карточек. Оформлен как строка-приглашение — кликается целиком и
+   ведёт в кассы. */
+.dash-capital-banner {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; border-radius: 14px; cursor: pointer;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
+  transition: border-color 0.15s, background 0.15s;
+}
+.dash-capital-banner:hover {
+  border-color: rgba(4, 120, 87, 0.35);
+  background: rgba(4, 120, 87, 0.03);
+}
+.dash-capital-banner-icon {
+  flex: none; display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 11px;
+  background: rgba(4, 120, 87, 0.1); color: #047857;
+}
+.dash-capital-banner-content { flex: 1; min-width: 0; }
+.dash-capital-banner-title {
+  font-size: 14px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.dash-capital-banner-text {
+  font-size: 12.5px; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+
 /* Section titles */
 .dash-section-title {
   font-size: 13px;

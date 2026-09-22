@@ -11,6 +11,8 @@ export interface PlanFeatures {
   pdfContract: boolean
   pdfExport: boolean
   excelExport: boolean
+  /** Раздел «Резервные копии»: Бизнес — 1 копия, Премиум — 5. */
+  backups: boolean
   import: boolean
   activity: boolean
   registry: boolean
@@ -31,6 +33,7 @@ export const FEATURE_MIN_PLAN: Record<keyof PlanFeatures, SubscriptionPlan> = {
   pdfContract: 'PRO',
   pdfExport: 'PRO',
   excelExport: 'BUSINESS',
+  backups: 'BUSINESS',
   import: 'BUSINESS',
   activity: 'PRO',
   registry: 'PRO',
@@ -120,13 +123,27 @@ export interface StaffMember {
   extraPermissions?: string[]
   // RBAC: назначенная кастомная роль (grant-list прав). null = на legacy-правах.
   roleId?: string | null
+  // Название назначенной роли. null = сотрудник на legacy-правах.
+  roleName?: string | null
   createdAt: string
   updatedAt: string
 }
 
 // ── RBAC: роли-шаблоны и реестр прав ──
-export interface PermissionDef { key: string; label: string }
-export interface PermissionSection { key: string; label: string; permissions: PermissionDef[] }
+export interface PermissionDef {
+  key: string
+  label: string
+  hint?: string
+  /** Подзаголовок внутри секции («Оформление», «Необратимое»…). */
+  block?: string
+}
+export interface PermissionSection {
+  key: string
+  label: string
+  /** Смысловая группа («Деньги», «Клиенты и сделки») — заголовок над секциями. */
+  group?: string
+  permissions: PermissionDef[]
+}
 export interface RolePreset { key: string; name: string; permissions: string[] }
 export interface PermissionRegistry { sections: PermissionSection[]; presets: RolePreset[] }
 export interface StaffRoleTemplate {
@@ -677,6 +694,15 @@ export interface Payment {
   // Плановая сумма строки на момент отметки оплаты (перерасчёт графика).
   // null/undefined = никогда не оплачивалась ИЛИ оплачена до релиза → «план vs факт» скрыт.
   scheduledAmount?: number | null
+  /**
+   * Строка — остаток недоплаты, оставленный долгом: id платежа, за который
+   * клиент недоплатил. Идёт под тем же номером, в перерасчёт графика не входит.
+   */
+  shortfallOfPaymentId?: string | null
+  /** Когда клиент обещал доплатить остаток. Пусто — дату не назвал. */
+  shortfallPromisedDate?: string | null
+  /** Комментарий партнёра к недоплате. */
+  shortfallNote?: string | null
   note?: string
   rescheduledFrom?: string
   rescheduledAt?: string
@@ -908,6 +934,14 @@ export interface ActivityLog {
   entityType?: string
   entityId?: string
   meta?: Record<string, any>
+  /** Сделка, к которой относится действие. */
+  dealId?: string | null
+  /**
+   * Карточка этой сделки — номер, товар, клиент. Сервер подставляет её к
+   * записям журнала: без неё «Платёж 6 оплачен» не говорит, по какому
+   * договору. Пусто — сделку удалили, запись её пережила.
+   */
+  deal?: { id: string; dealNumber: number; productName: string; clientName: string | null } | null
   createdAt: string
 }
 

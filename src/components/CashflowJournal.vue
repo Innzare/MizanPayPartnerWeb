@@ -426,6 +426,17 @@ const totals = computed(() => {
 })
 
 interface DateGroup { dateLabel: string; entries: CashFlowEntry[] }
+const groupedByDate = computed<DateGroup[]>(() => {
+  const groups: Map<string, CashFlowEntry[]> = new Map()
+  for (const e of entries.value) {
+    const key = formatDateKey(e.date)
+    const arr = groups.get(key) ?? []
+    arr.push(e)
+    groups.set(key, arr)
+  }
+  return Array.from(groups.entries()).map(([dateLabel, list]) => ({ dateLabel, entries: list }))
+})
+
 /**
  * Плоский список для виртуализации: заголовок дня и строки идут вперемешку.
  *
@@ -452,17 +463,6 @@ const virtual = useVirtualRows(journalRows, {
   estimatedRowHeight: 64,
 })
 const markerRow = virtual.markerRow
-
-const groupedByDate = computed<DateGroup[]>(() => {
-  const groups: Map<string, CashFlowEntry[]> = new Map()
-  for (const e of entries.value) {
-    const key = formatDateKey(e.date)
-    const arr = groups.get(key) ?? []
-    arr.push(e)
-    groups.set(key, arr)
-  }
-  return Array.from(groups.entries()).map(([dateLabel, list]) => ({ dateLabel, entries: list }))
-})
 
 function formatDateKey(iso: string): string {
   const d = new Date(iso)

@@ -142,6 +142,13 @@ export interface DraftStats {
     /** Номер не число («А-1047») — как номер сделки не подходит. */
     nonNumeric: number
   }
+  /**
+   * Настройка загрузки: месяц, оплаченный меньше плана, остаётся долгом, а не
+   * перекладывает разницу на последние платежи.
+   */
+  underpaymentAsDebt?: boolean
+  /** Что даст эта настройка: сделок с недоплатами и сколько клиенты не донесли. */
+  underpayments?: { deals: number; openAmount: number }
 }
 
 export interface ImportDraft {
@@ -204,6 +211,17 @@ export function useImportDraft() {
     }
   }
 
+  /** Настройки загрузки, выбранные перед импортом. */
+  async function setOptions(id: string, options: { underpaymentAsDebt: boolean }) {
+    saving.value = true
+    try {
+      draft.value = await api.post<ImportDraft>(`/import/drafts/${id}/options`, options)
+      return draft.value
+    } finally {
+      saving.value = false
+    }
+  }
+
   async function commit(id: string) {
     committing.value = true
     try {
@@ -242,5 +260,5 @@ export function useImportDraft() {
     }
   }
 
-  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, fetchProgress, cancel, addRow, deleteRow, confirmUnits }
+  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, fetchProgress, cancel, addRow, deleteRow, confirmUnits, setOptions }
 }

@@ -14,6 +14,8 @@ const NAV_PERMISSION: Record<string, string> = {
   '/clients': 'clients.view',
   '/payments': 'payments.view',
   '/debtors': 'debtors.view',
+  // Старый адрес поручителей: страница ведёт на вкладку в «Клиентах», но
+  // открывать её должен тот, кому эта вкладка вообще положена.
   '/guarantors': 'guarantors.view',
   '/suppliers/requests': 'suppliers.requests',
   '/suppliers/route-sheets': 'suppliers.routesheet',
@@ -21,17 +23,19 @@ const NAV_PERMISSION: Record<string, string> = {
   '/broadcasts': 'broadcasts.view',
   '/co-investors': 'coinvestors.view',
   '/cashboxes': 'cashboxes.view',
+  // Старый адрес инкассации ведёт на «Пункты приёма»; карточка рейса
+  // (/collections/:id) открывается оттуда и живёт по тому же праву.
   '/collections': 'collections.view',
-  // Инкассация переехала на вкладку «Пункты приёма»: инкассатору нужен доступ
-  // к ней по своему праву, без доступа ко всей бухгалтерии.
+  // Инкассатору нужен доступ к вкладке «Пункты приёма» по своему праву, без
+  // доступа ко всей бухгалтерии.
   '/accounting/points': 'accounting.view|collections.view',
   '/accounting/reports': 'accounting.reports',
   '/accounting/audit': 'accounting.audit',
   '/accounting': 'accounting.view',
   '/registry': 'registry.view',
   '/activity': 'activity.view',
+  // Роли — вкладка внутри «Сотрудников», своего адреса у них нет.
   '/staff': 'staff.manage',
-  '/roles': 'staff.manage',
   // Копия — файл с персональными данными: раздел открыт тем, кто настраивает
   // расписание, и тем, кому разрешено скачивать готовые файлы.
   '/backups': 'backups.manage|backups.download',
@@ -40,7 +44,7 @@ const NAV_PERMISSION: Record<string, string> = {
 // /messages — переписка с владельцем, доступна всегда.
 // /help — обучающая справка: она нужна сотруднику не меньше, чем владельцу,
 // и без этой строки неизвестный роут закрывается редиректом (см. canAccess ниже).
-const STAFF_ALWAYS = ['/calculator', '/messages', '/help']
+const STAFF_ALWAYS = ['/me', '/calculator', '/messages', '/help']
 // Кабинет пункта приёма: там работает только оператор пункта, а он — только там.
 const POINT_ROOT = '/point'
 // Только владелец аккаунта.

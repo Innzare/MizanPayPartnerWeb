@@ -739,7 +739,9 @@ const agingRows = computed(() => {
     { label: '1–7 дней', ...a.d1_7, color: '#f59e0b' },
     { label: '8–30 дней', ...a.d8_30, color: '#f97316' },
     { label: '31–60 дней', ...a.d31_60, color: '#ef4444' },
-    { label: '60+ дней', ...a.d60p, color: '#b91c1c' },
+    { label: '61–90 дней', ...a.d61_90, color: '#dc2626' },
+    { label: '91–180 дней', ...a.d91_180, color: '#b91c1c' },
+    { label: '180+ дней', ...a.d180p, color: '#7f1d1d' },
   ]
 })
 const agingMax = computed(() => Math.max(1, ...agingRows.value.map((r) => r.amount)))
@@ -1235,6 +1237,8 @@ onUnmounted(() => {
                       {{ PROMISE_STATUS_META[row.promiseStatus].label }}
                     </span>
                   </template>
+                  <!-- Недоплату оставили долгом, а дату клиент не назвал -->
+                  <span v-else-if="row.promiseStatus === 'PENDING'" class="dbt-nodate">обещал, без даты</span>
                   <span v-else class="text-medium-emphasis">—</span>
                 </template>
 
@@ -1325,7 +1329,12 @@ onUnmounted(() => {
           <div class="dbt-set-ico"><v-icon icon="mdi-tune-variant" size="22" /></div>
           <div>
             <h2 class="dbt-set-title">Кто считается неплательщиком</h2>
-            <p class="dbt-set-sub">Сделка попадает в список, только когда выполнены <b>оба</b> условия одновременно.</p>
+            <p class="dbt-set-sub">
+              Сделка попадает в список, только когда выполнены <b>оба</b> условия одновременно.
+              Долг по сделке виден всегда — пороги решают лишь, когда клиента обзванивать.
+              Исключение: если график закончился (недоплачен последний платёж), сделка попадает
+              в список при любой сумме — иначе её не закрыть.
+            </p>
           </div>
         </div>
 
@@ -1856,6 +1865,7 @@ onUnmounted(() => {
 .dbt-days { color: #ef4444; font-weight: 600; }
 .dbt-staff { font-size: 13px; }
 .dbt-unassigned { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.4); }
+.dbt-nodate { font-size: 12.5px; color: #b45309; }
 .dbt-dealstatus { font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 6px; white-space: nowrap; background: rgba(var(--v-theme-on-surface), 0.08); color: rgba(var(--v-theme-on-surface), 0.7); }
 .dbt-dealstatus--completed { background: rgba(16, 185, 129, 0.15); color: #047857; }
 .dbt-dealstatus--active { background: rgba(59, 130, 246, 0.14); color: #2563eb; }

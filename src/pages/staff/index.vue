@@ -10,9 +10,11 @@ import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useAccountingStore } from '@/stores/accounting'
 import ChatPanel from '@/components/ChatPanel.vue'
 import RolesManager from '@/components/RolesManager.vue'
+import SelectField from '@/components/SelectField.vue'
 import type { StaffMember, StaffRole, DealsAccessMode, Deal, DealStatus, StaffRoleTemplate, ActivityLog } from '@/types'
 import { STAFF_ROLE_LABELS } from '@/types'
-import { formatCurrency } from '@/utils/formatters'
+import StaffActivityFeed from '@/components/staff/StaffActivityFeed.vue'
+import { formatCurrency, pluralizeRu } from '@/utils/formatters'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -31,7 +33,21 @@ const activeMainTab = ref<'staff' | 'roles'>('staff')
 // Add dialog
 const addDialog = ref(false)
 const addLoading = ref(false)
-const addForm = ref({ email: '', firstName: '', lastName: '', role: 'MANAGER' as StaffRole })
+/**
+ * Новый сотрудник заводится сразу на роли из новой системы прав.
+ *
+ * Старые роли (менеджер / оператор) остались только у тех, кого завели до
+ * ролей, — новым их выдавать незачем. Оператор пункта приёма — исключение: у
+ * него не права, а список пунктов и отдельный кабинет, поэтому он остался
+ * отдельным видом сотрудника.
+ */
+const addForm = ref({
+  email: '',
+  firstName: '',
+  lastName: '',
+  roleId: null as string | null,
+  pointOperator: false,
+})
 
 // Edit dialog
 const editDialog = ref(false)
@@ -74,6 +90,15 @@ function togglePoint(id: string) {
 
 // Роли для пикера в модалке редактирования.
 const roles = ref<StaffRoleTemplate[]>([])
+
+/** Роли для нашего селекта: справа — сколько действий открывает роль. */
+const roleOptions = computed(() =>
+  roles.value.map((r) => ({
+    value: r.id,
+    label: r.name,
+    hint: `${r.permissions?.length ?? 0} ${pluralizeRu(r.permissions?.length ?? 0, 'право', 'права', 'прав')}`,
+  })),
+)
 async function loadRoles() {
   try { roles.value = await api.get<StaffRoleTemplate[]>('/auth/investor/roles') } catch { /* noop */ }
 }
@@ -81,6 +106,7 @@ async function loadRoles() {
 // Закрыть модалку и открыть вкладку «Роли».
 function goToRolesTab() {
   editDialog.value = false
+  addDialog.value = false
   activeMainTab.value = 'roles'
 }
 
@@ -169,9 +195,6 @@ async function loadStaffActivity() {
   } finally {
     staffActivityLoading.value = false
   }
-}
-function formatActTime(d: string) {
-  return new Date(d).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
 async function loadAssignedDeals() {
@@ -314,11 +337,30 @@ const ROLE_ICONS: Record<StaffRole, string> = {
   POINT_OPERATOR: 'mdi-storefront-outline',
 }
 
-const ROLE_DESCRIPTIONS: Record<StaffRole, string> = {
-  MANAGER: 'Полный доступ кроме настроек',
-  OPERATOR: 'Сделки, клиенты, платежи',
-  POINT_OPERATOR: 'Только приём платежей в своём пункте',
+// Бейдж роли. Пока сотрудник не переведён на роль (roleId пуст), права берутся
+// из старой системы, и правка ролей на него НЕ действует — раньше здесь всегда
+// показывалось старое название роли, неотличимое от одноимённой новой роли.
+function roleTag(m: StaffMember) {
+  if (m.roleName) {
+    return {
+      label: m.roleName,
+      legacy: false,
+      icon: ROLE_ICONS[m.role],
+      color: ROLE_COLORS[m.role],
+    }
+  }
+  return {
+    label: `Старые права · ${STAFF_ROLE_LABELS[m.role]}`,
+    legacy: true,
+    icon: 'mdi-alert-outline',
+    color: '#b45309',
+  }
 }
+
+// Сколько работающих сотрудников ещё не переведено на роли.
+const legacyStaffCount = computed(
+  () => staff.value.filter((m) => m.isActive && !m.roleId).length,
+)
 
 async function loadStaff() {
   pageLoading.value = true
@@ -341,17 +383,38 @@ function staffUnread(staffId: string): number {
 }
 
 function openAdd() {
-  addForm.value = { email: '', firstName: '', lastName: '', role: 'MANAGER' }
+  addForm.value = {
+    email: '',
+    firstName: '',
+    lastName: '',
+    roleId: null,
+    pointOperator: false,
+  }
   addDialog.value = true
+  if (!roles.value.length) loadRoles()
 }
 
 async function addStaffMember() {
   addLoading.value = true
   try {
-    await api.post('/auth/investor/staff', addForm.value)
+    const { email, firstName, lastName, roleId, pointOperator } = addForm.value
+    // Легаси-роль не шлём: сервер сам поставит минимальную, а права даёт roleId.
+    const created = await api.post<StaffMember>('/auth/investor/staff', {
+      email,
+      firstName,
+      lastName,
+      ...(pointOperator ? { role: 'POINT_OPERATOR' } : { roleId }),
+    })
     toast.success('Сотрудник добавлен. Данные для входа отправлены на email.')
     addDialog.value = false
     await loadStaff()
+    // Оператору без назначенных пунктов работать негде, поэтому сразу
+    // открываем доступы — иначе об этом вспоминают, когда он не может принять
+    // первый платёж.
+    if (pointOperator) {
+      const fresh = staff.value.find((m) => m.id === created.id)
+      if (fresh) openEdit(fresh)
+    }
   } catch (e: any) {
     toast.error(e.message || 'Ошибка при добавлении')
   } finally {
@@ -435,7 +498,9 @@ function formatDate(d: string) {
 const addFormValid = computed(() =>
   addForm.value.email.includes('@') &&
   addForm.value.firstName.length >= 2 &&
-  addForm.value.lastName.length >= 2
+  addForm.value.lastName.length >= 2 &&
+  // Без роли сотрудник не увидит ничего: пусть выбор будет обязательным.
+  (addForm.value.pointOperator || !!addForm.value.roleId)
 )
 
 const activeCount = computed(() => staff.value.filter((s) => s.isActive).length)
@@ -579,6 +644,18 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <!-- Пока сотрудник не переведён на роль, права ему даёт старая система:
+           правка роли с тем же названием на него не подействует. Это молча
+           сбивало с толку — теперь говорим прямо. -->
+      <div v-if="activeMainTab === 'staff' && legacyStaffCount" class="sf-legacy-banner mb-4">
+        <v-icon icon="mdi-alert-outline" size="18" />
+        <div class="sf-legacy-banner-text">
+          <b>{{ legacyStaffCount }} {{ legacyStaffCount === 1 ? 'сотрудник работает' : 'сотрудников работают' }} на старых правах.</b>
+          Изменения ролей на них не действуют: права берутся из старой системы.
+          Откройте «Доступы и роль» и назначьте роль, чтобы права считались по ней.
+        </div>
+      </div>
+
       <!-- Split: staff list (left) + chat panel (right) -->
       <div v-if="activeMainTab === 'staff'" class="sf-shell">
         <!-- LEFT: staff list -->
@@ -641,10 +718,11 @@ onBeforeUnmount(() => {
                 <div class="sf-row-line sf-row-line--sub">
                   <span
                     class="sf-role-tag"
-                    :style="{ background: ROLE_COLORS[m.role] + '14', color: ROLE_COLORS[m.role] }"
+                    :style="{ background: roleTag(m).color + '14', color: roleTag(m).color }"
+                    :title="roleTag(m).legacy ? 'Сотрудник не переведён на роли — изменения ролей на него не влияют' : 'Роль из раздела «Роли»'"
                   >
-                    <v-icon :icon="ROLE_ICONS[m.role]" size="11" />
-                    {{ STAFF_ROLE_LABELS[m.role] }}
+                    <v-icon :icon="roleTag(m).icon" size="11" />
+                    {{ roleTag(m).label }}
                   </span>
                 </div>
                 <!-- Что человеку доступно — прямо в списке: главный вопрос к
@@ -711,11 +789,19 @@ onBeforeUnmount(() => {
                   {{ selectedStaff.firstName }} {{ selectedStaff.lastName }}
                   <span
                     class="sf-role-tag"
-                    :style="{ background: ROLE_COLORS[selectedStaff.role] + '14', color: ROLE_COLORS[selectedStaff.role] }"
+                    :style="{ background: roleTag(selectedStaff).color + '14', color: roleTag(selectedStaff).color }"
                   >
-                    <v-icon :icon="ROLE_ICONS[selectedStaff.role]" size="11" />
-                    {{ STAFF_ROLE_LABELS[selectedStaff.role] }}
+                    <v-icon :icon="roleTag(selectedStaff).icon" size="11" />
+                    {{ roleTag(selectedStaff).label }}
                   </span>
+                  <button
+                    v-if="roleTag(selectedStaff).legacy"
+                    class="sf-legacy-fix"
+                    title="Назначить роль из раздела «Роли»"
+                    @click="openEdit(selectedStaff)"
+                  >
+                    Назначить роль
+                  </button>
                   <span v-if="!selectedStaff.isActive" class="sf-row-off">отключён</span>
                 </div>
                 <!-- Что человеку доступно — сразу под именем: раньше это можно
@@ -843,16 +929,7 @@ onBeforeUnmount(() => {
                   Здесь появятся все действия сотрудника: сделки, платежи, изменения и т.д.
                 </div>
               </div>
-              <div v-else class="sf-act-list">
-                <div v-for="a in staffActivity" :key="a.id" class="sf-act-row">
-                  <div class="sf-act-dot"><v-icon icon="mdi-history" size="13" /></div>
-                  <div class="sf-act-main">
-                    <div class="sf-act-title">{{ a.title }}</div>
-                    <div v-if="a.description" class="sf-act-desc">{{ a.description }}</div>
-                    <div class="sf-act-time">{{ formatActTime(a.createdAt) }}</div>
-                  </div>
-                </div>
-              </div>
+              <StaffActivityFeed v-else :items="staffActivity" compact />
             </div>
           </template>
 
@@ -918,26 +995,53 @@ onBeforeUnmount(() => {
 
           <div class="mb-6">
             <div class="sf-section-label mb-3">Роль</div>
-            <div class="sf-role-grid">
-              <button
-                v-for="(label, key) in STAFF_ROLE_LABELS"
-                :key="key"
-                class="sf-role-card"
-                :class="{ 'sf-role-card--active': addForm.role === key }"
-                :style="addForm.role === key ? { borderColor: ROLE_COLORS[key], background: ROLE_COLORS[key] + '06' } : {}"
-                @click="addForm.role = key as StaffRole"
-              >
-                <div class="sf-role-card-icon" :style="{ background: ROLE_COLORS[key] + '14', color: ROLE_COLORS[key] }">
-                  <v-icon :icon="ROLE_ICONS[key]" size="20" />
-                </div>
-                <div class="sf-role-card-label">{{ label }}</div>
-                <div class="sf-role-card-desc">
-                  {{ ROLE_DESCRIPTIONS[key] }}
-                </div>
-                <div v-if="addForm.role === key" class="sf-role-card-check">
-                  <v-icon icon="mdi-check-circle" size="18" :color="ROLE_COLORS[key]" />
-                </div>
+
+            <!-- Права выдаёт роль из новой системы. Старые роли остались лишь
+                 у заведённых раньше — новым их не предлагаем. -->
+            <template v-if="!addForm.pointOperator">
+              <SelectField
+                v-model="addForm.roleId"
+                :options="roleOptions"
+                :placeholder="roles.length ? 'Выберите роль' : 'Ролей пока нет'"
+                :disabled="!roles.length"
+              />
+              <div class="sf-field-hint mt-2">
+                {{
+                  roles.length
+                    ? 'Роль решает, что сотрудник видит и может делать. Доступ к кассам и сделкам настраивается после добавления.'
+                    : 'Ролей пока нет — заведите первую на вкладке «Роли», там видно, какие действия она открывает.'
+                }}
+              </div>
+              <button type="button" class="sf-goto-roles" @click="goToRolesTab">
+                <v-icon icon="mdi-shield-key-outline" size="15" />
+                Управлять ролями
               </button>
+            </template>
+
+            <!-- Оператор пункта приёма: у него не права, а список пунктов и
+                 свой кабинет, поэтому это отдельный вид сотрудника. -->
+            <div
+              class="sf-active-toggle mt-3"
+              :class="{ 'sf-active-toggle--off': !addForm.pointOperator }"
+              @click="addForm.pointOperator = !addForm.pointOperator"
+            >
+              <div
+                class="sf-active-toggle-dot"
+                :style="{ background: addForm.pointOperator ? '#f59e0b' : '#9ca3af' }"
+              />
+              <div class="sf-active-toggle-text">
+                <div class="sf-active-toggle-title">Оператор пункта приёма</div>
+                <div class="sf-active-toggle-desc">
+                  {{
+                    addForm.pointOperator
+                      ? 'Отдельный кабинет: только приём платежей в своих пунктах. Пункты назначим сразу после добавления'
+                      : 'Отдельный кабинет для приёма платежей вместо обычных прав'
+                  }}
+                </div>
+              </div>
+              <div class="sf-switch-track" :class="{ 'sf-switch-track--on': addForm.pointOperator }">
+                <div class="sf-switch-thumb" />
+              </div>
             </div>
           </div>
 
@@ -1038,16 +1142,11 @@ onBeforeUnmount(() => {
               <v-icon icon="mdi-information-outline" size="15" />
               Сейчас на старой роли «{{ STAFF_ROLE_LABELS[editForm.role] }}». Выберите роль, чтобы перевести на новую систему прав.
             </div>
-            <v-select
+            <SelectField
               v-model="editForm.roleId"
-              :items="roles"
-              item-title="name"
-              item-value="id"
-              variant="outlined"
-              density="comfortable"
-              placeholder="Выберите роль"
-              hide-details
-              no-data-text="Ролей пока нет — создайте на вкладке «Роли»"
+              :options="roleOptions"
+              :placeholder="roles.length ? 'Выберите роль' : 'Ролей пока нет'"
+              :disabled="!roles.length"
             />
             <button type="button" class="sf-goto-roles" @click="goToRolesTab">
               <v-icon icon="mdi-shield-key-outline" size="15" />
@@ -1409,6 +1508,24 @@ onBeforeUnmount(() => {
   display: flex; align-items: flex-start; gap: 7px; font-size: 12.5px; line-height: 1.4;
   padding: 9px 11px; border-radius: 10px; background: rgba(245, 158, 11, 0.1); color: #b45309;
 }
+
+/* Предупреждение о сотрудниках на старых правах — над списком. */
+.sf-legacy-banner {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border-radius: 12px;
+  background: rgba(245, 158, 11, 0.09); border: 1px solid rgba(245, 158, 11, 0.28);
+  color: #92400e;
+}
+.sf-legacy-banner-text { font-size: 13px; line-height: 1.5; }
+.sf-legacy-banner-text b { font-weight: 700; }
+
+.sf-legacy-fix {
+  font-size: 11.5px; font-weight: 600; line-height: 1;
+  padding: 4px 9px; border-radius: 7px; white-space: nowrap;
+  background: rgba(245, 158, 11, 0.12); color: #b45309;
+  transition: background 0.15s;
+}
+.sf-legacy-fix:hover { background: rgba(245, 158, 11, 0.22); }
 
 /* ── Stats (shared pattern) ── */
 .stats-row {

@@ -15,6 +15,8 @@ import { usePageHeaderStore } from '@/stores/pageHeader'
 import { useToast } from '@/composables/useToast'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import DateField from '@/components/DateField.vue'
+import StaffActivityFeed from '@/components/staff/StaffActivityFeed.vue'
+import type { ActivityLog } from '@/types'
 
 interface Summary {
   staff: {
@@ -205,7 +207,7 @@ const nothingHappened = computed(() => {
 })
 
 // ── Активность ──
-const activity = ref<any[]>([])
+const activity = ref<ActivityLog[]>([])
 const activityLoading = ref(false)
 async function loadActivity() {
   if (activity.value.length || activityLoading.value) return
@@ -607,22 +609,7 @@ function timeLabel(iso: string) {
             <span class="sp-panel-title">Что делал сотрудник</span>
             <span class="sp-panel-hint">последние действия, новые сверху</span>
           </div>
-          <v-progress-linear v-if="activityLoading" indeterminate color="#047857" class="mb-3" />
-          <div v-if="!activityLoading && !activity.length" class="sp-empty">
-            <v-icon icon="mdi-history" size="26" />
-            <div class="sp-empty-title">Действий за период нет</div>
-            <div class="sp-empty-text">Здесь появятся оплаты, сделки, правки и отмены — всё, что человек делает в системе.</div>
-          </div>
-          <div v-else class="sp-feed">
-            <div v-for="a in activity" :key="a.id" class="sp-feed-row">
-              <div class="sp-feed-dot"><v-icon icon="mdi-circle-small" size="18" /></div>
-              <div class="sp-feed-body">
-                <div class="sp-feed-title">{{ a.title }}</div>
-                <div v-if="a.description" class="sp-feed-desc">{{ a.description }}</div>
-              </div>
-              <div class="sp-feed-time">{{ timeLabel(a.createdAt) }}</div>
-            </div>
-          </div>
+          <StaffActivityFeed :items="activity" :loading="activityLoading" />
         </div>
       </template>
 

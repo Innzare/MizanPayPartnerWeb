@@ -27,10 +27,42 @@ export interface ProgramGrid {
    * стоимости не зависят.
    */
   steps: number[]
-  /** Наценка в процентах: `markup[срок][номер ступени]`. */
-  markup: Record<number, number[]>
+  /**
+   * Границы ступеней по первоначальному взносу, проценты от цены договора:
+   * [30] означает две ступени — взнос до 30% и от 30%. Пусто — условия от
+   * взноса не зависят, и так выглядят все тарифы, заведённые раньше.
+   */
+  downSteps: number[]
+  /** Наценка в процентах: `markup[срок][ступень стоимости][ступень взноса]`. */
+  markup: Record<number, number[][]>
   /** Минимальный первый взнос, процентов. Один на всю программу. */
   minDownPaymentPercent: number
+}
+
+/** Подписи ступеней взноса: «до 30%», «30 — 50%», «от 50%». */
+export function downStepLabels(steps: number[]): string[] {
+  if (!steps.length) return ['Любой взнос']
+  const out: string[] = [`взнос до ${steps[0]}%`]
+  for (let i = 1; i < steps.length; i++) out.push(`${steps[i - 1]}% — ${steps[i]}%`)
+  out.push(`от ${steps[steps.length - 1]}%`)
+  return out
+}
+
+/** Границы ступени взноса по её номеру: нижняя включительно, верхняя — нет. */
+export function downStepRange(
+  steps: number[],
+  index: number,
+): { from: number | null; to: number | null } {
+  if (!steps.length) return { from: null, to: null }
+  return {
+    from: index === 0 ? null : (steps[index - 1] ?? null),
+    to: index >= steps.length ? null : (steps[index] ?? null),
+  }
+}
+
+/** Сколько ступеней взноса даёт набор границ. */
+export function downStepCount(steps: number[]): number {
+  return steps.length + 1
 }
 
 /** Подписи ступеней для заголовков таблицы: «до 100 000», «от 300 000». */
@@ -61,18 +93,24 @@ export function stepCount(steps: number[]): number {
 export function gridToRules(grid: ProgramGrid): ProgramRule[] {
   const rules: ProgramRule[] = []
   for (const term of [...grid.terms].sort((a, b) => a - b)) {
-    const row = grid.markup[term] ?? []
-    for (let i = 0; i < stepCount(grid.steps); i++) {
-      const percent = row[i]
-      if (percent == null || !Number.isFinite(percent)) continue
-      const { from, to } = stepRange(grid.steps, i)
-      rules.push({
-        amountFrom: from,
-        amountTo: to,
-        termPayments: term,
-        markupPercent: percent,
-        minDownPaymentPercent: grid.minDownPaymentPercent || 0,
-      })
+    const rows = grid.markup[term] ?? []
+    for (let ai = 0; ai < stepCount(grid.steps); ai++) {
+      const cells = rows[ai] ?? []
+      for (let di = 0; di < downStepCount(grid.downSteps); di++) {
+        const percent = cells[di]
+        if (percent == null || !Number.isFinite(percent)) continue
+        const amount = stepRange(grid.steps, ai)
+        const down = downStepRange(grid.downSteps, di)
+        rules.push({
+          amountFrom: amount.from,
+          amountTo: amount.to,
+          termPayments: term,
+          markupPercent: percent,
+          minDownPaymentPercent: grid.minDownPaymentPercent || 0,
+          downFromPercent: down.from,
+          downToPercent: down.to,
+        })
+      }
     }
   }
   return rules
@@ -103,32 +141,70 @@ export function rulesToGrid(rules: ProgramRule[]): ProgramGrid | null {
   }
   const steps = [...bounds].sort((a, b) => a - b)
 
-  const markup: Record<number, number[]> = {}
+  const downBounds = new Set<number>()
+  for (const r of rules) {
+    if (r.downFromPercent != null) downBounds.add(r.downFromPercent)
+    if (r.downToPercent != null) downBounds.add(r.downToPercent)
+  }
+  const downSteps = [...downBounds].sort((a, b) => a - b)
+
+  const markup: Record<number, number[][]> = {}
   for (const term of terms) {
-    const row: number[] = []
-    for (let i = 0; i < stepCount(steps); i++) {
-      const { from, to } = stepRange(steps, i)
-      const rule = rules.find(
-        (r) =>
-          r.termPayments === term &&
-          (r.amountFrom ?? null) === from &&
-          (r.amountTo ?? null) === to,
-      )
-      if (!rule) return null // дыра в сетке — раскладка не получилась
-      row.push(rule.markupPercent)
+    const rows: number[][] = []
+    for (let ai = 0; ai < stepCount(steps); ai++) {
+      const amount = stepRange(steps, ai)
+      const cells: number[] = []
+      for (let di = 0; di < downStepCount(downSteps); di++) {
+        const down = downStepRange(downSteps, di)
+        const rule = rules.find(
+          (r) =>
+            r.termPayments === term &&
+            (r.amountFrom ?? null) === amount.from &&
+            (r.amountTo ?? null) === amount.to &&
+            (r.downFromPercent ?? null) === down.from &&
+            (r.downToPercent ?? null) === down.to,
+        )
+        if (!rule) return null // дыра в сетке — раскладка не получилась
+        cells.push(rule.markupPercent)
+      }
+      rows.push(cells)
     }
-    markup[term] = row
+    markup[term] = rows
   }
 
   return {
     terms,
     steps,
+    downSteps,
     markup,
     minDownPaymentPercent: [...downs][0] ?? 0,
   }
 }
 
-/** Пустая сетка для новой программы: один срок и одна наценка — уже рабочая. */
+/**
+ * Сетка для нового тарифа.
+ *
+ * Сроки — привычный ряд 3/6/9/12: это то, что партнёры предлагают чаще всего,
+ * и начинать с одного срока значило заставлять доклацывать остальные. Лишний
+ * снимается одним нажатием, чего о недостающем не скажешь.
+ */
+const NEW_TERMS: [term: number, markupPercent: number][] = [
+  [3, 15],
+  [6, 20],
+  [9, 25],
+  [12, 30],
+]
+
 export function emptyGrid(): ProgramGrid {
-  return { terms: [6], steps: [], markup: { 6: [20] }, minDownPaymentPercent: 0 }
+  const markup: Record<number, number[][]> = {}
+  // Наценка растёт вместе со сроком — так рассрочка и работает; равные проценты
+  // на 3 и 12 платежей партнёру всё равно пришлось бы переписывать.
+  for (const [term, percent] of NEW_TERMS) markup[term] = [[percent]]
+  return {
+    terms: NEW_TERMS.map(([term]) => term),
+    steps: [],
+    downSteps: [],
+    markup,
+    minDownPaymentPercent: 0,
+  }
 }

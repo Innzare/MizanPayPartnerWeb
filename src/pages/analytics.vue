@@ -13,8 +13,18 @@ import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
-import { useAnalyticsSummary, useAnalyticsMonthly, fetchDealsBreakdown, fetchMonthDeals } from '@/composables/useAnalyticsOverview'
-import type { MonthDealRow, MonthDealsResponse } from '@/types/analytics'
+import { useAnalyticsSummary, useAnalyticsMonthly, useAnalyticsTimeliness, fetchDealsBreakdown, fetchMonthDeals, fetchTimelinessDetails } from '@/composables/useAnalyticsOverview'
+import { pluralDays } from '@/utils/paymentAttribution'
+import ServerPager from '@/components/ServerPager.vue'
+import { PER_PAGE_OPTIONS, usePageSize } from '@/composables/useListPrefs'
+import type {
+  MonthPaymentRow,
+  MonthDealsResponse,
+  TimelinessBucket,
+  TimelinessBucketKey,
+  TimelinessDetailRow,
+  TimelinessSide,
+} from '@/types/analytics'
 import type { CapitalSummary } from '@/types'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
 import {
@@ -163,6 +173,70 @@ const { summary, loading: summaryLoading } = useAnalyticsSummary(() => selectedC
 
 const earnedProfit = computed(() => summary.value?.deals.grossEarned ?? 0)
 
+// ── Своевременность: просрочка и оплаты заранее ──────────────────────────
+// Срез «на сейчас», без периода: вопрос не «сколько было», а «как обстоят дела».
+const { timeliness } = useAnalyticsTimeliness(() => selectedCashBoxId.value)
+
+/** Подписи корзин возраста — одни на обе стороны, шкалы сравнимы. */
+const TIMELINESS_LABELS: Record<TimelinessBucketKey, string> = {
+  d1_7: '1–7 дней',
+  d8_30: '8–30 дней',
+  d31_60: '31–60 дней',
+  d61_90: '61–90 дней',
+  d91_180: '91–180 дней',
+  d180p: '180+ дней',
+}
+
+/** Пока данные не пришли, карточки показывают нули, а не пустоту. */
+const EMPTY_TIMELINESS_SIDE: TimelinessSide = {
+  count: 0, amount: 0, deals: 0, clients: 0, avgDays: 0, maxDays: 0,
+  buckets: (Object.keys(TIMELINESS_LABELS) as TimelinessBucketKey[]).map((key) => ({
+    key, count: 0, amount: 0, deals: 0, clients: 0,
+  })),
+}
+
+const timelinessSides = computed(() => [
+  {
+    key: 'overdue',
+    title: 'Просрочено',
+    subtitle: 'Платежи, срок которых уже прошёл',
+    countLabel: 'Просрочек',
+    ageTitle: 'Возраст просрочки',
+    emptyText: 'Просроченных платежей нет',
+    color: '#ef4444',
+    data: timeliness.value?.overdue ?? EMPTY_TIMELINESS_SIDE,
+  },
+  {
+    key: 'early',
+    title: 'Оплачено заранее',
+    subtitle: 'Платежи, внесённые раньше своего срока',
+    countLabel: 'Оплат',
+    ageTitle: 'Насколько раньше срока',
+    emptyText: 'Оплат раньше срока пока нет',
+    color: '#047857',
+    data: timeliness.value?.early ?? EMPTY_TIMELINESS_SIDE,
+  },
+])
+
+/** Склонение при числе: plural(5, ['платёж', 'платежа', 'платежей']). */
+function plural(n: number, forms: [string, string, string]): string {
+  if (n % 10 === 1 && n % 100 !== 11) return forms[0]
+  if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return forms[1]
+  return forms[2]
+}
+
+/**
+ * Ширина полосы — доля от самой крупной корзины этой же стороны.
+ *
+ * У непустой корзины полоса видна всегда: бывают платежи на нулевую сумму, и
+ * без нижнего порога «2 платежа» выглядели бы как пустой возраст.
+ */
+function barWidth(b: TimelinessBucket, buckets: TimelinessBucket[]): string {
+  if (!b.count) return '0%'
+  const max = Math.max(1, ...buckets.map((x) => x.amount))
+  return `${Math.max(2, Math.round((b.amount / max) * 100))}%`
+}
+
 /** Средний ожидаемый платёж — сумма ожидаемого, делённая на число строк. */
 const avgPendingPayment = computed(() => {
   const p = summary.value?.payments
@@ -180,29 +254,6 @@ const profitDetailMode = ref<'earned' | 'expected' | 'all'>('earned')
 const profitDetailYear = ref<number | null>(null) // null = default 6 months
 // Фильтр таблицы сделок: все / оплаченные / неоплаченные
 const dealFilter = ref<'all' | 'paid' | 'pending'>('all')
-
-interface DealProfit {
-  dealId: string
-  productName: string
-  clientName: string
-  markupPercent: number
-  totalReceived: number
-  paidReceived: number
-  pendingReceived: number
-  profitEarned: number
-  paidProfit: number
-  coInvestorProfit: number
-  partnerProfit: number
-  pendingProfit: number
-  projectedCoInvestorProfit: number
-  projectedPartnerProfit: number
-  paymentsCount: number
-  paidCount: number
-  pendingCount: number
-  earlyOffMonth: number
-  lateOffMonth: number
-  status: string
-}
 
 const profitMonthOptions = computed(() => {
   let months: string[]
@@ -225,11 +276,19 @@ const profitMonthOptions = computed(() => {
  * по сделкам; у крупного это сотни тысяч строк. Правила прежние: факт
  * относится к периоду по дате оплаты, прогноз — по плановому сроку.
  */
-const monthDealsRows = ref<MonthDealRow[]>([])
+const monthDealsRows = ref<MonthPaymentRow[]>([])
 const monthDealsTotals = ref<MonthDealsResponse['totals'] | null>(null)
-const monthDealsTruncated = ref(false)
 const monthDealsLoading = ref(false)
 let monthDealsReq = 0
+
+// Постраничный вывод: за месяц у крупного партнёра бывает больше тысячи
+// сделок, и «показаны крупнейшие 500» просто прятало остальные.
+const monthDealsPage = ref(1)
+const monthDealsPerPage = usePageSize('analytics.monthDeals.perPage', 25)
+/** Всего строк в текущем фильтре — по нему считается пагинация. */
+const monthDealsCount = ref(0)
+/** Счётчики вкладок с сервера: по всей выборке, а не по странице. */
+const monthDealsFilterCounts = ref({ all: 0, paid: 0, pending: 0 })
 
 async function loadMonthDeals() {
   const req = ++monthDealsReq
@@ -244,11 +303,15 @@ async function loadMonthDeals() {
       month: monthKey,
       year: monthKey ? null : profitDetailYear.value,
       cashBoxId: selectedCashBoxId.value,
+      filter: dealFilter.value,
+      limit: monthDealsPerPage.value,
+      offset: (monthDealsPage.value - 1) * monthDealsPerPage.value,
     })
     if (req !== monthDealsReq) return
     monthDealsRows.value = res.items
     monthDealsTotals.value = res.totals
-    monthDealsTruncated.value = res.truncated
+    monthDealsCount.value = res.count
+    monthDealsFilterCounts.value = res.filterCounts
   } catch (e: any) {
     if (req !== monthDealsReq) return
     console.error('Failed to load month deals:', e)
@@ -271,79 +334,68 @@ function monthKeyToYm(label: string, year: number | null): string | null {
   return `${y}-${String(idx + 1).padStart(2, '0')}`
 }
 
-/** Строки таблицы диалога в прежней форме — шаблон не меняем. */
-const profitByDeal = computed((): DealProfit[] =>
-  monthDealsRows.value.map((r) => ({
-    dealId: r.dealId,
-    productName: r.productName,
-    clientName: r.clientName,
-    markupPercent: r.markupPercent,
-    totalReceived: r.paidReceived + r.pendingReceived,
-    paidReceived: r.paidReceived,
-    pendingReceived: r.pendingReceived,
-    profitEarned: r.paidGross,
-    paidProfit: r.paidGross,
-    coInvestorProfit: r.ciPaid,
-    partnerProfit: r.paidGross - r.ciPaid,
-    pendingProfit: r.pendingGross,
-    projectedCoInvestorProfit: r.ciPending,
-    projectedPartnerProfit: r.pendingGross - r.ciPending,
-    paymentsCount: r.paidCount + r.pendingCount,
-    paidCount: r.paidCount,
-    pendingCount: r.pendingCount,
-    // Бейджи «оплачен не в свой месяц» считаются по платежам — в разрезе по
-    // сделкам их нет, а на строке таблицы они и не показывались.
-    earlyOffMonth: 0,
-    lateOffMonth: 0,
-    status: r.status,
-  })),
+/**
+ * Строки таблицы — платежи, как их прислал сервер.
+ *
+ * Ни фильтра, ни сортировки, ни агрегации здесь нет: и отбор, и порядок делает
+ * база, иначе страница перетасовывала бы присланные 25 строк, а счётчик над
+ * списком считал бы по-своему.
+ */
+const displayPayments = computed(() => monthDealsRows.value)
+
+// Смена периода, фильтра или кассы возвращает на первую страницу: на третьей
+// странице прошлого месяца в новом может не быть ни строки.
+watch(
+  () => [
+    profitDetailDialog.value,
+    profitDetailMonth.value,
+    profitDetailYear.value,
+    selectedCashBoxId.value,
+    dealFilter.value,
+  ],
+  () => { monthDealsPage.value = 1 },
 )
 
-// Перезапрашиваем при смене периода, режима и кассы — но только когда диалог
-// открыт: закрытый не должен дёргать сервер.
+// Перезапрашиваем при смене периода, фильтра, кассы и страницы — но только
+// когда диалог открыт: закрытый не должен дёргать сервер. Оба наблюдателя
+// срабатывают в одном проходе, поэтому запрос уходит один, а не два.
 watch(
-  () => [profitDetailDialog.value, profitDetailMonth.value, profitDetailYear.value, selectedCashBoxId.value],
+  () => [
+    profitDetailDialog.value,
+    profitDetailMonth.value,
+    profitDetailYear.value,
+    selectedCashBoxId.value,
+    dealFilter.value,
+    monthDealsPage.value,
+    monthDealsPerPage.value,
+  ],
   () => { if (profitDetailDialog.value) loadMonthDeals() },
 )
 
+// Счётчики вкладок считает сервер по всей выборке: на странице из 25 строк
+// собственный подсчёт показывал бы «25» во всех трёх вкладках.
 const dealFilterCounts = computed(() => ({
-  all: profitByDeal.value.filter(d => d.paymentsCount > 0).length,
-  paid: profitByDeal.value.filter(d => d.paidCount > 0).length,
-  pending: profitByDeal.value.filter(d => d.pendingCount > 0).length,
+  all: monthDealsFilterCounts.value.all,
+  paid: monthDealsFilterCounts.value.paid,
+  pending: monthDealsFilterCounts.value.pending,
 }))
 
-// Строки таблицы с учётом фильтра. Считаем «целиковый платёж за месяц» и вашу
-// чистую прибыль под выбранную категорию.
-const displayDeals = computed(() => {
-  const f = dealFilter.value
-  return profitByDeal.value
-    .map(d => {
-      const amount = f === 'paid' ? d.paidReceived : f === 'pending' ? d.pendingReceived : d.totalReceived
-      const net = f === 'paid'
-        ? d.partnerProfit
-        : f === 'pending'
-          ? d.projectedPartnerProfit
-          : d.partnerProfit + d.projectedPartnerProfit
-      const coInv = f === 'paid'
-        ? d.coInvestorProfit
-        : f === 'pending'
-          ? d.projectedCoInvestorProfit
-          : d.coInvestorProfit + d.projectedCoInvestorProfit
-      // Вся наценка с этих платежей — до вычета доли со-инвесторов.
-      const gross = f === 'paid'
-        ? d.paidProfit
-        : f === 'pending'
-          ? d.pendingProfit
-          : d.paidProfit + d.pendingProfit
-      const count = f === 'paid' ? d.paidCount : f === 'pending' ? d.pendingCount : d.paymentsCount
-      const hasPaid = f !== 'pending' && d.paidCount > 0
-      const hasPending = f !== 'paid' && d.pendingCount > 0
-      // Какая доля платежа — прибыль (остальное возвращает вложения в товар).
-      const profitShare = amount > 0 ? Math.max(0, gross) / amount : 0
-      return { ...d, amount, net, coInv, gross, count, hasPaid, hasPending, profitShare }
-    })
-    .filter(d => d.amount > 0)
-    .sort((a, b) => b.net - a.net)
+/** Какая доля платежа — прибыль. Остальное возвращает вложения в товар. */
+function profitShareOf(p: { amount: number; gross: number }): number {
+  return p.amount > 0 ? Math.max(0, p.gross) / p.amount : 0
+}
+
+/**
+ * Сколько строк-заглушек рисовать, пока считается новый период.
+ *
+ * Помним длину прошлого списка: при смене месяца окно тогда не меняет высоту —
+ * заглушки занимают ровно столько места, сколько только что занимала таблица.
+ * Границы нужны, чтобы окно не схлопывалось на одной сделке и не растягивалось
+ * на пятистах.
+ */
+const monthDealsSkeletonRows = ref(5)
+watch(displayPayments, (rows) => {
+  if (rows.length) monthDealsSkeletonRows.value = Math.min(6, Math.max(3, rows.length))
 })
 
 /**
@@ -352,60 +404,33 @@ const displayDeals = computed(() => {
  * строки было бы занижением у партнёра с большим портфелем. Если итогов нет
  * (старый ответ) — падаем на подсчёт по строкам, как раньше.
  */
-const profitDetailReceived = computed(() => {
-  const t = monthDealsTotals.value
-  if (t) return t.paidReceived + t.pendingReceived
-  return profitByDeal.value.reduce((s, d) => s + d.totalReceived, 0)
-})
-
-// Денежные (полные суммы): план месяца = пришло + осталось. totalReceived уже
-// суммирует и оплаченные, и неоплаченные платежи выборки — это и есть план.
-const profitDetailPlanned = computed(() => profitDetailReceived.value)
-const profitDetailPaid = computed(() =>
-  monthDealsTotals.value?.paidReceived
-    ?? profitByDeal.value.reduce((s, d) => s + d.paidReceived, 0)
-)
-const profitDetailPending = computed(() =>
-  monthDealsTotals.value?.pendingReceived
-    ?? profitByDeal.value.reduce((s, d) => s + d.pendingReceived, 0)
-)
-
-const profitDetailPartner = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.partnerProfit, 0)
-)
-
-const profitDetailProjectedPartner = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.projectedPartnerProfit, 0)
-)
-
 // Разбор прибыли для подсказок-формул: вся наценка и доля со-инвесторов
 // отдельно по оплаченным (факт) и неоплаченным (прогноз) платежам.
-const profitDetailGrossPaid = computed(() =>
-  monthDealsTotals.value?.paidGross
-    ?? profitByDeal.value.reduce((s, d) => s + d.paidProfit, 0)
+const profitDetailGrossPaid = computed(() => monthDealsTotals.value?.paidGross ?? 0)
+const profitDetailCoInvPaid = computed(() => monthDealsTotals.value?.ciPaid ?? 0)
+const profitDetailGrossPending = computed(() => monthDealsTotals.value?.pendingGross ?? 0)
+const profitDetailCoInvPending = computed(() => monthDealsTotals.value?.ciPending ?? 0)
+
+const profitDetailPaid = computed(() => monthDealsTotals.value?.paidReceived ?? 0)
+const profitDetailPending = computed(() => monthDealsTotals.value?.pendingReceived ?? 0)
+const profitDetailReceived = computed(() => profitDetailPaid.value + profitDetailPending.value)
+// План месяца = пришло + осталось.
+const profitDetailPlanned = computed(() => profitDetailReceived.value)
+
+const profitDetailPartner = computed(
+  () => profitDetailGrossPaid.value - profitDetailCoInvPaid.value,
 )
-const profitDetailCoInvPaid = computed(() =>
-  monthDealsTotals.value?.ciPaid
-    ?? profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit, 0)
-)
-const profitDetailGrossPending = computed(() =>
-  monthDealsTotals.value?.pendingGross
-    ?? profitByDeal.value.reduce((s, d) => s + d.pendingProfit, 0)
-)
-const profitDetailCoInvPending = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.projectedCoInvestorProfit, 0)
+const profitDetailProjectedPartner = computed(
+  () => profitDetailGrossPending.value - profitDetailCoInvPending.value,
 )
 
-// Доля со-инвесторов со ВСЕХ платежей периода (оплаченные + прогноз по неоплаченным)
-// и весь доход (наценка) со всех платежей — для доли в процентах.
-// ПРОГНОЗНАЯ часть (projectedCoInvestorProfit) считается только по показанным
-// сделкам: коэффициент доли сервер отдаёт вместе со строкой. Когда выборка
-// усечена, об этом сообщает подпись под списком.
-const profitDetailCoInvestorAll = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.coInvestorProfit + d.projectedCoInvestorProfit, 0)
+// Доля со-инвесторов со ВСЕХ платежей периода (оплаченные + прогноз по
+// неоплаченным) и весь доход со всех платежей — для доли в процентах.
+const profitDetailCoInvestorAll = computed(
+  () => profitDetailCoInvPaid.value + profitDetailCoInvPending.value,
 )
-const profitDetailProfitAll = computed(() =>
-  profitByDeal.value.reduce((s, d) => s + d.paidProfit + d.pendingProfit, 0)
+const profitDetailProfitAll = computed(
+  () => profitDetailGrossPaid.value + profitDetailGrossPending.value,
 )
 
 function openProfitDetail(monthKey?: string, mode: 'earned' | 'expected' | 'all' = 'earned', year?: number) {
@@ -838,6 +863,7 @@ function breakdownRow(metric: string, d: any) {
 async function openBreakdown(metric: string) {
   const meta = BREAKDOWN_META[metric]
   if (!meta) return
+  metricSource.value = 'deals'
   metricMetric.value = metric
   metricTitle.value = meta.title
   metricHint.value = meta.hint
@@ -863,11 +889,27 @@ async function openBreakdown(metric: string) {
   }
 }
 
-/** Догрузить следующую порцию сделок. */
+/** Догрузить следующую порцию — сделок или платежей, смотря что открыто. */
 async function loadMoreBreakdown() {
   if (metricLoading.value) return
   metricLoading.value = true
   try {
+    const q = timelinessQuery.value
+    if (metricSource.value === 'timeliness' && q) {
+      const res = await fetchTimelinessDetails({
+        side: q.side,
+        bucket: q.bucket,
+        cashBoxId: selectedCashBoxId.value,
+        limit: BREAKDOWN_PAGE,
+        offset: metricItems.value.length,
+      })
+      metricItems.value = [
+        ...metricItems.value,
+        ...res.items.map((p) => timelinessDetailRow(q.side, p)),
+      ]
+      return
+    }
+
     const res = await fetchDealsBreakdown(metricMetric.value as any, {
       cashBoxId: selectedCashBoxId.value,
       limit: BREAKDOWN_PAGE,
@@ -885,6 +927,76 @@ async function loadMoreBreakdown() {
 }
 
 const metricHasMore = computed(() => metricItems.value.length < metricCount.value)
+
+// ── Расшифровка своевременности ──────────────────────────────────────────
+// Та же модалка, что у показателей сводки: вопрос один — «откуда эта цифра».
+// Отличается только источником строк, поэтому источник запоминаем: от него
+// зависит и догрузка, и подпись «5 платежей» вместо «5 сделок».
+const metricSource = ref<'deals' | 'timeliness'>('deals')
+const timelinessQuery = ref<{ side: 'overdue' | 'early'; bucket: TimelinessBucketKey | null } | null>(null)
+const metricUnit = computed<'deals' | 'payments'>(() =>
+  metricSource.value === 'timeliness' ? 'payments' : 'deals',
+)
+
+/** Строка списка из платежа: сама сделка, клиент и чем этот платёж попал в выборку. */
+function timelinessDetailRow(side: 'overdue' | 'early', p: TimelinessDetailRow) {
+  const parts = [
+    { label: 'платёж', value: `№${p.paymentNumber}` },
+    { label: 'срок', value: formatDate(p.dueDate) },
+    {
+      label: side === 'overdue' ? 'просрочен на' : 'раньше срока на',
+      value: `${p.days} ${pluralDays(p.days)}`,
+    },
+  ]
+  if (side === 'early' && p.paidAt) parts.push({ label: 'оплачен', value: formatDate(p.paidAt) })
+  return {
+    id: p.dealId,
+    title: p.productName || 'Сделка',
+    subtitle: p.clientName || '—',
+    value: p.amount,
+    parts,
+  }
+}
+
+/**
+ * Открыть расшифровку: всю сторону (клик по карточке) или одну полосу возраста.
+ * Пустую полосу не открываем — показывать там нечего.
+ */
+async function openTimeliness(side: string, bucket: string | null) {
+  const s = side === 'early' ? 'early' : 'overdue'
+  const b = (bucket as TimelinessBucketKey | null) ?? null
+  const meta = timelinessSides.value.find((x) => x.key === s)
+  if (!meta) return
+
+  metricSource.value = 'timeliness'
+  timelinessQuery.value = { side: s, bucket: b }
+  metricTitle.value = b ? `${meta.title} · ${TIMELINESS_LABELS[b]}` : meta.title
+  metricHint.value = s === 'overdue'
+    ? 'Платежи, срок которых уже прошёл, а деньги не поступили. Нажмите на строку — откроется сделка.'
+    : 'Платежи, внесённые раньше своего срока. Нажмите на строку — откроется сделка.'
+  metricColor.value = meta.color
+  metricItems.value = []
+  metricTotal.value = 0
+  metricCount.value = 0
+  metricOpen.value = true
+  metricLoading.value = true
+  try {
+    const res = await fetchTimelinessDetails({
+      side: s,
+      bucket: b,
+      cashBoxId: selectedCashBoxId.value,
+      limit: BREAKDOWN_PAGE,
+    })
+    metricItems.value = res.items.map((p) => timelinessDetailRow(s, p))
+    metricCount.value = res.count
+    // Итог считает сервер по всей выборке — в списке может быть лишь часть.
+    metricTotal.value = res.total
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось загрузить расшифровку')
+  } finally {
+    metricLoading.value = false
+  }
+}
 
 </script>
 
@@ -1232,6 +1344,94 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
         </div>
       </v-card>
 
+      <!-- Своевременность: просрочка и оплаты, сделанные заранее. Две стороны
+           одного вопроса, поэтому рядом и в одинаковой шкале возраста.
+           Стоит сразу под годовым обзором: тот показывает, сколько денег
+           пришло по месяцам, а этот — насколько вовремя они приходят. -->
+      <div class="an-timeliness-section">
+        <div class="an-section-title">Своевременность платежей</div>
+        <v-row class="mb-6">
+          <v-col v-for="side in timelinessSides" :key="side.key" cols="12" lg="6">
+            <v-card rounded="lg" elevation="0" border class="pa-5 h-100">
+              <div class="chart-title mb-1">{{ side.title }}</div>
+              <div class="chart-subtitle mb-4">{{ side.subtitle }}</div>
+
+              <!-- Любая плитка открывает всю сторону целиком: за всеми
+                   четырьмя числами стоит одна и та же выборка платежей. -->
+              <div class="tl-stats">
+                <div
+                  class="tl-stat"
+                  :class="{ 'tl-stat--click': side.data.count > 0 }"
+                  @click="side.data.count && openTimeliness(side.key, null)"
+                >
+                  <div class="tl-stat-value" :style="{ color: side.color }">{{ side.data.count }}</div>
+                  <div class="tl-stat-label">{{ side.countLabel }}</div>
+                </div>
+                <div
+                  class="tl-stat"
+                  :class="{ 'tl-stat--click': side.data.count > 0 }"
+                  @click="side.data.count && openTimeliness(side.key, null)"
+                >
+                  <ExactValue :value="side.data.amount" :hint="false">
+                    <div class="tl-stat-value" :style="{ color: side.color }">{{ formatCurrencyShort(side.data.amount) }}</div>
+                  </ExactValue>
+                  <div class="tl-stat-label">Сумма</div>
+                </div>
+                <div
+                  class="tl-stat"
+                  :class="{ 'tl-stat--click': side.data.count > 0 }"
+                  @click="side.data.count && openTimeliness(side.key, null)"
+                >
+                  <div class="tl-stat-value">{{ side.data.deals }}</div>
+                  <div class="tl-stat-label">Сделок</div>
+                </div>
+                <div
+                  class="tl-stat"
+                  :class="{ 'tl-stat--click': side.data.count > 0 }"
+                  @click="side.data.count && openTimeliness(side.key, null)"
+                >
+                  <div class="tl-stat-value">{{ side.data.clients }}</div>
+                  <div class="tl-stat-label">Клиентов</div>
+                </div>
+              </div>
+
+              <div class="tl-age-head">
+                <span>{{ side.ageTitle }}</span>
+                <span v-if="side.data.count" class="tl-age-avg">
+                  в среднем {{ side.data.avgDays }} дн. · максимум {{ side.data.maxDays }}
+                </span>
+              </div>
+
+              <div v-if="side.data.count" class="tl-ages">
+                <!-- Клик по полосе показывает платежи именно этого возраста —
+                     цифра рядом перестаёт быть числом «из ниоткуда». -->
+                <div
+                  v-for="b in side.data.buckets"
+                  :key="b.key"
+                  class="tl-age"
+                  :class="{ 'tl-age--click': b.count > 0 }"
+                  :title="b.count ? 'Показать платежи этого возраста' : ''"
+                  @click="b.count && openTimeliness(side.key, b.key)"
+                >
+                  <div class="tl-age-lbl">{{ TIMELINESS_LABELS[b.key] }}</div>
+                  <div class="tl-age-bar-wrap">
+                    <div
+                      class="tl-age-bar"
+                      :style="{ width: barWidth(b, side.data.buckets), background: side.color }"
+                    />
+                  </div>
+                  <div class="tl-age-val">
+                    {{ formatCurrencyShort(b.amount) }}
+                    <span class="tl-age-count">· {{ b.count }}</span>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="tl-empty">{{ side.emptyText }}</div>
+            </v-card>
+          </v-col>
+        </v-row>
+      </div>
+
       <!-- Profit Charts — side by side -->
       <div class="an-section-title">Доход</div>
       <v-row class="mb-6">
@@ -1439,6 +1639,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
         </v-col>
       </v-row>
       </div>
+
       </div>
       </template>
     </template>
@@ -1477,15 +1678,31 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
           </div>
 
           <!-- Summary cards -->
+          <!-- Пока считается период, показываем заглушки той же формы: число
+               реальных карточек зависит от данных (от одной до четырёх), и без
+               заглушек блок скакал по высоте при каждой смене месяца. -->
           <div class="pd-stats mb-4">
+            <template v-if="monthDealsLoading">
+              <div v-for="i in 3" :key="`pd-sk-stat-${i}`" class="pd-stat pd-stat--sk">
+                <div class="an-sk an-sk--sm" />
+                <div class="an-sk pd-sk-value" />
+                <div class="an-sk pd-sk-hint" />
+                <div class="an-sk an-sk--sm pd-sk-hint" />
+              </div>
+            </template>
+            <template v-else>
             <div v-if="profitDetailMode === 'all'" class="pd-stat">
               <div class="pd-stat-label">Ожидается за месяц</div>
               <div class="pd-stat-value">{{ formatCurrency(profitDetailPlanned) }}</div>
+              <!-- Платежи и сделки вместе: у месяца в годовом обзоре стоит
+                   число ПЛАТЕЖЕЙ, а список здесь — по сделкам, и без обеих
+                   цифр окно выглядело так, будто часть месяца потерялась. -->
               <div class="pd-stat-hint">
                 весь план: пришло + осталось ·
-                {{ monthDealsTotals?.dealsCount ?? profitByDeal.length }}
-                {{ (monthDealsTotals?.dealsCount ?? profitByDeal.length) === 1 ? 'сделка' : (monthDealsTotals?.dealsCount ?? profitByDeal.length) < 5 ? 'сделки' : 'сделок' }}
-                <template v-if="monthDealsTruncated"> · показаны крупнейшие {{ profitByDeal.length }}</template>
+                {{ monthDealsTotals?.paymentsCount ?? 0 }}
+                {{ plural(monthDealsTotals?.paymentsCount ?? 0, ['платёж', 'платежа', 'платежей']) }}
+                по {{ monthDealsTotals?.dealsCount ?? 0 }}
+                {{ plural(monthDealsTotals?.dealsCount ?? 0, ['сделке', 'сделкам', 'сделкам']) }}
               </div>
             </div>
             <div v-if="profitDetailPaid > 0" class="pd-stat">
@@ -1520,10 +1737,14 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
               <div class="pd-stat-value" style="color: #8b5cf6;">{{ formatCurrency(profitDetailCoInvestorAll) }}</div>
               <div class="pd-stat-hint">доля инвесторов со всех платежей<template v-if="profitDetailProfitAll > 0"> · ≈ {{ Math.round(profitDetailCoInvestorAll / profitDetailProfitAll * 100) }}% дохода</template></div>
             </div>
+            </template>
           </div>
 
           <!-- Filter tabs -->
-          <div v-if="profitByDeal.length" class="pd-filter">
+          <div v-if="monthDealsLoading" class="pd-filter">
+            <div v-for="i in 3" :key="`pd-sk-filter-${i}`" class="an-sk pd-sk-filter" />
+          </div>
+          <div v-else-if="dealFilterCounts.all > 0" class="pd-filter">
             <button class="pd-filter-btn" :class="{ 'pd-filter-btn--active': dealFilter === 'all' }" @click="dealFilter = 'all'">
               Все <span class="pd-filter-count">{{ dealFilterCounts.all }}</span>
             </button>
@@ -1536,73 +1757,107 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
           </div>
 
           <!-- Deal table -->
-          <div v-if="displayDeals.length" class="pdt">
-            <!-- Header -->
+          <!-- Заглушка таблицы: шапка настоящая, строки — пустые той же сетки.
+               Раньше на месте загрузки висел прошлый месяц, а потом список
+               резко подменялся; при первом открытии вместо этого успевало
+               мелькнуть «нет платежей за период». -->
+          <div v-if="monthDealsLoading" class="pdt">
             <div class="pdt-head">
               <span class="pdt-h-deal">Сделка</span>
-              <span class="pdt-h-num" title="Полная сумма платежей по этой сделке за месяц — которые были оплачены или должны быть по плану">Платёж за месяц</span>
-              <span class="pdt-h-num" title="Ваш чистый заработок с этих платежей — доля наценки за вычетом доли инвесторов">Ваша прибыль</span>
+              <span class="pdt-h-num">Платёж за месяц</span>
+              <span class="pdt-h-num">Ваша прибыль</span>
+              <span class="pdt-h-chev" />
+            </div>
+            <div
+              v-for="i in monthDealsSkeletonRows"
+              :key="`pd-sk-row-${i}`"
+              class="pdt-row pdt-row--sk"
+            >
+              <div class="pdt-deal">
+                <div class="an-sk pd-sk-name" />
+                <div class="an-sk an-sk--sm pd-sk-meta" />
+              </div>
+              <div class="pdt-num">
+                <div class="an-sk pd-sk-num" />
+                <div class="an-sk pd-sk-sub" />
+              </div>
+              <div class="pdt-num">
+                <div class="an-sk pd-sk-num" />
+                <div class="an-sk pd-sk-sub" />
+                <div class="an-sk pd-sk-sub" />
+                <div class="an-sk pd-sk-sub" />
+              </div>
+              <span />
+            </div>
+          </div>
+
+          <div v-else-if="displayPayments.length" class="pdt">
+            <!-- Header -->
+            <div class="pdt-head">
+              <span class="pdt-h-deal">Платёж</span>
+              <span class="pdt-h-num" title="Сумма этого платежа: оплаченного или ожидаемого по графику">Сумма</span>
+              <span class="pdt-h-num" title="Ваш чистый заработок с этого платежа — доля наценки за вычетом доли инвесторов">Ваша прибыль</span>
               <span class="pdt-h-chev" />
             </div>
 
-            <!-- Rows -->
+            <!-- Rows: один платёж — одна строка. Из них и складывается месяц. -->
             <div
-              v-for="d in displayDeals"
-              :key="d.dealId"
+              v-for="p in displayPayments"
+              :key="p.paymentId ?? `down-${p.dealId}`"
               class="pdt-row"
-              @click="profitDetailDialog = false; router.push(`/deals/${d.dealId}`)"
+              @click="profitDetailDialog = false; router.push(`/deals/${p.dealId}`)"
             >
-              <!-- Сделка -->
+              <!-- Что за платёж и по какой сделке -->
               <div class="pdt-deal">
-                <div class="pdt-deal-name">{{ d.productName }}</div>
-                <div class="pdt-deal-meta">{{ d.clientName }}</div>
-                <div v-if="d.earlyOffMonth > 0 || d.lateOffMonth > 0" class="pdt-badges">
+                <div class="pdt-deal-name">{{ p.productName }}</div>
+                <div class="pdt-deal-meta">{{ p.clientName }}</div>
+                <div class="pdt-badges">
                   <span
-                    v-if="d.earlyOffMonth > 0"
-                    class="pdt-badge pdt-badge--early"
-                    title="Эти платежи оплачены раньше срока — доход учтён в этом месяце по факту оплаты"
+                    class="pdt-badge"
+                    :class="p.status === 'PAID' ? 'pdt-badge--paid' : p.status === 'OVERDUE' ? 'pdt-badge--overdue' : 'pdt-badge--pending'"
                   >
-                    <v-icon icon="mdi-calendar-arrow-left" size="11" />
-                    {{ d.earlyOffMonth }} досрочно
+                    <v-icon
+                      :icon="p.status === 'PAID' ? 'mdi-check-circle-outline' : p.status === 'OVERDUE' ? 'mdi-alert-circle-outline' : 'mdi-clock-outline'"
+                      size="11"
+                    />
+                    {{ p.status === 'PAID' ? 'оплачен' : p.status === 'OVERDUE' ? 'просрочен' : 'ожидается' }}
+                    {{ formatDate(p.date) }}
                   </span>
-                  <span
-                    v-if="d.lateOffMonth > 0"
-                    class="pdt-badge pdt-badge--late"
-                    title="Эти платежи оплачены позже срока — доход учтён в этом месяце по факту оплаты"
-                  >
-                    <v-icon icon="mdi-calendar-arrow-right" size="11" />
-                    {{ d.lateOffMonth }} с опозданием
+                  <span v-if="p.isDown" class="pdt-badge pdt-badge--down" title="Первоначальный взнос — деньги получены в день сделки">
+                    первоначальный взнос
                   </span>
+                  <span v-else class="pdt-badge pdt-badge--muted">платёж №{{ p.paymentNumber }}</span>
                 </div>
               </div>
 
-              <!-- Платёж за месяц -->
+              <!-- Сумма платежа -->
               <div class="pdt-num">
-                <span class="pdt-num-label">Платёж за месяц</span>
-                <div class="pdt-num-val" :class="d.hasPaid ? 'pdt-num-val--in' : 'pdt-num-val--left'">{{ formatCurrency(d.amount) }}</div>
-                <div class="pdt-num-sub">
-                  {{ d.count }} {{ d.count === 1 ? 'платёж' : (d.count < 5 ? 'платежа' : 'платежей') }}<template v-if="!d.hasPaid"> · не оплачен{{ d.count === 1 ? '' : 'ы' }}</template>
+                <span class="pdt-num-label">Сумма</span>
+                <div class="pdt-num-val" :class="p.status === 'PAID' ? 'pdt-num-val--in' : 'pdt-num-val--left'">
+                  {{ formatCurrency(p.amount) }}
                 </div>
+                <div class="pdt-num-sub">{{ p.status === 'PAID' ? 'деньги получены' : 'ещё не оплачен' }}</div>
               </div>
 
-              <!-- Ваша прибыль -->
+              <!-- Ваша прибыль с этого платежа -->
               <div class="pdt-num">
                 <span class="pdt-num-label">Ваша прибыль</span>
-                <div class="pdt-num-val" :class="d.hasPaid ? 'pdt-num-val--profit' : 'pdt-num-val--proj'">
-                  {{ d.hasPaid ? '+' : '~' }}{{ formatCurrency(Math.max(0, d.net)) }}
+                <div class="pdt-num-val" :class="p.status === 'PAID' ? 'pdt-num-val--profit' : 'pdt-num-val--proj'">
+                  {{ p.status === 'PAID' ? '+' : '~' }}{{ formatCurrency(Math.max(0, p.net)) }}
                   <ProfitFormula
-                    :amount="d.amount"
-                    :gross="d.gross"
-                    :co-investor="d.coInv"
-                    :net="d.net"
-                    :share="d.profitShare"
-                    :projected="!d.hasPaid"
+                    :amount="p.amount"
+                    :gross="p.gross"
+                    :co-investor="p.ci"
+                    :net="p.net"
+                    :share="profitShareOf(p)"
+                    :projected="p.status !== 'PAID'"
                   />
                 </div>
-                <div class="pdt-num-sub" title="Какая доля каждого платежа — прибыль. Остальное — возврат вложенных денег за товар">прибыль {{ Math.round(d.profitShare * 100) }}% от платежа</div>
-                <div v-if="d.coInv > 0" class="pdt-num-sub">инвесторам {{ formatCurrency(d.coInv) }}</div>
-                <div v-if="d.hasPaid && d.hasPending" class="pdt-num-sub pdt-num-sub--proj">часть — прогноз по неоплаченным</div>
-                <div v-else-if="!d.hasPaid" class="pdt-num-sub pdt-num-sub--proj">будет после оплаты</div>
+                <div class="pdt-num-sub" title="Какая доля платежа — прибыль. Остальное — возврат вложенных денег за товар">
+                  прибыль {{ Math.round(profitShareOf(p) * 100) }}% от платежа
+                </div>
+                <div v-if="p.ci > 0" class="pdt-num-sub">инвесторам {{ formatCurrency(p.ci) }}</div>
+                <div v-if="p.status !== 'PAID'" class="pdt-num-sub pdt-num-sub--proj">будет после оплаты</div>
               </div>
 
               <v-icon icon="mdi-chevron-right" size="16" class="pdt-chev" />
@@ -1612,6 +1867,21 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
           <div v-else class="text-center pa-8 text-medium-emphasis text-body-2">
             {{ dealFilter === 'paid' ? 'Нет оплаченных платежей за период' : dealFilter === 'pending' ? 'Нет неоплаченных платежей за период' : 'Нет платежей за выбранный период' }}
           </div>
+
+        </div>
+
+        <!-- Пагинация — подвал окна, вне прокрутки. Внутри тела она прилипала
+             поверх списка, и под ней оставались недочитанные строки. -->
+        <div v-if="monthDealsCount > 0" class="pd-foot">
+          <ServerPager
+            :page="monthDealsPage"
+            :total="monthDealsCount"
+            :per-page="monthDealsPerPage"
+            :busy="monthDealsLoading"
+            :per-page-options="PER_PAGE_OPTIONS"
+            @update:page="monthDealsPage = $event"
+            @update:per-page="monthDealsPerPage = $event"
+          />
         </div>
       </v-card>
     </v-dialog>
@@ -1627,6 +1897,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
       :loading="metricLoading"
       :count="metricCount"
       :has-more="metricHasMore"
+      :unit="metricUnit"
       @load-more="loadMoreBreakdown"
     />
 
@@ -2329,7 +2600,10 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
   color: rgba(var(--v-theme-on-surface), 0.5);
   margin-top: 2px;
 }
-.pd-body { padding: 20px 24px 24px; overflow-y: auto; }
+/* Прокручивается только тело: шапка сверху и пагинация снизу остаются на
+   месте. min-height: 0 обязателен — без него flex-элемент не даёт себя сжать,
+   и прокрутка уезжает на всё окно вместе с подвалом. */
+.pd-body { padding: 20px 24px 24px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 
 .pd-stats {
   display: grid;
@@ -2464,11 +2738,12 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 }
 .pdt-h-num { text-align: right; cursor: help; }
 
+/* Без скругления: строки идут сплошным списком, разделённые только чертой —
+   скруглённая подсветка разрывала его на отдельные карточки. */
 .pdt-row {
   padding: 14px 12px;
   cursor: pointer;
   transition: background 0.15s;
-  border-radius: 8px;
 }
 .pdt-row + .pdt-row { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06); }
 .pdt-row:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
@@ -2497,6 +2772,15 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 }
 .pdt-badge--early { color: #10b981; background: rgba(16, 185, 129, 0.1); }
 .pdt-badge--late { color: #f59e0b; background: rgba(245, 158, 11, 0.1); }
+/* Состояние платежа прямо в строке: деньги получены, ждём или просрочено. */
+.pdt-badge--paid { color: #059669; background: rgba(16, 185, 129, 0.1); }
+.pdt-badge--pending { color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
+.pdt-badge--overdue { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+.pdt-badge--down { color: #8b5cf6; background: rgba(139, 92, 246, 0.1); }
+.pdt-badge--muted {
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
 
 /* Numeric cells */
 .pdt-num { text-align: right; min-width: 0; }
@@ -2530,6 +2814,37 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
   align-self: center;
   justify-self: end;
 }
+
+/* В окне месяца лента-подгрузка не нужна: список короткий и листается
+   страницами, а переключатель режима только сбивал бы с толку. */
+.pd-foot :deep(.sp-auto) { display: none; }
+/* Панель уже стоит в подвале — прилипать ей некуда и не от чего отделяться
+   тенью: границу даёт сам подвал. */
+.pd-foot { flex-shrink: 0; }
+.pd-foot :deep(.sp-pager) {
+  position: static;
+  margin: 0;
+  padding: 12px 24px;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* Заглушки диалога месяца: повторяют геометрию реальных строк, чтобы окно не
+   меняло высоту, когда приезжают цифры. Высоты выверены по замеру живой
+   разметки: карточка показателя 124px, строка сделки ~112px. */
+.pd-stat--sk { pointer-events: none; min-height: 124px; }
+.pd-sk-value { height: 20px; width: 78%; margin-top: 6px; }
+.pd-sk-hint { height: 10px; margin-top: 8px; }
+.pd-sk-filter { width: 104px; height: 36px; border-radius: 9px; }
+/* Строка чуть ниже самой длинной реальной: у той бывает от двух до четырёх
+   подписей, и попадать точно всё равно не во что. */
+.pdt-row--sk { cursor: default; min-height: 104px; }
+.pdt-row--sk:hover { background: transparent; }
+.pd-sk-name { height: 14px; width: 74%; }
+.pd-sk-meta { margin-top: 6px; }
+/* Числовые колонки выровнены по правому краю — заглушки тоже. */
+.pd-sk-num { height: 14px; width: 68%; margin-left: auto; }
+.pd-sk-sub { height: 10px; width: 50%; margin-top: 6px; margin-left: auto; }
 
 /* Breakdown dialog */
 /* ─── Breakdown Dialog ─── */
@@ -2815,6 +3130,83 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
   .an-charts-overlay-features { grid-template-columns: 1fr; }
   .an-charts-overlay-title { font-size: 16px; }
   .an-charts-overlay-text { font-size: 12px; }
+}
+
+/* Своевременность: две симметричные карточки — просрочка и оплаты заранее.
+   Шкала возраста у обеих одна, поэтому и вёрстка полос общая. */
+.tl-stats {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  margin-bottom: 18px;
+}
+.tl-stat {
+  text-align: center; padding: 12px 8px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.tl-stat-value {
+  font-size: 20px; font-weight: 800; line-height: 1.1;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.tl-stat-label {
+  font-size: 11.5px; margin-top: 4px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.tl-age-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 10px;
+}
+.tl-age-avg {
+  font-size: 11px; font-weight: 600;
+  text-transform: none; letter-spacing: 0;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.tl-ages { display: flex; flex-direction: column; gap: 8px; }
+/* Отрицательные поля — чтобы подсветка при наведении выходила за текст полосы
+   и строка читалась как одна кликабельная область. */
+.tl-age {
+  display: flex; align-items: center; gap: 10px;
+  padding: 3px 8px; margin: 0 -8px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.tl-age--click { cursor: pointer; }
+.tl-age--click:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+/* Плитка показателя открывает всю сторону целиком. */
+.tl-stat--click { cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.tl-stat--click:hover {
+  background: rgba(var(--v-theme-on-surface), 0.045);
+  border-color: rgba(var(--v-theme-on-surface), 0.12);
+}
+.tl-age-lbl {
+  flex: 0 0 92px; font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.tl-age-bar-wrap {
+  flex: 1; height: 8px; border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  overflow: hidden;
+}
+/* Пустая корзина всё равно занимает строку — шкала возраста должна читаться
+   целиком, иначе «пропуск» между 8–30 и 91–180 выглядит как сбой. */
+.tl-age-bar { height: 100%; border-radius: 6px; transition: width 0.25s; }
+.tl-age-val {
+  flex: 0 0 auto; min-width: 96px; text-align: right;
+  font-size: 12px; font-weight: 700; white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.tl-age-count { font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.45); }
+.tl-empty {
+  padding: 18px 0; text-align: center; font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+@media (max-width: 600px) {
+  .tl-stats { grid-template-columns: repeat(2, 1fr); }
+  .tl-age-lbl { flex-basis: 78px; font-size: 11.5px; }
+  .tl-age-val { min-width: 84px; font-size: 11.5px; }
 }
 
 @media (max-width: 480px) {

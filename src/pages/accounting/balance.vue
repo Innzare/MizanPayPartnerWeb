@@ -68,7 +68,7 @@ function pickOperation(kind: OperationKind, accountId: string | null = null) {
 const canTransfer = computed(() => auth.can('accounting.transfer'))
 /** Кому вообще доступен ввод денег: капитал, финансы или переводы. */
 const canOperate = computed(
-  () => auth.can('finance.capital') || auth.can('finance.manage') || auth.can('accounting.transfer'),
+  () => auth.can('finance.capital') || auth.can('finance.transactions') || auth.can('accounting.transfer'),
 )
 
 const showDialog = ref(false)
@@ -208,10 +208,42 @@ const filtered = computed(() =>
     : visible.value.filter((a) => a.type === typeFilter.value),
 )
 
+/**
+ * Готов ли счёт принимать деньги.
+ *
+ * Выбранный лимит не запрещает перевод — банк его проведёт, и в жизни так и
+ * бывает. Но в списке такой счёт должен читаться сразу: раньше он отличался
+ * только приглушённым цветом, а это слишком тихо для «сюда лучше не лить».
+ */
+type AccountReady = { label: string; kind: 'ok' | 'off'; why: string }
+function readyOf(a: AccountView): AccountReady {
+  if (a.disabledAt) {
+    return {
+      label: 'Недоступен',
+      kind: 'off',
+      why: a.disabledReason || 'Счёт отключён — система не будет класть на него деньги сама',
+    }
+  }
+  if (limitOf(a.id)?.full) {
+    return {
+      label: 'Недоступен',
+      kind: 'off',
+      why: 'Лимит по счёту выбран — следующий перевод банк может не пропустить',
+    }
+  }
+  return { label: 'Доступен', kind: 'ok', why: 'Счёт принимает деньги' }
+}
+/** Порядок в списке: рабочие счета выше, недоступные — в конец. */
+const READY_ORDER: Record<AccountReady['kind'], number> = { ok: 0, off: 1 }
+
 const grouped = computed(() =>
-  GROUPS.map((g) => ({ ...g, items: filtered.value.filter((a) => a.type === g.type) })).filter(
-    (g) => g.items.length > 0,
-  ),
+  GROUPS.map((g) => ({
+    ...g,
+    items: filtered.value
+      .filter((a) => a.type === g.type)
+      .slice()
+      .sort((x, y) => READY_ORDER[readyOf(x).kind] - READY_ORDER[readyOf(y).kind]),
+  })).filter((g) => g.items.length > 0),
 )
 
 /**
@@ -753,6 +785,7 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
               <div>Где</div>
               <div>Реквизиты</div>
               <div>Метки</div>
+              <div>Состояние</div>
               <div class="ac-td--right">Остаток</div>
               <div />
             </div>
@@ -837,6 +870,18 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
                     :style="{ borderColor: readable(t.color), color: readable(t.color) }"
                   >{{ t.name }}</span>
                   <span v-if="!a.tags.length" class="ac-td-dim">—</span>
+                </div>
+                <!-- Готовность счёта: исчерпанный лимит должно быть видно из
+                     списка, не наводя курсор на полоску под остатком. -->
+                <div class="ac-td-ready">
+                  <span
+                    class="ac-ready"
+                    :class="`ac-ready--${readyOf(a).kind}`"
+                    :title="readyOf(a).why"
+                  >
+                    <span class="ac-ready-dot" />
+                    {{ readyOf(a).label }}
+                  </span>
                 </div>
                 <div class="ac-td--right ac-td-amount">
                   {{ a.balance !== null ? formatCurrency(a.balance) : '—' }}
@@ -1516,15 +1561,32 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
 .ac-status { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
 .ac-status--off { background: rgba(245, 158, 11, 0.14); color: #b45309; }
 
+/* Готовность счёта принимать деньги — отдельной колонкой. Исчерпанный лимит
+   красный: приглушённой строки для этого мало, её принимали за оформление. */
+.ac-td-ready { min-width: 0; }
+.ac-ready {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 3px 9px; border-radius: 7px;
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ac-ready-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.ac-ready--ok { background: rgba(16, 185, 129, 0.12); color: #047857; }
+/* Недоступен — красным и с рамкой: это предупреждение, а не оттенок. */
+.ac-ready--off {
+  background: rgba(239, 68, 68, 0.12); color: #dc2626;
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.3);
+}
+
 /* ── Табличный вид ── */
 /* Таблица живёт внутри панели, поэтому своей рамки у неё нет. Прокрутка по
    горизонтали обязана быть: колонок семь, и на ноутбуке они не помещаются —
    раньше правый край просто обрезался. */
 .ac-table-scroll { overflow-x: auto; }
-.ac-table { min-width: 1000px; }
+.ac-table { min-width: 1120px; }
 .ac-tr {
   display: grid;
-  grid-template-columns: 62px minmax(200px, 1.6fr) minmax(120px, 1fr) minmax(180px, 1.4fr) minmax(110px, 0.9fr) 150px 48px;
+  grid-template-columns: 62px minmax(200px, 1.6fr) minmax(120px, 1fr) minmax(170px, 1.3fr) minmax(100px, 0.8fr) 128px 150px 48px;
   align-items: center; gap: 12px;
   padding: 12px 18px;
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);

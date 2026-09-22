@@ -2,19 +2,18 @@
 import SearchInput from '@/components/SearchInput.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useClientProfilesStore } from '@/stores/clientProfiles'
-import { usePaymentsStore } from '@/stores/payments'
 import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
-import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { type Deal, type ClientProfile, type Payment, userName, clientProfileName } from '@/types'
+import { type ClientProfile, userName, clientProfileName } from '@/types'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
 import { useAutoLoad } from '@/composables/useAutoLoad'
+import { useTableColumns, type TableColumn } from '@/composables/useTableColumns'
+import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
 import { useVirtualRows } from '@/composables/useVirtualRows'
 import { useIsDark } from '@/composables/useIsDark'
 import { useClientCities } from '@/composables/useClientCities'
 import { useToast } from '@/composables/useToast'
-import { useDealLock } from '@/composables/useDealLock'
 import { useSections } from '@/composables/useSections'
 import { useClientsFilters } from '@/composables/useClientsFilters'
 import ClientsFilterPanel from '@/components/ClientsFilterPanel.vue'
@@ -42,8 +41,7 @@ watch(tab, v => {
   else delete query.tab
   router.replace({ query })
 })
-const paymentsStore = usePaymentsStore()
-const { isDark, statusStyle } = useIsDark()
+const { isDark } = useIsDark()
 const toast = useToast()
 const sections = useSections()
 
@@ -81,9 +79,14 @@ interface ClientRow {
   remaining: number
   onTimeRate: number
   nextPaymentDate: string | null
+  completedDealCount: number
+  overdueCount: number
+  overdueAmount: number
+  lastDealDate: string | null
 }
 
-const PAGE_SIZE = 25
+// Размер страницы партнёр выбирает сам — как в остальных списках.
+const perPage = usePageSize('clients:page-size')
 const rows = ref<ClientRow[]>([])
 const total = ref(0)
 const totalsAgg = ref<{ count: number; totalVolume: number; totalProfit: number; totalRemaining: number } | null>(null)
@@ -121,8 +124,12 @@ async function loadClients(append = false) {
   listLoading.value = true
   try {
     const qs = new URLSearchParams({
-      limit: String(PAGE_SIZE),
-      offset: String(append ? rows.value.length : (page.value - 1) * PAGE_SIZE),
+      limit: String(perPage.value),
+      offset: String(append ? rows.value.length : (page.value - 1) * perPage.value),
+      // Сортировка считается на сервере: список постраничный, и порядок
+      // «того, что уже загружено» разъезжался бы между страницами.
+      sort: sortCol.value,
+      dir: sortDir.value,
     })
     if (debouncedSearch.value.trim()) qs.set('q', debouncedSearch.value.trim())
     if (filterCity.value) qs.set('city', filterCity.value)
@@ -155,6 +162,10 @@ async function loadClients(append = false) {
       isExternal: !r.userId,
       dealCount: r.dealCount,
       activeDealCount: r.activeDealCount,
+      completedDealCount: r.completedDealCount ?? 0,
+      overdueCount: r.overdueCount ?? 0,
+      overdueAmount: r.overdueAmount ?? 0,
+      lastDealDate: r.lastDealDate ?? null,
       totalVolume: r.totalVolume,
       totalProfit: r.totalProfit,
       remaining: r.remaining,
@@ -189,8 +200,6 @@ watch(search, (v) => {
 })
 
 watch(filterCity, () => { page.value = 1 })
-watch([page, debouncedSearch, filterCity], () => { loadClients() })
-
 onMounted(async () => {
   try {
     await loadClients()
@@ -227,11 +236,8 @@ function createDealFor(client: ClientRow, e?: Event) {
   router.push(`/create-deal${q}`)
 }
 
-const expandedClients = ref<string[]>([])
 
 // Deal dialog
-const selectedDeal = ref<Deal | null>(null)
-const showDialog = ref(false)
 
 /** Поиск серверный — список уже отфильтрован. */
 const filteredClients = computed(() => rows.value)
@@ -239,12 +245,12 @@ const filteredClients = computed(() => rows.value)
 // ── Автоподгрузка ────────────────────────────────────────────────────
 const hasMore = computed(() => rows.value.length < total.value)
 
-// Виртуализация списка: у крупного партнёра клиентов под девять тысяч, а
-// карточка — это ещё и раскрывающийся блок со сделками.
-const listViewport = ref<HTMLElement | null>(null)
+// Виртуализация: у крупного партнёра клиентов под девять тысяч, а строка —
+// это полтора десятка ячеек.
+const tableViewport = ref<HTMLElement | null>(null)
 const virtual = useVirtualRows(filteredClients, {
-  viewport: listViewport,
-  estimatedRowHeight: 72,
+  viewport: tableViewport,
+  estimatedRowHeight: 56,
 })
 const markerRow = virtual.markerRow
 
@@ -278,45 +284,91 @@ const stats = computed(() => ({
     : 0,
 }))
 
-// ── Сделки клиента в раскрытой карточке ──
-// Показываем несколько последних; за полным списком — на страницу клиента.
-const CARD_DEALS = 5
-const dealsByClient = ref<Record<string, Deal[]>>({})
-const dealsLoadingKey = ref<string | null>(null)
+// ── Колонки таблицы ───────────────────────────────────────────────────
+// Тот же механизм, что в сделках и должниках: состав, порядок и наборы
+// колонок партнёр настраивает под себя, всё хранится в браузере.
 
-async function loadClientDeals(key: string) {
-  if (dealsByClient.value[key]) return
-  dealsLoadingKey.value = key
-  try {
-    const res = await api.get<{ items: Deal[] }>(
-      `/deals?role=investor&clientKey=${encodeURIComponent(key)}&limit=${CARD_DEALS}&sort=createdAt&dir=desc`,
-    )
-    dealsByClient.value = { ...dealsByClient.value, [key]: res.items ?? [] }
-  } catch (e) {
-    console.error('Failed to load client deals:', e)
-  } finally {
-    if (dealsLoadingKey.value === key) dealsLoadingKey.value = null
+type ColGroup = 'client' | 'deals' | 'money' | 'discipline'
+
+const COLUMN_GROUPS: { key: ColGroup; label: string }[] = [
+  { key: 'client', label: 'Клиент' },
+  { key: 'deals', label: 'Сделки' },
+  { key: 'money', label: 'Деньги' },
+  { key: 'discipline', label: 'Платёжная дисциплина' },
+]
+
+const ALL_COLUMNS: TableColumn<ColGroup>[] = [
+  // ── Клиент ──
+  // Телефон идёт подписью под именем: отдельная колонка под него занимала
+  // место, а читаются они всё равно вместе.
+  { key: 'client', label: 'Клиент', align: 'start', sortable: true, group: 'client', tdStyle: 'min-width: 230px;' },
+  { key: 'city', label: 'Город', align: 'start', sortable: false, group: 'client', tdClass: 'text-no-wrap' },
+  { key: 'passport', label: 'Паспорт', align: 'center', sortable: false, group: 'client', tdClass: 'text-center text-no-wrap' },
+
+  // ── Сделки ──
+  { key: 'dealCount', label: 'Всего сделок', align: 'center', sortable: true, group: 'deals', tdClass: 'text-center text-no-wrap' },
+  { key: 'activeDeals', label: 'Действующих', align: 'center', sortable: true, group: 'deals', tdClass: 'text-center text-no-wrap' },
+  { key: 'completedDeals', label: 'Закрытых', align: 'center', sortable: true, group: 'deals', tdClass: 'text-center text-no-wrap' },
+  { key: 'lastDeal', label: 'Последняя сделка', align: 'end', sortable: true, group: 'deals', tdClass: 'text-end text-no-wrap' },
+
+  // ── Деньги ──
+  { key: 'volume', label: 'Объём договоров', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'profit', label: 'Заработано', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'remaining', label: 'Остаток долга', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
+
+  // ── Дисциплина ──
+  { key: 'overdueAmount', label: 'Сумма просрочки', align: 'end', sortable: true, group: 'discipline', tdClass: 'text-end text-no-wrap font-weight-bold' },
+  { key: 'overdueCount', label: 'Просрочек', align: 'center', sortable: false, group: 'discipline', tdClass: 'text-center text-no-wrap' },
+  { key: 'nextPayment', label: 'Следующий платёж', align: 'end', sortable: true, group: 'discipline', tdClass: 'text-end text-no-wrap' },
+]
+
+const COLUMN_PRESETS = [
+  { key: 'min', label: 'Минимум', columns: ['client', 'dealCount', 'activeDeals', 'remaining'] },
+  { key: 'calls', label: 'Для обзвона', columns: ['client', 'city', 'overdueAmount', 'overdueCount', 'nextPayment'] },
+  { key: 'money', label: 'Деньги', columns: ['client', 'volume', 'profit', 'remaining', 'overdueAmount'] },
+  { key: 'trust', label: 'Надёжность', columns: ['client', 'dealCount', 'completedDeals', 'overdueCount', 'overdueAmount', 'lastDeal'] },
+  { key: 'full', label: 'Полный', columns: ALL_COLUMNS.map((c) => c.key) },
+]
+
+const cols = useTableColumns<ColGroup>({
+  storageKey: 'clients',
+  columns: ALL_COLUMNS,
+  defaultVisible: ['client', 'dealCount', 'activeDeals', 'profit', 'remaining', 'overdueAmount', 'nextPayment'],
+  groups: COLUMN_GROUPS,
+  presets: COLUMN_PRESETS,
+})
+const shownColumns = cols.shownColumns
+
+/** Колонок в строке — с учётом номера и колонки действий. */
+const columnCount = computed(() => shownColumns.value.length + 2)
+
+// ── Сортировка ──
+// Считается на сервере: список постраничный, и сортировать «то, что уже
+// загружено» означало бы разный порядок на разных страницах.
+const TEXT_COLS = new Set(['client'])
+const { col: sortCol, dir: sortDir } = useListSort<string>('clients:table-sort', 'activeDeals')
+
+function toggleSort(key: string) {
+  if (cols.wasDragged()) return
+  if (sortCol.value === key) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortCol.value = key
+    sortDir.value = TEXT_COLS.has(key) ? 'asc' : 'desc'
   }
 }
 
-function getClientDeals(clientKey: string): Deal[] {
-  return dealsByClient.value[clientKey] ?? []
-}
-
-function toggleClient(clientId: string) {
-  const idx = expandedClients.value.indexOf(clientId)
-  if (idx >= 0) {
-    expandedClients.value.splice(idx, 1)
+// Сортировка и размер страницы считаются на сервере — при их смене список
+// перечитывается целиком, а не переупорядочивается в браузере.
+watch([page, debouncedSearch, filterCity, sortCol, sortDir, perPage], ([p], [prevPage]) => {
+  // Смена сортировки или размера страницы возвращает к началу выборки:
+  // иначе «страница 7» показывала бы строки из другого порядка.
+  if (p === prevPage && page.value !== 1) {
+    page.value = 1
     return
   }
-  expandedClients.value.push(clientId)
-  // Сделки клиента грузим только при раскрытии — и лишь несколько последних.
-  loadClientDeals(clientId)
-}
-
-function isExpanded(clientId: string) {
-  return expandedClients.value.includes(clientId)
-}
+  loadClients()
+})
 
 function getScoreColor(rate: number) {
   if (rate >= 90) return '#047857'
@@ -335,33 +387,7 @@ function getAvatarColor(name: string) {
   return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length]
 }
 
-function getDealProgress(deal: Deal) {
-  return deal.numberOfPayments > 0 ? (deal.paidPayments / deal.numberOfPayments) * 100 : 0
-}
 
-const { isDealLocked } = useDealLock()
-
-function openDeal(deal: Deal) {
-  // Залоченная сделка: ведём на страницу (там экран блокировки), без превью.
-  if (isDealLocked(deal)) { router.push(`/deals/${deal.id}`); return }
-  selectedDeal.value = deal
-  showDialog.value = true
-  // График сделки больше не приходит вместе с портфелем — тянем точечно.
-  paymentsStore.fetchPaymentsForDeal(deal.id).catch(() => {})
-}
-
-function goToDeal(deal: Deal) {
-  router.push(`/deals/${deal.id}`)
-}
-
-const selectedDealPayments = computed<Payment[]>(() => {
-  if (!selectedDeal.value) return []
-  return paymentsStore.getPaymentsForDeal(selectedDeal.value.id)
-})
-
-const selectedDealPaidTotal = computed(() =>
-  selectedDealPayments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
-)
 </script>
 
 <template>
@@ -443,6 +469,90 @@ const selectedDealPaidTotal = computed(() =>
       <div class="pa-4">
         <!-- Search -->
         <div class="clients-search-row">
+          <!-- Настройка колонок — тот же механизм, что в сделках и должниках. -->
+          <v-menu :close-on-content-click="false" location="bottom start">
+            <template #activator="{ props: menuProps }">
+              <button class="clients-filter-btn" v-bind="menuProps" title="Колонки таблицы">
+                <v-icon icon="mdi-table-cog" size="16" />
+                <span class="d-none d-sm-inline">Колонки</span>
+              </button>
+            </template>
+            <div class="col-menu">
+              <div class="col-menu-head">
+                <span class="col-menu-title">Колонки таблицы</span>
+                <button class="col-menu-reset" @click="cols.resetColumns">Сбросить</button>
+              </div>
+
+              <!-- Готовые наборы под частые задачи. -->
+              <div class="col-menu-presets">
+                <button
+                  v-for="p in cols.presets"
+                  :key="p.key"
+                  type="button"
+                  class="col-menu-preset"
+                  @click="cols.applyPreset(p)"
+                >{{ p.label }}</button>
+              </div>
+
+              <!-- Свои наборы: сохранённый состав и порядок колонок. -->
+              <div v-if="cols.savedPresets.value.length" class="col-menu-presets col-menu-presets--own">
+                <span v-for="p in cols.savedPresets.value" :key="p.id" class="col-menu-own">
+                  <button type="button" class="col-menu-own-apply" @click="cols.applySavedPreset(p)">
+                    {{ p.name }}
+                  </button>
+                  <button type="button" class="col-menu-own-del" title="Удалить набор" @click="cols.removePreset(p)">
+                    <v-icon icon="mdi-close" size="11" />
+                  </button>
+                </span>
+              </div>
+
+              <div class="col-menu-save">
+                <input
+                  v-model="cols.presetName.value"
+                  type="text"
+                  placeholder="Сохранить набор как…"
+                  @keyup.enter="cols.savePreset"
+                />
+                <button :disabled="!cols.presetName.value.trim()" @click="cols.savePreset">Сохранить</button>
+              </div>
+
+              <div class="col-menu-search">
+                <v-icon icon="mdi-magnify" size="15" />
+                <input v-model="cols.colSearch.value" type="text" placeholder="Найти колонку" />
+                <button v-if="cols.colSearch.value" class="col-menu-search-clear" @click="cols.colSearch.value = ''">
+                  <v-icon icon="mdi-close" size="13" />
+                </button>
+              </div>
+
+              <div class="col-menu-hint">
+                Потяните за <v-icon icon="mdi-drag-horizontal-variant" size="13" />, чтобы поменять порядок
+              </div>
+
+              <div v-for="g in cols.menuGroups.value" :key="g.key" class="col-menu-group">
+                <div class="col-menu-group-title">{{ g.label }}</div>
+                <div
+                  v-for="c in g.columns"
+                  :key="c.key"
+                  class="col-menu-item"
+                  :class="{ 'col-menu-item--dragging': cols.dragColKey.value === c.key }"
+                  draggable="true"
+                  @dragstart="cols.onColDragStart(c.key, $event)"
+                  @dragover="cols.onColDragOver(c.key, $event)"
+                  @dragend="cols.onColDragEnd"
+                  @drop.prevent="cols.onColDragEnd"
+                >
+                  <v-icon icon="mdi-drag-horizontal-variant" size="16" class="col-menu-grip" />
+                  <label class="col-menu-label">
+                    <input type="checkbox" :checked="cols.isColVisible(c.key)" @change="cols.toggleColumn(c.key)" />
+                    <span>{{ c.label }}</span>
+                  </label>
+                </div>
+              </div>
+
+              <div v-if="!cols.menuGroups.value.length" class="col-menu-empty">Ничего не найдено</div>
+            </div>
+          </v-menu>
+
           <SearchInput v-model="search" placeholder="Поиск по имени, городу, адресу, телефону..." class="clients-search-input" />
           <!-- Фильтр по городу: список наполняется фактическими городами
                партнёра, поэтому пустых пунктов в нём не бывает. -->
@@ -473,9 +583,6 @@ const selectedDealPaidTotal = computed(() =>
             </span>
           </button>
 
-          <div class="text-caption text-medium-emphasis clients-search-count">
-            {{ filteredClients.length }} из {{ stats.count }}
-          </div>
         </div>
 
         <!-- Плашки включённых фильтров. -->
@@ -493,197 +600,163 @@ const selectedDealPaidTotal = computed(() =>
           <button type="button" class="af-clear" @click="filters.reset()">Сбросить всё</button>
         </div>
 
-        <!-- Client list -->
-        <div v-if="filteredClients.length" ref="listViewport" class="clients-list">
-          <!-- Верхняя распорка: место карточек выше экрана и точка отсчёта
-               списка. Карточки раскрываются, поэтому высоты у них разные —
-               виртуализация меряет каждую и держит их в своей карте. -->
-          <div ref="markerRow" :style="{ height: virtual.padTop.value + 'px' }" aria-hidden="true" />
-
-          <div
-            v-for="(client, idx) in virtual.visibleRows.value"
-            :key="client.key"
-            :ref="virtual.rowRef(virtual.offset.value + idx)"
-            data-virtual-row
-            class="client-card"
-            :class="{ 'client-card--expanded': isExpanded(client.key) }"
-          >
-            <!-- Client Header -->
-            <div class="client-header" @click="toggleClient(client.key)">
-              <div
-                class="client-avatar"
-                :style="{ background: client.isExternal ? '#6366f1' : getAvatarColor(client.firstName), cursor: hasClientProfile(client) ? 'pointer' : 'default' }"
-                @click.stop="goToClientProfile(client)"
+        <!-- Таблица клиентов -->
+        <!-- Обёртка для виртуализации: от её положения отсчитывается список. -->
+        <div v-if="filteredClients.length" ref="tableViewport">
+        <v-table density="default" hover class="at-table clients-table">
+          <thead>
+            <tr>
+              <th class="th-index">№</th>
+              <th
+                v-for="c in shownColumns"
+                :key="c.key"
+                :class="[
+                  c.align === 'end' ? 'text-end' : c.align === 'center' ? 'text-center' : 'text-start',
+                  { 'th-sortable': c.sortable, 'th-sorted': sortCol === c.key, 'th-dragging': cols.dragColKey.value === c.key },
+                ]"
+                draggable="true"
+                @click="c.sortable && toggleSort(c.key)"
+                @dragstart="cols.onColDragStart(c.key, $event)"
+                @dragover="cols.onColDragOver(c.key, $event)"
+                @dragend="cols.onColDragEnd"
+                @drop.prevent="cols.onColDragEnd"
               >
-                {{ (client.firstName || '?')[0] }}{{ (client.lastName || '')[0] }}
-              </div>
+                <span class="th-inner">
+                  {{ c.label }}
+                  <v-icon
+                    v-if="c.sortable"
+                    :icon="sortCol === c.key ? (sortDir === 'asc' ? 'mdi-arrow-up' : 'mdi-arrow-down') : 'mdi-unfold-more-horizontal'"
+                    size="14"
+                    class="th-sort-ico"
+                  />
+                </span>
+              </th>
+              <th class="text-end col-actions">Действия</th>
+            </tr>
+          </thead>
 
-              <div class="client-main">
-                <div class="client-name-row">
-                  <span
-                    class="client-name"
-                    :class="{ 'client-name--link': hasClientProfile(client) }"
-                    @click.stop="goToClientProfile(client)"
-                  >{{ client.firstName }} {{ client.lastName }}</span>
-                  <span v-if="hasClientProfile(client)" class="passport-badge" :class="client.hasPassport ? 'passport-badge--ok' : 'passport-badge--warn'">
-                    <v-icon :icon="client.hasPassport ? 'mdi-card-account-details-outline' : 'mdi-alert-circle-outline'" size="11" />
-                    {{ client.hasPassport ? 'Паспорт' : 'Нет паспорта' }}
-                  </span>
-                </div>
-                <div class="client-meta">
-                  <template v-if="client.city">{{ client.city }} · </template>{{ client.dealCount }} {{ client.dealCount === 1 ? 'сделка' : client.dealCount <= 4 ? 'сделки' : 'сделок' }}<template v-if="client.phone"> · {{ formatPhone(client.phone) }}</template>
-                </div>
-              </div>
+          <tbody>
+            <!-- Верхняя распорка: место строк выше экрана и точка отсчёта списка. -->
+            <tr ref="markerRow" class="virtual-pad" aria-hidden="true">
+              <td :colspan="columnCount"><div :style="{ height: virtual.padTop.value + 'px' }" /></td>
+            </tr>
 
-              <!-- Desktop stats -->
-              <div class="client-stats d-none d-md-flex">
-                <div class="client-stat">
-                  <div class="client-stat-value">{{ formatCurrency(client.totalVolume) }}</div>
-                  <div class="client-stat-label">Объём</div>
-                </div>
-                <div class="client-stat">
-                  <div class="client-stat-value" style="color: #047857;">{{ formatCurrency(client.totalProfit) }}</div>
-                  <div class="client-stat-label">Прибыль</div>
-                </div>
-                <div class="client-stat">
-                  <div class="client-stat-value" style="color: #f59e0b;">{{ formatCurrency(client.remaining) }}</div>
-                  <div class="client-stat-label">Остаток</div>
-                </div>
-              </div>
+            <tr
+              v-for="(client, idx) in virtual.visibleRows.value"
+              :key="client.key"
+              :ref="virtual.rowRef(virtual.offset.value + idx)"
+              data-virtual-row
+              class="cursor-pointer"
+              @click="goToClientProfile(client)"
+            >
+              <td class="td-index text-medium-emphasis">
+                {{ (page - 1) * perPage + virtual.offset.value + idx + 1 }}
+              </td>
 
-              <div class="row-actions client-row-actions" @click.stop>
-                <button
-                  v-if="sections.visible('whatsapp') && client.phone"
-                  class="row-action-btn row-action-btn--whatsapp"
-                  title="Написать в WhatsApp"
-                  @click="writeWhatsApp(client, $event)"
-                >
-                  <v-icon icon="mdi-whatsapp" size="17" />
-                </button>
-                <button
-                  v-if="canCreateDeal"
-                  class="row-action-btn row-action-btn--success"
-                  title="Новая сделка для этого клиента"
-                  @click="createDealFor(client, $event)"
-                >
-                  <v-icon icon="mdi-plus-box-outline" size="17" />
-                </button>
-                <button
-                  v-if="hasClientProfile(client)"
-                  class="row-action-btn"
-                  title="Открыть карточку клиента"
-                  @click="goToClientProfile(client)"
-                >
-                  <v-icon icon="mdi-open-in-new" size="16" />
-                </button>
-              </div>
-
-              <div class="expand-icon">
-                <v-icon :icon="isExpanded(client.key) ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="20" />
-              </div>
-            </div>
-
-            <!-- Expanded content -->
-            <v-expand-transition>
-              <div v-if="isExpanded(client.key)" class="client-expanded">
-                <!-- Mobile stats -->
-                <div class="client-stats-mobile d-md-none">
-                  <div class="client-stat-m">
-                    <div class="client-stat-m-label">Объём</div>
-                    <div class="client-stat-m-value">{{ formatCurrency(client.totalVolume) }}</div>
-                  </div>
-                  <div class="client-stat-m">
-                    <div class="client-stat-m-label">Прибыль</div>
-                    <div class="client-stat-m-value" style="color: #047857;">{{ formatCurrency(client.totalProfit) }}</div>
-                  </div>
-                  <div class="client-stat-m">
-                    <div class="client-stat-m-label">Остаток</div>
-                    <div class="client-stat-m-value" style="color: #f59e0b;">{{ formatCurrency(client.remaining) }}</div>
-                  </div>
-                </div>
-
-                <!-- Payment timeliness bar -->
-                <div class="ontime-bar mb-4">
-                  <div class="d-flex justify-space-between align-center mb-2">
-                    <span class="ontime-label">Своевременность платежей</span>
-                    <span class="ontime-value" :style="{ color: getScoreColor(client.onTimeRate) }">{{ client.onTimeRate }}%</span>
-                  </div>
-                  <div class="ontime-track">
+              <td v-for="c in shownColumns" :key="c.key" :class="c.tdClass" :style="c.tdStyle">
+                <template v-if="c.key === 'client'">
+                  <div class="cl-name-cell">
                     <div
-                      class="ontime-fill"
-                      :style="{
-                        width: client.onTimeRate + '%',
-                        background: getScoreColor(client.onTimeRate),
-                      }"
-                    />
-                  </div>
-                </div>
-
-                <!-- Next payment -->
-                <div v-if="client.nextPaymentDate" class="next-payment mb-4">
-                  <v-icon icon="mdi-calendar-clock" size="16" />
-                  <span>Ближайший платёж: <strong>{{ formatDate(client.nextPaymentDate) }}</strong></span>
-                </div>
-
-                <!-- Deals -->
-                <div class="deals-section-title">Сделки</div>
-
-                <div v-if="dealsLoadingKey === client.key" class="d-flex justify-center py-4">
-                  <v-progress-circular indeterminate size="22" width="2" color="primary" />
-                </div>
-
-                <div class="deal-list">
-                  <div
-                    v-for="deal in getClientDeals(client.key)"
-                    :key="deal.id"
-                    class="deal-item"
-                    :class="{ 'deal-locked-dim': isDealLocked(deal) }"
-                    @click.stop="openDeal(deal)"
-                  >
-                    <v-avatar size="40" rounded="lg" class="deal-photo" :color="deal.productPhotos?.[0] ? undefined : 'grey-lighten-3'">
-                      <v-img v-if="deal.productPhotos?.[0]" :src="deal.productPhotos[0]" cover />
-                      <v-icon v-else icon="mdi-package-variant-closed" size="20" color="grey" />
-                    </v-avatar>
-                    <div class="deal-info">
-                      <div class="deal-product">{{ deal.productName }}<span v-if="isDealLocked(deal)" class="deal-locked-chip ml-2"><v-icon icon="mdi-lock-outline" />Недоступно</span></div>
-                      <div class="deal-price">{{ formatCurrency(deal.totalPrice) }}</div>
-                    </div>
-                    <div class="deal-progress-col">
-                      <div class="deal-progress-text">{{ deal.paidPayments }} / {{ deal.numberOfPayments }}</div>
-                      <v-progress-linear
-                        :model-value="getDealProgress(deal)"
-                        color="primary"
-                        rounded
-                        height="4"
-                        style="width: 80px;"
-                      />
-                    </div>
-                    <div
-                      class="deal-status-chip"
-                      :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
+                      class="cl-avatar"
+                      :style="{ background: client.isExternal ? '#6366f1' : getAvatarColor(client.firstName) }"
                     >
-                      {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
+                      {{ (client.firstName || '?')[0] }}{{ (client.lastName || '')[0] }}
                     </div>
-                    <v-icon icon="mdi-chevron-right" size="18" class="deal-chevron" />
+                    <div class="cl-name-main">
+                      <div class="cl-name">{{ client.firstName }} {{ client.lastName }}</div>
+                      <div v-if="client.phone" class="cl-name-sub">
+                        {{ formatPhone(client.phone) }}
+                        <button
+                          v-if="sections.visible('whatsapp')"
+                          class="td-phone-wa"
+                          title="Написать в WhatsApp"
+                          @click.stop="writeWhatsApp(client, $event)"
+                        >
+                          <v-icon icon="mdi-whatsapp" size="12" />
+                        </button>
+                      </div>
+                    </div>
                   </div>
+                </template>
 
-                  <!-- Показываем несколько последних; за полным списком —
-                       на страницу клиента, там сделки грузятся порциями. -->
-                  <button
-                    v-if="client.dealCount > getClientDeals(client.key).length && hasClientProfile(client)"
-                    class="client-all-deals"
-                    @click.stop="goToClientProfile(client)"
+                <template v-else-if="c.key === 'city'">{{ client.city || '—' }}</template>
+
+                <template v-else-if="c.key === 'passport'">
+                  <span
+                    v-if="hasClientProfile(client)"
+                    class="passport-badge"
+                    :class="client.hasPassport ? 'passport-badge--ok' : 'passport-badge--warn'"
                   >
-                    Показать все {{ client.dealCount }}
-                    {{ client.dealCount === 1 ? 'сделку' : client.dealCount < 5 ? 'сделки' : 'сделок' }}
-                    <v-icon icon="mdi-arrow-right" size="14" />
+                    <v-icon :icon="client.hasPassport ? 'mdi-card-account-details-outline' : 'mdi-alert-circle-outline'" size="11" />
+                    {{ client.hasPassport ? 'Есть' : 'Нет' }}
+                  </span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <template v-else-if="c.key === 'dealCount'">{{ client.dealCount }}</template>
+                <template v-else-if="c.key === 'activeDeals'">
+                  <span :class="{ 'font-weight-medium': client.activeDealCount > 0 }">
+                    {{ client.activeDealCount }}
+                  </span>
+                </template>
+                <template v-else-if="c.key === 'completedDeals'">{{ client.completedDealCount }}</template>
+                <template v-else-if="c.key === 'lastDeal'">
+                  {{ client.lastDealDate ? formatDate(client.lastDealDate) : '—' }}
+                </template>
+
+                <template v-else-if="c.key === 'volume'">{{ formatCurrency(client.totalVolume) }}</template>
+                <template v-else-if="c.key === 'profit'">
+                  <span class="cl-profit">{{ formatCurrency(client.totalProfit) }}</span>
+                </template>
+                <template v-else-if="c.key === 'remaining'">
+                  <span :class="{ 'cl-remaining': client.remaining > 0 }">
+                    {{ client.remaining > 0 ? formatCurrency(client.remaining) : '—' }}
+                  </span>
+                </template>
+
+                <template v-else-if="c.key === 'overdueAmount'">
+                  <span v-if="client.overdueAmount > 0" class="cl-overdue">
+                    {{ formatCurrency(client.overdueAmount) }}
+                  </span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'overdueCount'">
+                  <span v-if="client.overdueCount > 0" class="cl-overdue">{{ client.overdueCount }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <template v-else-if="c.key === 'nextPayment'">
+                  {{ client.nextPaymentDate ? formatDate(client.nextPaymentDate) : '—' }}
+                </template>
+              </td>
+
+              <td class="text-end col-actions" @click.stop>
+                <div class="row-actions">
+                  <button
+                    v-if="canCreateDeal"
+                    class="row-action-btn row-action-btn--success"
+                    title="Новая сделка для этого клиента"
+                    @click="createDealFor(client, $event)"
+                  >
+                    <v-icon icon="mdi-plus-box-outline" size="17" />
+                  </button>
+                  <button
+                    v-if="hasClientProfile(client)"
+                    class="row-action-btn"
+                    title="Открыть карточку клиента"
+                    @click="goToClientProfile(client)"
+                  >
+                    <v-icon icon="mdi-open-in-new" size="16" />
                   </button>
                 </div>
-              </div>
-            </v-expand-transition>
-          </div>
+              </td>
+            </tr>
 
-          <div :style="{ height: virtual.padBottom.value + 'px' }" aria-hidden="true" />
+            <tr class="virtual-pad" aria-hidden="true">
+              <td :colspan="columnCount"><div :style="{ height: virtual.padBottom.value + 'px' }" /></td>
+            </tr>
+          </tbody>
+        </v-table>
         </div>
 
         <!-- Empty state -->
@@ -702,13 +775,14 @@ const selectedDealPaidTotal = computed(() =>
         <ServerPager
           :page="page"
           :total="total"
-          :per-page="25"
+          :per-page="perPage"
           :busy="listLoading"
-          :per-page-options="[25]"
+          :per-page-options="PER_PAGE_OPTIONS"
           :auto-load="autoLoad.enabled.value"
           :loaded="rows.length"
           :has-more="hasMore"
           @update:page="page = $event"
+          @update:per-page="perPage = $event"
           @update:auto-load="autoLoad.enabled.value = $event"
           @load-more="autoLoad.loadMoreManually()"
         />
@@ -716,113 +790,6 @@ const selectedDealPaidTotal = computed(() =>
       </div>
     </v-card>
 
-    <!-- Deal Detail Dialog -->
-    <v-dialog v-model="showDialog" max-width="680" scrollable :fullscreen="isMobile">
-      <v-card v-if="selectedDeal" rounded="lg">
-        <!-- Header with photo on the left -->
-        <div class="dialog-hero">
-          <button class="dialog-close" @click="showDialog = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-          <div class="dialog-hero-photo" :class="{ 'dialog-hero-photo--empty': !selectedDeal.productPhotos?.length }">
-            <img v-if="selectedDeal.productPhotos?.[0]" :src="selectedDeal.productPhotos[0]" alt="" />
-            <div v-else class="dialog-hero-photo-placeholder">
-              <v-icon icon="mdi-image-off-outline" size="28" />
-              <span>Нет фото</span>
-            </div>
-          </div>
-          <div class="dialog-hero-content">
-            <div
-              class="dialog-status"
-              :style="{ color: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }"
-            >
-              <span class="dialog-status-dot" :style="{ background: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }" />
-              {{ DEAL_STATUS_CONFIG[selectedDeal.status]?.label }}
-            </div>
-            <div class="dialog-title">{{ selectedDeal.productName }}</div>
-            <div class="dialog-hero-meta">
-              <v-icon icon="mdi-account" size="14" />
-              {{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '—' }}
-              <span class="mx-1">·</span>
-              Создано {{ formatDate(selectedDeal.createdAt) }}
-            </div>
-          </div>
-        </div>
-
-        <v-card-text class="pa-5">
-
-          <!-- Financial grid -->
-          <div class="dialog-finance-grid mb-5">
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Закупочная</div>
-              <div class="dialog-finance-value">{{ formatCurrency(selectedDeal.purchasePrice) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Итого</div>
-              <div class="dialog-finance-value font-weight-bold">{{ formatCurrency(selectedDeal.totalPrice) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Наценка</div>
-              <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ formatPercent(selectedDeal.markupPercent) }})</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Оплачено</div>
-              <div class="dialog-finance-value" style="color: #047857;">{{ formatCurrency(selectedDealPaidTotal) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Остаток</div>
-              <div class="dialog-finance-value" style="color: #f59e0b;">{{ formatCurrency(selectedDeal.remainingAmount) }}</div>
-            </div>
-          </div>
-
-          <!-- Progress -->
-          <div class="mb-5">
-            <div class="d-flex justify-space-between align-center mb-2">
-              <span class="text-body-2 font-weight-medium">Прогресс платежей</span>
-              <span class="text-caption text-medium-emphasis">{{ selectedDeal.paidPayments }} из {{ selectedDeal.numberOfPayments }}</span>
-            </div>
-            <v-progress-linear
-              :model-value="getDealProgress(selectedDeal)"
-              color="primary"
-              rounded
-              height="8"
-            />
-          </div>
-
-          <!-- Link to full page -->
-          <button class="detail-link-btn mb-5" @click="showDialog = false; goToDeal(selectedDeal!)">
-            <v-icon icon="mdi-open-in-new" size="16" />
-            Открыть полную страницу сделки
-          </button>
-
-          <!-- Payment schedule -->
-          <div v-if="selectedDealPayments.length">
-            <div class="text-body-2 font-weight-bold mb-3">График платежей</div>
-            <div class="schedule-list">
-              <div
-                v-for="p in selectedDealPayments"
-                :key="p.id"
-                class="schedule-item"
-                :class="{ 'schedule-item--paid': p.status === 'PAID', 'schedule-item--overdue': p.status === 'OVERDUE' }"
-              >
-                <div class="schedule-num">{{ p.number }}</div>
-                <div class="schedule-info">
-                  <div class="schedule-date">{{ formatDateShort(p.dueDate) }}</div>
-                  <div v-if="p.paidAt" class="schedule-paid-at">Оплачено {{ formatDateShort(p.paidAt) }}</div>
-                </div>
-                <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
-                <div
-                  class="schedule-status"
-                  :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
-                >
-                  {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                </div>
-              </div>
-            </div>
-          </div>
-        </v-card-text>
-      </v-card>
-    </v-dialog>
     </template>
     </template>
   </div>
@@ -842,6 +809,61 @@ const selectedDealPaidTotal = computed(() =>
 </template>
 
 <style scoped>
+
+/* ── Таблица клиентов ───────────────────────────────────────────────── */
+
+.clients-table :deep(tbody tr) { transition: background 0.12s; }
+/* Заголовки той же насыщенности, что в таблице поручителей. */
+.clients-table :deep(thead th) { font-weight: 600 !important; }
+
+/* Строки плотнее, чем по умолчанию: под именем идёт телефон, и при обычной
+   высоте строка вырастала вдвое — на экран помещалось вдвое меньше людей. */
+.clients-table :deep(tbody td) {
+  height: auto !important;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+}
+
+.cl-name-cell { display: flex; align-items: center; gap: 9px; }
+.cl-avatar {
+  width: 28px; height: 28px; min-width: 28px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 11px; font-weight: 700; text-transform: uppercase;
+}
+.cl-name-main { min-width: 0; line-height: 1.25; }
+.cl-name { font-weight: 500; white-space: nowrap; }
+.cl-name-sub {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); white-space: nowrap;
+}
+.cl-profit { color: #047857; }
+.cl-remaining { color: #f59e0b; }
+.cl-overdue { color: #ef4444; font-weight: 600; }
+
+.cl-score {
+  display: inline-flex; align-items: center; padding: 2px 8px;
+  border-radius: 6px; font-size: 12.5px; font-weight: 600;
+}
+
+/* Распорки виртуализации — см. пояснение в разделе сделок: высоту задаёт
+   блок внутри ячейки, собственную высоту и анимацию ячейки снимаем. */
+/* Распорки виртуализации: держат место неотрисованных строк и сами строкой
+   выглядеть не должны. Селектор перекрывает компактные отступы выше — иначе
+   пустая распорка занимала двенадцать пикселей и подсвечивалась под курсором,
+   как настоящая строка. */
+.clients-table :deep(tbody tr.virtual-pad td) {
+  height: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  overflow-anchor: none;
+  transition: none !important;
+}
+/* Подсветку при наведении Vuetify рисует псевдоэлементом — гасим и его. */
+.clients-table :deep(tbody tr.virtual-pad:hover td::after) { content: none !important; }
+
+.col-actions { width: 1%; white-space: nowrap; }
+
 /* Кнопка расширенных фильтров рядом с поиском. */
 .clients-filter-btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -887,7 +909,6 @@ const selectedDealPaidTotal = computed(() =>
 
 /* Кнопки действий в шапке карточки: на узком экране статистика уезжает вниз,
    а кнопки должны остаться рядом со стрелкой раскрытия. */
-.client-row-actions { flex-shrink: 0; margin: 0 4px 0 12px; }
 
 /* Прилипающая пагинация (ServerPager) требует, чтобы карточка не обрезала
    содержимое — у v-card overflow: hidden по умолчанию. */
@@ -950,10 +971,6 @@ const selectedDealPaidTotal = computed(() =>
   min-width: 300px;
   max-width: 460px;
 }
-.clients-search-count {
-  margin-left: auto;
-  flex-shrink: 0;
-}
 @media (max-width: 599px) {
   .clients-search-row {
     flex-wrap: wrap;
@@ -962,9 +979,6 @@ const selectedDealPaidTotal = computed(() =>
   .clients-search-input {
     flex: 1 1 100%;
     max-width: 100%;
-  }
-  .clients-search-count {
-    margin-left: 0;
   }
 }
 
@@ -1007,169 +1021,30 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 /* Client list */
-.clients-list {
-  display: flex; flex-direction: column; gap: 8px;
-}
-
-.client-card {
-  border-radius: 12px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  background: rgba(var(--v-theme-surface), 1);
-  overflow: hidden;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-.client-card:hover {
-  border-color: rgba(var(--v-theme-on-surface), 0.14);
-}
-.client-card--expanded {
-  border-color: rgba(4, 120, 87, 0.2);
-  box-shadow: 0 2px 12px rgba(4, 120, 87, 0.06);
-}
 
 /* Client header */
-.client-header {
-  display: flex; align-items: center; gap: 14px;
-  padding: 16px 20px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.client-header:hover {
-  background: rgba(var(--v-theme-on-surface), 0.02);
-}
 
-.client-avatar {
-  width: 44px; height: 44px; min-width: 44px;
-  border-radius: 12px; color: #fff;
-  font-size: 15px; font-weight: 700;
-  display: flex; align-items: center; justify-content: center;
-}
-
-.client-main { flex: 1; min-width: 0; }
-
-.client-name-row {
-  display: flex; align-items: center; gap: 8px;
-  flex-wrap: wrap;
-}
-.client-name {
-  font-size: 15px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.9);
-}
-.client-name--link {
-  cursor: pointer;
-  transition: color 0.15s;
-}
-.client-name--link:hover {
-  color: rgb(var(--v-theme-primary));
-}
 .verified-badge {
   display: inline-flex; align-items: center;
 }
 
-.client-meta {
-  font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-  margin-top: 2px;
-}
-
 /* Desktop stats */
-.client-stats {
-  display: flex; gap: 24px; margin-right: 8px;
-}
-.client-stat { text-align: right; }
-.client-stat-value {
-  font-size: 14px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap;
-}
-.client-stat-label {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.4);
-}
-
-.expand-icon {
-  width: 32px; height: 32px; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  transition: all 0.15s;
-}
-.client-header:hover .expand-icon {
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  background: rgba(var(--v-theme-on-surface), 0.05);
-}
 
 /* Expanded content */
-.client-expanded {
-  padding: 0 20px 20px;
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-  padding-top: 16px;
-}
 
 /* ───── Mobile (client cards) ───── */
 @media (max-width: 599px) {
   /* Сжимаем padding header'а — на 360px каждый пиксель критичен. */
-  .client-header {
-    padding: 12px 14px;
-    gap: 10px;
-  }
-  .client-avatar {
-    width: 40px; height: 40px; min-width: 40px;
-    border-radius: 10px;
-    font-size: 14px;
-  }
 
   /* Бэйджи в строке имени — компактнее, gap меньше. */
-  .client-name-row {
-    gap: 6px;
-  }
-  .client-name {
-    font-size: 14px;
-    line-height: 1.3;
-  }
   /* Паспортный бейдж на узком экране лишний — имя важнее. */
-  .client-name-row .passport-badge {
-    display: none;
-  }
-
-  .client-meta {
-    font-size: 12px;
-    line-height: 1.35;
-  }
 
   /* Шеврон поближе и поменьше отступы. */
-  .expand-icon {
-    margin-left: 4px;
-  }
 }
 
 /* Mobile stats */
-.client-stats-mobile {
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 8px; margin-bottom: 16px;
-}
 @media (max-width: 599px) {
   /* На очень узких экранах stats в один столбец — иначе суммы сжимаются. */
-  .client-stats-mobile {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-  .client-stat-m {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 12px;
-    text-align: left;
-  }
-}
-.client-stat-m {
-  padding: 10px; border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  text-align: center;
-}
-.client-stat-m-label {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.4);
-}
-.client-stat-m-value {
-  font-size: 14px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.85);
 }
 
 /* On-time bar */
@@ -1192,64 +1067,11 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 /* Next payment */
-.next-payment {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 14px; border-radius: 10px;
-  background: rgba(4, 120, 87, 0.04);
-  border: 1px solid rgba(4, 120, 87, 0.1);
-  font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
-.next-payment .v-icon { color: #047857; }
 
 /* Deals section */
-.deals-section-title {
-  font-size: 13px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  text-transform: uppercase; letter-spacing: 0.03em;
-  margin-bottom: 8px;
-}
 
 .deal-list {
   display: flex; flex-direction: column; gap: 4px;
-}
-
-.deal-item {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px; border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.deal-item:hover {
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-
-.deal-photo { flex-shrink: 0; }
-
-.deal-info { flex: 1; min-width: 0; }
-.deal-product {
-  font-size: 14px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.deal-price {
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-
-.deal-progress-col {
-  display: flex; flex-direction: column; align-items: flex-end;
-  gap: 4px; flex-shrink: 0;
-}
-.deal-progress-text {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-
-.deal-status-chip {
-  font-size: 11px; font-weight: 600;
-  padding: 3px 10px; border-radius: 6px;
-  white-space: nowrap; flex-shrink: 0;
 }
 
 .deal-chevron {
@@ -1258,50 +1080,9 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 @media (max-width: 768px) {
-  .deal-progress-col { display: none; }
 }
 
 /* Dialog */
-.dialog-hero {
-  position: relative;
-  background: linear-gradient(135deg, #047857 0%, #065f46 100%);
-  display: flex; gap: 16px; align-items: stretch;
-  padding: 20px 24px;
-  min-height: 160px;
-}
-.dialog-close {
-  position: absolute; top: 12px; right: 12px; z-index: 3;
-  width: 30px; height: 30px; border-radius: 8px;
-  background: rgba(255, 255, 255, 0.2); border: 1px solid rgba(255, 255, 255, 0.25);
-  color: #fff; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.15s;
-  backdrop-filter: blur(8px);
-}
-.dialog-close:hover { background: rgba(255, 255, 255, 0.3); }
-.dialog-hero-photo {
-  flex-shrink: 0;
-  width: 120px; height: 120px;
-  border-radius: 12px; overflow: hidden;
-  align-self: center;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-}
-.dialog-hero-photo img {
-  width: 100%; height: 100%; object-fit: cover; display: block;
-}
-.dialog-hero-photo--empty {
-  display: flex; align-items: center; justify-content: center;
-}
-.dialog-hero-photo-placeholder {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  color: rgba(255, 255, 255, 0.55); font-size: 10px;
-}
-.dialog-hero-content {
-  flex: 1; min-width: 0; color: #fff;
-  display: flex; flex-direction: column; justify-content: flex-start;
-  padding-right: 44px;
-}
 .dialog-status {
   display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
   font-size: 11px; font-weight: 600;
@@ -1315,11 +1096,6 @@ const selectedDealPaidTotal = computed(() =>
 .dialog-title {
   font-size: 20px; font-weight: 700; color: #fff; line-height: 1.25;
   margin-bottom: 6px; word-break: break-word;
-}
-.dialog-hero-meta {
-  font-size: 12px; opacity: 0.85;
-  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-  margin-top: auto;
 }
 .dialog-finance-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
@@ -1373,20 +1149,6 @@ const selectedDealPaidTotal = computed(() =>
 }
 
 /* Detail link */
-.detail-link-btn {
-  display: flex; align-items: center; gap: 6px;
-  width: 100%; padding: 10px 16px; border-radius: 10px;
-  border: 1px dashed rgba(var(--v-theme-primary), 0.3);
-  background: rgba(var(--v-theme-primary), 0.04);
-  color: rgb(var(--v-theme-primary));
-  font-size: 13px; font-weight: 500;
-  cursor: pointer; transition: all 0.15s;
-  justify-content: center;
-}
-.detail-link-btn:hover {
-  background: rgba(var(--v-theme-primary), 0.1);
-  border-color: rgba(var(--v-theme-primary), 0.5);
-}
 
 /* Dark mode */
 .dark .stat-card {

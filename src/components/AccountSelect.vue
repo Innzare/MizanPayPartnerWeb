@@ -11,7 +11,7 @@ import { computed } from 'vue'
 import { useAnchoredMenu } from '@/composables/useAnchoredMenu'
 import BankLogo from '@/components/BankLogo.vue'
 import { formatCurrency } from '@/utils/formatters'
-import type { AccountView } from '@/stores/accounting'
+import { useAccountingStore, type AccountView } from '@/stores/accounting'
 
 const props = withDefaults(
   defineProps<{
@@ -61,13 +61,37 @@ const GROUPS: Array<{ type: AccountView['type']; title: string; icon: string }> 
 ]
 
 const groups = computed(() =>
-  GROUPS.map((g) => ({ ...g, items: props.items.filter((a) => a.type === g.type) })).filter(
-    (g) => g.items.length > 0,
-  ),
+  GROUPS.map((g) => ({
+    ...g,
+    // Недоступные — в конец своей группы: выбирать их можно, но предлагать
+    // первыми незачем. Порядок тот же, что в списке счетов «Баланса», чтобы
+    // карты не искали каждый раз на новом месте.
+    items: props.items
+      .filter((a) => a.type === g.type)
+      .slice()
+      .sort((x, y) => Number(!!unavailable(x)) - Number(!!unavailable(y))),
+  })).filter((g) => g.items.length > 0),
 )
 
 /** Пока вид один, заголовок только занимает место. */
 const showGroupTitles = computed(() => groups.value.length > 1)
+
+/**
+ * Почему система сама не кладёт деньги на этот счёт: отключён или лимит выбран.
+ *
+ * Выбрать его всё равно можно — банк проводит перевод и после того, как лимит
+ * выбран, а отключённая карта остаётся картой, на которую клиент мог перевести.
+ * Запрещать это в кабинете значит спорить с реальностью; наше дело — сказать
+ * об этом прямо, чтобы деньги записали осознанно.
+ *
+ * Обороты лежат отдельно от счетов и грузятся не на каждом экране: не
+ * загружены — пометки про лимит просто нет, выбор от этого не меняется.
+ */
+const accounting = useAccountingStore()
+function unavailable(a: AccountView): string | null {
+  if (a.disabledAt) return 'недоступна'
+  return accounting.limits.find((l) => l.id === a.id)?.limits.full ? 'лимит исчерпан' : null
+}
 
 function pick(id: string | null) {
   emit('update:modelValue', id)
@@ -94,6 +118,7 @@ function pick(id: string | null) {
       <span class="as-label" :class="{ 'as-label--dim': !current }">
         <template v-if="current">
           {{ current.name }}
+          <span v-if="unavailable(current)" class="as-full">{{ unavailable(current) }}</span>
           <span class="as-label-sub">
             {{ current.code }}<template v-if="current.balance !== null"> · {{ formatCurrency(current.balance) }}</template>
           </span>
@@ -144,7 +169,10 @@ function pick(id: string | null) {
           >
             <BankLogo :bank-name="a.bank?.name" :color="accentOf(a)" :fallback="a.code" :size="26" />
             <span class="as-item-body">
-              <span class="as-item-title">{{ a.name }}</span>
+              <span class="as-item-title">
+                {{ a.name }}
+                <span v-if="unavailable(a)" class="as-full">{{ unavailable(a) }}</span>
+              </span>
               <span class="as-item-hint">
                 {{ a.code }}<template v-if="a.bank"> · {{ a.bank.name }}</template>
               </span>
@@ -231,6 +259,12 @@ function pick(id: string | null) {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .as-item-hint { display: block; font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
+/* Счёт выбрать можно — пометка предупреждает, а не запрещает. */
+.as-full {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.01em; white-space: nowrap;
+  background: rgba(239, 68, 68, 0.13); color: #dc2626;
+}
 .as-item-balance {
   font-size: 12.5px; font-weight: 600; white-space: nowrap;
   font-variant-numeric: tabular-nums;

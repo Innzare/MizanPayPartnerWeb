@@ -60,6 +60,21 @@ function clearSessionAndRedirect(): never {
   throw new Error('Сессия истекла');
 }
 
+/**
+ * Сотрудника отключили вместе с подпиской партнёра.
+ *
+ * Выкидываем из кабинета сразу и оставляем причину для страницы входа: иначе
+ * человек видит подряд ошибки на каждом разделе и не понимает, что случилось.
+ */
+function suspendSessionAndRedirect(message?: string): never {
+  // Причину формулирует сервер; своя подстановка — на случай пустого ответа.
+  localStorage.setItem(
+    'auth_notice',
+    message || 'Доступ приостановлен. Обратитесь к владельцу аккаунта.',
+  );
+  clearSessionAndRedirect();
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -111,6 +126,19 @@ async function request<T>(
       return request<T>(method, path, body, skipAuthRedirect, true, _throttleRetries);
     }
     clearSessionAndRedirect();
+  }
+
+  /**
+   * Подписка партнёра кончилась — сотруднику в кабинете делать нечего.
+   *
+   * Сервер отвечает так на любой запрос, поэтому перехватываем здесь, а не на
+   * каждом экране: иначе интерфейс просто наполнялся бы ошибками.
+   */
+  if (response.status === 403 && hasToken) {
+    const denial = await response.clone().json().catch(() => null);
+    if (denial?.code === 'STAFF_ACCESS_SUSPENDED') {
+      suspendSessionAndRedirect(denial.message);
+    }
   }
 
   /**

@@ -2,10 +2,10 @@
 import SearchInput from '@/components/SearchInput.vue'
 import { usePaymentsStore } from '@/stores/payments'
 import { useDealsStore } from '@/stores/deals'
-import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
-import { PAYMENT_STATUS_CONFIG, DEAL_STATUS_CONFIG } from '@/constants/statuses'
+import { formatCurrency, formatDate, formatDateShort, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Payment, type Deal, userName, clientProfileName } from '@/types'
-import { attributionMonthStr, offMonthKind, monthPrepositional, dueYearMonth, isLivePayment } from '@/utils/paymentAttribution'
+import { attributionMonthStr, offMonthKind, monthPrepositional, dueYearMonth, isLivePayment, overdueDays, pluralDays } from '@/utils/paymentAttribution'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
@@ -26,7 +26,9 @@ import { usePaymentsFilters } from '@/composables/usePaymentsFilters'
 import PaymentsFilterPanel from '@/components/PaymentsFilterPanel.vue'
 import { useCoInvestors } from '@/composables/useCoInvestors'
 import { useSuppliersStore } from '@/stores/suppliers'
-import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
+import QuickPayDialog from '@/components/QuickPayDialog.vue'
+import DealPreviewDialog from '@/components/DealPreviewDialog.vue'
+import * as money from '@/utils/paymentMath'
 import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
 
 const router = useRouter()
@@ -882,25 +884,10 @@ function goToDeal(deal: Deal) {
   router.push(`/deals/${deal.id}`)
 }
 
-function getDealProgress(deal: Deal) {
-  return deal.numberOfPayments > 0 ? (deal.paidPayments / deal.numberOfPayments) * 100 : 0
-}
-
 const selectedDealPayments = computed(() => {
   if (!selectedDeal.value) return []
   return paymentsStore.getPaymentsForDeal(selectedDeal.value.id)
 })
-
-const selectedDealPhone = computed<string | null>(() => {
-  const d = selectedDeal.value
-  if (!d) return null
-  const raw = d.clientProfile?.phone || d.client?.phone || d.externalClientPhone
-  return raw ? formatPhone(raw) : null
-})
-
-const selectedDealPaidTotal = computed(() =>
-  selectedDealPayments.value.filter(p => p.status === 'PAID').reduce((s, p) => s + p.amount, 0)
-)
 
 // Перенос даты — общий компонент ReschedulePaymentDialog: дату, причину и
 // отправку он держит сам, странице остаётся только выбор платежа.
@@ -1088,27 +1075,67 @@ function daysUntil(dateStr: string) {
   return `через ${diff} дн.`
 }
 
-// Отметка оплаты — общий компонент MarkPaidDialog: та же модалка и тот же
+/**
+ * Своевременность платежа — подпись рядом со статусом.
+ *
+ * Отдельной колонки «Срок» больше нет: она отвечала на тот же вопрос, что и
+ * статус, только другими словами («Просрочено» и «5 дн. назад» в соседних
+ * ячейках). Теперь статус говорит, пришли ли деньги, а подпись — насколько
+ * вовремя.
+ */
+function timeliness(p: Payment): { text: string; kind: 'ontime' | 'late' | 'overdue' | 'due' } | null {
+  if (p.status === 'CLOSED_EARLY') return null
+  const days = overdueDays(p)
+  if (p.status === 'PAID') {
+    return days > 0
+      ? { text: `с задержкой на ${days} ${pluralDays(days)}`, kind: 'late' }
+      : { text: 'вовремя', kind: 'ontime' }
+  }
+  // Ожидаемый платёж: пока срок не прошёл — когда его ждать.
+  return days > 0
+    ? { text: `на ${days} ${pluralDays(days)}`, kind: 'overdue' }
+    : { text: daysUntil(p.dueDate), kind: 'due' }
+}
+
+// Отметка оплаты — общий компонент QuickPayDialog: та же модалка и тот же
 // функционал, что на странице сделки. Раньше здесь стояла своя урезанная
 // версия (сумма и галочка «в срок»), без перерасчёта графика, фактической
 // даты оплаты, квитанции и скриншота.
 const markPaidDialog = ref(false)
 const markPaidTarget = ref<Payment | null>(null)
 
-/** Сделка отмечаемого платежа — приходит вместе с ним в списке. */
-const markPaidDeal = computed(() =>
-  markPaidTarget.value ? getDealForPayment(markPaidTarget.value) ?? null : null,
-)
+/** Сделка отмечаемого платежа — берётся из строки, по которой нажали. */
+const markPaidDeal = ref<Deal | null>(null)
 
-function handleMarkPaid(e: Event, payment: Payment) {
+/**
+ * Принять оплату по сделке этой строки.
+ *
+ * Месяц не выбирается: клиент гасит договор, а строку система берёт сама —
+ * самую раннюю открытую (сначала недоплаты). Раньше можно было отметить любой
+ * месяц, и оплаты шли вразнобой.
+ */
+/** Приём оплаты из окна предпросмотра: события оттуда не приходит. */
+function onPreviewPay(payment: Payment) {
+  void handleMarkPaid(new Event('click'), payment)
+}
+
+async function handleMarkPaid(e: Event, payment: Payment) {
   e.stopPropagation()
-  markPaidTarget.value = payment
+  markPaidDeal.value = getDealForPayment(payment) ?? null
+  // График сделки нужен, чтобы выбрать строку: в списке платежей лежат строки
+  // разных договоров, соседних строк этой сделки здесь может не быть.
+  try {
+    await paymentsStore.fetchPaymentsForDeal(payment.dealId)
+  } catch { /* без графика оплатим ту строку, по которой нажали */ }
+  const schedule = paymentsStore.getPaymentsForDeal(payment.dealId)
+  markPaidTarget.value = money.paymentToPay(schedule) ?? payment
   markPaidDialog.value = true
 }
 
 /** Платёж отмечен: перечитываем страницу, счётчики и календарь. */
 async function onMarkPaidDone() {
   markPaidTarget.value = null
+  markPaidDeal.value = null
   await refreshList()
 }
 
@@ -1631,7 +1658,7 @@ async function onRescheduled() {
                   </td>
                   <td class="text-center">
                     <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
-                      <v-tooltip text="Отметить оплаченным" location="top">
+                      <v-tooltip text="Принять оплату по сделке" location="top">
                         <template #activator="{ props }">
                           <button v-bind="props" class="action-btn action-btn--success" @click.stop="handleMarkPaid($event, p)">
                             <v-icon icon="mdi-check" size="16" />
@@ -1811,7 +1838,6 @@ async function onRescheduled() {
                 Дата
                 <v-icon :icon="sortIcon('dueDate')" size="14" class="sort-icon" :class="{ active: sortField === 'dueDate' }" />
               </th>
-              <th>Срок</th>
               <th class="sortable-th" @click="toggleSort('status')">
                 Статус
                 <v-icon :icon="sortIcon('status')" size="14" class="sort-icon" :class="{ active: sortField === 'status' }" />
@@ -1826,14 +1852,14 @@ async function onRescheduled() {
                    высоту строки браузер в таблице не соблюдает — он
                    перераспределяет её между строками, и на тысячах строк
                    список разъезжался с прокруткой на сотни пикселей. -->
-              <td colspan="8"><div :style="{ height: virtual.padTop.value + 'px' }" /></td>
+              <td colspan="7"><div :style="{ height: virtual.padTop.value + 'px' }" /></td>
             </tr>
 
             <template v-for="(row, idx) in virtual.visibleRows.value" :key="row.key">
               <!-- Граница дня: дальше идут платежи одной даты, и сразу видно,
                    сколько их и на какую сумму. -->
               <tr v-if="row.kind === 'day'" :ref="virtual.rowRef(virtual.offset.value + idx)" data-virtual-row class="pl-day-row">
-                <td :colspan="8">
+                <td :colspan="7">
                   <div class="pl-day" :class="{ 'pl-day--overdue': row.overdue }">
                     <span class="pl-day-label">{{ row.label }}</span>
                     <span class="pl-day-meta">
@@ -1880,11 +1906,8 @@ async function onRescheduled() {
                   </div>
                 </div>
               </td>
-              <td>
-                <span :class="{ 'text-error font-weight-medium': row.payment.status === 'OVERDUE' || (row.payment.status === 'PENDING' && new Date(row.payment.dueDate) < new Date()) }">
-                  {{ row.payment.status === 'PAID' ? '—' : daysUntil(row.payment.dueDate) }}
-                </span>
-              </td>
+              <!-- Статус и своевременность — один ответ: пришли ли деньги и
+                   насколько в срок. -->
               <td>
                 <div
                   class="payment-status-chip"
@@ -1892,10 +1915,17 @@ async function onRescheduled() {
                 >
                   {{ PAYMENT_STATUS_CONFIG[row.payment.status]?.label }}
                 </div>
+                <div
+                  v-if="timeliness(row.payment)"
+                  class="status-note"
+                  :class="`status-note--${timeliness(row.payment)!.kind}`"
+                >
+                  {{ timeliness(row.payment)!.text }}
+                </div>
               </td>
               <td class="text-center">
                 <div v-if="row.payment.status === 'PENDING' || row.payment.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
-                  <v-tooltip text="Отметить оплаченным" location="top">
+                  <v-tooltip text="Принять оплату по сделке" location="top">
                     <template #activator="{ props }">
                       <button v-bind="props" class="action-btn action-btn--success" @click="handleMarkPaid($event, row.payment)">
                         <v-icon icon="mdi-check" size="16" />
@@ -1925,7 +1955,7 @@ async function onRescheduled() {
             </template>
 
             <tr class="virtual-pad" aria-hidden="true">
-              <td colspan="8"><div :style="{ height: virtual.padBottom.value + 'px' }" /></td>
+              <td colspan="7"><div :style="{ height: virtual.padBottom.value + 'px' }" /></td>
             </tr>
           </tbody>
         </v-table>
@@ -1979,11 +2009,11 @@ async function onRescheduled() {
                   <span>{{ paidOffMonth(p) === 'early' ? 'оплачен досрочно' : 'оплачен позже срока' }}</span>
                 </div>
                 <div
-                  v-if="p.status !== 'PAID'"
-                  class="pay-card-due"
-                  :class="{ 'pay-card-due--overdue': p.status === 'OVERDUE' || (p.status === 'PENDING' && new Date(p.dueDate) < new Date()) }"
+                  v-if="timeliness(p)"
+                  class="status-note"
+                  :class="`status-note--${timeliness(p)!.kind}`"
                 >
-                  {{ daysUntil(p.dueDate) }}
+                  {{ timeliness(p)!.text }}
                 </div>
               </div>
             </div>
@@ -1995,7 +2025,7 @@ async function onRescheduled() {
                 @click="handleMarkPaid($event, p)"
               >
                 <v-icon icon="mdi-check" size="16" />
-                Отметить оплачено
+                Принять оплату
               </button>
               <button
                 v-if="p.status === 'PENDING' || p.status === 'OVERDUE'"
@@ -2052,125 +2082,23 @@ async function onRescheduled() {
     <!-- /TABLE VIEW -->
 
     <!-- Deal Detail Dialog -->
-    <v-dialog v-model="showDealDialog" max-width="680" scrollable :fullscreen="isMobile">
-      <v-card v-if="selectedDeal" rounded="lg">
-        <div class="dialog-hero">
-          <button class="dialog-close" @click="showDealDialog = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-          <div class="dialog-hero-photo" :class="{ 'dialog-hero-photo--empty': !selectedDeal.productPhotos?.length }">
-            <img v-if="selectedDeal.productPhotos?.[0]" :src="selectedDeal.productPhotos[0]" alt="" />
-            <div v-else class="dialog-hero-photo-placeholder">
-              <v-icon icon="mdi-image-off-outline" size="28" />
-              <span>Нет фото</span>
-            </div>
-          </div>
-          <div class="dialog-hero-content">
-            <div
-              class="dialog-status"
-              :style="{ color: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }"
-            >
-              <span class="dialog-status-dot" :style="{ background: DEAL_STATUS_CONFIG[selectedDeal.status]?.color }" />
-              {{ DEAL_STATUS_CONFIG[selectedDeal.status]?.label }}
-            </div>
-            <div class="dialog-title">{{ selectedDeal.productName }}</div>
-            <div class="dialog-hero-meta">
-              <v-icon icon="mdi-account" size="14" />
-              {{ selectedDeal.client ? userName(selectedDeal.client) : selectedDeal.clientProfile ? clientProfileName(selectedDeal.clientProfile) : selectedDeal.externalClientName || '—' }}
-              <template v-if="selectedDealPhone">
-                <span class="mx-1">·</span>
-                <v-icon icon="mdi-phone-outline" size="13" />
-                {{ selectedDealPhone }}
-              </template>
-              <span class="mx-1">·</span>
-              Создано {{ formatDate(selectedDeal.createdAt) }}
-            </div>
-          </div>
-        </div>
-
-        <v-card-text class="pa-5">
-
-          <div class="dialog-finance-grid mb-5">
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Закупочная</div>
-              <div class="dialog-finance-value">{{ formatCurrency(selectedDeal.purchasePrice) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Итого</div>
-              <div class="dialog-finance-value font-weight-bold">{{ formatCurrency(selectedDeal.totalPrice) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Наценка</div>
-              <div class="dialog-finance-value" style="color: #047857;">+{{ formatCurrency(selectedDeal.markup) }} ({{ formatPercent(selectedDeal.markupPercent) }})</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Оплачено</div>
-              <div class="dialog-finance-value" style="color: #047857;">{{ formatCurrency(selectedDealPaidTotal) }}</div>
-            </div>
-            <div class="dialog-finance-item">
-              <div class="dialog-finance-label">Остаток</div>
-              <div class="dialog-finance-value" style="color: #f59e0b;">{{ formatCurrency(selectedDeal.remainingAmount) }}</div>
-            </div>
-          </div>
-
-          <div class="mb-5">
-            <div class="d-flex justify-space-between align-center mb-2">
-              <span class="text-body-2 font-weight-medium">Прогресс платежей</span>
-              <span class="text-caption text-medium-emphasis">{{ selectedDeal.paidPayments }} из {{ selectedDeal.numberOfPayments }}</span>
-            </div>
-            <v-progress-linear
-              :model-value="getDealProgress(selectedDeal)"
-              color="primary"
-              rounded
-              height="8"
-            />
-          </div>
-
-          <button class="detail-link-btn mb-5" @click="showDealDialog = false; goToDeal(selectedDeal!)">
-            <v-icon icon="mdi-open-in-new" size="16" />
-            Открыть полную страницу сделки
-          </button>
-
-          <div v-if="selectedDealPayments.length">
-            <div class="text-body-2 font-weight-bold mb-3">График платежей</div>
-            <div v-if="dealPaymentsLoading && !selectedDealPayments.length" class="d-flex justify-center py-4">
-              <v-progress-circular indeterminate size="22" width="2" color="primary" />
-            </div>
-            <div v-else class="schedule-list">
-              <div
-                v-for="p in selectedDealPayments"
-                :key="p.id"
-                class="schedule-item"
-                :class="{ 'schedule-item--paid': p.status === 'PAID', 'schedule-item--overdue': p.status === 'OVERDUE' }"
-              >
-                <div class="schedule-num">{{ p.number }}</div>
-                <div class="schedule-info">
-                  <div class="schedule-date">{{ formatDateShort(p.dueDate) }}</div>
-                  <div v-if="p.paidAt" class="schedule-paid-at">Оплачено {{ formatDateShort(p.paidAt) }}</div>
-                  <div v-if="p.rescheduledFrom" class="rescheduled-hint">
-                    <v-icon icon="mdi-calendar-arrow-right" size="11" />
-                    с {{ formatDateShort(p.rescheduledFrom) }}
-                  </div>
-                </div>
-                <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
-                <div
-                  class="schedule-status"
-                  :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
-                >
-                  {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                </div>
-              </div>
-            </div>
-          </div>
-        </v-card-text>
-      </v-card>
-    </v-dialog>
+    <!-- Предпросмотр сделки — тот же компонент, что в списке сделок: раньше
+         здесь была своя копия со старым графиком без недоплат и статусов. -->
+    <DealPreviewDialog
+      v-model="showDealDialog"
+      :deal="selectedDeal"
+      :payments="selectedDealPayments"
+      :loading="dealPaymentsLoading"
+      :fullscreen="isMobile"
+      @pay="onPreviewPay"
+      @open="goToDeal"
+    />
 
     <!-- Reschedule Dialog -->
     <!-- Mark Paid Dialog -->
     <!-- Отметка оплаты — общий компонент: тот же функционал, что на странице
          сделки (перерасчёт графика, фактическая дата, квитанция, скриншот). -->
-    <MarkPaidDialog
+    <QuickPayDialog
       v-model="markPaidDialog"
       :payment="markPaidTarget"
       :deal="markPaidDeal"
@@ -2424,6 +2352,15 @@ async function onRescheduled() {
   padding: 4px 10px; border-radius: 6px; white-space: nowrap;
 }
 
+/* Своевременность — подпись под статусом, вместо отдельной колонки «Срок».
+   Оплата с задержкой — предупреждение, а не ошибка: янтарный, не красный. */
+.status-note {
+  font-size: 11px; margin-top: 3px; white-space: nowrap;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.status-note--late { color: #d97706; font-weight: 600; }
+.status-note--overdue { color: #ef4444; font-weight: 600; }
+
 .rescheduled-hint {
   display: flex; align-items: center; gap: 3px;
   font-size: 11px; color: #f59e0b; margin-top: 1px;
@@ -2538,23 +2475,6 @@ async function onRescheduled() {
   transform: translateX(16px);
 }
 
-/* Deal Dialog */
-.dialog-hero {
-  position: relative;
-  background: linear-gradient(135deg, #047857 0%, #065f46 100%);
-  display: flex; gap: 16px; align-items: stretch;
-  padding: 20px 24px;
-  min-height: 160px;
-}
-.dialog-close {
-  position: absolute; top: 12px; right: 12px; z-index: 3;
-  width: 30px; height: 30px; border-radius: 8px;
-  background: rgba(255, 255, 255, 0.2); border: 1px solid rgba(255, 255, 255, 0.25);
-  color: #fff; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.15s;
-  backdrop-filter: blur(8px);
-}
 .dialog-close:hover { background: rgba(255, 255, 255, 0.3); }
 .dialog-edit {
   position: absolute; top: 12px; right: 52px; z-index: 3;
@@ -2568,120 +2488,6 @@ async function onRescheduled() {
   transition: all 0.15s;
 }
 .dialog-edit:hover { background: rgba(255, 255, 255, 0.3); }
-.dialog-hero-photo {
-  flex-shrink: 0;
-  width: 120px; height: 120px;
-  border-radius: 12px; overflow: hidden;
-  align-self: center;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-}
-.dialog-hero-photo img {
-  width: 100%; height: 100%; object-fit: cover; display: block;
-}
-.dialog-hero-photo--empty {
-  display: flex; align-items: center; justify-content: center;
-}
-.dialog-hero-photo-placeholder {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  color: rgba(255, 255, 255, 0.55); font-size: 10px;
-}
-.dialog-hero-content {
-  flex: 1; min-width: 0; color: #fff;
-  display: flex; flex-direction: column; justify-content: flex-start;
-  padding-right: 44px; /* room for close button */
-}
-.dialog-status {
-  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
-  font-size: 11px; font-weight: 600;
-  padding: 4px 10px; border-radius: 999px;
-  background: #fff; margin-bottom: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-.dialog-status-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-}
-.dialog-title {
-  font-size: 20px; font-weight: 700; color: #fff; line-height: 1.25;
-  margin-bottom: 6px; word-break: break-word;
-}
-.dialog-hero-meta {
-  font-size: 12px; opacity: 0.85;
-  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-  margin-top: auto;
-}
-.dialog-avatar {
-  width: 36px; height: 36px; min-width: 36px; border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 600; font-size: 14px;
-}
-
-.dialog-finance-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
-}
-@media (max-width: 600px) { .dialog-finance-grid { grid-template-columns: repeat(2, 1fr); } }
-.dialog-finance-item {
-  padding: 12px; border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-}
-.dialog-finance-label {
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.45); margin-bottom: 2px;
-}
-.dialog-finance-value {
-  font-size: 15px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-
-/* Detail link */
-.detail-link-btn {
-  display: flex; align-items: center; gap: 6px;
-  width: 100%; padding: 10px 16px; border-radius: 10px;
-  border: 1px dashed rgba(var(--v-theme-primary), 0.3);
-  background: rgba(var(--v-theme-primary), 0.04);
-  color: rgb(var(--v-theme-primary));
-  font-size: 13px; font-weight: 500;
-  cursor: pointer; transition: all 0.15s;
-  justify-content: center;
-}
-.detail-link-btn:hover {
-  background: rgba(var(--v-theme-primary), 0.1);
-  border-color: rgba(var(--v-theme-primary), 0.5);
-}
-
-/* Schedule */
-.schedule-list { display: flex; flex-direction: column; gap: 4px; }
-.schedule-item {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px; border-radius: 8px;
-  transition: background 0.15s;
-}
-.schedule-item:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
-.schedule-item--paid { opacity: 0.65; }
-.schedule-item--overdue { background: rgba(239, 68, 68, 0.04); }
-.schedule-num {
-  width: 24px; height: 24px; min-width: 24px;
-  border-radius: 6px; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 600;
-  background: rgba(var(--v-theme-on-surface), 0.06);
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-.schedule-info { flex: 1; min-width: 0; }
-.schedule-date {
-  font-size: 14px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.schedule-paid-at {
-  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
-}
-.schedule-amount {
-  font-size: 14px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  white-space: nowrap;
-}
-.schedule-status {
-  font-size: 11px; font-weight: 600;
-  padding: 3px 10px; border-radius: 6px; white-space: nowrap;
-}
 
 /* Reschedule Dialog */
 .dialog-close-sm {

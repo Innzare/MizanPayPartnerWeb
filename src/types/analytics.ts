@@ -71,6 +71,65 @@ export interface AnalyticsMonthlyRow {
   lateOffMonth: number
 }
 
+/** Ключи корзин возраста — те же для просрочки и для оплат заранее. */
+export type TimelinessBucketKey = 'd1_7' | 'd8_30' | 'd31_60' | 'd61_90' | 'd91_180' | 'd180p'
+
+/** Одна корзина возраста: сколько платежей, на сколько денег, сколько сделок и людей. */
+export interface TimelinessBucket {
+  key: TimelinessBucketKey
+  count: number
+  amount: number
+  deals: number
+  clients: number
+}
+
+/**
+ * Одна сторона своевременности — просрочка или оплаты заранее.
+ * Сделки и клиенты уникальны: один человек с двумя долгами — это один клиент.
+ */
+export interface TimelinessSide {
+  count: number
+  amount: number
+  deals: number
+  clients: number
+  avgDays: number
+  maxDays: number
+  buckets: TimelinessBucket[]
+}
+
+export interface AnalyticsTimeliness {
+  overdue: TimelinessSide
+  early: TimelinessSide
+}
+
+/** Один платёж за цифрой своевременности. */
+export interface TimelinessDetailRow {
+  paymentId: string
+  dealId: string
+  dealNumber: number
+  paymentNumber: number
+  productName: string
+  clientName: string
+  amount: number
+  /** Дней просрочки — либо на сколько дней платёж опередил срок. */
+  days: number
+  dueDate: string
+  paidAt: string | null
+}
+
+/**
+ * Расшифровка: платежи страницами, итоги — по всей выборке, а не по странице.
+ */
+export interface TimelinessDetails {
+  items: TimelinessDetailRow[]
+  count: number
+  total: number
+  deals: number
+  clients: number
+  limit: number
+  offset: number
+}
+
 /** Строка расшифровки показателя — сделка, стоящая за цифрой. */
 export interface AnalyticsBreakdownDeal {
   id: string
@@ -116,33 +175,40 @@ export type BreakdownMetric =
   | 'roi'
   | 'monthly'
   | 'overdue'
-/** Строка разбора дохода: одна сделка за выбранный период. */
-export interface MonthDealRow {
+/**
+ * Строка разбора дохода — ОДИН ПЛАТЁЖ за выбранный период.
+ *
+ * Окно отвечает на вопрос «из каких поступлений сложилась сумма месяца»,
+ * поэтому список идёт по платежам, а не по сделкам.
+ */
+export interface MonthPaymentRow {
+  /** null у первоначального взноса: своей строки в графике у него нет. */
+  paymentId: string | null
+  paymentNumber: number
   dealId: string
   productName: string
   clientName: string
-  markupPercent: number
+  /** Первоначальный взнос — «платёж №0» в день сделки. */
+  isDown: boolean
+  amount: number
+  /** PAID / PENDING / OVERDUE. */
   status: string
-  /** Пришло за период. */
-  paidReceived: number
-  /** Ожидается за период. */
-  pendingReceived: number
-  /** Доход с пришедшего — до вычета доли со-инвесторов. */
-  paidGross: number
-  /** Доход с ожидаемого — до вычета доли со-инвесторов. */
-  pendingGross: number
-  /** Доля со-инвесторов, уже начисленная. */
-  ciPaid: number
-  /** Прогноз доли со-инвесторов с ожидаемого. */
-  ciPending: number
-  paidCount: number
-  pendingCount: number
+  /** Дата, по которой платёж отнесён к периоду: оплата — по факту, план — по сроку. */
+  date: string
+  /** Доход с этого платежа — до вычета доли со-инвесторов. */
+  gross: number
+  /** Доля со-инвесторов: факт по оплаченному, прогноз по ожидаемому. */
+  ci: number
+  /** Ваш чистый доход с этого платежа. */
+  net: number
 }
 
 export interface MonthDealsResponse {
-  items: MonthDealRow[]
+  items: MonthPaymentRow[]
   totals: {
     dealsCount: number
+    /** Строк платежей за период — то же число, что стоит у месяца в годовом обзоре. */
+    paymentsCount: number
     paidReceived: number
     pendingReceived: number
     paidGross: number
@@ -150,6 +216,10 @@ export interface MonthDealsResponse {
     ciPaid: number
     ciPending: number
   }
-  /** Показаны не все сделки периода — итоги при этом полные. */
-  truncated: boolean
+  /** Сколько сделок в каждом фильтре за период — для бейджиков вкладок. */
+  filterCounts: { all: number; paid: number; pending: number }
+  /** Всего строк в текущем фильтре — по нему считается пагинация. */
+  count: number
+  limit: number
+  offset: number
 }

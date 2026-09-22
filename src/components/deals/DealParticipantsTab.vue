@@ -270,10 +270,6 @@ async function onChangeClient(profile: import('@/types').ClientProfile | null) {
       <span class="profile-detail-label">Адрес проживания</span>
       <span class="profile-detail-value">{{ deal.clientProfile.residentialAddress }}</span>
     </div>
-    <div v-if="deal.clientProfile.inn" class="profile-detail-row">
-      <span class="profile-detail-label">ИНН</span>
-      <span class="profile-detail-value">{{ deal.clientProfile.inn }}</span>
-    </div>
   </div>
 
   <!-- Дополнительные номера: когда клиент не берёт трубку, звонить надо

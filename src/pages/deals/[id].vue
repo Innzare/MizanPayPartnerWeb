@@ -9,7 +9,7 @@ import DealParticipantsTab from '@/components/deals/DealParticipantsTab.vue'
 import DealInvestorsTab from '@/components/deals/DealInvestorsTab.vue'
 import { formatCurrency, formatCurrencyShort, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, pluralizeRu, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
-import { userName, clientProfileName, type Deal, type ClientProfile } from '@/types'
+import { userName, clientProfileName, type Deal, type ClientProfile, type Payment } from '@/types'
 import { dealGuarantors } from '@/utils/dealGuarantors'
 import { useAuthStore } from '@/stores/auth'
 import ClientLink from '@/components/ClientLink.vue'
@@ -18,12 +18,12 @@ import DateField from '@/components/DateField.vue'
 import { useRecentDeals } from '@/composables/useRecentDeals'
 import { useRoute, useRouter } from 'vue-router'
 import { useIsDark } from '@/composables/useIsDark'
+import DealScheduleTable from '@/components/DealScheduleTable.vue'
+import PaymentDetailsDialog from '@/components/PaymentDetailsDialog.vue'
 import { useToast } from '@/composables/useToast'
 import { useSubscription } from '@/composables/useSubscription'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
-import { offMonthKind, dueYearMonth, monthPrepositional } from '@/utils/paymentAttribution'
-import MarkPaidDialog from '@/components/MarkPaidDialog.vue'
 import QuickPayDialog from '@/components/QuickPayDialog.vue'
 import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
 import { Line } from 'vue-chartjs'
@@ -146,7 +146,6 @@ async function handleMoveCashbox() {
 }
 const payments = computed(() => paymentsStore.getPaymentsForDeal(dealId.value))
 
-
 /**
  * Платёжная дисциплина клиента — с сервера, по всем его сделкам у этого
  * партнёра. Раньше бралась из списка клиентов, собранного в браузере: работала
@@ -240,12 +239,15 @@ const supplierDebtRemaining = computed(() => {
   return Math.max(0, d.amount - d.paidAmount)
 })
 
-
-
 // Load co-investors on mount. Свой шаблон договора больше не грузится здесь —
 // он нужен только вкладке «Документы» и подтягивается при её открытии.
 onMounted(() => {
-  if (sections.visible('coInvestors')) loadCoInvestors()
+  // Доли инвесторов нужны вкладке «Инвесторы» и блоку прибыли. Если владелец
+  // закрыл сотруднику и то и другое — не запрашиваем: сервер такой запрос
+  // всё равно отклонит.
+  if (sections.visible('coInvestors') && (canSeeInvestorsTab.value || canSeeProfit.value)) {
+    loadCoInvestors()
+  }
   if (sections.visible('staff')) loadStaff()
 })
 
@@ -309,6 +311,41 @@ const overdueStats = computed(() => {
   return {
     count: overdue.length,
     total: overdue.reduce((s, p) => s + p.amount, 0),
+  }
+})
+
+/**
+ * Показатели над графиком: оплачено, осталось, просрочено, недоплаты.
+ *
+ * Два правила, без которых цифры начинают спорить друг с другом:
+ *  • недоплаты вынесены в свой показатель и НЕ входят в «просрочено» — иначе
+ *    один и тот же долг считался бы дважды в соседних карточках;
+ *  • в счётчиках платежей строки-недоплаты не участвуют (иначе выходит
+ *    «7 из 6»), а в суммах участвуют: деньги есть деньги.
+ */
+const scheduleKpi = computed(() => {
+  const rows = payments.value
+  const isPlan = (p: typeof rows[0]) => !p.shortfallOfPaymentId
+  const sum = (list: typeof rows) => list.reduce((s, p) => s + Math.round(p.amount), 0)
+
+  const settled = rows.filter((p) => p.status === 'PAID' || p.status === 'CLOSED_EARLY')
+  const open = rows.filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE')
+  const overdue = open.filter((p) => p.status === 'OVERDUE' && isPlan(p))
+  const debts = open.filter((p) => !isPlan(p))
+
+  return {
+    // Знаменатель — по фактическим строкам плана, а не по numberOfPayments
+    // сделки: график могли расширить кнопкой «Добавить платёж», и тогда
+    // вышло бы «оплачено 9 из 8».
+    total: rows.filter(isPlan).length,
+    paidCount: settled.filter(isPlan).length,
+    paidSum: sum(settled),
+    leftCount: open.filter(isPlan).length,
+    leftSum: sum(open),
+    overdueCount: overdue.length,
+    overdueSum: sum(overdue),
+    debtCount: debts.length,
+    debtSum: sum(debts),
   }
 })
 
@@ -426,9 +463,25 @@ type DealTab =
   | 'docs'
   | 'history'
 
+/**
+ * Что из карточки сделки видит этот человек.
+ *
+ * Владелец видит всё всегда (`can` для него истинно); сотруднику вкладки и
+ * блок прибыли выдаются правами роли — в блоке прибыли видны доли
+ * со-инвесторов, поэтому он закрывается отдельно от вкладки «Инвесторы».
+ */
+const canSeeProfit = computed(() => authStore.can('deals.profit'))
+const canSeeInvestorsTab = computed(() => authStore.can('deals.investors'))
+const canSeeDocs = computed(() => authStore.can('deals.docs'))
+const canSeeHistory = computed(() => authStore.can('deals.history'))
+
 function normalizeTab(v: unknown): DealTab {
-  if (v === 'payments' || v === 'participants' || v === 'docs' || v === 'history') return v
-  if (v === 'investors' && sections.visible('coInvestors')) return 'investors'
+  if (v === 'payments' || v === 'participants') return v
+  if (v === 'docs' && canSeeDocs.value) return 'docs'
+  if (v === 'history' && canSeeHistory.value) return 'history'
+  if (v === 'investors' && sections.visible('coInvestors') && canSeeInvestorsTab.value) {
+    return 'investors'
+  }
   return 'overview'
 }
 const tab = ref<DealTab>(normalizeTab(route.query.tab))
@@ -437,7 +490,6 @@ watch(tab, (t) => {
   const q = t === 'overview' ? undefined : t
   if (route.query.tab !== q) router.replace({ query: { ...route.query, tab: q } })
 })
-
 
 const visibleTabs = computed(() => {
   const guarantorCount = deal.value ? dealGuarantors(deal.value).length : 0
@@ -464,16 +516,20 @@ const visibleTabs = computed(() => {
       title: 'Инвесторы',
       icon: 'mdi-account-cash-outline',
       count: dealCoInvestors.value.length || undefined,
-      show: !!deal.value && !deal.value.deletedAt && sections.visible('coInvestors'),
+      show:
+        !!deal.value &&
+        !deal.value.deletedAt &&
+        sections.visible('coInvestors') &&
+        canSeeInvestorsTab.value,
     },
     {
       key: 'docs',
       title: 'Документы',
       icon: 'mdi-file-document-outline',
       count: deal.value?.contractPhotos?.length || undefined,
-      show: true,
+      show: canSeeDocs.value,
     },
-    { key: 'history', title: 'История', icon: 'mdi-history', show: true },
+    { key: 'history', title: 'История', icon: 'mdi-history', show: canSeeHistory.value },
   ]
   return all.filter((t) => t.show)
 })
@@ -486,33 +542,6 @@ watch(
     if (!visibleTabs.value.some((t) => t.key === tab.value)) tab.value = 'overview'
   },
 )
-
-// Days a payment was late by. Positive integer; 0 if on time.
-//   • OVERDUE → today − dueDate (still waiting for client)
-//   • PAID with paidAt > dueDate → paidAt − dueDate (paid late after all)
-//   • everything else (PENDING, CLOSED_EARLY, PAID on time) → 0
-function daysOverdue(p: { dueDate: string; status: string; paidAt?: string | null }): number {
-  const due = new Date(p.dueDate)
-  due.setHours(0, 0, 0, 0)
-  let reference: Date | null = null
-  if (p.status === 'OVERDUE') {
-    reference = new Date()
-    reference.setHours(0, 0, 0, 0)
-  } else if (p.status === 'PAID' && p.paidAt) {
-    reference = new Date(p.paidAt)
-    reference.setHours(0, 0, 0, 0)
-  }
-  if (!reference) return 0
-  const diff = Math.floor((reference.getTime() - due.getTime()) / 86400000)
-  return Math.max(diff, 0)
-}
-
-function pluralDays(n: number): string {
-  if (n % 10 === 1 && n % 100 !== 11) return 'день'
-  if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20)) return 'дня'
-  return 'дней'
-}
-
 
 // Payment timeline chart
 const paymentChartData = computed(() => {
@@ -638,6 +667,22 @@ const uncoveredByPlan = computed(() => {
   const sumExisting = payments.value.reduce((s, p) => s + (p.amount ?? 0), 0)
   return Math.max(0, balance - sumExisting)
 })
+/**
+ * Подпись карточки прибыли.
+ *
+ * Карточка теперь есть у каждой сделки, а подпись обещала «инвесторов и
+ * оптовую цену» всегда — по обычной сделке это неправда. Говорим ровно о том,
+ * что участвует в расчёте именно здесь.
+ */
+const profitCardSubtitle = computed(() => {
+  const withCi = dealCoInvestors.value.length > 0
+  const withWholesale = !!dealProfitBreakdown.value?.useWholesale
+  if (withCi && withWholesale) return 'С учётом инвесторов и оптовой цены'
+  if (withCi) return 'С учётом долей инвесторов'
+  if (withWholesale) return 'С учётом оптовой цены'
+  return 'Вся прибыль по этой сделке ваша'
+})
+
 const canAddPayment = computed(() => {
   if (!deal.value) return false
   if (deal.value.deletedAt) return false
@@ -719,11 +764,96 @@ async function onQuickPayDone(id: string) {
   ])
 }
 
-// Отметка оплаты — общий компонент MarkPaidDialog (та же модалка, что на
-// страницах платежей и в превью сделки). Здесь остаётся только выбор платежа и
-// проверка «оплата не по порядку»: она про график сделки, а не про саму отметку.
-const markPaidDialog = ref(false)
-const markPaidTarget = ref<typeof payments.value[0] | null>(null)
+// ─── Отмена последнего действия по графику ─────────────────────────────────
+/**
+ * Кнопка «назад» отменяет строго последнее действие по графику — и только его.
+ *
+ * Причина в каскадах: оплата пересчитывает остаток всех открытых строк, а
+ * снимок, снятый при ней, описывает график ровно на тот момент. Применив его
+ * после более поздних операций, мы получили бы суммы, которых никто не вводил.
+ * Что именно можно отменить, решает сервер: у него журнал и правила.
+ */
+type UndoInfo =
+  | { ok: true; activityId: string; kind: string; paymentId: string; label: string }
+  | { ok: false; reason: string; activityId?: string; label?: string }
+
+const undoInfo = ref<UndoInfo | null>(null)
+const undoing = ref(false)
+/** Лента на вкладке «История» — перечитываем её после каждого действия. */
+const historyRef = ref<{ reload: () => void } | null>(null)
+
+async function refreshUndo() {
+  if (!dealId.value || paymentsHidden.value) return
+  try {
+    undoInfo.value = (await paymentsStore.fetchUndoCandidate(dealId.value)) as UndoInfo
+  } catch {
+    // Кнопка просто останется неактивной — падать из-за подсказки незачем.
+    undoInfo.value = null
+  }
+}
+
+/**
+ * Показывать ли отмену последнего действия.
+ *
+ * Отменять нечего у сделки в корзине и у отменённой; у сотрудника со скрытым
+ * графиком кнопки тоже быть не должно — отменять он может только то, что
+ * видит. Само право на конкретное действие проверяет сервер: «снять оплату» и
+ * «вернуть дату» — разные права.
+ */
+const canUndo = computed(
+  () =>
+    !!deal.value &&
+    !deal.value.deletedAt &&
+    deal.value.status !== 'CANCELLED' &&
+    !paymentsHidden.value,
+)
+
+/** Подпись кнопки: что именно отменится — или почему нельзя. */
+const undoTitle = computed(() => {
+  const u = undoInfo.value
+  if (!u) return 'Отменить последнее действие'
+  return u.ok ? `Отменить: ${u.label}` : u.reason
+})
+
+async function doUndo() {
+  const u = undoInfo.value
+  if (!u?.ok || undoing.value) return
+  // Переспрашиваем: отмена оплаты возвращает деньги в кассе и доли
+  // со-инвесторов — это не то действие, которое делают случайным кликом.
+  if (!confirm(`Отменить последнее действие?\n\n${u.label}`)) return
+  undoing.value = true
+  try {
+    await paymentsStore.undoLastAction(dealId.value, u.activityId)
+    await dealsStore.fetchDeal(dealId.value).catch(() => {})
+    historyRef.value?.reload()
+    toast.success('Последнее действие отменено')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось отменить действие')
+  } finally {
+    undoing.value = false
+    await refreshUndo()
+  }
+}
+
+// График меняется после любой операции — тогда же пересматриваем и то, что
+// предлагает отменить кнопка. Одна точка вместо вызова из каждого действия.
+watch(payments, () => { void refreshUndo() }, { immediate: true })
+
+/**
+ * Карточка платежа — по клику на строку графика.
+ *
+ * Держим саму строку, а не только id: после перечитывания графика ссылка
+ * обновится через пересчёт ниже, и окно покажет свежие данные.
+ */
+const paymentDetailsDialog = ref(false)
+const paymentDetailsId = ref<string | null>(null)
+const paymentDetails = computed(
+  () => payments.value.find((p) => p.id === paymentDetailsId.value) ?? null,
+)
+function openPaymentDetails(p: typeof payments.value[0]) {
+  paymentDetailsId.value = p.id
+  paymentDetailsDialog.value = true
+}
 
 // Proof screenshot enlarge
 const proofEnlargeDialog = ref(false)
@@ -737,69 +867,6 @@ function toDateInput(d: string | Date): string {
   const mm = String(date.getMonth() + 1).padStart(2, '0')
   const dd = String(date.getDate()).padStart(2, '0')
   return `${yyyy}-${mm}-${dd}`
-}
-
-const outOfOrderDialog = ref(false)
-const outOfOrderPending = ref<typeof payments.value[0] | null>(null)
-
-const earlierUnpaid = computed(() => {
-  const target = outOfOrderPending.value
-  if (!target) return []
-  return payments.value
-    .filter(p => p.number < target.number && (p.status === 'PENDING' || p.status === 'OVERDUE'))
-    .sort((a, b) => a.number - b.number)
-})
-
-function openMarkPaid(p: typeof payments.value[0]) {
-  const earlier = payments.value.filter(
-    x => x.number < p.number && (x.status === 'PENDING' || x.status === 'OVERDUE'),
-  )
-  if (earlier.length > 0) {
-    outOfOrderPending.value = p
-    outOfOrderDialog.value = true
-    return
-  }
-  openMarkPaidImmediate(p)
-}
-
-function openMarkPaidImmediate(p: typeof payments.value[0]) {
-  // Сумму, дату, режим перерасчёта и скриншот компонент сбрасывает сам при
-  // каждом открытии — странице достаточно передать платёж.
-  markPaidTarget.value = p
-  markPaidDialog.value = true
-}
-
-// ── «Оплачен не в свой месяц»: доход учтён по факту оплаты ───────────────────
-function paymentOffMonth(p: { status: string; paidAt?: string | null; dueDate: string }): 'early' | 'late' | null {
-  return offMonthKind(p)
-}
-function paymentOffMonthLabel(p: { paidAt?: string | null; dueDate: string }): string {
-  if (!p.paidAt) return ''
-  const paid = new Date(p.paidAt)
-  const due = dueYearMonth(p.dueDate)
-  if (!due) return ''
-  const paidStr = monthPrepositional(paid.getFullYear(), paid.getMonth(), due.year)
-  const dueStr = monthPrepositional(due.year, due.month, paid.getFullYear())
-  return `Оплачен в ${paidStr}, а плановый срок — в ${dueStr}. Доход учтён в месяце фактической оплаты.`
-}
-
-function dismissOutOfOrder() {
-  outOfOrderDialog.value = false
-  outOfOrderPending.value = null
-}
-
-function markEarlierFirst() {
-  const first = earlierUnpaid.value[0]
-  outOfOrderDialog.value = false
-  outOfOrderPending.value = null
-  if (first) openMarkPaidImmediate(first)
-}
-
-function markOutOfOrderAnyway() {
-  const target = outOfOrderPending.value
-  outOfOrderDialog.value = false
-  outOfOrderPending.value = null
-  if (target) openMarkPaidImmediate(target)
 }
 
 const unpaidLoading = ref<string | null>(null)
@@ -820,33 +887,9 @@ async function confirmUnmarkPaid(p: typeof payments.value[0]) {
   }
 }
 
-// Delete an unpaid payment row. Backend rejects PAID — partner must
-// unmarkPaid first. We confirm even for unpaid since the row may have
-// real history (e.g. rescheduled note, manual amount adjustment).
-const removingPayment = ref<string | null>(null)
-// Only "extra" rows (added on top of the original installment plan) can
-// be deleted. Sister guard on the backend; UI just hides the button on
-// the rows that aren't deletable so the partner doesn't get a 400.
-const canDeleteAnyPayment = computed(() => {
-  if (!deal.value) return false
-  if (deal.value.deletedAt) return false
-  if (deal.value.status === 'CANCELLED') return false
-  return payments.value.length > (deal.value.numberOfPayments ?? 0)
-})
-
-async function confirmRemovePayment(p: typeof payments.value[0]) {
-  if (!confirm(`Удалить платёж #${p.number} на ${formatCurrency(p.amount)}?`)) return
-  removingPayment.value = p.id
-  try {
-    await paymentsStore.removePayment(p.id, p.dealId)
-    await dealsStore.fetchDeal(p.dealId)
-    toast.success('Платёж удалён')
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить платёж')
-  } finally {
-    removingPayment.value = null
-  }
-}
+// Удалять строки графика из этого окна нельзя: договор заключён на N
+// платежей, и все N должны остаться в истории. Менять их число —
+// только через редактирование самой сделки.
 
 // Banner shown under the schedule when the schedule itself doesn't add
 // up to the deal balance — i.e. there's a hole even before considering
@@ -873,7 +916,6 @@ function openProofEnlarge(url: string) {
  * переплата закрыла её досрочно).
  */
 async function onMarkPaidDone(dealId: string) {
-  markPaidTarget.value = null
   await dealsStore.fetchDeal(dealId)
 }
 
@@ -883,7 +925,11 @@ const STATUS_ACTIONS: Record<string, { nextStatus: Deal['status']; label: string
   ACTIVE: { nextStatus: 'COMPLETED', label: 'Завершить сделку', icon: 'mdi-check-decagram', color: '#047857' },
 }
 
-const statusAction = computed(() => deal.value ? STATUS_ACTIONS[deal.value.status] : null)
+/** Менять статус договора — отдельное право: без него кнопки быть не должно. */
+const canChangeStatus = computed(() => authStore.can('deals.status'))
+const statusAction = computed(() =>
+  deal.value && canChangeStatus.value ? STATUS_ACTIONS[deal.value.status] : null,
+)
 const statusDialog = ref(false)
 const statusUpdating = ref(false)
 // ── Пометка по договору ──
@@ -933,10 +979,27 @@ const unpaidCount = computed(() =>
 )
 const hasUnpaidPayments = computed(() => unpaidCount.value > 0 || (deal.value?.remainingAmount ?? 0) > 0)
 
-
 function openStatusDialog(preselect?: 'paid_early' | 'forgive' | 'force') {
   closeMode.value = preselect ?? 'paid_early'
   statusDialog.value = true
+}
+
+/**
+ * Перечитать всё, на что влияет закрытие или возобновление договора.
+ *
+ * Раньше обновлялась только сама сделка, а график, история и кнопка «назад»
+ * оставались от прошлого состояния — статус в шапке менялся, а строки графика
+ * показывали старое, и человеку приходилось перезагружать страницу.
+ */
+async function refreshDealAndSchedule() {
+  await Promise.all([
+    dealsStore.fetchDeal(dealId.value).catch(() => {}),
+    paymentsHidden.value
+      ? Promise.resolve()
+      : paymentsStore.fetchPaymentsForDeal(dealId.value).catch(() => {}),
+  ])
+  historyRef.value?.reload()
+  await refreshUndo()
 }
 
 async function confirmStatusChange() {
@@ -948,8 +1011,7 @@ async function confirmStatusChange() {
     await dealsStore.updateDealStatus(deal.value.id, statusAction.value.nextStatus, mode)
     toast.success('Сделка завершена')
     statusDialog.value = false
-    // Refresh payments to reflect new statuses
-    await dealsStore.fetchDeal(deal.value.id).catch(() => {})
+    await refreshDealAndSchedule()
   } catch (e: any) {
     toast.error(e.message || 'Ошибка обновления статуса')
   } finally {
@@ -957,6 +1019,39 @@ async function confirmStatusChange() {
   }
 }
 
+// ── Возобновление завершённой сделки ──
+/**
+ * Закрытие договора — не пометка: «клиент рассчитался» заводит остаток в кассу
+ * и начисляет доли инвесторам, «списать долг» обнуляет строки графика. Поэтому
+ * возврат в работу идёт отдельной операцией, которая откатывает и деньги.
+ */
+const reopenDialog = ref(false)
+const reopening = ref(false)
+const canReopen = computed(
+  () => deal.value?.status === 'COMPLETED' && !deal.value?.deletedAt && canChangeStatus.value,
+)
+
+async function confirmReopen() {
+  if (!deal.value) return
+  reopening.value = true
+  try {
+    const res = await api.post<{ restored?: { exact?: boolean; payments?: number } }>(
+      `/deals/${deal.value.id}/reopen`,
+      {},
+    )
+    reopenDialog.value = false
+    await refreshDealAndSchedule()
+    toast.success(
+      res?.restored?.exact === false
+        ? 'Сделка возобновлена. График оставлен как есть: она была закрыта до появления отмены'
+        : 'Сделка возобновлена — график и деньги вернулись к состоянию до закрытия',
+    )
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось возобновить сделку')
+  } finally {
+    reopening.value = false
+  }
+}
 
 </script>
 
@@ -1080,14 +1175,14 @@ async function confirmStatusChange() {
           </div>
 
           <div class="status-action-buttons">
-            <!-- Отметить оплату — самое частое действие по сделке -->
+            <!-- Приём оплаты — самое частое действие по сделке -->
             <button
               v-if="nextPayment && !paymentsHidden"
               class="status-action-btn status-action-btn--ghost"
               @click="openQuickPay()"
             >
               <v-icon icon="mdi-cash-check" size="16" />
-              Отметить оплату
+              Принять оплату
             </button>
             <button
               v-if="canDiscount && deal.status === 'ACTIVE'"
@@ -1106,6 +1201,16 @@ async function confirmStatusChange() {
               {{ statusAction.label }}
               <v-icon icon="mdi-arrow-right" size="16" />
             </button>
+            <!-- Завершение можно отменить: раньше кнопка просто исчезала, и
+                 закрытый по ошибке договор оставался закрытым навсегда. -->
+            <button
+              v-if="canReopen"
+              class="status-action-btn status-action-btn--ghost"
+              @click="reopenDialog = true"
+            >
+              <v-icon icon="mdi-restore" size="16" />
+              Возобновить сделку
+            </button>
           </div>
         </div>
 
@@ -1116,6 +1221,28 @@ async function confirmStatusChange() {
         <div class="pg-ends">
           <span class="pg-end">Оплачено {{ formatCurrency(totalPaid) }}</span>
           <span class="pg-end">Осталось {{ formatCurrency(deal.remainingAmount) }}</span>
+        </div>
+
+        <!-- Отмена последнего действия — про сделку целиком, а не про один
+             график: раньше кнопка пряталась в карточке платежей, хотя
+             отменяет то же, что показывает вкладка «История». Ссылка рядом
+             ведёт туда же — посмотреть, что именно отменяется. -->
+        <div v-if="canUndo" class="pg-undo">
+          <button
+            class="undo-btn"
+            :disabled="!undoInfo?.ok || undoing"
+            :title="undoTitle"
+            @click="doUndo"
+          >
+            <v-progress-circular v-if="undoing" indeterminate size="14" width="2" />
+            <v-icon v-else icon="mdi-undo-variant" size="16" />
+            Отменить последнее действие
+          </button>
+          <span class="pg-undo-what">{{ undoInfo?.ok ? undoInfo.label : undoTitle }}</span>
+          <button v-if="canSeeHistory" class="pg-undo-link" @click="tab = 'history'">
+            <v-icon icon="mdi-history" size="15" />
+            История сделки
+          </button>
         </div>
       </v-card>
 
@@ -1217,10 +1344,12 @@ async function confirmStatusChange() {
           </v-card>
           <!-- Из чего складывается прибыль — сразу под «Деньгами по сделке»:
                это продолжение того же разговора, отдельная вкладка ради одной
-               карточки только уводила от него. Показываем, когда есть что
-               делить: оптовая цена или инвесторы. -->
+               карточки только уводила от него.
+               Показываем всегда: раньше карточка появлялась лишь при оптовой
+               цене или инвесторах, и по обычной сделке заработок партнёра
+               посмотреть было негде, хотя считается он ровно так же. -->
           <v-card
-            v-if="dealProfitBreakdown && (dealProfitBreakdown.useWholesale || dealCoInvestors.length > 0)"
+            v-if="dealProfitBreakdown && canSeeProfit"
             rounded="lg"
             elevation="0"
             border
@@ -1228,7 +1357,7 @@ async function confirmStatusChange() {
           >
             <div class="pf-head">
               <div class="pf-head-title">Прибыль по сделке</div>
-              <div class="pf-head-sub">С учётом инвесторов и оптовой цены</div>
+              <div class="pf-head-sub">{{ profitCardSubtitle }}</div>
             </div>
 
             <!-- Что заработала сделка целиком -->
@@ -1330,7 +1459,6 @@ async function confirmStatusChange() {
               <div class="pf-bar-fill" :style="{ width: dealProfitBreakdown.progressPercent + '%' }" />
             </div>
           </v-card>
-
 
           <!-- Раздел платежей закрыт этому сотруднику: говорим об этом прямо,
                а не оставляем пустое место, будто данных нет. -->
@@ -1524,6 +1652,9 @@ async function confirmStatusChange() {
               <div class="section-subtitle mb-4">Полный список по сделке</div>
             </div>
             <div v-if="deal && !deal.deletedAt && deal.status !== 'CANCELLED'" class="d-flex align-center ga-2">
+              <!-- Отмена последнего действия переехала в блок «Прогресс по
+                   договору»: она отменяет не только платежи, и её место —
+                   рядом с самим договором, а не внутри одной карточки. -->
               <button
                 class="add-payment-btn"
                 :disabled="!canAddPayment"
@@ -1550,246 +1681,100 @@ async function confirmStatusChange() {
             </div>
           </div>
 
-          <v-table density="default" class="schedule-table schedule-table--desktop">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Дата</th>
-                <th class="text-end">Сумма</th>
-                <th class="text-end">Остаток после</th>
-                <th>Оплачено</th>
-                <th>Статус</th>
-                <th class="text-center">Действия</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="p in payments"
-                :key="p.id"
-                :class="{ 'row-paid': p.status === 'PAID', 'row-overdue': p.status === 'OVERDUE' }"
-              >
-                <td class="font-weight-medium">{{ p.number }}</td>
-                <td>
-                  {{ formatDate(p.dueDate) }}
-                  <div v-if="p.rescheduledFrom" class="rescheduled-hint">
-                    <v-icon icon="mdi-calendar-arrow-right" size="12" />
-                    было {{ formatDate(p.rescheduledFrom) }}
-                  </div>
-                  <!-- Days-late chip — surfaced for any payment that's
-                       late, regardless of whether it's still OVERDUE or
-                       already PAID after the due date. Lets the partner
-                       see the delay history at a glance. -->
-                  <div v-if="daysOverdue(p) > 0" class="overdue-chip">
-                    <v-icon icon="mdi-clock-alert-outline" size="11" />
-                    {{ p.status === 'PAID' ? 'оплачен с задержкой' : 'просрочен' }}
-                    на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
-                  </div>
-                </td>
-                <td class="text-end font-weight-bold text-no-wrap">
-                  {{ formatCurrency(p.amount) }}
-                  <!-- План vs факт: показываем плановую сумму, если она была
-                       зафиксирована при оплате и отличается от фактической. -->
-                  <div
-                    v-if="p.scheduledAmount != null && Math.round(p.scheduledAmount) !== Math.round(p.amount)"
-                    class="plan-vs-fact"
-                    :style="{ color: p.amount > p.scheduledAmount ? '#10b981' : '#f59e0b' }"
-                  >
-                    план: {{ formatCurrency(p.scheduledAmount) }}
-                  </div>
-                </td>
-                <td class="text-end text-medium-emphasis text-no-wrap">{{ formatCurrency(p.remainingAfter) }}</td>
-                <td class="text-medium-emphasis">
-                  <div>{{ p.paidAt ? formatDate(p.paidAt) : '—' }}</div>
-                  <!-- Оплачен не в свой месяц → доход учтён по факту оплаты. -->
-                  <div
-                    v-if="paymentOffMonth(p)"
-                    class="offmonth-chip"
-                    :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
-                    :title="paymentOffMonthLabel(p)"
-                  >
-                    <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
-                    {{ paymentOffMonth(p) === 'early' ? 'учтён по факту (досрочно)' : 'учтён по факту (позже срока)' }}
-                  </div>
-                  <div v-if="p.proofScreenshot" class="mt-1">
-                    <img
-                      :src="p.proofScreenshot"
-                      class="proof-thumbnail"
-                      title="Скриншот оплаты"
-                      @click="openProofEnlarge(p.proofScreenshot!)"
-                    />
-                  </div>
-                </td>
-                <td>
-                  <div
-                    class="pay-status"
-                    :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])"
-                  >
-                    {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                  </div>
-                </td>
-                <td class="text-center">
-                  <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
-                    <button class="action-btn action-btn--success" title="Отметить оплаченным" @click="openMarkPaid(p)">
-                      <v-icon icon="mdi-check" size="16" />
-                    </button>
-                    <button class="action-btn action-btn--warning" title="Перенести дату" @click="openReschedule(p)">
-                      <v-icon icon="mdi-calendar-clock" size="16" />
-                    </button>
-                    <button
-                      v-if="p.rescheduledFrom"
-                      class="action-btn action-btn--ghost"
-                      :title="`Вернуть исходную дату (${formatDate(p.rescheduledFrom)})`"
-                      :disabled="undoingReschedule === p.id"
-                      @click="confirmUndoReschedule(p)"
-                    >
-                      <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
-                      <v-icon v-else icon="mdi-calendar-refresh" size="16" />
-                    </button>
-                    <button
-                      v-if="canDeleteAnyPayment"
-                      class="action-btn action-btn--danger"
-                      title="Удалить платёж"
-                      :disabled="removingPayment === p.id"
-                      @click="confirmRemovePayment(p)"
-                    >
-                      <v-progress-circular v-if="removingPayment === p.id" indeterminate size="12" width="2" />
-                      <v-icon v-else icon="mdi-trash-can-outline" size="16" />
-                    </button>
-                  </div>
-                  <div v-else-if="p.status === 'PAID'" class="d-flex align-center justify-center">
-                    <button
-                      class="action-btn action-btn--danger"
-                      title="Отменить оплату"
-                      :disabled="unpaidLoading === p.id"
-                      @click="confirmUnmarkPaid(p)"
-                    >
-                      <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
-                      <v-icon v-else icon="mdi-undo" size="16" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </v-table>
+          <!-- График вынесен в общий компонент: тот же вид и в окне
+               предпросмотра сделки из списка. Действия остаются здесь —
+               в предпросмотре их нет. -->
+          <!-- Показатели над таблицей: ответы на «сколько уже получено»,
+               «сколько ждём» и «что горит» — до того, как читать строки. -->
+          <div class="sched-kpi">
+            <div class="sched-kpi-card sched-kpi-card--paid">
+              <div class="sched-kpi-label">Оплачено</div>
+              <div class="sched-kpi-value">
+                {{ scheduleKpi.paidCount }}
+                <span class="sched-kpi-of">из {{ scheduleKpi.total }}</span>
+              </div>
+              <div class="sched-kpi-sum">{{ formatCurrency(scheduleKpi.paidSum) }}</div>
+            </div>
 
-          <!-- Mobile card list — same content rearranged for narrow screens. -->
-          <div class="schedule-cards">
+            <div class="sched-kpi-card">
+              <div class="sched-kpi-label">Осталось</div>
+              <div class="sched-kpi-value">
+                {{ scheduleKpi.leftCount }}
+                <span class="sched-kpi-of">{{ pluralizeRu(scheduleKpi.leftCount, 'платёж', 'платежа', 'платежей') }}</span>
+              </div>
+              <div class="sched-kpi-sum">{{ formatCurrency(scheduleKpi.leftSum) }}</div>
+            </div>
+
             <div
-              v-for="p in payments"
-              :key="p.id"
-              class="sched-card"
-              :class="{
-                'sched-card--paid': p.status === 'PAID',
-                'sched-card--overdue': p.status === 'OVERDUE',
-                'sched-card--closed': p.status === 'CLOSED_EARLY',
-              }"
+              class="sched-kpi-card"
+              :class="{ 'sched-kpi-card--overdue': scheduleKpi.overdueCount > 0 }"
             >
-              <div class="sched-card-head">
-                <div class="sched-card-num">#{{ p.number }}</div>
-                <div class="pay-status" :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])">
-                  {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-                </div>
+              <div class="sched-kpi-label">Просрочено</div>
+              <div class="sched-kpi-value">
+                {{ scheduleKpi.overdueCount }}
+                <span class="sched-kpi-of">{{ pluralizeRu(scheduleKpi.overdueCount, 'платёж', 'платежа', 'платежей') }}</span>
               </div>
+              <div class="sched-kpi-sum">{{ formatCurrency(scheduleKpi.overdueSum) }}</div>
+            </div>
 
-              <div class="sched-card-date">
-                <div class="sched-card-date-value">{{ formatDate(p.dueDate) }}</div>
-                <div v-if="p.rescheduledFrom" class="rescheduled-hint">
-                  <v-icon icon="mdi-calendar-arrow-right" size="12" />
-                  было {{ formatDate(p.rescheduledFrom) }}
-                </div>
-                <div v-if="daysOverdue(p) > 0" class="overdue-chip">
-                  <v-icon icon="mdi-clock-alert-outline" size="11" />
-                  {{ p.status === 'PAID' ? 'оплачен с задержкой' : 'просрочен' }}
-                  на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
-                </div>
+            <div
+              class="sched-kpi-card"
+              :class="{ 'sched-kpi-card--debt': scheduleKpi.debtCount > 0 }"
+            >
+              <div class="sched-kpi-label">Недоплаты</div>
+              <div class="sched-kpi-value">
+                {{ scheduleKpi.debtCount }}
+                <span class="sched-kpi-of">{{ pluralizeRu(scheduleKpi.debtCount, 'строка', 'строки', 'строк') }}</span>
               </div>
+              <div class="sched-kpi-sum">{{ formatCurrency(scheduleKpi.debtSum) }}</div>
+            </div>
+          </div>
 
-              <div class="sched-card-amounts">
-                <div class="sched-card-amount">
-                  <div class="sched-card-amount-label">Сумма</div>
-                  <div class="sched-card-amount-value">{{ formatCurrency(p.amount) }}</div>
-                  <div
-                    v-if="p.scheduledAmount != null && Math.round(p.scheduledAmount) !== Math.round(p.amount)"
-                    class="plan-vs-fact"
-                    :style="{ color: p.amount > p.scheduledAmount ? '#10b981' : '#f59e0b' }"
-                  >
-                    план: {{ formatCurrency(p.scheduledAmount) }}
-                  </div>
-                </div>
-                <div class="sched-card-amount">
-                  <div class="sched-card-amount-label">Остаток после</div>
-                  <div class="sched-card-amount-value sched-card-amount-value--muted">
-                    {{ formatCurrency(p.remainingAfter) }}
-                  </div>
-                </div>
-              </div>
-
-              <div v-if="p.paidAt || p.proofScreenshot" class="sched-card-paid">
-                <div v-if="p.paidAt" class="sched-card-paid-date">
-                  <v-icon icon="mdi-check-circle-outline" size="14" />
-                  Оплачено {{ formatDate(p.paidAt) }}
-                </div>
-                <div
-                  v-if="paymentOffMonth(p)"
-                  class="offmonth-chip"
-                  :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
-                  :title="paymentOffMonthLabel(p)"
+          <DealScheduleTable
+            :payments="payments"
+            actions
+            @proof="openProofEnlarge"
+            @select="openPaymentDetails"
+          >
+            <template #actions="{ p }">
+              <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="d-flex align-center justify-center ga-1">
+                <!-- У долга-недоплаты вместо переноса — обещание доплатить. -->
+                <button
+                  v-if="!p.shortfallOfPaymentId"
+                  class="action-btn action-btn--warning"
+                  title="Перенести дату"
+                  @click="openReschedule(p)"
                 >
-                  <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
-                  {{ paymentOffMonth(p) === 'early' ? 'доход учтён по факту (досрочно)' : 'доход учтён по факту (позже срока)' }}
-                </div>
-                <img
-                  v-if="p.proofScreenshot"
-                  :src="p.proofScreenshot"
-                  class="proof-thumbnail sched-card-proof"
-                  title="Скриншот оплаты"
-                  @click="openProofEnlarge(p.proofScreenshot!)"
-                />
-              </div>
-
-              <div v-if="p.status === 'PENDING' || p.status === 'OVERDUE'" class="sched-card-actions">
-                <button class="action-btn action-btn--success" @click="openMarkPaid(p)">
-                  <v-icon icon="mdi-check" size="16" />
-                  Оплачено
-                </button>
-                <button class="action-btn action-btn--warning" @click="openReschedule(p)">
                   <v-icon icon="mdi-calendar-clock" size="16" />
-                  Перенести
+                  <span class="sched-action-label">Перенести</span>
                 </button>
                 <button
                   v-if="p.rescheduledFrom"
                   class="action-btn action-btn--ghost"
+                  :title="`Вернуть исходную дату (${formatDate(p.rescheduledFrom)})`"
                   :disabled="undoingReschedule === p.id"
                   @click="confirmUndoReschedule(p)"
                 >
                   <v-progress-circular v-if="undoingReschedule === p.id" indeterminate size="12" width="2" />
                   <v-icon v-else icon="mdi-calendar-refresh" size="16" />
-                  Вернуть
-                </button>
-                <button
-                  v-if="canDeleteAnyPayment"
-                  class="action-btn action-btn--danger"
-                  :disabled="removingPayment === p.id"
-                  @click="confirmRemovePayment(p)"
-                >
-                  <v-progress-circular v-if="removingPayment === p.id" indeterminate size="12" width="2" />
-                  <v-icon v-else icon="mdi-trash-can-outline" size="16" />
-                  Удалить
+                  <span class="sched-action-label">Вернуть</span>
                 </button>
               </div>
-              <div v-else-if="p.status === 'PAID'" class="sched-card-actions">
+              <div v-else-if="p.status === 'PAID'" class="d-flex align-center justify-center">
                 <button
                   class="action-btn action-btn--danger"
+                  title="Отменить оплату"
                   :disabled="unpaidLoading === p.id"
                   @click="confirmUnmarkPaid(p)"
                 >
                   <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
                   <v-icon v-else icon="mdi-undo" size="16" />
-                  Отменить оплату
+                  <span class="sched-action-label">Отменить оплату</span>
                 </button>
               </div>
-            </div>
-          </div>
+            </template>
+          </DealScheduleTable>
+
 
           <!-- Outstanding-balance banner. Surfaces when the schedule has
                been fully marked off but the deal still has a remaining
@@ -1867,10 +1852,10 @@ async function confirmStatusChange() {
       </div>
 
       <!-- История -->
-      <div v-else>
+      <div v-else-if="tab === 'history' && canSeeHistory">
         <!-- История: настоящий журнал с сервера, а не три события,
              собранные в браузере -->
-        <DealHistoryTab :deal-id="dealId" />
+        <DealHistoryTab ref="historyRef" :deal-id="dealId" />
       </div>
 
       <!-- Deleted banner -->
@@ -2020,6 +2005,37 @@ async function confirmStatusChange() {
         </v-card>
       </v-dialog>
 
+      <!-- Возобновление: переспрашиваем, потому что это откат денег, а не
+           только статуса — из кассы уйдут суммы, заведённые закрытием. -->
+      <v-dialog v-model="reopenDialog" max-width="480" :fullscreen="isMobile">
+        <v-card rounded="xl" class="pa-6">
+          <div class="d-flex align-start ga-4 mb-4">
+            <div class="status-dialog-icon" style="background: rgba(4, 120, 87, 0.12)">
+              <v-icon icon="mdi-restore" size="24" color="#047857" />
+            </div>
+            <div>
+              <h3 class="text-h6 font-weight-bold mb-1">Возобновить сделку</h3>
+              <p class="text-body-2 text-medium-emphasis ma-0">
+                Договор вернётся в работу в том состоянии, в котором был на момент
+                завершения: график платежей и деньги в кассе восстановятся.
+              </p>
+            </div>
+          </div>
+
+          <div class="d-flex ga-3">
+            <button class="btn-secondary flex-grow-1" @click="reopenDialog = false">Отмена</button>
+            <button
+              class="btn-primary flex-grow-1"
+              :disabled="reopening"
+              @click="confirmReopen"
+            >
+              <v-progress-circular v-if="reopening" indeterminate size="16" width="2" color="white" class="mr-2" />
+              Возобновить
+            </button>
+          </div>
+        </v-card>
+      </v-dialog>
+
       <!-- Отметка оплаты — общий компонент: та же модалка, что на странице
            платежей и в превью сделки (сумма, фактическая дата, перерасчёт
            графика, хвостовой платёж, квитанция, скриншот). График у страницы
@@ -2031,15 +2047,6 @@ async function confirmStatusChange() {
         :deal="deal ?? null"
         :fullscreen="isMobile"
         @paid="onQuickPayDone"
-      />
-
-      <MarkPaidDialog
-        v-model="markPaidDialog"
-        :payment="markPaidTarget"
-        :deal="deal"
-        :schedule="payments"
-        :fullscreen="isMobile"
-        @paid="onMarkPaidDone"
       />
 
       <!-- Скидка на остаток договора: долг уменьшается, договор действует. -->
@@ -2111,37 +2118,14 @@ async function confirmStatusChange() {
       </v-dialog>
 
       <!-- Out-of-order warning dialog -->
-      <v-dialog v-model="outOfOrderDialog" max-width="440" :fullscreen="isMobile">
-        <v-card rounded="lg" class="pa-6">
-          <button class="dialog-close-sm" @click="dismissOutOfOrder">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-          <div class="d-flex align-center ga-2 mb-2">
-            <v-icon icon="mdi-alert-circle-outline" color="warning" size="22" />
-            <div class="text-h6 font-weight-bold">Платежи не по порядку</div>
-          </div>
-          <div class="text-body-2 text-medium-emphasis mb-4">
-            Раньше этого платежа есть неоплаченные. Чтобы остаток и график считались корректно, рекомендуется отмечать платежи по порядку.
-          </div>
-          <div class="ooo-list mb-4">
-            <div v-for="p in earlierUnpaid" :key="p.id" class="ooo-row">
-              <span class="ooo-num">№{{ p.number }}</span>
-              <span class="ooo-date">{{ formatDate(p.dueDate) }}</span>
-              <span class="ooo-amount">{{ formatCurrency(p.amount) }}</span>
-            </div>
-          </div>
-          <div class="d-flex flex-column ga-2">
-            <button class="btn-primary" @click="markEarlierFirst">
-              Сначала отметить №{{ earlierUnpaid[0]?.number }}
-            </button>
-            <button class="btn-secondary" @click="markOutOfOrderAnyway">
-              Всё равно отметить этот
-            </button>
-          </div>
-        </v-card>
-      </v-dialog>
-
       <!-- Proof enlarge dialog -->
+      <!-- Карточка платежа: подробности, квитанция, комментарий. -->
+      <PaymentDetailsDialog
+        v-model="paymentDetailsDialog"
+        :payment="paymentDetails"
+        :deal="deal"
+      />
+
       <v-dialog v-model="proofEnlargeDialog" max-width="600">
         <v-card rounded="lg" class="pa-2">
           <button class="dialog-close-sm" style="position: absolute; top: 8px; right: 8px; z-index: 1;" @click="proofEnlargeDialog = false">
@@ -2212,6 +2196,27 @@ async function confirmStatusChange() {
   color: rgba(var(--v-theme-on-surface), 0.5);
   font-variant-numeric: tabular-nums;
 }
+
+/* Отмена последнего действия — отдельной строкой под полосой прогресса. */
+.pg-undo {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+/* Что именно отменится — рядом с кнопкой, чтобы не наводить курсор ради
+   подсказки: «Отменить» без названия действия читается как рулетка. */
+.pg-undo-what {
+  flex: 1; min-width: 0; font-size: 12.5px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pg-undo-link {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 6px 10px; border-radius: 8px; border: none; cursor: pointer;
+  font-size: 12.5px; font-weight: 600; background: none; color: #047857;
+  transition: background .15s;
+}
+.pg-undo-link:hover { background: rgba(4, 120, 87, 0.08); }
 
 /* Номер договора — отдельной строкой под названием товара: раньше он стоял
    перед названием и первым бросался в глаза, хотя ищут сделку по товару. */
@@ -2526,7 +2531,6 @@ async function confirmStatusChange() {
 .dl-btn--ghost:hover { background: rgba(var(--v-theme-on-surface), 0.1); }
 .dl-btn--primary { background: rgb(var(--v-theme-primary)); color: #fff; }
 .dl-btn--primary:hover { opacity: 0.9; }
-
 
 /* Hero */
 .detail-hero {
@@ -2957,20 +2961,6 @@ async function confirmStatusChange() {
   font-size: 24px; font-weight: 700; color: rgb(var(--v-theme-primary));
 }
 
-/* Schedule table */
-.schedule-table :deep(td) { font-size: 14px; }
-.schedule-table :deep(th) {
-  font-size: 12px !important; text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: rgba(var(--v-theme-on-surface), 0.5) !important;
-}
-.row-paid { opacity: 0.55; }
-.row-overdue { background: rgba(239, 68, 68, 0.04); }
-.pay-status {
-  display: inline-block; font-size: 11px; font-weight: 600;
-  padding: 3px 10px; border-radius: 6px; white-space: nowrap;
-}
-
 /* Client card */
 
 /* Deal details list */
@@ -2992,6 +2982,10 @@ async function confirmStatusChange() {
 }
 
 /* Timeline */
+
+/* В таблице у кнопок только иконки, в мобильных карточках — с подписью. */
+.sched-action-label { display: none; }
+@media (max-width: 767px) { .sched-action-label { display: inline; } }
 
 /* Action buttons */
 .action-btn {
@@ -3133,6 +3127,81 @@ async function confirmStatusChange() {
   color: rgba(var(--v-theme-on-surface), 0.95);
 }
 
+/* Показатели над таблицей графика. Четыре в ряд на широком экране, по два —
+   на узком: в одну строку они превращаются в нечитаемую ленту цифр. */
+.sched-kpi {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  padding: 0 20px 16px;
+}
+@media (max-width: 767px) {
+  .sched-kpi { grid-template-columns: repeat(2, 1fr); }
+}
+.sched-kpi-card {
+  padding: 12px 14px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.015);
+}
+.sched-kpi-label {
+  font-size: 11.5px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.sched-kpi-value {
+  margin-top: 3px;
+  font-size: 18px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  display: flex; align-items: baseline; gap: 5px;
+}
+/* Единица измерения рядом с числом — подписью, а не тем же кеглем. */
+.sched-kpi-of {
+  font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.sched-kpi-sum {
+  margin-top: 2px;
+  font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+.sched-kpi-card--paid .sched-kpi-value { color: #047857; }
+/* Подсвечиваем, только когда есть что подсвечивать: нули не должны кричать. */
+.sched-kpi-card--overdue {
+  background: rgba(239, 68, 68, 0.04);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.sched-kpi-card--overdue .sched-kpi-value,
+.sched-kpi-card--overdue .sched-kpi-sum { color: #dc2626; }
+.sched-kpi-card--debt {
+  background: rgba(217, 119, 6, 0.05);
+  border-color: rgba(217, 119, 6, 0.2);
+}
+.sched-kpi-card--debt .sched-kpi-value,
+.sched-kpi-card--debt .sched-kpi-sum { color: #b45309; }
+
+/* Переключатель «Платежи | История» внутри карточки графика */
+/* Отмена последнего действия: выглядит скромнее соседей — это откат ошибки,
+   а не самостоятельное действие. */
+.undo-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.undo-btn:hover:not(:disabled) {
+  border-color: rgba(var(--v-theme-primary), 0.4);
+  color: rgb(var(--v-theme-primary));
+}
+.undo-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
 /* «Добавить платёж» button in the schedule header */
 .add-payment-btn {
   display: inline-flex;
@@ -3171,27 +3240,6 @@ async function confirmStatusChange() {
 /* Reminder buttons */
 /* Deal reminder settings */
 .deal-day-chip.active { background: rgba(var(--v-theme-primary), 0.12); color: rgb(var(--v-theme-primary)); }
-
-
-/* Rescheduled hint */
-.rescheduled-hint {
-  display: flex; align-items: center; gap: 4px;
-  font-size: 11px; color: #f59e0b; margin-top: 2px;
-  text-decoration: line-through;
-  text-decoration-color: rgba(245, 158, 11, 0.4);
-}
-
-/* Overdue chip in payments table — explicit "просрочен на N дней" hint */
-.overdue-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  margin-top: 4px;
-  padding: 2px 8px;
-  font-size: 11px; font-weight: 700;
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.08);
-  border-radius: 5px;
-  white-space: nowrap;
-}
 
 /* Reschedule dialog */
 .dialog-close-sm {
@@ -3636,17 +3684,6 @@ async function confirmStatusChange() {
 }
 .dark .dialog-finance-item { background: rgba(255, 255, 255, 0.04); }
 
-/* Proof screenshot */
-.proof-thumbnail {
-  width: 36px; height: 36px; border-radius: 6px;
-  object-fit: cover; cursor: pointer;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
-  transition: all 0.15s;
-}
-.proof-thumbnail:hover {
-  border-color: rgba(4, 120, 87, 0.3);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
 /* PDF documents card */
 
 /* Row wrapper that pairs the download button with a small WhatsApp action */
@@ -3737,7 +3774,6 @@ async function confirmStatusChange() {
 
 /* Cards */
 
-
 /* Empty state */
 
 /* Dark overrides */
@@ -3746,7 +3782,6 @@ async function confirmStatusChange() {
 .dark .ci-card:hover { background: rgba(255,255,255,0.02); }
 .dark .ci-menu-header { border-color: rgba(255,255,255,0.06); }
 .dark .ci-card-remove { background: rgba(239, 68, 68, 0.1); }
-
 
 /* Guarantor list items */
 
@@ -3758,53 +3793,13 @@ async function confirmStatusChange() {
   border-color: rgba(var(--v-theme-on-surface), 0.1);
 }
 
-.ooo-list {
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  border-radius: 10px;
-  overflow: hidden;
-  max-height: 180px;
-  overflow-y: auto;
-}
-.ooo-row {
-  display: grid;
-  grid-template-columns: 60px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  font-size: 13px;
-}
-.ooo-row + .ooo-row {
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-}
-.ooo-num { font-weight: 600; }
-.ooo-date { color: rgba(var(--v-theme-on-surface), 0.6); }
-.ooo-amount { font-weight: 600; }
-
-.plan-vs-fact {
-  font-size: 11px; font-weight: 500;
-  margin-top: 2px; line-height: 1.2;
-}
-
-/* «Оплачен не в свой месяц» — приглушённый чип, доход учтён по факту оплаты. */
-.offmonth-chip {
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 10.5px; font-weight: 600;
-  margin-top: 3px; padding: 1px 6px; border-radius: 6px;
-  line-height: 1.3;
-}
-.offmonth-chip--early { color: #059669; background: rgba(16, 185, 129, 0.1); }
-.offmonth-chip--late { color: #d97706; background: rgba(245, 158, 11, 0.1); }
-
-/* ───── Mobile: schedule cards вместо широкой таблицы ───── */
-.schedule-cards {
-  display: none;
-  padding: 12px 14px 14px;
-}
-
+/* Долг-недоплата в графике — ветка своего платежа.
+   Платёж и его недоплата читаются одним блоком: черту между ними убираем,
+   её место занимает уголок-связка. Цветом не кричим: о том, что это долг,
+   говорят сумма и статус, а подсветка строки только группирует. */
+/* Под последней строкой линия есть всегда: без неё фон просроченной строки
+   сливался с блоком под таблицей, и строка казалась заехавшей под него. */
 @media (max-width: 767px) {
-  .schedule-table--desktop { display: none !important; }
-  .schedule-cards { display: flex; flex-direction: column; gap: 10px; }
-
   /* Финансовая сетка на мобиле — 2 колонки уже есть (768px),
      но карточки сами по себе крупные. Чуть компактнее. */
   .finance-card { padding: 12px; }
@@ -3815,76 +3810,4 @@ async function confirmStatusChange() {
   }
 }
 
-.sched-card {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 14px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  border-radius: 12px;
-  background: rgb(var(--v-theme-surface));
-}
-.sched-card--overdue {
-  border-color: rgba(239, 68, 68, 0.25);
-  background: rgba(239, 68, 68, 0.02);
-}
-.sched-card--paid {
-  background: rgba(16, 185, 129, 0.03);
-}
-.sched-card--closed {
-  opacity: 0.6;
-}
-.sched-card-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-}
-.sched-card-num {
-  font-size: 13px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.sched-card-date-value {
-  font-size: 15px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.92);
-}
-.sched-card-amounts {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-  padding: 10px 12px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  border-radius: 10px;
-}
-.sched-card-amount-label {
-  font-size: 11px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  margin-bottom: 2px;
-}
-.sched-card-amount-value {
-  font-size: 15px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.95);
-}
-.sched-card-amount-value--muted {
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.65);
-}
-.sched-card-paid {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
-.sched-card-paid-date {
-  display: inline-flex; align-items: center; gap: 4px;
-}
-.sched-card-paid-date .v-icon { color: #10b981; }
-.sched-card-proof {
-  width: 40px; height: 40px;
-}
-.sched-card-actions {
-  display: flex; gap: 6px; flex-wrap: wrap;
-  margin-top: 4px;
-}
-.sched-card-actions .action-btn {
-  flex: 1 1 auto;
-  width: auto;
-  height: 38px;
-  padding: 0 12px;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 500;
-}
 </style>

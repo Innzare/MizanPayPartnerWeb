@@ -5,7 +5,9 @@ import type {
   MonthDealsResponse,
   AnalyticsMonthlyRow,
   AnalyticsSummary,
+  AnalyticsTimeliness,
   BreakdownMetric,
+  TimelinessDetails,
 } from '@/types/analytics'
 
 /**
@@ -65,6 +67,38 @@ export function useAnalyticsSummary(cashBoxId: () => string | null) {
 }
 
 /**
+ * Просрочка и оплаты заранее — срез «на сейчас», без периода.
+ * Перезапрашивается при смене кассы, как и сводка.
+ */
+export function useAnalyticsTimeliness(cashBoxId: () => string | null) {
+  const timeliness = ref<AnalyticsTimeliness | null>(null)
+  const loading = ref(false)
+
+  const params = computed(() => query({ cashBoxId: cashBoxId() }))
+
+  async function load() {
+    const qs = params.value
+    loading.value = true
+    try {
+      const res = await api.get<AnalyticsTimeliness>(`/analytics/timeliness?${qs}`)
+      // Касса могла смениться, пока ходили, — устаревший ответ не применяем.
+      if (qs !== params.value) return
+      timeliness.value = res
+    } catch (e: any) {
+      if (qs !== params.value) return
+      // 403 — закрытый тарифом раздел, а не сбой: страница покажет заглушку.
+      if (e?.status !== 403) console.error('Failed to load analytics timeliness:', e)
+    } finally {
+      if (qs === params.value) loading.value = false
+    }
+  }
+
+  watch(params, load, { immediate: true })
+
+  return { timeliness, loading, reload: load }
+}
+
+/**
  * Помесячный разрез за период. Используется и годовым обзором, и графиками —
  * с разными диапазонами.
  */
@@ -106,6 +140,27 @@ export function useAnalyticsMonthly(
 }
 
 /**
+ * Какие платежи стоят за цифрой своевременности — вся сторона или одна полоса
+ * возраста. Зовётся по клику, поэтому обычная функция.
+ */
+export async function fetchTimelinessDetails(opts: {
+  side: 'overdue' | 'early'
+  bucket?: string | null
+  cashBoxId?: string | null
+  limit?: number
+  offset?: number
+}): Promise<TimelinessDetails> {
+  const qs = query({
+    side: opts.side,
+    bucket: opts.bucket,
+    cashBoxId: opts.cashBoxId,
+    limit: opts.limit != null ? String(opts.limit) : undefined,
+    offset: opts.offset ? String(opts.offset) : undefined,
+  })
+  return api.get<TimelinessDetails>(`/analytics/timeliness-details?${qs}`)
+}
+
+/**
  * Расшифровка показателя: какие сделки за ним стоят. Зовётся по клику, без
  * наблюдения — поэтому обычная функция, а не composable с watch.
  */
@@ -129,11 +184,18 @@ export async function fetchMonthDeals(opts: {
   month?: string | null
   year?: number | null
   cashBoxId?: string | null
+  limit?: number
+  offset?: number
+  /** Фильтр вкладок: все сделки, только с оплатами, только с ожидаемыми. */
+  filter?: 'all' | 'paid' | 'pending'
 }): Promise<MonthDealsResponse> {
   const qs = query({
     month: opts.month,
     year: opts.year ? String(opts.year) : undefined,
     cashBoxId: opts.cashBoxId,
+    limit: opts.limit != null ? String(opts.limit) : undefined,
+    offset: opts.offset ? String(opts.offset) : undefined,
+    filter: opts.filter && opts.filter !== 'all' ? opts.filter : undefined,
   })
   return api.get<MonthDealsResponse>(`/analytics/month-deals?${qs}`)
 }

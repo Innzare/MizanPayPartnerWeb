@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Page, Payment, PaymentCalendarDay, PaymentFacets } from '@/types'
 import { api } from '@/api/client'
+import type { ShortfallAction } from '@/utils/paymentMath'
 
 /** Параметры страницы платежей — ровно то, что понимает сервер. */
 export interface PaymentsPageParams {
@@ -175,8 +176,17 @@ export const usePaymentsStore = defineStore('payments', () => {
       remainingSchedule?: Array<{ paymentId: string; amount: number }>
       /** Режим ввода суммы: платёж за месяц или досрочное погашение. */
       payMode?: 'MONTH' | 'EARLY'
-      /** Что делать с недостающей частью: разложить по графику или простить. */
-      shortfallAction?: 'REDISTRIBUTE' | 'FORGIVE'
+      /**
+       * Что делать с недостающей частью: разложить по графику, простить или
+       * оставить долгом за этот же месяц.
+       */
+      shortfallAction?: ShortfallAction
+      /** Для долга: когда клиент обещал доплатить (YYYY-MM-DD). */
+      shortfallPromisedDate?: string
+      /** Для долга: комментарий. */
+      shortfallNote?: string
+      /** Переплатой сначала закрыть недоплаты прошлых месяцев. */
+      coverDebts?: boolean
     }
   ) {
     try {
@@ -188,6 +198,21 @@ export const usePaymentsStore = defineStore('payments', () => {
       await fetchPaymentsForDeal(dealId)
     } catch (e: any) {
       error.value = e.message || 'Ошибка при отметке оплаты'
+      throw e
+    }
+  }
+
+  /**
+   * Комментарий к платежу. Перечитываем график сделки: заметка видна и в
+   * карточке платежа, и в самой строке.
+   */
+  async function updatePaymentNote(paymentId: string, dealId: string, note: string) {
+    try {
+      const updated = await api.patch<Payment>(`/payments/${paymentId}/note`, { note })
+      await fetchPaymentsForDeal(dealId)
+      return updated
+    } catch (e: any) {
+      error.value = e.message || 'Не удалось сохранить комментарий'
       throw e
     }
   }
@@ -287,6 +312,51 @@ export const usePaymentsStore = defineStore('payments', () => {
     }
   }
 
+  /**
+   * Ответ сервера на вопрос «что можно отменить».
+   *
+   * Решение целиком серверное: там журнал действий и правила обратимости.
+   * Отказ приходит с причиной — её показываем подсказкой у кнопки.
+   */
+  type UndoCandidate =
+    | {
+        ok: true
+        activityId: string
+        kind: 'UNMARK_PAID' | 'UNDO_RESCHEDULE' | 'DELETE_PAYMENT'
+        paymentId: string
+        label: string
+      }
+    | { ok: false; reason: string; activityId?: string; label?: string }
+
+  /**
+   * Что можно отменить кнопкой «назад» по сделке.
+   *
+   * Решение принимает сервер: он же знает журнал и правила обратимости.
+   * Окно ответа одинаковое и для «можно», и для «нельзя» — во втором случае
+   * приходит причина, её показываем подсказкой у неактивной кнопки.
+   */
+  async function fetchUndoCandidate(dealId: string): Promise<UndoCandidate> {
+    return api.get<UndoCandidate>(`/payments/deal/${dealId}/undo`)
+  }
+
+  /**
+   * Отменить последнее действие по графику.
+   *
+   * `activityId` передаём обратно тем же, каким его прислал сервер: если за
+   * это время по сделке что-то произошло, отмена будет отклонена, а не
+   * отменит чужое действие.
+   */
+  async function undoLastAction(dealId: string, activityId: string) {
+    const res = await api.post<{ undone: string; activityId: string; payment: Payment }>(
+      `/payments/deal/${dealId}/undo`,
+      { activityId },
+    )
+    // График и сделку перечитывает вызывающая сторона: отмена меняет и то, и
+    // другое, а стор сделок сюда не тянем.
+    await fetchPaymentsForDeal(dealId)
+    return res
+  }
+
   return {
     payments,
     loading,
@@ -306,5 +376,8 @@ export const usePaymentsStore = defineStore('payments', () => {
     reschedulePayment,
     undoReschedulePayment,
     addPayments,
+    updatePaymentNote,
+    fetchUndoCandidate,
+    undoLastAction,
   }
 })

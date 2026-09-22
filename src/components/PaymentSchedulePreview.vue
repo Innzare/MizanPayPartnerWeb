@@ -28,9 +28,63 @@ const props = withDefaults(
     forgive?: boolean
     /** Перерасчёт реально применяется (сумма ≠ плановой). */
     redistributing?: boolean
+    /**
+     * Недоплата остаётся долгом: сколько. Под оплачиваемой строкой появится
+     * строка-остаток, остальной график не меняется.
+     */
+    debt?: number
+    /**
+     * Отмеченные строки — за что вносят деньги. Пусто — выбор не используется
+     * (окно открыто в режиме досрочного погашения или прощения).
+     */
+    selected?: string[]
+    /** Показывать ли чекбоксы: при досрочном погашении выбирать нечего. */
+    selectable?: boolean
+    /**
+     * По каким строкам можно кликать. Отмечают по порядку, поэтому доступны
+     * только следующая свободная строка и последняя отмеченная — остальные
+     * показываем неактивными, чтобы не было пропусков в середине.
+     */
+    pickable?: string[]
+    /**
+     * Строки, участвующие в очереди оплаты. Недоплаты, которые партнёр решил
+     * не учитывать, в неё не входят — у них чекбокса нет вовсе.
+     */
+    queue?: string[]
   }>(),
-  { forgive: false, redistributing: false },
+  {
+    forgive: false, redistributing: false, debt: 0,
+    selected: () => [], selectable: false, pickable: () => [], queue: () => [],
+  },
 )
+
+const emit = defineEmits<{ (e: 'toggle', paymentId: string): void }>()
+
+/** Отмечена ли строка — по ней и считается сумма к оплате. */
+function isSelected(id: string): boolean {
+  return props.selected.includes(id)
+}
+
+/** Можно ли сейчас нажать на эту строку. */
+function isPickable(id: string): boolean {
+  return props.pickable.includes(id)
+}
+
+/** Участвует ли строка в очереди оплаты — только у таких есть чекбокс. */
+function inQueue(id: string): boolean {
+  return props.queue.includes(id)
+}
+
+/**
+ * Сколько останется по оплачиваемой строке после внесённого.
+ *
+ * В саму строку уходит только её плановая сумма: что сверх — гасит следующие
+ * месяцы. Поэтому показываем план и остаток по нему, а не введённую сумму:
+ * иначе строка на 600 ₽ выглядела бы строкой на 12 000 ₽.
+ */
+function targetLeft(p: Payment): number {
+  return Math.max(Math.round(p.amount) - Math.round(props.entered ?? 0), 0)
+}
 
 const SETTLED = ['PAID', 'CLOSED_EARLY']
 
@@ -116,22 +170,40 @@ watch(
         </div>
       </template>
 
+      <template v-for="p in activeRows" :key="p.id">
       <div
-        v-for="p in activeRows"
-        :key="p.id"
         class="sched-row"
-        :class="`sched-row--${stateOf(p)}`"
+        :class="[
+          `sched-row--${stateOf(p)}`,
+          { 'sched-row--pick': selectable && inQueue(p.id) && isPickable(p.id) },
+        ]"
+        @click="selectable && inQueue(p.id) && isPickable(p.id) && emit('toggle', p.id)"
       >
-        <span class="sched-when">№{{ p.number }} · {{ dayLabel(p) }}</span>
+        <span class="sched-when">
+          <!-- Чекбокс: партнёр отмечает, за какие платежи внесены деньги.
+               Сумма в окне считается по отмеченным строкам. -->
+          <input
+            v-if="selectable && inQueue(p.id)"
+            type="checkbox"
+            class="sched-cb"
+            :checked="isSelected(p.id)"
+            :disabled="!isPickable(p.id)"
+            @click.stop="emit('toggle', p.id)"
+          />
+          №{{ p.number }} · {{ dayLabel(p) }}
+        </span>
 
         <template v-if="stateOf(p) === 'target'">
-          <span class="sched-amount">
-            <span v-if="entered !== null && Math.round(entered) !== Math.round(p.amount)" class="sched-was">
-              {{ formatCurrency(p.amount) }}
-            </span>
-            {{ formatCurrency(entered ?? p.amount) }}
+          <span class="sched-amount" :class="{ 'sched-amount--muted': !!entered && targetLeft(p) === 0 && !debt }">
+            {{ formatCurrency(p.amount) }}
           </span>
-          <span class="sched-mark">оплачивается сейчас</span>
+          <span class="sched-mark">
+            <!-- Сумму ещё не ввели — писать «останется» не о чем. -->
+            <template v-if="!entered"></template>
+            <template v-else-if="debt > 0">внесено {{ formatCurrency(entered ?? 0) }}</template>
+            <template v-else-if="targetLeft(p) === 0">закроется</template>
+            <template v-else>останется {{ formatCurrency(targetLeft(p)) }}</template>
+          </span>
         </template>
 
         <template v-else-if="stateOf(p) === 'forgiven'">
@@ -154,9 +226,22 @@ watch(
 
         <template v-else>
           <span class="sched-amount">{{ formatCurrency(p.amount) }}</span>
-          <span class="sched-mark"></span>
+          <!-- Долг-недоплата прошлых месяцев: сумма у него своя, пересчёт его
+               не трогает. -->
+          <span class="sched-mark" :class="{ 'sched-mark--debt': p.shortfallOfPaymentId }">
+            {{ p.shortfallOfPaymentId ? 'недоплата' : '' }}
+          </span>
         </template>
       </div>
+
+      <!-- Недоплата остаётся долгом: такой строки ещё нет в графике, она
+           появится после подтверждения — сразу под оплачиваемой. -->
+      <div v-if="debt > 0 && p.id === targetId" class="sched-row sched-row--debt">
+        <span class="sched-when">№{{ p.number }} · остаток</span>
+        <span class="sched-amount">{{ formatCurrency(debt) }}</span>
+        <span class="sched-mark">останется долгом</span>
+      </div>
+      </template>
     </div>
   </div>
 </template>
@@ -196,7 +281,17 @@ watch(
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
 }
 .sched-row:last-child { border-bottom: none; }
+.sched-row--pick { cursor: pointer; }
+.sched-row--pick:hover { background: rgba(var(--v-theme-on-surface), 0.03); }
+.sched-cb {
+  width: 15px; height: 15px; margin-right: 8px;
+  accent-color: rgb(var(--v-theme-primary));
+  vertical-align: -2px; cursor: pointer;
+}
+/* Недоступная строка: отметить её всё равно нельзя — сначала предыдущий месяц. */
+.sched-cb:disabled { cursor: default; opacity: 0.45; }
 .sched-when {
+  display: flex; align-items: center;
   color: rgba(var(--v-theme-on-surface), 0.7);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -231,6 +326,10 @@ watch(
 .sched-row--closing .sched-mark { color: #0ea5e9; }
 .sched-row--forgiven { background: rgba(4, 120, 87, 0.05); }
 .sched-row--forgiven .sched-mark { color: #047857; font-weight: 600; }
+/* Долг-недоплата — тот же янтарный, что у просрочки в списках. */
+.sched-mark--debt { color: #d97706; }
+.sched-row--debt { background: rgba(217, 119, 6, 0.06); }
+.sched-row--debt .sched-mark { color: #d97706; font-weight: 600; }
 
 /* На телефоне место на вес золота: подписи мельче, отступы плотнее. */
 @media (max-width: 480px) {
