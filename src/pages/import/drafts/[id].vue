@@ -17,7 +17,7 @@
           {{ formatDateShort(draft.createdAt) }}
         </span>
         <span class="page-header-meta-dot">·</span>
-        <span class="page-header-meta-item">{{ draft.format === 'vertical' ? 'Pyrus-формат' : 'Excel-таблица' }}</span>
+        <span class="page-header-meta-item">{{ draft.format === 'vertical' ? 'Pyrus-формат' : draft.format === 'template' ? 'Книга переноса' : 'Excel-таблица' }}</span>
       </div>
     </div>
 
@@ -66,6 +66,14 @@
           </div>
         </div>
       </div>
+
+      <!-- Книга переноса: справочники и история денег сверх сделок. -->
+      <ImportBookSummary
+        v-if="draft.stats.book"
+        :summary="draft.stats.book"
+        :draft-id="draft.id"
+        class="mb-4"
+      />
 
       <!-- Номера договоров из файла. Партнёр ищет сделку по номеру со своей
            бумаги — здесь видно, у скольких он совпадёт. -->
@@ -543,6 +551,7 @@ import { useFolders } from '@/composables/useFolders'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
 import FolderCreateDialog from '@/components/FolderCreateDialog.vue'
+import ImportBookSummary from '@/components/ImportBookSummary.vue'
 import { formatDateShort } from '@/utils/formatters'
 import type { DealFolder } from '@/types'
 import 'ag-grid-community/styles/ag-grid.css'

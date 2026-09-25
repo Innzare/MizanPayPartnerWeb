@@ -9,6 +9,7 @@ const DEFAULT_FREE_FEATURES: PlanFeatures = {
   pdfContract: false,
   pdfExport: false,
   excelExport: false,
+  backups: false,
   import: false,
   activity: false,
   registry: false,

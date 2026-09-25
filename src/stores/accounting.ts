@@ -87,6 +87,29 @@ export interface AccountLimitView {
   limits: { gauges: LimitGauge[]; full: boolean; warn: boolean; worst: LimitGauge | null }
 }
 
+/** Шаг цепочки «доступные деньги»: сумма со знаком. */
+export interface AvailableStep {
+  key: string
+  sign: '+' | '-' | '='
+  amount: number
+}
+
+export interface AvailableMoney {
+  inflow: AvailableStep[]
+  cashInBox: number
+  locked: AvailableStep[]
+  available: number
+  notes: {
+    inProgress: number
+    supplierDebt: number
+    clientsOwe: number
+    lentOut: number
+    unallocated: number
+  }
+  /** На счетах записано больше, чем есть в кассе — цифра неточна. */
+  warnings: Array<'accountsExceedCash'>
+}
+
 /** Пункт приёма, из которого пора забрать деньги. */
 export interface PickupView {
   id: string
@@ -567,6 +590,18 @@ export const useAccountingStore = defineStore('accounting', () => {
     return res
   }
 
+  /**
+   * Доступные деньги: сколько можно потратить сейчас и почему остальное
+   * нельзя. Цепочкой шагов — считает сервер, чтобы цифра была одна и та же
+   * везде и не расходилась с кассой.
+   */
+  const available = ref<AvailableMoney | null>(null)
+
+  async function fetchAvailable() {
+    available.value = await api.get<AvailableMoney>('/finance/available')
+    return available.value
+  }
+
   /** Итог и история возвратных денег за период — раздел «Временные операции». */
   async function fetchTemporary(from: string, to: string) {
     return api.get<TemporarySummary>(
@@ -812,7 +847,7 @@ export const useAccountingStore = defineStore('accounting', () => {
     cancelRun,
 
     accounts, banks, tags, loading, balanceIssues, unallocated, limits, pickups,
-    pendingOps, pendingTotals, liabilities, liabilityTotals,
+    pendingOps, pendingTotals, liabilities, liabilityTotals, available, fetchAvailable,
     fetchAccounts, fetchBanks, fetchTags, suggestCode,
     createAccount, updateAccount, toggleAccount,
     removeAccount,

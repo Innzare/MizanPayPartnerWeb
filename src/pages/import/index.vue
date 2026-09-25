@@ -45,6 +45,25 @@
               </div>
             </div>
           </div>
+
+          <!-- Шаблон — под списком возможностей: сначала человек понимает,
+               что умеет импорт, и только потом решает, нужна ли ему заготовка.
+               В верху блока он разрывал связку заголовка с описанием. -->
+          <div class="tpl-card">
+            <div class="tpl-icon"><v-icon icon="mdi-file-excel-outline" size="18" /></div>
+            <div class="tpl-body">
+              <div class="tpl-title">Не знаете, как оформить таблицу?</div>
+              <div class="tpl-desc">
+                Скачайте эталонный шаблон — лист на каждый раздел: сделки, кассы, счета,
+                инвесторы с историей их денег, сотрудники, поставщики.
+              </div>
+            </div>
+            <button class="tpl-btn" :disabled="templateLoading" @click.stop="downloadTemplate">
+              <v-progress-circular v-if="templateLoading" size="14" width="2" indeterminate />
+              <v-icon v-else icon="mdi-download-outline" size="16" />
+              Скачать шаблон
+            </button>
+          </div>
         </div>
 
         <!-- Upload zone -->
@@ -200,6 +219,7 @@
           <div class="batch-main">
             <div class="batch-name">
               {{ b.fileName || 'Загрузка из файла' }}
+              <span v-if="b.book" class="batch-badge batch-badge-book">книга переноса</span>
               <span v-if="b.rolledBackAt" class="batch-badge">откачена</span>
             </div>
             <div class="batch-meta">
@@ -218,16 +238,23 @@
               {{ pluralize(b.rolledBackCount || 0, 'сделка', 'сделки', 'сделок') }} —
               их можно вернуть из корзины
             </div>
+            <!-- Сверка переноса книги: что история не объяснила и что не провелось. -->
+            <div v-if="b.book && !b.rolledBackAt && reportLines(b).length" class="batch-report">
+              <div v-for="(line, i) in reportLines(b)" :key="i" class="batch-report-line" :class="line.tone">
+                <v-icon :icon="line.tone === 'warn' ? 'mdi-alert-outline' : 'mdi-information-outline'" size="14" />
+                <span>{{ line.text }}</span>
+              </div>
+            </div>
           </div>
           <button
-            v-if="!b.rolledBackAt && b.aliveCount > 0"
+            v-if="!b.rolledBackAt && (b.aliveCount > 0 || b.book)"
             class="batch-rollback"
             :disabled="rollingBack === b.id"
             @click="onRollback(b)"
           >
             <v-progress-circular v-if="rollingBack === b.id" indeterminate size="13" width="2" />
             <v-icon v-else icon="mdi-undo-variant" size="15" />
-            Откатить ({{ b.aliveCount }})
+            {{ b.book ? 'Откатить перенос' : `Откатить (${b.aliveCount})` }}
           </button>
         </div>
       </v-card>
@@ -242,12 +269,42 @@ import { api } from '@/api/client'
 import { useImportDraft, type DraftStats } from '@/composables/useImportDraft'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
+import { useAuthStore } from '@/stores/auth'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 
 const router = useRouter()
 const { analyze } = useImportDraft()
 const { show: showToast } = useToast()
 const { isDark } = useIsDark()
+const auth = useAuthStore()
+
+/**
+ * Эталонный шаблон переноса.
+ *
+ * Скачиваем авторизованным запросом, как резервные копии: файл отдаёт тот же
+ * защищённый раздел, прямой ссылкой его не взять.
+ */
+const templateLoading = ref(false)
+async function downloadTemplate() {
+  templateLoading.value = true
+  try {
+    const res = await fetch(`${import.meta.env.VITE_API_URL}/import/template`, {
+      headers: { Authorization: `Bearer ${auth.accessToken}` },
+    })
+    if (!res.ok) throw new Error('Не удалось скачать шаблон')
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'MizanPay_шаблон_переноса.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    showToast(e?.message || 'Не удалось скачать шаблон', 'error')
+  } finally {
+    templateLoading.value = false
+  }
+}
 
 interface DraftListItem {
   id: string
@@ -278,6 +335,64 @@ interface ImportBatchItem {
   rolledBackCount: number | null
   /** Сколько сделок партии в работе сейчас — столько и уйдёт в корзину. */
   aliveCount: number
+  /** Перенос книги: отчёт сверки. У обычной загрузки — null. */
+  book: {
+    report: BookReport | null
+    invitesFailed: string[]
+  } | null
+}
+
+/** Сверка после переноса книги — считает сервер в последнем шаге импорта. */
+interface BookReport {
+  cashBoxes: Array<{ name: string; gap: number; entry: 'topup' | 'withdraw' | null; after: number }>
+  notBalanced: Array<{ name: string; gap: number }>
+  investors: Array<{ name: string; cashBox: string; field: 'capital' | 'owed'; stated: number; actual: number }>
+  skipped: Array<{ sheet: string; rowNo: number; reason: string }>
+  /** Долг инвестору приведён к колонке «Не выплачено на дату переноса». */
+  aligned?: Array<{ name: string; cashBox: string; delta: number }>
+}
+
+/** Строки отчёта переноса — простым языком, по одной на факт. */
+function reportLines(b: ImportBatchItem): Array<{ text: string; tone: 'info' | 'warn' }> {
+  const r = b.book?.report
+  const out: Array<{ text: string; tone: 'info' | 'warn' }> = []
+  if (!r) return out
+  for (const c of r.cashBoxes) {
+    if (!c.gap) continue
+    out.push({
+      tone: 'info',
+      text: c.entry === 'topup'
+        ? `Касса «${c.name}»: на счетах на ${formatCurrency(Math.abs(c.gap))} больше, чем объясняет история, — записано как ваше пополнение капитала`
+        : `Касса «${c.name}»: на счетах на ${formatCurrency(c.gap)} меньше, чем объясняет история, — записано как ваше снятие`,
+    })
+  }
+  for (const c of r.notBalanced) {
+    out.push({
+      tone: 'warn',
+      text: `Касса «${c.name}» была в системе до переноса: по журналу и по счетам расходится на ${formatCurrency(Math.abs(c.gap))} — проверьте остатки`,
+    })
+  }
+  for (const a of r.aligned ?? []) {
+    out.push({
+      tone: 'info',
+      text: `${a.name} (касса «${a.cashBox}»): долг по прибыли приведён к цифре из файла — ` +
+        `${a.delta > 0 ? 'добавлено' : 'снято'} ${formatCurrency(Math.abs(a.delta))} начисления`,
+    })
+  }
+  for (const i of r.investors) {
+    const what = i.field === 'capital' ? 'капитал' : 'не выплачено'
+    out.push({
+      tone: 'warn',
+      text: `${i.name} (касса «${i.cashBox}»): ${what} по системе ${formatCurrency(i.actual)}, в файле ${formatCurrency(i.stated)}`,
+    })
+  }
+  for (const sk of r.skipped) {
+    out.push({ tone: 'warn', text: `Лист «${sk.sheet}», строка ${sk.rowNo}: ${sk.reason}` })
+  }
+  for (const email of b.book?.invitesFailed ?? []) {
+    out.push({ tone: 'warn', text: `Приглашение на ${email} не отправилось — сбросьте пароль сотруднику в разделе «Сотрудники»` })
+  }
+  return out
 }
 const batches = ref<ImportBatchItem[]>([])
 const rollingBack = ref<string | null>(null)
@@ -303,6 +418,7 @@ async function loadBatches() {
  * обратимое — сделки уходят в корзину, а не удаляются насовсем.
  */
 async function onRollback(batch: ImportBatchItem) {
+  if (batch.book) return onRollbackBook(batch)
   const count = `${batch.aliveCount} ${pluralize(batch.aliveCount, 'сделку', 'сделки', 'сделок')}`
   // Про обновлённые говорим прямо: откат их не вернёт, прежних данных нигде
   // нет. Иначе партнёр решит, что отменил загрузку целиком.
@@ -319,6 +435,34 @@ async function onRollback(batch: ImportBatchItem) {
     await loadBatches()
   } catch (e: any) {
     showToast(e?.message || 'Не удалось откатить загрузку', 'error')
+  } finally {
+    rollingBack.value = null
+  }
+}
+
+/**
+ * Откат переноса книги — не только сделки: кассы уйдут в архив, счета,
+ * инвесторы, займы и история денег удалятся. Сервер откажет, если после
+ * переноса чем-то из этого уже пользовались.
+ */
+async function onRollbackBook(batch: ImportBatchItem) {
+  const deals = batch.aliveCount
+    ? `\n• ${batch.aliveCount} ${pluralize(batch.aliveCount, 'сделка уйдёт', 'сделки уйдут', 'сделок уйдут')} в корзину`
+    : ''
+  const text =
+    `Откатить перенос «${batch.fileName || 'без имени'}»?\n` +
+    deals +
+    '\n• кассы из файла уйдут в архив, их счета, инвесторы, поставщики и сотрудники удалятся' +
+    '\n• вложения инвесторов, движения по кассе, выплаты поставщикам и займы из файла удалятся' +
+    '\n\nКлиенты останутся. Если после переноса вы уже работали с этими кассами или инвесторами, система откат не выполнит.'
+  if (!confirm(text)) return
+  rollingBack.value = batch.id
+  try {
+    await api.post<{ removed: number }>(`/import/batches/${batch.id}/rollback`, {})
+    showToast('Перенос откачен', 'success')
+    await loadBatches()
+  } catch (e: any) {
+    showToast(e?.message || 'Не удалось откатить перенос', 'error')
   } finally {
     rollingBack.value = null
   }
@@ -423,6 +567,15 @@ onMounted(() => {
   color: rgba(var(--v-theme-on-surface), 0.55);
 }
 .batch-dot { opacity: 0.45; margin: 0 2px; }
+.batch-badge-book { background: rgba(99, 102, 241, 0.12); color: #6366f1; }
+.batch-report { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.batch-report-line {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 12.5px; line-height: 1.45;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.batch-report-line .v-icon { margin-top: 2px; }
+.batch-report-line.warn .v-icon { color: #b45309; }
 .batch-rollback {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 7px 12px; border-radius: 9px;
@@ -499,6 +652,44 @@ onMounted(() => {
   color: rgba(var(--v-theme-on-surface), 0.95);
   margin-bottom: 10px;
 }
+/* Шаблон переноса: спокойная карточка внутри hero — предложение, а не
+   призыв. Партнёр с готовой таблицей просто проходит мимо. */
+.tpl-card {
+  display: flex; align-items: center; gap: 14px;
+  /* Отступ крупнее, чем шаг между пунктами списка выше: это уже другой
+     смысловой блок, а не четвёртый пункт перечисления. */
+  margin-top: 24px; padding: 16px 18px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.18);
+  border-radius: 14px;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.tpl-icon {
+  flex: 0 0 38px; height: 38px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  color: #047857; background: rgba(4, 120, 87, 0.1);
+}
+.tpl-body { flex: 1; min-width: 0; }
+.tpl-title { font-size: 14px; font-weight: 700; }
+.tpl-desc {
+  font-size: 12.5px; line-height: 1.5; margin-top: 4px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.tpl-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600;
+  padding: 9px 14px; border-radius: 10px;
+  color: #047857; background: rgba(4, 120, 87, 0.1);
+  transition: background 0.15s;
+}
+.tpl-btn:hover:not(:disabled) { background: rgba(4, 120, 87, 0.18); }
+.tpl-btn:disabled { opacity: 0.6; cursor: default; }
+@media (max-width: 700px) {
+  .tpl-card { flex-wrap: wrap; }
+  .tpl-btn { width: 100%; justify-content: center; }
+}
+
 .hero-desc {
   font-size: 14px;
   color: rgba(var(--v-theme-on-surface), 0.6);

@@ -149,13 +149,45 @@ export interface DraftStats {
   underpaymentAsDebt?: boolean
   /** Что даст эта настройка: сделок с недоплатами и сколько клиенты не донесли. */
   underpayments?: { deals: number; openAmount: number }
+  /** Книга переноса — только у черновика из нашего шаблона. */
+  book?: BookSummary
+}
+
+/** Книга переноса: сводка по листам — считается сервером при разборе файла. */
+export interface BookSummary {
+  /** Дата, на которую партнёр считал остатки. Пусто — возьмём день импорта. */
+  transferDate: string | null
+  sheets: Record<string, {
+    rows: number
+    samples: number
+    withErrors: number
+    withWarnings: number
+    willCreate: number
+    willReuse: number
+    unknownColumns: string[]
+    missingRequired: string[]
+  }>
+  /** Что мешает импорту. Пока список не пуст, сервер фиксацию не пустит. */
+  problems: string[]
+  /** Что система достроит или истолкует сама. */
+  warnings?: string[]
+}
+
+/** Строки листов книги с замечаниями — для поиска и исправления в своём файле. */
+export interface BookIssues {
+  sheets: Array<{
+    name: string
+    missingRequired: string[]
+    rows: Array<{ rowNo: number; errors: Array<{ column: string; message: string }>; warnings: string[] }>
+  }>
 }
 
 export interface ImportDraft {
   id: string
   investorId: string
   originalFileName: string
-  format: 'horizontal' | 'vertical' | 'custom'
+  /** 'template' — книга переноса по нашему шаблону. */
+  format: 'horizontal' | 'vertical' | 'custom' | 'template'
   normalizedData: DraftRow[]
   aiConfidence: Record<string, Record<string, number>>
   duplicateChecks: Record<string, any>
@@ -236,6 +268,10 @@ export function useImportDraft() {
     return api.get<CommitStatus>(`/import/drafts/${id}/progress`)
   }
 
+  async function fetchBookIssues(id: string): Promise<BookIssues> {
+    return api.get<BookIssues>(`/import/drafts/${id}/book-issues`)
+  }
+
   async function cancel(id: string) {
     return api.delete(`/import/drafts/${id}`)
   }
@@ -260,5 +296,5 @@ export function useImportDraft() {
     }
   }
 
-  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, fetchProgress, cancel, addRow, deleteRow, confirmUnits, setOptions }
+  return { draft, loading, saving, committing, analyze, fetchDraft, savePatches, commit, fetchProgress, fetchBookIssues, cancel, addRow, deleteRow, confirmUnits, setOptions }
 }

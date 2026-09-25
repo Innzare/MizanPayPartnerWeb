@@ -14,7 +14,20 @@ const toast = useToast()
 
 const loading = ref(true)
 const saving = ref(false)
-const registry = ref<PermissionRegistry>({ sections: [], presets: [] })
+const registry = ref<PermissionRegistry>({ sections: [], presets: [], grantable: null })
+
+/**
+ * Чем распоряжается тот, кто сейчас правит роль.
+ *
+ * null — владелец: доступно всё. Сотрудник видит чужие права, но не трогает
+ * их: выдать коллеге то, чего лишён сам, он не может, а снять — тем более,
+ * иначе обходил бы собственное ограничение чужими руками. Сервер проверяет
+ * то же самое; здесь — чтобы человек видел причину, а не терял правку молча.
+ */
+const grantable = computed(() => (registry.value.grantable ? new Set(registry.value.grantable) : null))
+function canEditPerm(key: string): boolean {
+  return !grantable.value || grantable.value.has(key)
+}
 const roles = ref<StaffRoleTemplate[]>([])
 
 interface Draft { id: string | null; name: string; isSystem: boolean; staffCount: number; perms: Set<string> }
@@ -61,7 +74,15 @@ async function newRole() {
 }
 function applyPreset(preset: RolePreset) {
   if (!draft.value) return
-  draft.value.perms = new Set(preset.permissions)
+  // Недоступные права берём из текущего состояния роли, а не из пресета:
+  // иначе «быстрый старт» стал бы лазейкой мимо собственных ограничений.
+  const current = draft.value.perms
+  draft.value.perms = grantable.value
+    ? new Set([
+        ...preset.permissions.filter((k) => canEditPerm(k)),
+        ...[...current].filter((k) => !canEditPerm(k)),
+      ])
+    : new Set(preset.permissions)
   dirty.value = true
   expanded.value = new Set(
     registry.value.sections.filter((s) => s.permissions.some((p) => draft.value!.perms.has(p.key))).map((s) => s.key),
@@ -89,14 +110,16 @@ function viewKeyFor(key: string): string {
   return `${key.split('.')[0]}.view`
 }
 function togglePerm(_sectionKey: string, key: string) {
-  if (!draft.value) return
+  if (!draft.value || !canEditPerm(key)) return
   const perms = draft.value.perms
   const viewKey = viewKeyFor(key)
   if (perms.has(key)) {
     perms.delete(key)
     // Сняли «доступ к области» — снимаем и всё, что без него бессмысленно,
     // где бы эти права ни показывались.
-    if (key === viewKey) for (const k of allKeys.value) if (viewKeyFor(k) === viewKey) perms.delete(k)
+    if (key === viewKey) {
+      for (const k of allKeys.value) if (viewKeyFor(k) === viewKey && canEditPerm(k)) perms.delete(k)
+    }
   } else {
     perms.add(key)
     if (key !== viewKey && allKeys.value.includes(viewKey)) perms.add(viewKey)
@@ -408,7 +431,8 @@ async function removeRole() {
                     v-for="p in b.permissions"
                     :key="p.key"
                     class="rm-perm"
-                    :class="{ 'rm-perm--on': hasPerm(p.key) }"
+                    :class="{ 'rm-perm--on': hasPerm(p.key), 'rm-perm--locked': !canEditPerm(p.key) }"
+                    :title="canEditPerm(p.key) ? '' : 'Это право не выдано вам самим — менять его может только владелец'"
                     @click.prevent="togglePerm(sec.key, p.key)"
                   >
                     <span class="rm-check" :class="{ 'rm-check--on': hasPerm(p.key) }">
@@ -417,7 +441,10 @@ async function removeRole() {
                     <!-- Пояснение там, где цена ошибки выше обычной: реестр даёт
                          его не всем правам, и раньше оно просто терялось. -->
                     <span class="rm-perm-text">
-                      <span class="rm-perm-label">{{ p.label }}</span>
+                      <span class="rm-perm-label">
+                        {{ p.label }}
+                        <v-icon v-if="!canEditPerm(p.key)" icon="mdi-lock-outline" size="12" class="rm-perm-lock" />
+                      </span>
                       <span v-if="p.hint" class="rm-perm-hint">{{ p.hint }}</span>
                     </span>
                   </label>
@@ -669,6 +696,10 @@ async function removeRole() {
 }
 .rm-perm { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; transition: background .12s; }
 .rm-perm:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+/* Право, которого нет у самого редактора: видно, но не трогается. */
+.rm-perm--locked { cursor: not-allowed; opacity: 0.45; }
+.rm-perm--locked:hover { background: transparent; }
+.rm-perm-lock { opacity: 0.7; margin-left: 3px; vertical-align: baseline; }
 .rm-perm-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .rm-perm-label { font-size: 13px; line-height: 20px; }
 .rm-perm--on .rm-perm-label { font-weight: 500; }

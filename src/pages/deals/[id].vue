@@ -973,6 +973,16 @@ async function onDiscountApplied() {
 }
 
 const closeMode = ref<'paid_early' | 'forgive' | 'force'>('paid_early')
+/**
+ * Способы закрытия требуют своих прав — тех же, что и при оплате.
+ *
+ * «Списать долг» — это прощение остатка (payments.forgive), «клиент
+ * рассчитался» — приём оплаты по всем открытым платежам (payments.markPaid).
+ * Сервер проверяет то же самое; здесь — чтобы человек не выбирал вариант,
+ * который ему откажут.
+ */
+const canCloseForgive = computed(() => authStore.can('payments.forgive'))
+const canClosePaidEarly = computed(() => authStore.can('payments.markPaid'))
 
 const unpaidCount = computed(() =>
   payments.value.filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE').length,
@@ -980,7 +990,11 @@ const unpaidCount = computed(() =>
 const hasUnpaidPayments = computed(() => unpaidCount.value > 0 || (deal.value?.remainingAmount ?? 0) > 0)
 
 function openStatusDialog(preselect?: 'paid_early' | 'forgive' | 'force') {
-  closeMode.value = preselect ?? 'paid_early'
+  // По умолчанию — первый доступный вариант: иначе диалог открывался бы с
+  // выбранным способом, на который у сотрудника нет права.
+  closeMode.value =
+    preselect ??
+    (canClosePaidEarly.value ? 'paid_early' : canCloseForgive.value ? 'forgive' : 'force')
   statusDialog.value = true
 }
 
@@ -1950,7 +1964,7 @@ async function confirmReopen() {
 
           <!-- Close mode options — only when there's unpaid -->
           <div v-if="hasUnpaidPayments" class="close-modes mb-5">
-            <label class="close-mode-card" :class="{ active: closeMode === 'paid_early' }">
+            <label v-if="canClosePaidEarly" class="close-mode-card" :class="{ active: closeMode === 'paid_early' }">
               <input v-model="closeMode" type="radio" value="paid_early" />
               <div class="close-mode-content">
                 <div class="d-flex align-center ga-2">
@@ -1963,7 +1977,7 @@ async function confirmReopen() {
               </div>
             </label>
 
-            <label class="close-mode-card" :class="{ active: closeMode === 'forgive' }">
+            <label v-if="canCloseForgive" class="close-mode-card" :class="{ active: closeMode === 'forgive' }">
               <input v-model="closeMode" type="radio" value="forgive" />
               <div class="close-mode-content">
                 <div class="d-flex align-center ga-2">

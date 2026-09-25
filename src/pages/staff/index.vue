@@ -6,6 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useChats } from '@/composables/useChats'
+import { useAuthStore } from '@/stores/auth'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useAccountingStore } from '@/stores/accounting'
 import ChatPanel from '@/components/ChatPanel.vue'
@@ -21,6 +22,14 @@ const toast = useToast()
 const { isMobile } = useIsMobile()
 const router = useRouter()
 const route = useRoute()
+const authStore = useAuthStore()
+/**
+ * Заводить, править и увольнять сотрудников может только владелец — так
+ * устроен сервер (isOwner в /auth/investor/staff). Сотрудник с доступом к
+ * разделу видит людей и правит роли, но не состав команды: без этой проверки
+ * кнопки были видны и приводили к отказу сервера.
+ */
+const canManageStaff = computed(() => authStore.isOwner)
 const cashBoxesStore = useCashBoxesStore()
 const accountingStore = useAccountingStore()
 
@@ -590,7 +599,7 @@ onBeforeUnmount(() => {
         <div class="page-tabs-actions">
           <!-- Главное действие раздела стоит на виду: раньше сотрудника
                добавляли плюсиком в шапке узкого списка. -->
-          <button v-if="activeMainTab === 'staff'" class="sf-primary-btn" @click="openAdd">
+          <button v-if="activeMainTab === 'staff' && canManageStaff" class="sf-primary-btn" @click="openAdd">
             <v-icon icon="mdi-account-plus-outline" size="16" />
             Добавить сотрудника
           </button>
@@ -743,12 +752,12 @@ onBeforeUnmount(() => {
                     <v-icon icon="mdi-chart-box-outline" size="16" />
                     Профиль и статистика
                   </button>
-                  <button class="sf-menu-item" @click="openEdit(m)">
+                  <button v-if="canManageStaff" class="sf-menu-item" @click="openEdit(m)">
                     <v-icon icon="mdi-pencil-outline" size="16" />
                     Доступы и роль
                   </button>
                   <div class="sf-menu-sep" />
-                  <button class="sf-menu-item sf-menu-item--danger" @click="openDelete(m)">
+                  <button v-if="canManageStaff" class="sf-menu-item sf-menu-item--danger" @click="openDelete(m)">
                     <v-icon icon="mdi-delete-outline" size="16" />
                     Удалить
                   </button>
@@ -770,7 +779,7 @@ onBeforeUnmount(() => {
             <v-icon icon="mdi-account-key-outline" size="32" color="grey-lighten-1" />
             <div class="sf-sidebar-empty-title">Нет сотрудников</div>
             <div class="sf-sidebar-empty-sub">Добавьте первого — он получит доступ на почту</div>
-            <button class="sf-add-btn mt-3" @click="openAdd">
+            <button v-if="canManageStaff" class="sf-add-btn mt-3" @click="openAdd">
               <v-icon icon="mdi-plus" size="16" />
               <span>Добавить</span>
             </button>
@@ -795,7 +804,7 @@ onBeforeUnmount(() => {
                     {{ roleTag(selectedStaff).label }}
                   </span>
                   <button
-                    v-if="roleTag(selectedStaff).legacy"
+                    v-if="roleTag(selectedStaff).legacy && canManageStaff"
                     class="sf-legacy-fix"
                     title="Назначить роль из раздела «Роли»"
                     @click="openEdit(selectedStaff)"
@@ -813,7 +822,7 @@ onBeforeUnmount(() => {
                   <v-icon icon="mdi-chart-box-outline" size="15" />
                   Профиль
                 </button>
-                <button class="sf-ghost-btn" @click="openEdit(selectedStaff)">
+                <button v-if="canManageStaff" class="sf-ghost-btn" @click="openEdit(selectedStaff)">
                   <v-icon icon="mdi-pencil-outline" size="15" />
                   Доступы
                 </button>
@@ -945,7 +954,7 @@ onBeforeUnmount(() => {
               В сообщениях можно ссылаться на сделку через <code>#номер</code>.
             </div>
             <div class="sf-placeholder-acts">
-              <button class="sf-primary-btn" @click="openAdd">
+              <button v-if="canManageStaff" class="sf-primary-btn" @click="openAdd">
                 <v-icon icon="mdi-account-plus-outline" size="16" />
                 Добавить сотрудника
               </button>

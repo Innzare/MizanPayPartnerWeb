@@ -4,6 +4,7 @@ import type {
   AnalyticsBreakdown,
   MonthDealsResponse,
   AnalyticsMonthlyRow,
+  AnalyticsMonthlySalesRow,
   AnalyticsSummary,
   AnalyticsTimeliness,
   BreakdownMetric,
@@ -137,6 +138,50 @@ export function useAnalyticsMonthly(
   }
 
   return { rows, loading, monthRow, reload: load }
+}
+
+/**
+ * Продажи по месяцам: число договоров, их сумма, закупка и наценка.
+ *
+ * Отдельно от поступлений: там месяц — дата оплаты, здесь — дата сделки.
+ * Грузится лениво, при первом открытии вкладки «Продажи»: большинство
+ * заходит в аналитику ради денег, и лишний запрос им ни к чему.
+ */
+export function useAnalyticsMonthlySales(
+  range: () => { from: string; to: string },
+  cashBoxId: () => string | null,
+  enabled: () => boolean,
+) {
+  const rows = ref<AnalyticsMonthlySalesRow[]>([])
+  const loading = ref(false)
+  /** Для каких параметров данные уже лежат — чтобы не грузить повторно. */
+  let loadedFor = ''
+
+  const params = computed(() => {
+    const r = range()
+    return query({ from: r.from, to: r.to, cashBoxId: cashBoxId() })
+  })
+
+  async function load() {
+    const qs = params.value
+    if (!enabled() || qs === loadedFor) return
+    loading.value = true
+    try {
+      const res = await api.get<AnalyticsMonthlySalesRow[]>(`/analytics/monthly-sales?${qs}`)
+      if (qs !== params.value) return
+      rows.value = res
+      loadedFor = qs
+    } catch (e: any) {
+      if (qs !== params.value) return
+      console.error('Failed to load monthly sales:', e)
+    } finally {
+      if (qs === params.value) loading.value = false
+    }
+  }
+
+  watch([params, enabled], load, { immediate: true })
+
+  return { rows, loading }
 }
 
 /**

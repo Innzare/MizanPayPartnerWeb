@@ -68,6 +68,7 @@ declare module 'vue' {
     HelpNav: typeof import('./components/help/HelpNav.vue')['default']
     HelpRichText: typeof import('./components/help/HelpRichText.vue')['default']
     HeroSummary: typeof import('./components/HeroSummary.vue')['default']
+    ImportBookSummary: typeof import('./components/ImportBookSummary.vue')['default']
     InstallmentPrograms: typeof import('./components/InstallmentPrograms.vue')['default']
     MessageTemplatesTab: typeof import('./components/MessageTemplatesTab.vue')['default']
     MetricDetailDialog: typeof import('./components/MetricDetailDialog.vue')['default']

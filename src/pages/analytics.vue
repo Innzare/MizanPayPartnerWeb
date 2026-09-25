@@ -13,7 +13,7 @@ import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
-import { useAnalyticsSummary, useAnalyticsMonthly, useAnalyticsTimeliness, fetchDealsBreakdown, fetchMonthDeals, fetchTimelinessDetails } from '@/composables/useAnalyticsOverview'
+import { useAnalyticsSummary, useAnalyticsMonthly, useAnalyticsMonthlySales, useAnalyticsTimeliness, fetchDealsBreakdown, fetchMonthDeals, fetchTimelinessDetails } from '@/composables/useAnalyticsOverview'
 import { pluralDays } from '@/utils/paymentAttribution'
 import ServerPager from '@/components/ServerPager.vue'
 import { PER_PAGE_OPTIONS, usePageSize } from '@/composables/useListPrefs'
@@ -217,6 +217,41 @@ const timelinessSides = computed(() => [
     data: timeliness.value?.early ?? EMPTY_TIMELINESS_SIDE,
   },
 ])
+
+/**
+ * Доля от вложенного в дело — вторая координата для просрочки и досрочных.
+ *
+ * База — totalCapital: собственный капитал партнёра плюс капитал
+ * со-инвесторов, ровно тот же показатель, что «Общий капитал» на странице
+ * кассы. Сумма просрочки в рублях сама по себе ни о чём не говорит: 500 тыс.
+ * — это половина дела у одного партнёра и пара процентов у другого. Процент
+ * отвечает на вопрос «какая часть вложенных денег зависла».
+ *
+ * При выбранной кассе база — капитал этой кассы: иначе доля считалась бы от
+ * всего дела, а суммы — только по одной кассе.
+ *
+ * Капитал берём из уже загруженного ответа: у того, кому финансы закрыты
+ * правами или тарифом, запрос молча отваливается, база остаётся нулевой и
+ * процент просто не показывается.
+ */
+const investedBase = computed(() => Math.max(0, capital.value?.totalCapital ?? 0))
+
+/** «12,4%», «45%» или «<0,1%». null — базы нет или считать нечего. */
+function pctOfInvested(amount: number): string | null {
+  if (investedBase.value <= 0 || amount <= 0) return null
+  const pct = (amount / investedBase.value) * 100
+  if (pct < 0.1) return '<0,1%'
+  // Двузначные проценты в десятых не нуждаются — только шумят.
+  return pct >= 10 ? `${Math.round(pct)}%` : `${pct.toFixed(1).replace('.', ',')}%`
+}
+
+/** Пояснение к проценту — одно на все места, где он показан. */
+const investedHint = computed(() => {
+  const where = selectedCashBox.value ? `в кассу «${selectedCashBox.value.name}»` : 'в дело'
+  return `Какую часть вложенных ${where} денег составляет эта сумма. `
+    + `Вложено — собственный капитал плюс капитал со-инвесторов: `
+    + `${formatCurrency(investedBase.value)}. Считаем: сумма ÷ вложено × 100.`
+})
 
 /** Склонение при числе: plural(5, ['платёж', 'платежа', 'платежей']). */
 function plural(n: number, forms: [string, string, string]): string {
@@ -538,6 +573,99 @@ const yearTotal = computed(() => {
     planned: s.planned + m.planned,
   }), { earned: 0, coInvestorEarned: 0, partnerEarned: 0, expected: 0, received: 0, pendingAmount: 0, planned: 0 })
 })
+
+// ── Два взгляда на год: «Поступления» и «Продажи» ──
+/**
+ * «Поступления» — деньги по дате оплаты: сколько пришло, сколько ждём.
+ * «Продажи» — договоры по дате сделки: сколько работы взяли и на какие суммы.
+ *
+ * Разные вопросы — «как собираем» и «растём ли мы» — и отвечать на них одной
+ * таблицей нельзя: платежи по договору идут месяцами после продажи, и сильный
+ * месяц продаж в поступлениях размазан на полгода вперёд.
+ */
+type YearView = 'inflow' | 'sales'
+const YEAR_VIEW_KEY = 'analytics.yearView'
+function readYearView(): YearView {
+  try {
+    return localStorage.getItem(YEAR_VIEW_KEY) === 'sales' ? 'sales' : 'inflow'
+  } catch {
+    return 'inflow'
+  }
+}
+const yearView = ref<YearView>(readYearView())
+watch(yearView, (v) => {
+  try { localStorage.setItem(YEAR_VIEW_KEY, v) } catch { /* выбор не критичен */ }
+})
+
+const { rows: salesRows, loading: salesLoading } = useAnalyticsMonthlySales(
+  () => ({ from: `${calYear.value}-01-01`, to: `${calYear.value}-12-31` }),
+  () => selectedCashBoxId.value,
+  () => yearView.value === 'sales',
+)
+
+/** Закупка и наценка — только тем, кому положено их видеть. */
+const canSeeCost = computed(() => authStore.can('deals.cost'))
+
+interface SalesMonth {
+  month: number
+  dealsCount: number
+  clientsCount: number
+  totalPrice: number
+  downPayment: number
+  financed: number
+  purchasePrice: number
+  markup: number
+  /** Средний договор — сумма ÷ число сделок. */
+  avgDeal: number
+  /** Наценка к закупке, % — средняя по месяцу, взвешенная по суммам. */
+  markupPct: number
+  isCurrent: boolean
+}
+
+const salesMonths = computed((): SalesMonth[] => {
+  const now = new Date()
+  return Array.from({ length: 12 }, (_, i) => {
+    const key = `${calYear.value}-${String(i + 1).padStart(2, '0')}`
+    const r = salesRows.value.find((x) => x.month === key)
+    const deals = r?.dealsCount ?? 0
+    const purchase = r?.purchasePrice ?? 0
+    const markup = r?.markup ?? 0
+    return {
+      month: i,
+      dealsCount: deals,
+      clientsCount: r?.clientsCount ?? 0,
+      totalPrice: r?.totalPrice ?? 0,
+      downPayment: r?.downPayment ?? 0,
+      financed: r?.financed ?? 0,
+      purchasePrice: purchase,
+      markup,
+      avgDeal: deals > 0 ? Math.round((r?.totalPrice ?? 0) / deals) : 0,
+      markupPct: purchase > 0 ? (markup / purchase) * 100 : 0,
+      isCurrent: calYear.value === now.getFullYear() && i === now.getMonth(),
+    }
+  })
+})
+
+const salesTotal = computed(() => {
+  const t = salesMonths.value.reduce(
+    (s, m) => ({
+      dealsCount: s.dealsCount + m.dealsCount,
+      totalPrice: s.totalPrice + m.totalPrice,
+      financed: s.financed + m.financed,
+      purchasePrice: s.purchasePrice + m.purchasePrice,
+      markup: s.markup + m.markup,
+    }),
+    { dealsCount: 0, totalPrice: 0, financed: 0, purchasePrice: 0, markup: 0 },
+  )
+  return { ...t, markupPct: t.purchasePrice > 0 ? (t.markup / t.purchasePrice) * 100 : 0 }
+})
+
+/** Шкала полосы — самый крупный месяц года: видно, какие месяцы сильнее. */
+const salesMax = computed(() => Math.max(0, ...salesMonths.value.map((m) => m.totalPrice)))
+
+const yearBusy = computed(() =>
+  yearView.value === 'sales' ? salesLoading.value || summaryLoading.value : overviewBusy.value,
+)
 
 function openMonthDetail(m: MonthData) {
   const d = new Date(calYear.value, m.month, 1)
@@ -1190,9 +1318,63 @@ async function openTimeliness(side: string, bucket: string | null) {
                 <v-icon icon="mdi-chevron-right" size="20" />
               </button>
             </div>
+            <!-- Два взгляда на год: деньги по дате оплаты и договоры по дате
+                 сделки. Разные вопросы — «как собираем» и «растём ли мы». -->
+            <div class="yc-tabs" role="tablist">
+              <button
+                class="yc-tab"
+                :class="{ 'yc-tab--on': yearView === 'inflow' }"
+                role="tab"
+                @click="yearView = 'inflow'"
+              >
+                <v-icon icon="mdi-cash-multiple" size="15" />
+                Оплаты
+              </button>
+              <button
+                class="yc-tab"
+                :class="{ 'yc-tab--on': yearView === 'sales' }"
+                role="tab"
+                @click="yearView = 'sales'"
+              >
+                <v-icon icon="mdi-file-sign" size="15" />
+                Эффективность
+              </button>
+            </div>
           </div>
 
-          <div class="yc-header-stats">
+          <!-- Итоги года: продажи -->
+          <div v-if="yearView === 'sales'" class="yc-header-stats">
+            <div class="yc-stat">
+              <div class="yc-stat-value">{{ salesTotal.dealsCount }}</div>
+              <div class="yc-stat-label">Договоров оформлено</div>
+            </div>
+            <div class="yc-stat-divider" />
+            <div class="yc-stat">
+              <ExactValue class="yc-stat-value" :value="salesTotal.totalPrice">{{ formatCurrencyShort(salesTotal.totalPrice) }}</ExactValue>
+              <div class="yc-stat-label">Сумма договоров</div>
+              <div class="yc-stat-sub">
+                в рассрочку <ExactValue :value="salesTotal.financed" :hint="false">{{ formatCurrencyShort(salesTotal.financed) }}</ExactValue>
+              </div>
+            </div>
+            <template v-if="canSeeCost">
+              <div class="yc-stat-divider" />
+              <div class="yc-stat">
+                <ExactValue class="yc-stat-value" style="color: #3b82f6;" :value="salesTotal.purchasePrice">{{ formatCurrencyShort(salesTotal.purchasePrice) }}</ExactValue>
+                <div class="yc-stat-label">Закупка</div>
+              </div>
+              <div class="yc-stat-divider" />
+              <div class="yc-stat">
+                <ExactValue class="yc-stat-value" style="color: #34d399;" :value="salesTotal.markup">{{ formatCurrencyShort(salesTotal.markup) }}</ExactValue>
+                <div class="yc-stat-label">Наценка</div>
+                <div v-if="salesTotal.purchasePrice > 0" class="yc-stat-sub">
+                  {{ formatPercent(salesTotal.markupPct) }} к закупке
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Итоги года: поступления -->
+          <div v-else class="yc-header-stats">
             <div class="yc-stat">
               <ExactValue class="yc-stat-value" style="color: #34d399;" :value="Math.max(0, yearTotal.partnerEarned)">{{ formatCurrencyShort(Math.max(0, yearTotal.partnerEarned)) }}</ExactValue>
               <div class="yc-stat-label">Мой чистый доход</div>
@@ -1218,14 +1400,111 @@ async function openTimeliness(side: string, bucket: string | null) {
           </div>
         </div>
 
+        <!-- ── Продажи: договоры по дате сделки ── -->
+        <template v-if="yearView === 'sales'">
+          <div class="yc-caption yc-caption--sales" :class="{ 'yc-caption--nocost': !canSeeCost }">
+            <span class="yc-cap-month">Месяц</span>
+            <span class="yc-cap-num yc-cap-num--mid">Договоров</span>
+            <span class="yc-cap-num yc-cap-num--mid">Клиентов</span>
+            <span class="yc-cap-num">Сумма договоров</span>
+            <span class="yc-cap-num">Первые взносы</span>
+            <span class="yc-cap-num">В рассрочку</span>
+            <span v-if="canSeeCost" class="yc-cap-num">Закупка</span>
+            <span v-if="canSeeCost" class="yc-cap-num">Наценка</span>
+            <span class="yc-cap-num">Средний договор</span>
+            <span class="yc-cap-chev" />
+          </div>
+
+          <div class="yc-list">
+            <div v-for="sk in (yearBusy ? 12 : 0)" :key="`ys-sk-${sk}`" class="yc-row yc-row--sales yc-row--sk" :class="{ 'yc-row--nocost': !canSeeCost }">
+              <div class="yc-row-month"><div class="an-sk an-sk--sm" /></div>
+              <div v-for="n in (canSeeCost ? 7 : 5)" :key="n" class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
+            </div>
+
+            <div
+              v-for="m in (yearBusy ? [] : salesMonths)"
+              :key="`ys-${m.month}`"
+              class="yc-row yc-row--sales yc-row--static"
+              :class="{
+                'yc-row--current': m.isCurrent,
+                'yc-row--empty': m.dealsCount === 0,
+                'yc-row--nocost': !canSeeCost,
+              }"
+            >
+              <div class="yc-row-month">
+                <div class="yc-month-head">
+                  <span class="yc-row-mname" :class="{ 'yc-row-mname--current': m.isCurrent }">{{ MONTH_NAMES[m.month] }}</span>
+                  <span v-if="m.isCurrent" class="yc-month-now">сейчас</span>
+                </div>
+
+                <!-- Компактная строка — только на телефоне, где колонок нет -->
+                <div v-if="m.dealsCount > 0" class="yc-row-mmoney">
+                  <span><b>{{ m.dealsCount }}</b> договоров</span>
+                  <span><b>{{ formatCurrencyShort(m.totalPrice) }}</b> сумма</span>
+                  <span v-if="canSeeCost" class="yc-mm--net"><b>+{{ formatCurrencyShort(m.markup) }}</b> наценка</span>
+                  <span v-else><b>{{ formatCurrencyShort(m.financed) }}</b> в рассрочку</span>
+                </div>
+              </div>
+
+              <div class="yc-row-num yc-row-num--mid">
+                <span v-if="m.dealsCount > 0" class="yc-num-count">{{ m.dealsCount }}</span>
+                <span v-else class="yc-num-empty">—</span>
+              </div>
+              <div class="yc-row-num yc-row-num--mid">
+                <span v-if="m.clientsCount > 0" class="yc-num-count">{{ m.clientsCount }}</span>
+                <span v-else class="yc-num-empty">—</span>
+              </div>
+              <div class="yc-row-num">
+                <ExactValue v-if="m.totalPrice > 0" class="yc-num-val" :value="m.totalPrice">{{ formatCurrencyShort(m.totalPrice) }}</ExactValue>
+                <span v-else class="yc-num-empty">—</span>
+              </div>
+              <div class="yc-row-num">
+                <ExactValue v-if="m.downPayment > 0" class="yc-num-val" :value="m.downPayment">{{ formatCurrencyShort(m.downPayment) }}</ExactValue>
+                <span v-else class="yc-num-empty">—</span>
+              </div>
+              <div class="yc-row-num">
+                <ExactValue v-if="m.financed > 0" class="yc-num-val" :value="m.financed">{{ formatCurrencyShort(m.financed) }}</ExactValue>
+                <span v-else class="yc-num-empty">—</span>
+              </div>
+              <template v-if="canSeeCost">
+                <div class="yc-row-num">
+                  <ExactValue v-if="m.purchasePrice > 0" class="yc-num-val yc-num-val--pending" :value="m.purchasePrice">{{ formatCurrencyShort(m.purchasePrice) }}</ExactValue>
+                  <span v-else class="yc-num-empty">—</span>
+                </div>
+                <div class="yc-row-num">
+                  <ExactValue v-if="m.markup !== 0" class="yc-num-val yc-num-val--net" :value="m.markup">+{{ formatCurrencyShort(m.markup) }}</ExactValue>
+                  <span v-else class="yc-num-empty">—</span>
+                </div>
+              </template>
+              <div class="yc-row-num">
+                <ExactValue v-if="m.avgDeal > 0" class="yc-num-val" :value="m.avgDeal">{{ formatCurrencyShort(m.avgDeal) }}</ExactValue>
+                <span v-else class="yc-num-empty">—</span>
+              </div>
+              <span class="yc-row-chev" />
+            </div>
+          </div>
+
+          <div class="yc-footer">
+            <div class="yc-legend-hint">
+              <v-icon icon="mdi-information-outline" size="14" />
+              Месяц — по дате оформления договора. Наведите на сумму — покажем точное значение.
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
         <!-- Column captions (desktop) -->
-        <div class="yc-caption">
+        <div class="yc-caption yc-caption--pay">
           <span class="yc-cap-month">Месяц</span>
-          <span class="yc-cap-bar">Сбор за месяц</span>
-          <span class="yc-cap-num">Ожидается за месяц</span>
+          <span class="yc-cap-num yc-cap-num--mid">Платежей</span>
+          <span class="yc-cap-num yc-cap-num--mid">Досрочно</span>
+          <span class="yc-cap-num yc-cap-num--mid">С опозданием</span>
+          <span class="yc-cap-num">Ожидается</span>
           <span class="yc-cap-num">Пришло</span>
           <span class="yc-cap-num">Осталось</span>
+          <span class="yc-cap-num">Весь доход</span>
           <span class="yc-cap-num">Мой чистый доход</span>
+          <span class="yc-cap-num">Инвесторам</span>
           <span class="yc-cap-chev" />
         </div>
 
@@ -1234,78 +1513,80 @@ async function openTimeliness(side: string, bucket: string | null) {
           <!-- Пока считаются новые цифры, показываем заглушки той же формы:
                иначе при смене кассы месяцы пару секунд стоят со старыми
                суммами. -->
-          <div v-for="sk in (overviewBusy ? 12 : 0)" :key="`yc-sk-${sk}`" class="yc-row yc-row--sk">
+          <div v-for="sk in (overviewBusy ? 12 : 0)" :key="`yc-sk-${sk}`" class="yc-row yc-row--pay yc-row--sk">
             <div class="yc-row-month"><div class="an-sk an-sk--sm" /></div>
-            <div class="yc-row-mid"><div class="an-sk" /></div>
-            <div class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
-            <div class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
-            <div class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
-            <div class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
+            <div v-for="n in 9" :key="n" class="yc-row-num"><div class="an-sk an-sk--sm" /></div>
           </div>
 
           <div
             v-for="m in (overviewBusy ? [] : yearMonths)"
             :key="m.month"
-            class="yc-row"
+            class="yc-row yc-row--pay"
             :class="{
               'yc-row--current': m.isCurrent,
               'yc-row--empty': m.planned === 0,
             }"
             @click="openMonthDetail(m)"
           >
-            <!-- Month name -->
+            <!-- Месяц — якорь строки: мягкая подложка со скруглением справа
+                 показывает, что все цифры правее относятся именно к нему.
+                 Полоса сбора живёт здесь же, под названием: своей колонки она
+                 не стоила — это подпись к месяцу, а не отдельный показатель. -->
             <div class="yc-row-month">
-              <span class="yc-row-mname" :class="{ 'yc-row-mname--current': m.isCurrent }">{{ MONTH_NAMES[m.month] }}</span>
-              <span v-if="m.isCurrent" class="yc-month-now">сейчас</span>
-              <span v-if="m.payments > 0" class="yc-row-pays">{{ m.payments }}&nbsp;{{ m.payments === 1 ? 'платёж' : (m.payments < 5 ? 'платежа' : 'платежей') }}</span>
-            </div>
-
-            <!-- Bar + secondary info: доля собранного из плана месяца -->
-            <div class="yc-row-mid">
-              <div class="yc-bar-track">
+              <div class="yc-month-head">
+                <span class="yc-row-mname" :class="{ 'yc-row-mname--current': m.isCurrent }">{{ MONTH_NAMES[m.month] }}</span>
+                <span v-if="m.isCurrent" class="yc-month-now">сейчас</span>
+              </div>
+              <div v-if="m.planned > 0" class="yc-progress">
                 <div
                   v-if="m.received > 0"
-                  class="yc-bar yc-bar--earned"
+                  class="yc-progress-fill yc-progress-fill--earned"
                   :style="{ width: (m.received / m.planned * 100) + '%' }"
                 />
                 <div
                   v-if="m.pendingAmount > 0"
-                  class="yc-bar yc-bar--pending"
+                  class="yc-progress-fill yc-progress-fill--pending"
                   :style="{ width: (m.pendingAmount / m.planned * 100) + '%' }"
                 />
               </div>
-              <div v-if="m.coInvestorEarned > 0 || m.earlyOffMonth > 0 || m.lateOffMonth > 0" class="yc-row-chips">
-                <span v-if="m.coInvestorEarned > 0" class="yc-chip">
-                  весь доход <ExactValue :value="m.earned" :hint="false">{{ formatCurrencyShort(m.earned) }}</ExactValue> · инвесторам <ExactValue :value="m.coInvestorEarned" :hint="false">{{ formatCurrencyShort(m.coInvestorEarned) }}</ExactValue>
-                </span>
-                <span
-                  v-if="m.earlyOffMonth > 0"
-                  class="yc-chip yc-chip--off"
-                  title="Эти платежи оплачены раньше срока — доход учтён в месяце фактической оплаты"
-                >
-                  <v-icon icon="mdi-calendar-arrow-left" size="10" />
-                  {{ m.earlyOffMonth }} досрочно
-                </span>
-                <span
-                  v-if="m.lateOffMonth > 0"
-                  class="yc-chip yc-chip--off-late"
-                  title="Эти платежи оплачены позже срока — доход учтён в месяце фактической оплаты"
-                >
-                  <v-icon icon="mdi-calendar-arrow-right" size="10" />
-                  {{ m.lateOffMonth }} с опозданием
-                </span>
-              </div>
-
-              <!-- Компактная строка сумм — только на телефоне -->
-              <div v-if="m.planned > 0" class="yc-row-mmoney">
-                <span><b>{{ formatCurrencyShort(m.planned) }}</b> ожидается</span>
-                <span class="yc-mm--green"><b>{{ formatCurrencyShort(m.received) }}</b> пришло</span>
-                <span v-if="m.pendingAmount > 0" class="yc-mm--pending"><b>{{ formatCurrencyShort(m.pendingAmount) }}</b> осталось</span>
-                <span v-if="m.partnerEarned > 0" class="yc-mm--net"><b>+{{ formatCurrencyShort(Math.max(0, m.partnerEarned)) }}</b> чисто</span>
-              </div>
             </div>
 
-            <!-- Numbers: план месяца / пришло / осталось / чистый доход -->
+            <!-- Компактная строка сумм — только на телефоне, где колонок нет -->
+            <div v-if="m.planned > 0" class="yc-row-mmoney">
+              <span><b>{{ formatCurrencyShort(m.planned) }}</b> ожидается</span>
+              <span class="yc-mm--green"><b>{{ formatCurrencyShort(m.received) }}</b> пришло</span>
+              <span v-if="m.pendingAmount > 0" class="yc-mm--pending"><b>{{ formatCurrencyShort(m.pendingAmount) }}</b> осталось</span>
+              <span v-if="m.partnerEarned > 0" class="yc-mm--net"><b>+{{ formatCurrencyShort(Math.max(0, m.partnerEarned)) }}</b> чисто</span>
+              <span v-if="m.payments > 0">{{ m.payments }}&nbsp;плат.</span>
+              <span v-if="m.earlyOffMonth > 0">{{ m.earlyOffMonth }}&nbsp;досрочно</span>
+              <span v-if="m.lateOffMonth > 0">{{ m.lateOffMonth }}&nbsp;с&nbsp;опозданием</span>
+            </div>
+
+            <!-- Платежи месяца: сколько всего, из них досрочно и с опозданием.
+                 Досрочные и опоздавшие оплачены не в свой месяц — их доход
+                 учтён там, где деньги реально пришли. -->
+            <div class="yc-row-num yc-row-num--mid">
+              <span v-if="m.payments > 0" class="yc-num-count">{{ m.payments }}</span>
+              <span v-else class="yc-num-empty">—</span>
+            </div>
+            <div class="yc-row-num yc-row-num--mid">
+              <span
+                v-if="m.earlyOffMonth > 0"
+                class="yc-num-count yc-num-count--early"
+                title="Оплачены раньше своего срока — доход учтён в месяце фактической оплаты"
+              >{{ m.earlyOffMonth }}</span>
+              <span v-else class="yc-num-empty">—</span>
+            </div>
+            <div class="yc-row-num yc-row-num--mid">
+              <span
+                v-if="m.lateOffMonth > 0"
+                class="yc-num-count yc-num-count--late"
+                title="Оплачены позже срока — доход учтён в месяце фактической оплаты"
+              >{{ m.lateOffMonth }}</span>
+              <span v-else class="yc-num-empty">—</span>
+            </div>
+
+            <!-- Деньги месяца: план, факт, остаток и доход -->
             <div class="yc-row-num">
               <ExactValue v-if="m.planned > 0" class="yc-num-val" :value="m.planned">{{ formatCurrencyShort(m.planned) }}</ExactValue>
               <span v-else class="yc-num-empty">—</span>
@@ -1319,7 +1600,15 @@ async function openTimeliness(side: string, bucket: string | null) {
               <span v-else class="yc-num-empty">—</span>
             </div>
             <div class="yc-row-num">
+              <ExactValue v-if="m.earned !== 0" class="yc-num-val" :value="m.earned">{{ formatCurrencyShort(m.earned) }}</ExactValue>
+              <span v-else class="yc-num-empty">—</span>
+            </div>
+            <div class="yc-row-num">
               <ExactValue v-if="m.partnerEarned !== 0" class="yc-num-val yc-num-val--net" :value="Math.max(0, m.partnerEarned)">+{{ formatCurrencyShort(Math.max(0, m.partnerEarned)) }}</ExactValue>
+              <span v-else class="yc-num-empty">—</span>
+            </div>
+            <div class="yc-row-num">
+              <ExactValue v-if="m.coInvestorEarned > 0" class="yc-num-val yc-num-val--ci" :value="m.coInvestorEarned">{{ formatCurrencyShort(m.coInvestorEarned) }}</ExactValue>
               <span v-else class="yc-num-empty">—</span>
             </div>
 
@@ -1342,6 +1631,7 @@ async function openTimeliness(side: string, bucket: string | null) {
             Наведите на сумму — покажем точное значение · нажмите на месяц для детализации
           </div>
         </div>
+        </template>
       </v-card>
 
       <!-- Своевременность: просрочка и оплаты, сделанные заранее. Две стороны
@@ -1373,9 +1663,28 @@ async function openTimeliness(side: string, bucket: string | null) {
                   @click="side.data.count && openTimeliness(side.key, null)"
                 >
                   <ExactValue :value="side.data.amount" :hint="false">
-                    <div class="tl-stat-value" :style="{ color: side.color }">{{ formatCurrencyShort(side.data.amount) }}</div>
+                    <div class="tl-stat-value" :style="{ color: side.color }">
+                      {{ formatCurrencyShort(side.data.amount) }}<span
+                        v-if="pctOfInvested(side.data.amount)"
+                        class="tl-stat-pct"
+                      >&nbsp;/&nbsp;{{ pctOfInvested(side.data.amount) }}</span>
+                    </div>
                   </ExactValue>
-                  <div class="tl-stat-label">Сумма</div>
+                  <div class="tl-stat-label">
+                    Сумма<template v-if="pctOfInvested(side.data.amount)"> и доля вложенного</template>
+                    <v-tooltip v-if="pctOfInvested(side.data.amount)" :text="investedHint" location="top" max-width="320">
+                      <template #activator="{ props }">
+                        <!-- Клик по бейджу не должен открывать детализацию стороны. -->
+                        <v-icon
+                          v-bind="props"
+                          icon="mdi-information-outline"
+                          size="12"
+                          class="tl-info"
+                          @click.stop
+                        />
+                      </template>
+                    </v-tooltip>
+                  </div>
                 </div>
                 <div
                   class="tl-stat"
@@ -1396,7 +1705,14 @@ async function openTimeliness(side: string, bucket: string | null) {
               </div>
 
               <div class="tl-age-head">
-                <span>{{ side.ageTitle }}</span>
+                <span class="tl-age-title">
+                  {{ side.ageTitle }}
+                  <v-tooltip v-if="investedBase > 0" :text="investedHint" location="top" max-width="320">
+                    <template #activator="{ props }">
+                      <v-icon v-bind="props" icon="mdi-information-outline" size="12" class="tl-info" />
+                    </template>
+                  </v-tooltip>
+                </span>
                 <span v-if="side.data.count" class="tl-age-avg">
                   в среднем {{ side.data.avgDays }} дн. · максимум {{ side.data.maxDays }}
                 </span>
@@ -1422,6 +1738,7 @@ async function openTimeliness(side: string, bucket: string | null) {
                   </div>
                   <div class="tl-age-val">
                     {{ formatCurrencyShort(b.amount) }}
+                    <span v-if="pctOfInvested(b.amount)" class="tl-age-pct">· {{ pctOfInvested(b.amount) }}</span>
                     <span class="tl-age-count">· {{ b.count }}</span>
                   </div>
                 </div>
@@ -2221,10 +2538,34 @@ async function openTimeliness(side: string, bucket: string | null) {
   color: rgba(var(--v-theme-on-surface), 0.8);
 }
 
-.yc-header-stats {
-  display: flex; align-items: center; gap: 20px;
+/* Вкладки обзора: «Поступления» и «Продажи» — сегмент под годом. */
+.yc-tabs {
+  display: inline-flex; gap: 2px; margin-top: 12px; padding: 3px;
+  border-radius: 10px; background: rgba(var(--v-theme-on-surface), 0.05);
+  align-self: flex-start;
 }
-.yc-stat { text-align: center; }
+.yc-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border: none; border-radius: 8px; cursor: pointer;
+  font-size: 13px; font-weight: 600; background: none;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.yc-tab:hover { color: rgba(var(--v-theme-on-surface), 0.85); }
+.yc-tab--on {
+  background: rgb(var(--v-theme-surface)); color: #047857;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.yc-header-stats {
+  display: flex; align-items: stretch; gap: 20px;
+}
+/* Показатели с подписями разной длины раньше «гуляли» по вертикали, потому
+   что выравнивались по центру. Теперь все начинаются с одной линии сверху. */
+.yc-stat {
+  text-align: center;
+  display: flex; flex-direction: column; align-items: center;
+}
 .yc-stat-value {
   font-size: 20px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.8);
@@ -2253,6 +2594,45 @@ async function openTimeliness(side: string, bucket: string | null) {
   align-items: center;
   gap: 14px;
 }
+/* «Оплаты»: у каждого показателя своя колонка, поэтому полоса — узкая, а
+   сетка своя. Раньше полоса занимала половину ширины, а числа платежей,
+   досрочных и опоздавших ютились подписями под ней. */
+.yc-caption--pay,
+.yc-row--pay {
+  grid-template-columns:
+    166px 82px 84px 108px
+    minmax(74px, 1fr) minmax(74px, 1fr) minmax(74px, 1fr)
+    minmax(74px, 1fr) minmax(84px, 1fr) minmax(74px, 1fr) 18px;
+  gap: 10px;
+}
+/* «Эффективность»: без полосы — только счётчики и суммы. Два последних
+   столбца (закупка и наценка) появляются лишь у тех, кому они открыты. */
+.yc-caption--sales,
+.yc-row--sales {
+  grid-template-columns:
+    166px 90px 90px
+    minmax(84px, 1fr) minmax(84px, 1fr) minmax(84px, 1fr)
+    minmax(84px, 1fr) minmax(84px, 1fr) minmax(88px, 1fr) 18px;
+  gap: 10px;
+}
+.yc-caption--sales.yc-caption--nocost,
+.yc-row--sales.yc-row--nocost {
+  grid-template-columns:
+    166px 90px 90px
+    minmax(96px, 1fr) minmax(96px, 1fr) minmax(96px, 1fr) minmax(96px, 1fr) 18px;
+}
+/* Узкие заголовки не должны ломаться по слогам: «ПЛАТЕЖЕ/Й» читается как
+   опечатка. Лучше чуть мельче шрифт, чем перенос. */
+.yc-caption--pay span { white-space: nowrap; font-size: 10.5px; }
+/* Счётчики: платежи, досрочные, опоздавшие */
+.yc-num-count {
+  font-size: 13.5px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.yc-num-count--early { color: #0369a1; }
+.yc-num-count--late { color: #b45309; }
+.yc-num-val--ci { color: rgba(var(--v-theme-on-surface), 0.55); }
 .yc-caption {
   padding: 12px 26px;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
@@ -2273,15 +2653,20 @@ async function openTimeliness(side: string, bucket: string | null) {
   position: relative;
   transition: background 0.15s;
 }
-/* Отчётливый разделитель между месяцами */
+/* Отчётливый разделитель между месяцами.
+   Начинается от колонки с цифрами: подложку месяца он пересекать не должен —
+   иначе линия рассекает «таблетку» пополам. 202px = отступ строки (26) +
+   колонка месяца (166) + зазор сетки (10). */
 .yc-row + .yc-row::after {
   content: '';
   position: absolute;
-  top: 0; left: 26px; right: 26px;
+  top: 0; left: 202px; right: 26px;
   height: 1px;
-  background: rgba(var(--v-theme-on-surface), 0.1);
+  background: rgba(var(--v-theme-on-surface), 0.08);
 }
 .yc-row:hover { background: rgba(var(--v-theme-on-surface), 0.035); }
+/* Строка продаж ничего не открывает — не делаем вид, что по ней можно нажать. */
+.yc-row--static { cursor: default; }
 /* при ховере скрываем разделитель у соседей — строка «выделяется» целиком */
 .yc-row:hover::after,
 .yc-row:hover + .yc-row::after { background: transparent; }
@@ -2297,11 +2682,40 @@ async function openTimeliness(side: string, bucket: string | null) {
 }
 .yc-row--empty .yc-row-mname { color: rgba(var(--v-theme-on-surface), 0.4); }
 
-/* Month cell */
+/* Месяц — якорь строки.
+   Мягкая подложка с острыми левыми и скруглёнными правыми углами: строка
+   «начинается» от края таблицы и читается как «всё правее — про этот месяц».
+   Отрицательный отступ вытягивает подложку под паддинг строки, чтобы она
+   доходила до самого края карточки. */
 .yc-row-month {
-  display: flex; align-items: center; flex-wrap: wrap;
-  gap: 4px 8px;
+  display: flex; flex-direction: column; gap: 6px;
+  /* Подложка занимает почти всю высоту строки, между месяцами остаётся
+     небольшой зазор: без него они сливаются в сплошной серый столбец. */
+  margin: -11px 0 -11px -26px;
+  padding: 11px 16px 11px 26px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border-radius: 0 12px 12px 0;
 }
+.yc-row--current .yc-row-month { background: rgba(16, 185, 129, 0.1); }
+.yc-row--empty .yc-row-month { background: rgba(var(--v-theme-on-surface), 0.02); }
+.yc-month-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+
+/* Полоса сбора — как на странице сделки: тонкая, со скруглёнными краями и
+   спокойным фоном. Это подпись к месяцу, а не самостоятельный показатель. */
+.yc-progress {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  display: flex;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+}
+.yc-progress-fill {
+  height: 100%;
+  transition: width 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+  min-width: 0; flex-shrink: 0;
+}
+.yc-progress-fill:first-child { border-radius: 3px 0 0 3px; }
+.yc-progress-fill:last-child { border-radius: 0 3px 3px 0; }
+.yc-progress-fill--earned { background: #10b981; }
+.yc-progress-fill--pending { background: #3b82f6; }
 .yc-row-mname {
   font-size: 15px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.85);
@@ -2341,6 +2755,8 @@ async function openTimeliness(side: string, bucket: string | null) {
 .yc-bar--earned { background: #10b981; }
 .yc-bar--expected { background: #3b82f6; }
 .yc-bar--pending { background: #3b82f6; }
+/* Продажи: закупка светлее наценки — видно, какая часть договора заработок. */
+.yc-bar--cost { background: #93c5fd; }
 .yc-row-chips {
   display: flex; flex-wrap: wrap; gap: 4px 6px;
   margin-top: 7px;
@@ -2363,6 +2779,10 @@ async function openTimeliness(side: string, bucket: string | null) {
 
 /* Numeric columns */
 .yc-row-num { text-align: right; }
+/* Счётчики (платежи, досрочные, опоздавшие, договоры, клиенты) — по центру:
+   это короткие числа, и у правого края они висели далеко от заголовка. */
+.yc-row-num--mid { text-align: center; }
+.yc-cap-num--mid { text-align: center; }
 .yc-num-val {
   font-size: 15px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.8);
@@ -3044,6 +3464,12 @@ async function openTimeliness(side: string, bucket: string | null) {
     padding: 14px 16px;
   }
   .yc-row + .yc-row::after { left: 16px; right: 16px; }
+  .yc-row-month {
+    margin: -8px -16px 0;
+    padding: 8px 16px;
+    border-radius: 0;
+    background: transparent;
+  }
   .yc-row-num, .yc-row-chev { display: none; } /* колонки-числа заменяет компактная строка */
   .yc-row-mid { grid-column: 1; }
   .yc-row-mmoney {
@@ -3151,6 +3577,19 @@ async function openTimeliness(side: string, bucket: string | null) {
   font-size: 11.5px; margin-top: 4px;
   color: rgba(var(--v-theme-on-surface), 0.45);
 }
+/* Доля от вложенного — приглушённее самой суммы: это её пояснение, а не
+   второй равноправный показатель. */
+.tl-stat-pct {
+  font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.tl-age-pct { color: rgba(var(--v-theme-on-surface), 0.45); font-weight: 600; }
+.tl-info {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: help; vertical-align: baseline;
+  margin-left: 3px;
+}
+.tl-age-title { display: inline-flex; align-items: center; }
 .tl-age-head {
   display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
   font-size: 12px; font-weight: 700;
@@ -3193,7 +3632,9 @@ async function openTimeliness(side: string, bucket: string | null) {
    целиком, иначе «пропуск» между 8–30 и 91–180 выглядит как сбой. */
 .tl-age-bar { height: 100%; border-radius: 6px; transition: width 0.25s; }
 .tl-age-val {
-  flex: 0 0 auto; min-width: 96px; text-align: right;
+  /* Шире прежнего: к сумме и счётчику добавилась доля от вложенного, а
+     переносить строку возраста нельзя — полосы перестанут быть сравнимыми. */
+  flex: 0 0 auto; min-width: 150px; text-align: right;
   font-size: 12px; font-weight: 700; white-space: nowrap;
   color: rgba(var(--v-theme-on-surface), 0.75);
 }

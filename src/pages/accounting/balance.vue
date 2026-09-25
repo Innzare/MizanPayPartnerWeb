@@ -113,6 +113,9 @@ async function load() {
     await store.fetchUnallocated()
     await store.fetchLimits()
     await store.fetchPending()
+    // Доступные деньги — своим запросом: он собирает цифры из касс,
+    // обязательств и счетов, и ради него не стоит задерживать список счетов.
+    if (canSeeAvailable.value) void store.fetchAvailable().catch(() => {})
     if (!cashboxes.items.length) await cashboxes.fetchAll().catch(() => {})
   } catch (e: any) {
     toast.error(e?.message || 'Не удалось загрузить счета')
@@ -252,6 +255,93 @@ const grouped = computed(() =>
  * итоге.
  */
 const canSeeBalance = computed(() => store.accounts.some((a) => a.balance !== null))
+
+/**
+ * «Доступные деньги»: сколько можно потратить прямо сейчас.
+ *
+ * Считает сервер — цифра слишком дорогая, чтобы собирать её на клиенте из
+ * четырёх запросов и расходиться с кассой. Здесь только подписи к шагам:
+ * человеку нужно не число, а причина, по которой остальное недоступно.
+ *
+ * Цифра общая по всем кассам и не реагирует на фильтр вверху страницы:
+ * долги поставщикам и займы к кассе не привязаны, и делить их между кассами
+ * было бы выдумкой.
+ */
+// Оба права: финансы дают саму кассу, «видеть общий баланс» — суммы по
+// счетам внутри цепочки. Сервер требует того же, здесь только чтобы не
+// ходить за заведомым отказом.
+const canSeeAvailable = computed(() => auth.can('finance.view') && auth.can('accounting.balanceView'))
+const avail = computed(() => store.available)
+const availOpen = ref(localStorage.getItem('accounting.availOpen') === '1')
+function toggleAvail() {
+  availOpen.value = !availOpen.value
+  localStorage.setItem('accounting.availOpen', availOpen.value ? '1' : '0')
+}
+
+/** Подписи шагов: что за сумма и почему она здесь. */
+const STEP_TEXT: Record<string, { title: string; note: string }> = {
+  broughtIn: {
+    title: 'Завели в дело',
+    note: 'Стартовый капитал касс, деньги со-инвесторов и ваши пополнения — за вычетом того, что вы уже забрали себе.',
+  },
+  deployed: {
+    title: 'Ушло в закупки',
+    note: 'Деньги, потраченные на товар по всем сделкам — и по действующим, и по закрытым.',
+  },
+  received: {
+    title: 'Вернулось от клиентов',
+    note: 'Все оплаты клиентов: первые взносы и платежи по графику.',
+  },
+  dividendOut: {
+    title: 'Выплачено со-инвесторам',
+    note: 'Дивиденды, которые вы уже отдали инвесторам на руки.',
+  },
+  loans: {
+    title: 'Займы',
+    note: 'Взяли и вернули, дали в долг и нам вернули — вместе.',
+  },
+  other: {
+    title: 'Прочие операции',
+    note: 'Ручные доходы и расходы и всё остальное движение по кассе.',
+  },
+  reconcile: {
+    title: 'Инвентаризация',
+    note: 'Пересчитали деньги и поправили остаток счёта. Касса о пересчёте не знает, поэтому поправка видна отдельной строкой.',
+  },
+  pendingIn: {
+    title: 'Пришло без назначения',
+    note: 'Деньги легли на счёт, но чьи они — ещё не решили. В кассе их пока нет.',
+  },
+  pendingOut: {
+    title: 'Выдано под отчёт',
+    note: 'Деньги ушли со счёта, а в кассе они ещё числятся — пока операцию не разнесли.',
+  },
+  disabledAccounts: {
+    title: 'На отключённых счетах',
+    note: 'Счёт отключён вручную: снять и перевести с него нельзя, пока вы его не включите.',
+  },
+  atPoints: {
+    title: 'В пунктах приёма',
+    note: 'Деньги приняты, но лежат у приёмщика — пока их не забрали, распорядиться ими нельзя.',
+  },
+  inHands: {
+    title: 'На руках у сотрудников',
+    note: 'Наличные на счетах, закреплённых за сотрудниками.',
+  },
+
+  owedToCoInvestors: {
+    title: 'Должны со-инвесторам',
+    note: 'Прибыль, начисленная инвесторам, но ещё не выплаченная. Деньги пока у вас, но они уже не ваши.',
+  },
+  borrowed: {
+    title: 'Взято в долг',
+    note: 'Заёмные деньги лежат на счетах и работают, но бизнесу не принадлежат — их придётся вернуть.',
+  },
+}
+
+/** Шаги без нулей: пустые строки только мешают читать цепочку. */
+const availInflow = computed(() => (avail.value?.inflow ?? []).filter((s) => s.amount !== 0))
+const availLocked = computed(() => (avail.value?.locked ?? []).filter((s) => s.amount !== 0))
 
 /** Общий остаток — сумма по всем счетам. */
 const total = computed(() => visible.value.reduce((s, a) => s + (a.balance ?? 0), 0))
@@ -638,6 +728,98 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
             <span class="ac-hero-legend-dot" :style="{ background: SHARE_COLORS[g.type] }" />
             {{ g.title }} {{ g.pct }}%
           </span>
+        </div>
+      </div>
+
+      <!-- Доступные деньги: главный ответ раздела. Одной суммы мало — рядом
+           обязана стоять цепочка, иначе это очередная цифра, которой нет
+           причины верить. -->
+      <div v-if="canSeeAvailable && avail && canSeeBalance" class="av-card">
+        <div class="av-head">
+          <div class="av-head-main">
+            <div class="av-label">Доступно сейчас</div>
+            <div class="av-amount" :class="{ 'av-amount--neg': avail.available < 0 }">
+              {{ formatCurrency(avail.available) }}
+            </div>
+            <div class="av-sub">
+              Из {{ formatCurrency(avail.cashInBox) }}, которые есть сейчас, свободно распорядиться можно этой суммой
+            </div>
+            <!-- Пока учёт не сходится, выдавать цифру за точную нельзя. -->
+            <div v-if="avail.warnings.includes('accountsExceedCash')" class="av-warn">
+              <v-icon icon="mdi-alert-outline" size="15" />
+              На счетах записано больше, чем есть в кассах — на
+              {{ formatCurrency(Math.abs(avail.notes.unallocated)) }}. Пока расхождение не устранено,
+              сумма приблизительная.
+            </div>
+          </div>
+          <button class="av-toggle" @click="toggleAvail">
+            {{ availOpen ? 'Свернуть' : 'Откуда эта сумма' }}
+            <v-icon :icon="availOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="16" />
+          </button>
+        </div>
+
+        <!-- Цепочка: сначала как деньги появились, потом что из них занято.
+             Свёрнута по умолчанию — ежедневно нужен итог, а разбор открывают,
+             когда цифра удивила. -->
+        <div v-if="availOpen" class="av-chain">
+          <div class="av-chain-title">Сколько денег есть на самом деле</div>
+          <div v-for="s in availInflow" :key="s.key" class="av-step">
+            <div class="av-step-sign" :class="`av-step-sign--${s.sign === '-' ? 'minus' : 'plus'}`">
+              {{ s.sign }}
+            </div>
+            <div class="av-step-body">
+              <div class="av-step-title">{{ STEP_TEXT[s.key]?.title || s.key }}</div>
+              <div class="av-step-note">{{ STEP_TEXT[s.key]?.note }}</div>
+            </div>
+            <div class="av-step-sum">{{ formatCurrency(s.amount) }}</div>
+          </div>
+
+          <div class="av-total">
+            <div class="av-total-title">Всего денег сейчас</div>
+            <div class="av-total-sum">{{ formatCurrency(avail.cashInBox) }}</div>
+          </div>
+
+          <div v-if="availLocked.length" class="av-chain-title av-chain-title--gap">
+            Что из них уже занято
+          </div>
+          <div v-for="s in availLocked" :key="s.key" class="av-step">
+            <div class="av-step-sign av-step-sign--minus">−</div>
+            <div class="av-step-body">
+              <div class="av-step-title">{{ STEP_TEXT[s.key]?.title || s.key }}</div>
+              <div class="av-step-note">{{ STEP_TEXT[s.key]?.note }}</div>
+            </div>
+            <div class="av-step-sum">{{ formatCurrency(s.amount) }}</div>
+          </div>
+
+          <div class="av-total av-total--final">
+            <div class="av-total-title">Доступно сейчас</div>
+            <div class="av-total-sum" :class="{ 'av-amount--neg': avail.available < 0 }">
+              {{ formatCurrency(avail.available) }}
+            </div>
+          </div>
+
+          <!-- Справки: в цепочке не участвуют, но без них цифры выглядят
+               странно — «почему в сейфе больше, чем в кассе». -->
+          <div class="av-notes">
+            <div class="av-notes-title">Рядом, но в расчёт не входит</div>
+            <div v-if="avail.notes.inProgress > 0" class="av-note">
+              <b>{{ formatCurrency(avail.notes.inProgress) }}</b> — в товаре по действующим сделкам.
+              Эти деньги уже ушли из кассы, поэтому второй раз не вычитаются.
+            </div>
+            <div v-if="avail.notes.supplierDebt > 0" class="av-note">
+              <b>{{ formatCurrency(avail.notes.supplierDebt) }}</b> — долг поставщикам. Касса списала
+              закупку ещё при создании сделки, поэтому эти деньги у вас на руках есть, а в кассе
+              их уже нет — вычитать их ещё раз значило бы отнять одну сумму дважды.
+            </div>
+            <div v-if="avail.notes.clientsOwe > 0" class="av-note">
+              <b>{{ formatCurrency(avail.notes.clientsOwe) }}</b> — должны клиенты по действующим
+              сделкам. Эти деньги ещё не пришли.
+            </div>
+            <div v-if="avail.notes.lentOut > 0" class="av-note">
+              <b>{{ formatCurrency(avail.notes.lentOut) }}</b> — вам должны по выданным займам.
+              Деньги из кассы уже ушли и вернутся позже.
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1635,6 +1817,98 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
 
 /* Обычная карточка, а не пунктирная «заглушка»: это не черновик, а задача,
    которую партнёр закрывает кнопкой рядом. */
+/* ── Доступные деньги ──────────────────────────────────────────────
+   Главный ответ раздела: одна сумма крупно, под ней — цепочка, из которой
+   она получилась. Цепочка свёрнута: каждый день нужен итог, разбор открывают,
+   когда цифра удивила. */
+.av-card {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 16px;
+  padding: 20px 22px;
+  margin-bottom: 18px;
+  background: rgba(var(--v-theme-surface), 1);
+}
+.av-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.av-head-main { min-width: 0; }
+.av-label {
+  font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.av-amount {
+  font-size: 30px; font-weight: 800; line-height: 1.15; margin-top: 4px;
+  color: #047857;
+}
+.av-amount--neg { color: #ef4444; }
+.av-sub { font-size: 13px; margin-top: 4px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.av-warn {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: 12.5px; line-height: 1.45; margin-top: 8px;
+  padding: 8px 10px; border-radius: 10px;
+  color: #b45309; background: rgba(245, 158, 11, 0.12);
+}
+.av-toggle {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 13px; font-weight: 600;
+  padding: 7px 12px; border-radius: 10px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  transition: background 0.15s;
+}
+.av-toggle:hover { background: rgba(var(--v-theme-on-surface), 0.09); }
+.av-chain { margin-top: 18px; }
+.av-chain-title {
+  font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 8px;
+}
+.av-chain-title--gap { margin-top: 18px; }
+.av-step { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; }
+.av-step-sign {
+  flex: 0 0 22px; height: 22px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 800; line-height: 1;
+}
+.av-step-sign--plus { color: #047857; background: rgba(4, 120, 87, 0.1); }
+.av-step-sign--minus { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+.av-step-body { flex: 1; min-width: 0; }
+.av-step-title { font-size: 14px; font-weight: 600; }
+.av-step-note {
+  font-size: 12.5px; line-height: 1.45; margin-top: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.av-step-sum { flex: 0 0 auto; font-size: 14px; font-weight: 700; white-space: nowrap; }
+.av-total {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 8px; padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+.av-total-title { font-size: 14px; font-weight: 700; }
+.av-total-sum { font-size: 17px; font-weight: 800; white-space: nowrap; }
+.av-total--final { background: rgba(4, 120, 87, 0.09); }
+.av-total--final .av-total-sum { color: #047857; }
+.av-notes {
+  margin-top: 18px; padding-top: 14px;
+  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.14);
+}
+.av-notes-title {
+  font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: rgba(var(--v-theme-on-surface), 0.4);
+  margin-bottom: 8px;
+}
+.av-note {
+  font-size: 12.5px; line-height: 1.5; margin-top: 6px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.av-note b { color: rgba(var(--v-theme-on-surface), 0.85); }
+@media (max-width: 700px) {
+  .av-card { padding: 16px; border-radius: 14px; }
+  .av-head { flex-direction: column; gap: 12px; }
+  .av-amount { font-size: 26px; }
+  .av-step-sum { font-size: 13px; }
+}
+
 .ac-unalloc {
   display: flex; align-items: center; gap: 14px;
   padding: 16px 18px; border-radius: 14px; margin-bottom: 26px;

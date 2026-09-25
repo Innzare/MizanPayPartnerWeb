@@ -41,6 +41,25 @@ watch(tab, v => {
   else delete query.tab
   router.replace({ query })
 })
+
+/**
+ * Сколько всего поручителей — число на вкладке, как у клиентов.
+ *
+ * Отдельным лёгким запросом, а не из панели: панель грузится только когда
+ * вкладку открыли, а число должно стоять на ней сразу. Когда панель всё же
+ * откроется, она отдаёт своё, уже посчитанное, — если за это время кого-то
+ * добавили, вкладка не будет показывать устаревшее.
+ */
+const guarantorsCount = ref(0)
+async function loadGuarantorsCount() {
+  if (!canSeeGuarantors.value) return
+  try {
+    const res = await api.get<{ total: number }>('/guarantors/count')
+    guarantorsCount.value = res.total
+  } catch {
+    // Молча: счётчик — украшение вкладки, из-за него раздел падать не должен.
+  }
+}
 const { isDark } = useIsDark()
 const toast = useToast()
 const sections = useSections()
@@ -201,6 +220,7 @@ watch(search, (v) => {
 
 watch(filterCity, () => { page.value = 1 })
 onMounted(async () => {
+  void loadGuarantorsCount()
   try {
     await loadClients()
   } finally {
@@ -408,10 +428,11 @@ function getAvatarColor(name: string) {
       <button class="page-tab" :class="{ active: tab === 'guarantors' }" @click="tab = 'guarantors'">
         <v-icon icon="mdi-account-check-outline" size="18" />
         <span>Поручители</span>
+        <span v-if="guarantorsCount" class="page-tab-count">{{ guarantorsCount }}</span>
       </button>
     </div>
 
-    <GuarantorsPanel v-if="tab === 'guarantors'" />
+    <GuarantorsPanel v-if="tab === 'guarantors'" @count="guarantorsCount = $event" />
 
     <template v-else>
     <!-- KPI Cards — скрываются у ролей без права clients.kpi -->

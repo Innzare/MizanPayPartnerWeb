@@ -223,3 +223,25 @@ export interface MonthDealsResponse {
   limit: number
   offset: number
 }
+
+/**
+ * Продажи за месяц — сколько договоров оформлено и на какие суммы.
+ * Месяц считается по дате сделки, а не по оплатам.
+ */
+export interface AnalyticsMonthlySalesRow {
+  /** 'YYYY-MM' */
+  month: string
+  dealsCount: number
+  /** Разные клиенты, оформившие договор в этом месяце. */
+  clientsCount: number
+  /** Сумма договоров целиком — вместе с наценкой. */
+  totalPrice: number
+  /** Первые взносы по этим договорам. */
+  downPayment: number
+  /** Сумма рассрочки — что клиенты выплатят по графику после взноса. */
+  financed: number
+  /** Закупка. null — нет права видеть закупочную цену и наценку. */
+  purchasePrice: number | null
+  /** Наценка. null — нет права видеть закупочную цену и наценку. */
+  markup: number | null
+}

@@ -14,6 +14,7 @@ import { useAutoLoad } from '@/composables/useAutoLoad'
 import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
 import { useVirtualRows } from '@/composables/useVirtualRows'
 import { useDebtorsFilters } from '@/composables/useDebtorsFilters'
+import { useCapital } from '@/composables/useCapital'
 import DebtorsFilterPanel from '@/components/DebtorsFilterPanel.vue'
 import { api } from '@/api/client'
 import DebtorDetailModal from '@/components/DebtorDetailModal.vue'
@@ -374,9 +375,15 @@ const DEAL_STATUS_LABEL: Record<string, string> = {
 // ── Поиск + фильтр по обещанию + сортировка ──
 const search = ref('')
 type PromiseFilter = 'all' | 'has' | 'today' | 'tomorrow' | 'next7' | 'overdue' | 'broken' | 'none'
-const promiseFilter = ref<PromiseFilter>('all')
+/**
+ * Выбранные условия по обещаниям. Несколько сразу: «обещал сегодня» и
+ * «обещал завтра» складываются по «или» — человек ищет, кого обзванивать, а
+ * не пересечение условий, которого не бывает. Пустой набор = все.
+ */
+const promiseFilters = ref<PromiseFilter[]>([])
+/** Для сервера и старых мест, где ждут одну строку: `today,tomorrow`. */
+const promiseParam = computed(() => promiseFilters.value.join(','))
 const PROMISE_FILTERS: { key: PromiseFilter; label: string }[] = [
-  { key: 'all', label: 'Все' },
   { key: 'has', label: 'Есть обещание' },
   { key: 'today', label: 'Обещал сегодня' },
   { key: 'tomorrow', label: 'Обещал завтра' },
@@ -385,7 +392,24 @@ const PROMISE_FILTERS: { key: PromiseFilter; label: string }[] = [
   { key: 'broken', label: 'Нарушенные обещания' },
   { key: 'none', label: 'Без обещания' },
 ]
-const promiseFilterLabel = computed(() => PROMISE_FILTERS.find((f) => f.key === promiseFilter.value)?.label || 'Все')
+const promiseFilterLabel = computed(() => {
+  const n = promiseFilters.value.length
+  if (!n) return 'Все'
+  if (n === 1) return PROMISE_FILTERS.find((f) => f.key === promiseFilters.value[0])?.label || 'Все'
+  // Два условия ещё читаются целиком; дальше в кнопке остаётся бейдж с
+  // числом — перечисление превращало бы её в строку текста.
+  return n === 2
+    ? promiseFilters.value.map((k) => PROMISE_FILTERS.find((f) => f.key === k)?.label).join(', ')
+    : 'несколько'
+})
+function hasPromiseFilter(key: PromiseFilter): boolean {
+  return promiseFilters.value.includes(key)
+}
+function togglePromiseFilter(key: PromiseFilter) {
+  promiseFilters.value = hasPromiseFilter(key)
+    ? promiseFilters.value.filter((k) => k !== key)
+    : [...promiseFilters.value, key]
+}
 
 // Фильтр по ответственному: 'all' | 'unassigned' | 'mine' | <staffId>
 const assigneeFilter = ref<string>('all')
@@ -456,7 +480,7 @@ watch(
 function pageParams() {
   return {
     q: search.value,
-    promise: promiseFilter.value,
+    promise: promiseParam.value,
     assignee: assigneeParam.value,
     sort: sortCol.value,
     dir: sortDir.value,
@@ -530,7 +554,7 @@ watch(
   { deep: true },
 )
 
-watch([search, promiseFilter, assigneeFilter, sortCol, sortDir, perPage], () => {
+watch([search, promiseParam, assigneeFilter, sortCol, sortDir, perPage], () => {
   page.value = 1
   loadPage()
 })
@@ -547,7 +571,8 @@ const stats = computed(() => ({
   unassigned: store.kpi?.unassigned ?? 0,
 }))
 const brokenCount = computed(() => store.kpi?.broken ?? 0)
-function toggleQuickFilter(f: PromiseFilter) { promiseFilter.value = promiseFilter.value === f ? 'all' : f }
+/** Быстрый чип — тот же набор: нажатие добавляет или снимает условие. */
+function toggleQuickFilter(f: PromiseFilter) { togglePromiseFilter(f) }
 
 // ── Настройки порогов ──
 const settingsForm = ref({ minOverdueDays: 1, minOverdueAmount: 0 })
@@ -670,7 +695,7 @@ async function confirmAssign() {
       assignTargetIds.value,
       assignStaffId.value,
       assignWholeSelection.value
-        ? { mode: isArchive.value ? 'archive' : 'active', q: search.value, promise: promiseFilter.value, assignee: assigneeParam.value }
+        ? { mode: isArchive.value ? 'archive' : 'active', q: search.value, promise: promiseParam.value, assignee: assigneeParam.value }
         : null,
     )
     assignOpen.value = false
@@ -717,6 +742,8 @@ const anPresets = computed(() => {
 
 async function loadAnalytics() {
   analyticsLoading.value = true
+  // Капитал общий на всё приложение — тянем один раз за сессию.
+  if (!capitalLoaded.value) void fetchCapital()
   try {
     analytics.value = await store.fetchAnalytics({ from: anFrom.value, to: anTo.value, staffId: anStaffId.value || null })
   } finally {
@@ -732,6 +759,33 @@ function applyPreset(p: { key: PresetKey; fromIso: string; toIso: string }) {
 // Ручная правка дат сбрасывает выбранный пресет (период становится «свой»).
 function onDateEdit() { activePreset.value = null }
 
+/**
+ * Доля от вложенного в дело — та же мера, что в «Своевременности платежей» на
+ * странице аналитики: база totalCapital (собственный капитал партнёра плюс
+ * капитал со-инвесторов). Просрочка в рублях не показывает масштаб — процент
+ * отвечает, какая часть вложенных денег зависла у должников.
+ *
+ * Аналитика должников не режется по кассам, поэтому база — общая по партнёру.
+ * У того, кому финансы закрыты правами или тарифом, запрос молча отваливается
+ * и процент не показывается вовсе.
+ */
+const { capital: capitalSummary, loaded: capitalLoaded, fetchCapital } = useCapital()
+const investedBase = computed(() => Math.max(0, capitalSummary.value?.totalCapital ?? 0))
+
+/** «12,4%», «45%» или «<0,1%». null — базы нет или считать нечего. */
+function pctOfInvested(amount: number): string | null {
+  if (investedBase.value <= 0 || amount <= 0) return null
+  const pct = (amount / investedBase.value) * 100
+  if (pct < 0.1) return '<0,1%'
+  return pct >= 10 ? `${Math.round(pct)}%` : `${pct.toFixed(1).replace('.', ',')}%`
+}
+
+const investedHint = computed(() =>
+  'Какую часть вложенных в дело денег составляет эта сумма. Вложено — '
+  + `собственный капитал плюс капитал со-инвесторов: ${formatCurrency(investedBase.value)}. `
+  + 'Считаем: сумма ÷ вложено × 100.',
+)
+
 const agingRows = computed(() => {
   const a = analytics.value?.aging
   if (!a) return []
@@ -746,16 +800,25 @@ const agingRows = computed(() => {
 })
 const agingMax = computed(() => Math.max(1, ...agingRows.value.map((r) => r.amount)))
 
-const kpiCards = computed(() => {
+interface DebtorKpiCard {
+  label: string
+  value: string
+  icon: string
+  color: string
+  /** Доля от вложенного — только у денежных показателей. */
+  pct?: string | null
+}
+
+const kpiCards = computed<DebtorKpiCard[]>(() => {
   const k = analytics.value?.kpi
   if (!k) return []
   return [
     { label: 'Должников', value: String(k.debtorsCount), icon: 'mdi-account-alert-outline', color: '#ef4444' },
-    { label: 'Сумма просрочки', value: formatCurrency(k.overdueTotal), icon: 'mdi-cash-remove', color: '#f59e0b' },
+    { label: 'Сумма просрочки', value: formatCurrency(k.overdueTotal), icon: 'mdi-cash-remove', color: '#f59e0b', pct: pctOfInvested(k.overdueTotal) },
     { label: 'Просроченных платежей', value: String(k.overdueCount), icon: 'mdi-calendar-alert', color: '#f97316' },
     { label: 'Средняя просрочка', value: `${k.avgOverdueDays} дн.`, icon: 'mdi-clock-alert-outline', color: '#8b5cf6' },
-    { label: 'Остаток к получению', value: formatCurrency(k.remainingTotal), icon: 'mdi-wallet-outline', color: '#3b82f6' },
-    { label: 'Взыскано за период', value: formatCurrency(k.collectedAmount), icon: 'mdi-cash-check', color: '#10b981' },
+    { label: 'Остаток к получению', value: formatCurrency(k.remainingTotal), icon: 'mdi-wallet-outline', color: '#3b82f6', pct: pctOfInvested(k.remainingTotal) },
+    { label: 'Взыскано за период', value: formatCurrency(k.collectedAmount), icon: 'mdi-cash-check', color: '#10b981', pct: pctOfInvested(k.collectedAmount) },
     { label: 'Назначено', value: String(k.assigned), icon: 'mdi-account-check-outline', color: '#047857' },
     { label: 'Не назначено', value: String(k.unassigned), icon: 'mdi-account-question-outline', color: '#64748b' },
   ]
@@ -947,17 +1010,35 @@ onUnmounted(() => {
                 <span v-if="filters.activeCount.value" class="fb-btn-count">{{ filters.activeCount.value }}</span>
               </button>
 
-              <v-menu :close-on-content-click="true" location="bottom start">
+              <v-menu :close-on-content-click="false" location="bottom start">
               <template #activator="{ props: menuProps }">
-                <button class="fb-btn" :class="{ 'fb-btn--active': promiseFilter !== 'all' }" v-bind="menuProps">
+                <button class="fb-btn" :class="{ 'fb-btn--active': promiseFilters.length > 0 }" v-bind="menuProps">
                   <v-icon icon="mdi-hand-coin-outline" size="16" />
                   <span>Обещание: {{ promiseFilterLabel }}</span>
+                  <span v-if="promiseFilters.length > 2" class="fb-btn-count">{{ promiseFilters.length }}</span>
                 </button>
               </template>
-              <div class="col-menu">
-                <div class="col-menu-title">Фильтр обещаний</div>
-                <label v-for="f in PROMISE_FILTERS" :key="f.key" class="col-menu-item" @click="promiseFilter = f.key">
-                  <v-icon :icon="promiseFilter === f.key ? 'mdi-radiobox-marked' : 'mdi-radiobox-blank'" size="16" :color="promiseFilter === f.key ? 'primary' : ''" />
+              <!-- Меню не закрывается по клику: отметок обычно ставят
+                   несколько, и закрытие после первой заставляло бы открывать
+                   его заново на каждое условие. -->
+              <div class="col-menu" @click.stop>
+                <div class="col-menu-head">
+                  <span class="col-menu-title">Фильтр обещаний</span>
+                  <button v-if="promiseFilters.length" class="col-menu-reset" @click="promiseFilters = []">
+                    Сбросить
+                  </button>
+                </div>
+                <label
+                  v-for="f in PROMISE_FILTERS"
+                  :key="f.key"
+                  class="col-menu-item"
+                  @click="togglePromiseFilter(f.key)"
+                >
+                  <v-icon
+                    :icon="hasPromiseFilter(f.key) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline'"
+                    size="16"
+                    :color="hasPromiseFilter(f.key) ? 'primary' : ''"
+                  />
                   <span>{{ f.label }}</span>
                 </label>
               </div>
@@ -989,7 +1070,7 @@ onUnmounted(() => {
             </v-menu>
 
             <!-- Быстрый чип: нарушенные обещания -->
-            <button v-if="brokenCount" class="dbt-chip" :class="{ active: promiseFilter === 'broken' }" @click="toggleQuickFilter('broken')">
+            <button v-if="brokenCount" class="dbt-chip" :class="{ active: hasPromiseFilter('broken') }" @click="toggleQuickFilter('broken')">
               <v-icon icon="mdi-alert-circle-outline" size="15" /> Нарушенные обещания
               <span class="dbt-chip-count">{{ brokenCount }}</span>
             </button>
@@ -1432,8 +1513,17 @@ onUnmounted(() => {
               <v-icon :icon="c.icon" size="20" />
             </div>
             <div class="dbt-an-kpi-body">
-              <div class="dbt-an-kpi-val">{{ c.value }}</div>
-              <div class="dbt-an-kpi-lbl">{{ c.label }}</div>
+              <div class="dbt-an-kpi-val">
+                {{ c.value }}<span v-if="c.pct" class="dbt-an-kpi-pct">&nbsp;/&nbsp;{{ c.pct }}</span>
+              </div>
+              <div class="dbt-an-kpi-lbl">
+                {{ c.label }}
+                <v-tooltip v-if="c.pct" :text="investedHint" location="top" max-width="320">
+                  <template #activator="{ props }">
+                    <v-icon v-bind="props" icon="mdi-information-outline" size="12" class="dbt-info" />
+                  </template>
+                </v-tooltip>
+              </div>
             </div>
           </div>
         </div>
@@ -1441,13 +1531,24 @@ onUnmounted(() => {
         <div class="dbt-an-2col mb-4">
           <!-- Aging -->
           <div class="dbt-card pa-5">
-            <h3 class="dbt-an-h">Возраст просрочки</h3>
+            <h3 class="dbt-an-h">
+              Возраст просрочки
+              <v-tooltip v-if="investedBase > 0" :text="investedHint" location="top" max-width="320">
+                <template #activator="{ props }">
+                  <v-icon v-bind="props" icon="mdi-information-outline" size="12" class="dbt-info" />
+                </template>
+              </v-tooltip>
+            </h3>
             <div v-for="a in agingRows" :key="a.label" class="dbt-aging-row">
               <div class="dbt-aging-lbl">{{ a.label }}</div>
               <div class="dbt-aging-bar-wrap">
                 <div class="dbt-aging-bar" :style="{ width: (a.amount / agingMax * 100) + '%', background: a.color }" />
               </div>
-              <div class="dbt-aging-val">{{ formatCurrency(a.amount) }} <span class="dbt-sub">· {{ a.count }}</span></div>
+              <div class="dbt-aging-val">
+                {{ formatCurrency(a.amount) }}
+                <span v-if="pctOfInvested(a.amount)" class="dbt-sub">· {{ pctOfInvested(a.amount) }}</span>
+                <span class="dbt-sub">· {{ a.count }}</span>
+              </div>
             </div>
           </div>
 
@@ -1916,6 +2017,13 @@ onUnmounted(() => {
 .dbt-an-kpi-body { min-width: 0; }
 .dbt-an-kpi-val { font-size: 19px; font-weight: 800; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dbt-an-kpi-lbl { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 2px; }
+/* Доля от вложенного — приглушённее самой суммы: это её пояснение, а не
+   второй равноправный показатель. */
+.dbt-an-kpi-pct { font-size: 15px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.45); }
+.dbt-info {
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: help; vertical-align: baseline; margin-left: 3px;
+}
 .dbt-an-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 900px) { .dbt-an-2col { grid-template-columns: 1fr; } }
 .dbt-an-h { font-size: 15px; font-weight: 700; margin-bottom: 14px; }
@@ -1923,7 +2031,8 @@ onUnmounted(() => {
 .dbt-aging-lbl { width: 90px; font-size: 13px; flex-shrink: 0; }
 .dbt-aging-bar-wrap { flex: 1; height: 10px; border-radius: 6px; background: rgba(var(--v-theme-on-surface), 0.06); overflow: hidden; }
 .dbt-aging-bar { height: 100%; border-radius: 6px; min-width: 2px; transition: width 0.3s; }
-.dbt-aging-val { font-size: 13px; font-weight: 600; white-space: nowrap; text-align: right; min-width: 120px; }
+/* Шире прежнего: к сумме и счётчику добавилась доля от вложенного. */
+.dbt-aging-val { font-size: 13px; font-weight: 600; white-space: nowrap; text-align: right; min-width: 176px; }
 .dbt-an-promises { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
 .dbt-an-pr { display: flex; flex-direction: column; gap: 2px; padding: 14px; border-radius: 10px; background: rgba(var(--v-theme-on-surface), 0.04); }
 .dbt-an-pr-val { font-size: 22px; font-weight: 800; }

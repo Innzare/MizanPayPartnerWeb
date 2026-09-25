@@ -776,8 +776,10 @@ const plans = [
                 <v-icon icon="mdi-account-outline" size="18" />
                 <span>Личные данные</span>
               </div>
+              <!-- Это данные ВЛАДЕЛЬЦА аккаунта (имя и компания идут в договоры),
+                   а не личная карточка сотрудника: править их может только он. -->
               <button
-                v-if="!isEditing"
+                v-if="!isEditing && !authStore.isStaff"
                 class="btn-text"
                 @click="startEditing"
               >

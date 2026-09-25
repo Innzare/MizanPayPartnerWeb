@@ -145,7 +145,16 @@ export interface PermissionSection {
   permissions: PermissionDef[]
 }
 export interface RolePreset { key: string; name: string; permissions: string[] }
-export interface PermissionRegistry { sections: PermissionSection[]; presets: RolePreset[] }
+export interface PermissionRegistry {
+  sections: PermissionSection[]
+  presets: RolePreset[]
+  /**
+   * Права, которыми распоряжается тот, кто правит роль. null — владелец,
+   * ограничений нет. Сотрудник не может ни выдать, ни снять то, чего нет
+   * у него самого.
+   */
+  grantable?: string[] | null
+}
 export interface StaffRoleTemplate {
   id: string
   name: string

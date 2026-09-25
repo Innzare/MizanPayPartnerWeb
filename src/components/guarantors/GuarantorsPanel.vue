@@ -58,6 +58,9 @@ const toast = useToast()
 const router = useRouter()
 const { isDark } = useIsDark()
 
+/** Актуальное число поручителей — вкладке раздела, чтобы её счётчик не отставал. */
+const emit = defineEmits<{ count: [number] }>()
+
 const items = ref<GuarantorRow[]>([])
 
 // Виртуализация: поручителей у крупного партнёра тысячи, а строка списка —
@@ -107,6 +110,9 @@ async function load(append = false) {
     const res = await api.get<{ items: GuarantorRow[]; totals: Totals }>(`/guarantors?${params}`)
     items.value = append ? [...items.value, ...res.items] : res.items
     totals.value = res.totals
+    // Счётчик вкладки — только по неотфильтрованному списку: с поиском и
+    // «только с просрочкой» итог показывает найденных, а не всех.
+    if (!q.value.trim() && !onlyOverdue.value) emit('count', res.totals.total)
   } catch (e: any) {
     toast.error(e?.message || 'Не удалось загрузить поручителей')
   } finally {
