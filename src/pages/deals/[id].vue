@@ -83,6 +83,15 @@ onMounted(async () => {
 })
 
 const deal = computed(() => dealsStore.getDeal(dealId.value))
+// Процент наценки так, как считал партнёр: в режиме «от остатка после взноса» —
+// от (закупка − взнос), иначе — хранимый «от закупки».
+const markupShownPercent = computed(() => {
+  const d = deal.value
+  if (!d) return 0
+  if (d.markupFrom !== 'AFTER_DOWN_PAYMENT') return d.markupPercent
+  const base = Math.max(d.purchasePrice - (d.downPayment || 0), 0)
+  return base > 0 ? (d.markup / base) * 100 : 0
+})
 // Тарифная блокировка сделки: страница закрыта, если сделка помечена locked
 // (флаг из списка, лежит в кэше) ИЛИ прямой заход вернул 403 DEAL_LOCKED.
 // Единый гейт на самой странице — покрывает ВСЕ точки входа (платежи, поиск,
@@ -1377,7 +1386,10 @@ const timeline = computed(() => {
             </div>
             <div class="finance-card">
               <div class="finance-label">Наценка</div>
-              <div class="finance-value" style="color: #047857;">+{{ formatCurrency(deal.markup) }} ({{ formatPercent(deal.markupPercent) }})</div>
+              <div class="finance-value" style="color: #047857;">+{{ formatCurrency(deal.markup) }} ({{ formatPercent(markupShownPercent) }})</div>
+              <div v-if="deal.markupFrom === 'AFTER_DOWN_PAYMENT'" class="finance-sub">
+                от остатка после взноса — {{ formatCurrency(Math.max(deal.purchasePrice - (deal.downPayment || 0), 0)) }}
+              </div>
               <div
                 v-if="deal.wholesalePrice && deal.wholesalePrice > 0 && deal.profitSplitBase === 'FULL_MARGIN'"
                 class="finance-sub"

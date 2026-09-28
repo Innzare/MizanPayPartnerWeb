@@ -20,6 +20,7 @@ import { useSections } from '@/composables/useSections'
 import { useSendPdfWhatsApp } from '@/composables/useSendPdfWhatsApp'
 import { formatCurrency, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { generateReceipt } from '@/utils/receiptPdf'
+import { receiptAsPaid } from '@/utils/receiptAsPaid'
 import { api } from '@/api/client'
 import { redistribute, validateManual, type RedistributeMode } from '@/utils/redistribute'
 import { dueYearMonth, monthPrepositional, monthAccusative } from '@/utils/paymentAttribution'
@@ -309,11 +310,26 @@ function removeProofFile() {
   markPaidProofPreview.value = ''
 }
 
+/**
+ * Квитанция по тому, что введено в окне: сумма, которую реально принесли, и
+ * выбранная дата оплаты, — а не плановые значения графика (см. receiptAsPaid).
+ */
+function receiptData(payment: Payment) {
+  return receiptAsPaid(props.deal!, payment, { amount: markPaidAmount.value, paidAt: markPaidPaidAt.value })
+}
+
+function downloadReceipt(payment: Payment) {
+  if (!props.deal) return
+  const r = receiptData(payment)
+  generateReceipt(r.deal, r.payment, authStore.user || {})
+}
+
 async function sendReceiptWhatsApp(payment: Payment) {
   if (!props.deal) return
   if (!(await confirmSend(`Квитанция #${payment.number}`))) return
   const investor = (authStore.user || {}) as Partial<User>
-  const blob = (await generateReceipt(props.deal, payment, investor, { returnBlob: true })) as Blob
+  const r = receiptData(payment)
+  const blob = (await generateReceipt(r.deal, r.payment, investor, { returnBlob: true })) as Blob
   await sendPdf({
     blob,
     fileName: `Квитанция-${props.deal.dealNumber || props.deal.id.slice(0, 6)}-${payment.number}.pdf`,
@@ -582,7 +598,7 @@ async function confirmMarkPaid() {
         <div class="receipt-row">
           <button
             class="receipt-btn"
-            @click="target && deal && generateReceipt(deal, target, authStore.user || {})"
+            @click="target && downloadReceipt(target)"
           >
             <v-icon icon="mdi-file-document-outline" size="18" />
             <div class="receipt-btn-text">

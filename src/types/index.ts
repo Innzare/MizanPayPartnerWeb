@@ -202,7 +202,10 @@ export interface Deal {
   productUrl?: string
   purchasePrice: number
   markup: number
+  // Всегда «от закупки» — на нём держатся аналитика и отчёты.
   markupPercent: number
+  // От чего партнёр считал наценку: от закупки или от остатка после взноса.
+  markupFrom?: MarkupFrom
   totalPrice: number
   remainingAmount: number
   downPayment?: number
@@ -923,3 +926,10 @@ export function userName(u?: Partial<User> | null): string {
   if (!u) return '—'
   return `${u.firstName || ''} ${u.lastName || ''}`.trim() || '—'
 }
+
+/**
+ * От какой суммы считается наценка сделки.
+ *  PURCHASE           — от закупочной цены;
+ *  AFTER_DOWN_PAYMENT — от остатка после первоначального взноса.
+ */
+export type MarkupFrom = 'PURCHASE' | 'AFTER_DOWN_PAYMENT'

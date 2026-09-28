@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
-import type { Deal, DealCounts, Page } from '@/types'
+import type { Deal, DealCounts, MarkupFrom, Page } from '@/types'
 
 interface DealAnalytics {
   totalDeals: number
@@ -159,6 +159,7 @@ export const useDealsStore = defineStore('deals', () => {
     purchasePrice?: number
     totalPrice?: number
     markupPercent?: number
+    markupFrom?: MarkupFrom
     downPayment?: number
     dealDate?: string
     firstPaymentDate?: string
@@ -198,6 +199,7 @@ export const useDealsStore = defineStore('deals', () => {
     productUrl?: string
     purchasePrice: number
     markupPercent: number
+    markupFrom?: MarkupFrom
     totalPrice?: number
     downPayment?: number
     numberOfPayments: number
