@@ -52,7 +52,13 @@ export function replaceReceiptVariables(
   const paidSum = live
     .filter((p) => p.status === 'PAID')
     .reduce((s, p) => s + (p.amount || 0), 0) + (deal.downPayment || 0)
-  const remaining = Math.max(0, (deal.totalPrice || 0) - paidSum)
+  // Прощённое при досрочном закрытии не оплачено, но и не долг: остаток по
+  // договору после этой оплаты — тот, что записан в платеже (0), иначе бланк
+  // показывал бы прощённую сумму, а стандартная квитанция — ноль.
+  const byPayments = Math.max(0, (deal.totalPrice || 0) - paidSum)
+  const remaining = typeof payment.remainingAfter === 'number'
+    ? Math.min(byPayments, Math.max(0, payment.remainingAfter))
+    : byPayments
 
   // Следующий по графику — тот, за который ещё не платили.
   const next = live

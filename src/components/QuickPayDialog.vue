@@ -22,6 +22,7 @@ import PaymentSourcePicker from '@/components/PaymentSourcePicker.vue'
 import PaymentSchedulePreview from '@/components/PaymentSchedulePreview.vue'
 import { formatCurrency, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { generateReceipt } from '@/utils/receiptPdf'
+import { receiptAsPaid } from '@/utils/receiptAsPaid'
 import { useReceiptTemplate } from '@/composables/useReceiptTemplate'
 import { api } from '@/api/client'
 import { type RedistributeMode } from '@/utils/redistribute'
@@ -59,8 +60,30 @@ const receiptTemplate = useReceiptTemplate()
  */
 async function printReceipt() {
   if (!props.deal || !target.value) return
-  generateReceipt(props.deal, target.value, authStore.user || {}, {
+  const r = receiptData(target.value)
+  generateReceipt(r.deal, r.payment, authStore.user || {}, {
     template: await receiptTemplate.getTemplate(),
+  })
+}
+
+/**
+ * Квитанция — о том, что ввели в окне, а не о плановой строке графика:
+ * сумма и дата из формы, остаток — тот же, что окно показывает партнёру
+ * (с учётом прощения при досрочном закрытии), график — загруженный окном.
+ */
+function receiptData(payment: Payment) {
+  return receiptAsPaid(props.deal!, payment, {
+    amount: enteredAmount.value,
+    paidAt: paidAt.value,
+    remainingAfter: hasAmount.value ? remainingAfter.value : null,
+    payments: schedule.value,
+    // Какие ещё строки закроет эта оплата: при прощении — все остальные
+    // открытые, иначе — те, что гасит переплата (как в превью графика).
+    closedIds: !hasAmount.value
+      ? null
+      : forgivingValid.value
+        ? openSchedule.value.filter((p) => p.id !== payment.id).map((p) => p.id)
+        : preview.value.closedIds,
   })
 }
 const toast = useToast()
@@ -610,7 +633,8 @@ async function sendReceiptWhatsApp(payment: Payment) {
   }
   if (!confirm(`Отправить «Квитанция #${payment.number}» клиенту в WhatsApp на ${phone}?`)) return
   const investor = (authStore.user || {}) as Partial<User>
-  const blob = (await generateReceipt(props.deal, payment, investor, { returnBlob: true, template: await receiptTemplate.getTemplate() })) as Blob
+  const r = receiptData(payment)
+  const blob = (await generateReceipt(r.deal, r.payment, investor, { returnBlob: true, template: await receiptTemplate.getTemplate() })) as Blob
   await sendPdf({
     blob,
     fileName: `Квитанция-${props.deal.dealNumber || props.deal.id.slice(0, 6)}-${payment.number}.pdf`,

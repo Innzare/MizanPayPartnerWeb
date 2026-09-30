@@ -40,6 +40,8 @@ export interface DealDraft {
   city: string
   purchasePrice: number | null
   markupType: 'percent' | 'fixed'
+  /** От чего считается наценка. Нет в старых черновиках — «от закупки». */
+  markupFrom?: 'PURCHASE' | 'AFTER_DOWN_PAYMENT'
   markupValue: number
   manualTotalPrice: number | null
   downPayment: number | null

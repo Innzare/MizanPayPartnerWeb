@@ -97,6 +97,15 @@ onMounted(async () => {
 })
 
 const deal = computed(() => dealsStore.getDeal(dealId.value))
+// Процент наценки так, как считал партнёр: в режиме «от остатка после взноса» —
+// от (закупка − взнос), иначе — хранимый «от закупки».
+const markupShownPercent = computed(() => {
+  const d = deal.value
+  if (!d) return 0
+  if (d.markupFrom !== 'AFTER_DOWN_PAYMENT') return d.markupPercent
+  const base = Math.max(d.purchasePrice - (d.downPayment || 0), 0)
+  return base > 0 ? (d.markup / base) * 100 : 0
+})
 // Тарифная блокировка сделки: страница закрыта, если сделка помечена locked
 // (флаг из списка, лежит в кэше) ИЛИ прямой заход вернул 403 DEAL_LOCKED.
 // Единый гейт на самой странице — покрывает ВСЕ точки входа (платежи, поиск,
@@ -388,7 +397,12 @@ const moneyGroups = computed<MoneyRow[][]>(() => {
     },
     {
       id: 'markup', icon: 'mdi-trending-up', tone: 'good',
-      title: 'Размер наценки', sub: `${formatPercent(d.markupPercent)} к закупке`,
+      // Процент так, как его считал партнёр: у наценки «от остатка» — от
+      // (закупка − взнос), а не хранимый «от закупки».
+      title: 'Размер наценки',
+      sub: d.markupFrom === 'AFTER_DOWN_PAYMENT'
+        ? `${formatPercent(markupShownPercent.value)} от остатка после взноса`
+        : `${formatPercent(d.markupPercent)} к закупке`,
       value: formatCurrency(d.markup),
     },
     {

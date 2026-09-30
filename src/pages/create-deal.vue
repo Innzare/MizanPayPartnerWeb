@@ -24,7 +24,8 @@ import { formatCurrency, CURRENCY_MASK, PERCENT_MASK, parseMasked, maskedMoney, 
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter, useRoute } from 'vue-router'
-import type { PaymentType, ClientProfile, DealFolder } from '@/types'
+import type { PaymentType, ClientProfile, DealFolder, MarkupFrom } from '@/types'
+import { markupFromPercent } from '@/utils/markupFrom'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
@@ -219,6 +220,10 @@ const usableAccounts = computed(() =>
 const purchasePrice = ref<number | null>(null)
 const markupType = ref<'percent' | 'fixed'>('percent')
 const markupValue = ref(15)
+// От чего считается процент наценки: от закупки (как было всегда) или от
+// остатка после первоначального взноса — так работают часть партнёров:
+// закупка 600 000, взнос 150 000, 20% → наценка 90 000 (20% от 450 000).
+const markupFrom = ref<MarkupFrom>('PURCHASE')
 // Down payment supports two input modes, mirroring the markup field:
 //   'fixed'   — partner types the amount in ₽ directly (downPayment is the truth)
 //   'percent' — partner types a % of the total price; downPaymentPercent is the
@@ -391,7 +396,12 @@ onMounted(async () => {
       productName.value = deal.productName || ''
       purchasePrice.value = deal.purchasePrice
       markupType.value = 'percent'
-      markupValue.value = Math.round(deal.markupPercent * 100) / 100
+      markupFrom.value = deal.markupFrom ?? 'PURCHASE'
+      // В режиме «от остатка» показываем процент, которым партнёр считал:
+      // от (закупка − взнос), а не хранимый «от закупки».
+      markupValue.value = markupFrom.value === 'AFTER_DOWN_PAYMENT'
+        ? Math.round((deal.markup / Math.max(deal.purchasePrice - (deal.downPayment || 0), 1)) * 100 * 100) / 100
+        : Math.round(deal.markupPercent * 100) / 100
       downPayment.value = deal.downPayment || null
       downPaymentType.value = 'fixed'
       downPaymentPercent.value = null
@@ -753,13 +763,24 @@ const selectedFolder = computed<DealFolder | null>(() =>
 // Markup type switch with value conversion
 function switchMarkupType(type: 'percent' | 'fixed') {
   if (markupType.value === type) return
+  // База процента — та, что выбрана переключателем «от закупки / от остатка»:
+  // в рублях режим не действует, но при возврате к процентам он тот же.
   const purchase = purchasePrice.value || 0
+  const base = markupFrom.value === 'AFTER_DOWN_PAYMENT'
+    ? Math.max(purchase - (downPaymentAmount.value || 0), 0)
+    : purchase
   if (type === 'fixed') {
-    markupValue.value = purchase > 0 ? Math.round(purchase * markupValue.value / 100) : 0
+    markupValue.value = base > 0 ? Math.round(base * markupValue.value / 100) : 0
   } else {
-    markupValue.value = purchase > 0 ? Math.round((markupValue.value / purchase) * 100) : 0
+    markupValue.value = base > 0 ? Math.round((markupValue.value / base) * 100) : 0
   }
   markupType.value = type
+}
+
+// Смена базы: процент остаётся тем, что ввёл партнёр, — меняется сумма, от
+// которой он считается. Ручная цена сбрасывается (см. watch ниже).
+function switchMarkupFrom(base: MarkupFrom) {
+  markupFrom.value = base
 }
 
 // Total price ↔ markup sync.
@@ -1044,7 +1065,8 @@ function onTotalPriceInput(value: number) {
   // Sync markupValue for display in the markup field — but it's no longer
   // the source of truth, manualTotalPrice is.
   if (markupType.value === 'percent') {
-    markupValue.value = Math.round((markupAmount / purchase) * 100 * 100) / 100
+    const base = markupFromAmount.value
+    markupValue.value = base > 0 ? Math.round((markupAmount / base) * 100 * 100) / 100 : 0
   } else {
     markupValue.value = markupAmount
   }
@@ -1052,8 +1074,33 @@ function onTotalPriceInput(value: number) {
 
 // Any change to purchase / markup / type drops the manual override —
 // from then on, totalPrice is derived from markup again.
-watch([purchasePrice, markupValue, markupType], () => {
+watch([purchasePrice, markupValue, markupType, markupFrom], () => {
   manualTotalPrice.value = null
+})
+/**
+ * Режим базы, который действует сейчас.
+ *
+ * «От остатка» — это про процент без тарифа. Наценка в рублях от базы не
+ * зависит, а у тарифа наценку и цену задаёт он сам (`programTotalPrice`):
+ * в обоих случаях сделка уходит «от закупки», иначе в ней осел бы режим,
+ * которым её никто не считал, и следующая правка взноса пересчитала бы цену.
+ */
+const activeMarkupFrom = computed<MarkupFrom>(() =>
+  markupType.value === 'percent' && !programLocked.value ? markupFrom.value : 'PURCHASE',
+)
+// Выбрали тариф — переключатель возвращаем «от закупки»: тариф подставил
+// процент от закупки, и после «Без программы» форма не должна считать его
+// от остатка.
+watch(selectedProgramId, (id) => {
+  if (id) markupFrom.value = 'PURCHASE'
+})
+// «От остатка»: наценка зависит от взноса, поэтому правка взноса тоже
+// пересчитывает цену (в том числе в режиме правки сделки, где цена иначе
+// зафиксирована). Фиксированная наценка в рублях от взноса не зависит.
+watch([downPayment, downPaymentPercent, downPaymentType], () => {
+  if (activeMarkupFrom.value === 'AFTER_DOWN_PAYMENT') {
+    manualTotalPrice.value = null
+  }
 })
 
 // Reload the cashbox's available capital whenever the partner picks a
@@ -1066,18 +1113,40 @@ const markup = computed(() => {
   if (manualTotalPrice.value !== null) {
     return Math.max(0, manualTotalPrice.value - purchase)
   }
-  return markupType.value === 'percent'
-    ? Math.round(purchase * markupValue.value / 100)
-    : markupValue.value
+  if (markupType.value !== 'percent') return markupValue.value
+  // От закупки или от остатка после взноса (см. utils/markupFrom).
+  const percentDown = downPaymentType.value === 'percent' && manualDownPayment.value === null
+  return markupFromPercent({
+    purchase,
+    percent: markupValue.value || 0,
+    base: activeMarkupFrom.value,
+    downRubles: percentDown
+      ? null
+      : downPaymentType.value === 'percent' ? (manualDownPayment.value || 0) : (downPayment.value || 0),
+    downPercentOfPrice: percentDown ? (downPaymentPercent.value || 0) : null,
+  })
 })
+// Сумма, от которой считается процент наценки, — для подсказки и пересчёта
+// процента ⇄ рублей. В режиме «от остатка» — закупка минус взнос.
+const markupFromAmount = computed(() => {
+  const purchase = purchasePrice.value || 0
+  if (activeMarkupFrom.value !== 'AFTER_DOWN_PAYMENT') return purchase
+  return Math.max(purchase - (downPaymentAmount.value || 0), 0)
+})
+// Процент «от закупки» — так он хранится в сделке (аналитика и отчёты).
 const markupPercent = computed(() => {
   const purchase = purchasePrice.value || 0
-  if (manualTotalPrice.value !== null && purchase > 0) {
+  if ((manualTotalPrice.value !== null || activeMarkupFrom.value === 'AFTER_DOWN_PAYMENT') && purchase > 0) {
     return Math.round((markup.value / purchase) * 100 * 100) / 100
   }
   return markupType.value === 'percent'
     ? markupValue.value
     : (purchase > 0 ? Math.round((markupValue.value / purchase) * 100 * 100) / 100 : 0)
+})
+// Процент от той базы, которую выбрал партнёр, — для показа в сводке.
+const markupPercentOfBase = computed(() => {
+  const base = markupFromAmount.value
+  return base > 0 ? Math.round((markup.value / base) * 100 * 100) / 100 : 0
 })
 const totalPrice = computed(() =>
   manualTotalPrice.value !== null
@@ -1165,7 +1234,9 @@ const lastPaymentDiffers = computed(() => {
 // warning, and re-clamp a fixed-mode amount that the new (lower) total no longer
 // fits.
 watch(totalPrice, (total) => {
-  manualDownPayment.value = null
+  // «От остатка»: цена меняется из-за самого взноса — набранную сумму взноса
+  // не сбрасываем, иначе она «уплывала» бы при каждом вводе.
+  if (activeMarkupFrom.value !== 'AFTER_DOWN_PAYMENT') manualDownPayment.value = null
   downPaymentExceeded.value = false
   if (downPaymentType.value === 'fixed' && total > 0 && (downPayment.value || 0) > total) {
     downPayment.value = total
@@ -1406,6 +1477,7 @@ async function applyDraftToForm(source?: DealDraft | null) {
     city.value = d.city
     purchasePrice.value = d.purchasePrice
     markupType.value = d.markupType
+    markupFrom.value = d.markupFrom ?? 'PURCHASE'
     markupValue.value = d.markupValue
     manualTotalPrice.value = d.manualTotalPrice
     downPayment.value = d.downPayment
@@ -1492,6 +1564,7 @@ function scheduleDraftSave() {
       city: city.value,
       purchasePrice: purchasePrice.value,
       markupType: markupType.value,
+      markupFrom: markupFrom.value,
       markupValue: markupValue.value,
       manualTotalPrice: manualTotalPrice.value,
       downPayment: downPayment.value,
@@ -1532,6 +1605,7 @@ function resetDraftAndForm() {
   city.value = ''
   purchasePrice.value = null
   markupType.value = 'percent'
+  markupFrom.value = 'PURCHASE'
   markupValue.value = 15
   manualTotalPrice.value = null
   downPayment.value = null
@@ -1565,7 +1639,7 @@ function resetDraftAndForm() {
 watch(
   [
     productName, productDescription, category, city,
-    purchasePrice, markupType, markupValue, manualTotalPrice,
+    purchasePrice, markupType, markupFrom, markupValue, manualTotalPrice,
     downPayment, downPaymentType, downPaymentPercent, termMonths, paymentType, paymentInterval,
     dealDate, customFirstPayment,
     useWholesalePrice, wholesalePrice, profitSplitBase,
@@ -1706,6 +1780,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
         productName: productName.value,
         purchasePrice: purchasePrice.value || 0,
         markupPercent: markupPercent.value,
+        markupFrom: activeMarkupFrom.value,
         // Явная цена в рублях — источник истины. Без неё сервер пересчитывал
         // цену из процента, и у сделок с процентом «от цены продажи» долг
         // клиента молча уменьшался при каждом сохранении.
@@ -1783,11 +1858,16 @@ async function submitDeal(acknowledgedOverdraft = false) {
       contractPhotos: contractUrls.length ? contractUrls : undefined,
       purchasePrice: purchasePrice.value || 0,
       markupPercent: markupPercent.value,
+      markupFrom: activeMarkupFrom.value,
       // Точная цена в рублях. У программы она считается по её же формуле:
       // передавать вместо неё процент нельзя — сервер восстановил бы цену из
       // округлённого процента и получил другую сумму, а строгая программа
-      // отклонила бы корректно оформленную сделку.
-      totalPrice: programTotalPrice.value ?? (manualTotalPrice.value !== null ? manualTotalPrice.value : undefined),
+      // отклонила бы корректно оформленную сделку. В режиме «от остатка» цену
+      // тоже шлём всегда: её посчитала форма с учётом взноса.
+      totalPrice: programTotalPrice.value
+        ?? (manualTotalPrice.value !== null
+          ? manualTotalPrice.value
+          : activeMarkupFrom.value === 'AFTER_DOWN_PAYMENT' ? totalPrice.value : undefined),
       downPayment: downPaymentAmount.value || undefined,
       numberOfPayments: termMonths.value,
       // Программа: сервер подставит и проверит условия, а в сделке останется
@@ -2338,6 +2418,19 @@ async function submitDeal(acknowledgedOverdraft = false) {
                     <button class="toggle-btn" :class="{ active: markupType === 'fixed' }" @click="switchMarkupType('fixed')">₽</button>
                   </div>
                 </div>
+                <!-- От чего считать процент: от закупки или от остатка после взноса -->
+                <div v-if="markupType === 'percent'" class="markup-from-switch">
+                  <button
+                    type="button" class="markup-from-option"
+                    :class="{ active: markupFrom === 'PURCHASE' }"
+                    @click="switchMarkupFrom('PURCHASE')"
+                  >От закупки</button>
+                  <button
+                    type="button" class="markup-from-option"
+                    :class="{ active: markupFrom === 'AFTER_DOWN_PAYMENT' }"
+                    @click="switchMarkupFrom('AFTER_DOWN_PAYMENT')"
+                  >От остатка после взноса</button>
+                </div>
                 <div v-if="markupType === 'percent'" class="chip-group">
                   <button
                     v-for="opt in markupOptions" :key="opt"
@@ -2392,6 +2485,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   class="field-hint-styled"
                 >
                   <v-icon icon="mdi-information-outline" size="14" />
+                  <template v-if="activeMarkupFrom === 'AFTER_DOWN_PAYMENT'">
+                    {{ markupPercentOfBase }}% от {{ formatCurrency(markupFromAmount) }} (закупка − взнос) ·
+                  </template>
                   Наценка {{ formatCurrency(markup) }} · итоговая цена {{ formatCurrency(totalPrice) }}
                 </div>
               </div>
@@ -2954,7 +3050,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <span class="preview-row-label">Наценка</span>
                 <span class="preview-row-value preview-row-value--accent">
                   +{{ formatCurrency(markup) }}
-                  <small v-if="markupPercent">({{ markupPercent.toFixed(1) }}%)</small>
+                  <small v-if="markupPercent">
+                    ({{ (activeMarkupFrom === 'AFTER_DOWN_PAYMENT' ? markupPercentOfBase : markupPercent).toFixed(1) }}%{{ activeMarkupFrom === 'AFTER_DOWN_PAYMENT' ? ' от остатка' : '' }})
+                  </small>
                 </span>
               </div>
               <div class="preview-divider" />
@@ -4209,6 +4307,23 @@ async function submitDeal(acknowledgedOverdraft = false) {
 }
 .toggle-btn.active {
   background: #fff; color: rgba(var(--v-theme-on-surface), 0.8);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+/* Наценка: от закупки / от остатка после взноса */
+.markup-from-switch {
+  display: flex; gap: 2px; padding: 2px; margin-bottom: 8px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+}
+.markup-from-option {
+  flex: 1; padding: 6px 10px; border-radius: 6px; border: none;
+  font-size: 13px; font-weight: 600;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  cursor: pointer; transition: all 0.15s;
+}
+.markup-from-option.active {
+  background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.9);
   box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
 /* Wholesale price section — Phase 3 */
