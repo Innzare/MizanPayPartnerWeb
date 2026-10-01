@@ -535,7 +535,9 @@ const ALL_COLUMNS: DealColumn[] = [
   { key: 'createdAt', label: 'Дата создания', align: 'end', sortable: true, group: 'deal', tdClass: 'text-end text-medium-emphasis text-no-wrap' },
   { key: 'dealDate', label: 'Дата договора', align: 'end', sortable: true, group: 'deal', tdClass: 'text-end text-medium-emphasis text-no-wrap' },
   { key: 'term', label: 'Срок рассрочки', align: 'center', sortable: true, group: 'deal', tdClass: 'text-center text-no-wrap' },
-  { key: 'staff', label: 'Сотрудник', align: 'start', sortable: false, group: 'deal', tdClass: 'text-no-wrap' },
+  { key: 'staff', label: 'Ответственный', align: 'start', sortable: false, group: 'deal', tdClass: 'text-no-wrap' },
+  // Кто заключил сделку — не то же, что ответственный: тот ведёт её сейчас.
+  { key: 'createdBy', label: 'Оформил', align: 'start', sortable: false, group: 'deal', tdClass: 'text-no-wrap' },
   { key: 'supplier', label: 'Поставщик', align: 'start', sortable: false, group: 'deal', extra: 'supplier', tdClass: 'text-no-wrap' },
   { key: 'comment', label: 'Комментарий', align: 'start', sortable: false, group: 'deal', tdStyle: 'min-width: 220px;' },
 
@@ -2144,6 +2146,14 @@ async function refreshSelectedDeal(dealId: string) {
                     {{ deal.assignedStaff.firstName }} {{ deal.assignedStaff.lastName }}
                   </span>
                   <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <!-- Пусто — сделку оформил сам партнёр; id без имени — сотрудника
+                     удалили из базы вовсе (из команды удалённого сервер находит). -->
+                <template v-else-if="c.key === 'createdBy'">
+                  <span v-if="deal.createdByStaff" class="text-no-wrap">
+                    {{ deal.createdByStaff.firstName }} {{ deal.createdByStaff.lastName }}
+                  </span>
+                  <span v-else class="text-medium-emphasis">{{ deal.createdByStaffId ? 'Удалённый сотрудник' : 'Владелец' }}</span>
                 </template>
                 <template v-else-if="c.key === 'supplier'">
                   <span v-if="deal.supplierName">{{ deal.supplierName }}</span>

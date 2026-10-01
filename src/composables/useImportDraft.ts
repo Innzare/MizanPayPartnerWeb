@@ -60,8 +60,20 @@ export interface DraftRow {
 }
 
 /** Прогресс фоновой фиксации — сервер пишет его в stats.commitProgress черновика. */
+/** Итог отмены импорта: что удалено насовсем и что оставлено. */
+export interface CancelReport {
+  /** Сделок импорта удалено насовсем. */
+  deals: number
+  /** Существовавших сделок возвращено к виду до импорта. */
+  restored: number
+  /** Клиентов, заведённых импортом, удалено. */
+  profiles: number
+  /** Что оставлено и почему — партнёр успел этим воспользоваться. */
+  kept: string[]
+}
+
 export interface CommitProgress {
-  state: 'queued' | 'running' | 'done' | 'failed'
+  state: 'queued' | 'running' | 'done' | 'failed' | 'cancelling' | 'cancelled'
   /** Строк обработано / всего к импорту (без «пропустить»). */
   processed: number
   total: number
@@ -71,6 +83,8 @@ export interface CommitProgress {
   startedAt: string
   /** Только для state='failed' — причина, уже с номером строки. */
   error?: string
+  /** Отмена импорта: ход и итог. */
+  cancel?: CancelReport
 }
 
 /** Ответ лёгкого эндпоинта опроса GET /import/drafts/:id/progress. */
@@ -193,7 +207,7 @@ export interface ImportDraft {
   duplicateChecks: Record<string, any>
   validationErrors: Record<string, Record<string, string>>
   stats: DraftStats
-  status: 'DRAFT' | 'QUEUED' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED'
+  status: 'DRAFT' | 'QUEUED' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'CANCELLING'
   expiresAt: string
   committedAt: string | null
   createdAt: string
@@ -272,8 +286,12 @@ export function useImportDraft() {
     return api.get<BookIssues>(`/import/drafts/${id}/book-issues`)
   }
 
+  /**
+   * Отменить импорт. `cancelled` — записать импорт ничего не успел, черновик
+   * отменён; `cancelling` — записанное удаляется в фоне, ход виден в опросе.
+   */
   async function cancel(id: string) {
-    return api.delete(`/import/drafts/${id}`)
+    return api.delete<{ state: 'cancelled' | 'cancelling' }>(`/import/drafts/${id}`)
   }
 
   async function addRow(id: string) {

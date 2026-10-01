@@ -161,10 +161,10 @@
               <div class="draft-meta">
                 <!-- Фоновая фиксация: черновик остаётся в списке, пока идёт
                      импорт, — открыв его, партнёр увидит прогресс. -->
-                <template v-if="d.status === 'COMMITTING'">
+                <template v-if="d.status === 'COMMITTING' || d.status === 'CANCELLING'">
                   <span class="draft-committing">
                     <v-progress-circular indeterminate size="10" width="2" />
-                    импортируется
+                    {{ d.status === 'CANCELLING' ? 'отменяется' : 'импортируется' }}
                   </span>
                   <span class="draft-meta-dot">·</span>
                 </template>
@@ -390,7 +390,8 @@ function reportLines(b: ImportBatchItem): Array<{ text: string; tone: 'info' | '
     out.push({ tone: 'warn', text: `Лист «${sk.sheet}», строка ${sk.rowNo}: ${sk.reason}` })
   }
   for (const email of b.book?.invitesFailed ?? []) {
-    out.push({ tone: 'warn', text: `Приглашение на ${email} не отправилось — сбросьте пароль сотруднику в разделе «Сотрудники»` })
+    // Старые переносы ещё слали письма сами; теперь приглашает партнёр.
+    out.push({ tone: 'warn', text: `Приглашение на ${email} не отправилось — отправьте его ещё раз в разделе «Сотрудники»` })
   }
   return out
 }

@@ -8,7 +8,7 @@ import DateField from '@/components/DateField.vue'
 import { useSections } from '@/composables/useSections'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { formatCurrency, formatDateShort } from '@/utils/formatters'
+import { formatCurrency, formatDateShort, pluralizeRu } from '@/utils/formatters'
 import ServerPager from '@/components/ServerPager.vue'
 import { useAutoLoad } from '@/composables/useAutoLoad'
 import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
@@ -18,6 +18,10 @@ import { useCapital } from '@/composables/useCapital'
 import DebtorsFilterPanel from '@/components/DebtorsFilterPanel.vue'
 import { api } from '@/api/client'
 import DebtorDetailModal from '@/components/DebtorDetailModal.vue'
+import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
+import type { MetricDetailItem } from '@/components/MetricDetailDialog.vue'
+import { useToast } from '@/composables/useToast'
+import { pluralDays } from '@/utils/paymentAttribution'
 import PromiseDialog from '@/components/PromiseDialog.vue'
 
 const store = useDebtorsStore()
@@ -790,15 +794,100 @@ const agingRows = computed(() => {
   const a = analytics.value?.aging
   if (!a) return []
   return [
-    { label: '1–7 дней', ...a.d1_7, color: '#f59e0b' },
-    { label: '8–30 дней', ...a.d8_30, color: '#f97316' },
-    { label: '31–60 дней', ...a.d31_60, color: '#ef4444' },
-    { label: '61–90 дней', ...a.d61_90, color: '#dc2626' },
-    { label: '91–180 дней', ...a.d91_180, color: '#b91c1c' },
-    { label: '180+ дней', ...a.d180p, color: '#7f1d1d' },
+    { key: 'd1_7', label: '1–7 дней', ...a.d1_7, color: '#f59e0b' },
+    { key: 'd8_30', label: '8–30 дней', ...a.d8_30, color: '#f97316' },
+    { key: 'd31_60', label: '31–60 дней', ...a.d31_60, color: '#ef4444' },
+    { key: 'd61_90', label: '61–90 дней', ...a.d61_90, color: '#dc2626' },
+    { key: 'd91_180', label: '91–180 дней', ...a.d91_180, color: '#b91c1c' },
+    { key: 'd180p', label: '180+ дней', ...a.d180p, color: '#7f1d1d' },
   ]
 })
 const agingMax = computed(() => Math.max(1, ...agingRows.value.map((r) => r.amount)))
+
+// ── Расшифровка полосы возраста: какие сделки за ней стоят ──
+// Сделки, а не платежи: у должника бывает по пять просроченных месяцев, и в
+// строке видно «5 платежей просрочено». Отбор — тот же, что у полосы (сервер),
+// поэтому список сходится с цифрой.
+interface AgingDetailRow {
+  dealId: string
+  dealNumber: number
+  productName: string
+  clientName: string
+  payments: number
+  amount: number
+  days: number
+}
+const toast = useToast()
+const AGING_PAGE = 100
+const agingOpen = ref(false)
+const agingTitle = ref('')
+const agingColor = ref('')
+const agingBucket = ref<string | null>(null)
+const agingStaff = ref<string | null>(null)
+const agingItems = ref<MetricDetailItem[]>([])
+const agingTotal = ref(0)
+const agingCount = ref(0)
+const agingLoading = ref(false)
+const agingHasMore = computed(() => agingItems.value.length < agingCount.value)
+
+function agingItem(r: AgingDetailRow): MetricDetailItem {
+  return {
+    id: r.dealId,
+    title: r.productName || 'Сделка',
+    subtitle: r.clientName || '—',
+    value: r.amount,
+    parts: [
+      { label: '', value: `${r.payments} ${pluralizeRu(r.payments, 'платёж просрочен', 'платежа просрочено', 'платежей просрочено')}` },
+      { label: 'самая старая просрочка', value: `${r.days} ${pluralDays(r.days)}` },
+      { label: 'договор', value: `№${r.dealNumber}` },
+    ],
+  }
+}
+
+async function fetchAgingPage(offset: number) {
+  const qs = new URLSearchParams({ limit: String(AGING_PAGE), offset: String(offset) })
+  if (agingBucket.value) qs.set('bucket', agingBucket.value)
+  if (agingStaff.value) qs.set('staffId', agingStaff.value)
+  return api.get<{ items: AgingDetailRow[]; count: number; total: number }>(`/debtors/analytics/aging-details?${qs}`)
+}
+
+/** Открыть сделки полосы. Пустую не открываем — показывать нечего. */
+async function openAging(row: { key: string; label: string; count: number; color: string }) {
+  if (!row.count) return
+  agingBucket.value = row.key
+  // Ответственный — тот, по которому посчитана аналитика на экране.
+  agingStaff.value = anStaffId.value || null
+  agingTitle.value = `Просрочка ${row.label}`
+  agingColor.value = row.color
+  agingItems.value = []
+  agingTotal.value = 0
+  agingCount.value = 0
+  agingOpen.value = true
+  agingLoading.value = true
+  try {
+    const res = await fetchAgingPage(0)
+    agingItems.value = res.items.map(agingItem)
+    agingCount.value = res.count
+    agingTotal.value = res.total
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось загрузить сделки')
+  } finally {
+    agingLoading.value = false
+  }
+}
+
+async function loadMoreAging() {
+  if (agingLoading.value) return
+  agingLoading.value = true
+  try {
+    const res = await fetchAgingPage(agingItems.value.length)
+    agingItems.value = [...agingItems.value, ...res.items.map(agingItem)]
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось загрузить ещё')
+  } finally {
+    agingLoading.value = false
+  }
+}
 
 interface DebtorKpiCard {
   label: string
@@ -1539,7 +1628,14 @@ onUnmounted(() => {
                 </template>
               </v-tooltip>
             </h3>
-            <div v-for="a in agingRows" :key="a.label" class="dbt-aging-row">
+            <div
+              v-for="a in agingRows"
+              :key="a.label"
+              class="dbt-aging-row"
+              :class="{ 'dbt-aging-row--click': a.count > 0 }"
+              :title="a.count ? 'Показать сделки с такой просрочкой' : ''"
+              @click="openAging(a)"
+            >
               <div class="dbt-aging-lbl">{{ a.label }}</div>
               <div class="dbt-aging-bar-wrap">
                 <div class="dbt-aging-bar" :style="{ width: (a.amount / agingMax * 100) + '%', background: a.color }" />
@@ -1596,6 +1692,21 @@ onUnmounted(() => {
     </div>
 
     <!-- Модалка детали должника -->
+    <!-- Сделки за полосой «Возраст просрочки» -->
+    <MetricDetailDialog
+      v-model="agingOpen"
+      :title="agingTitle"
+      hint="Сделки, у которых самая старая просрочка в этих пределах. Нажмите на строку — откроется сделка."
+      :total="agingTotal"
+      :color="agingColor"
+      :items="agingItems"
+      :loading="agingLoading"
+      :count="agingCount"
+      :has-more="agingHasMore"
+      unit="deals"
+      @load-more="loadMoreAging"
+    />
+
     <DebtorDetailModal
       v-model="modalOpen"
       :row="liveSelectedRow"
@@ -2028,6 +2139,8 @@ onUnmounted(() => {
 @media (max-width: 900px) { .dbt-an-2col { grid-template-columns: 1fr; } }
 .dbt-an-h { font-size: 15px; font-weight: 700; margin-bottom: 14px; }
 .dbt-aging-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.dbt-aging-row--click { cursor: pointer; border-radius: 8px; }
+.dbt-aging-row--click:hover .dbt-aging-lbl { color: rgb(var(--v-theme-primary)); }
 .dbt-aging-lbl { width: 90px; font-size: 13px; flex-shrink: 0; }
 .dbt-aging-bar-wrap { flex: 1; height: 10px; border-radius: 6px; background: rgba(var(--v-theme-on-surface), 0.06); overflow: hidden; }
 .dbt-aging-bar { height: 100%; border-radius: 6px; min-width: 2px; transition: width 0.3s; }

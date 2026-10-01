@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
-import { formatCurrency, formatCurrencyShort, formatPercent, formatDate } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatPercent, formatDate, pluralizeRu } from '@/utils/formatters'
 import { useRouter } from 'vue-router'
 import { userName, clientProfileName } from '@/types'
 import { useIsDark } from '@/composables/useIsDark'
@@ -187,6 +187,20 @@ const TIMELINESS_LABELS: Record<TimelinessBucketKey, string> = {
   d180p: '180+ дней',
 }
 
+/**
+ * Цвет полосы просрочки по её возрасту — та же шкала, что в «Должниках»:
+ * от жёлтого (неделя) до тёмно-бордового (полгода и больше). Чем старше долг,
+ * тем тревожнее цвет, — видно с одного взгляда, где деньги зависли надолго.
+ */
+const OVERDUE_AGE_COLORS: Record<TimelinessBucketKey, string> = {
+  d1_7: '#f59e0b',
+  d8_30: '#f97316',
+  d31_60: '#ef4444',
+  d61_90: '#dc2626',
+  d91_180: '#b91c1c',
+  d180p: '#7f1d1d',
+}
+
 /** Пока данные не пришли, карточки показывают нули, а не пустоту. */
 const EMPTY_TIMELINESS_SIDE: TimelinessSide = {
   count: 0, amount: 0, deals: 0, clients: 0, avgDays: 0, maxDays: 0,
@@ -209,10 +223,10 @@ const timelinessSides = computed(() => [
   {
     key: 'early',
     title: 'Оплачено заранее',
-    subtitle: 'Платежи, внесённые раньше своего срока',
+    subtitle: 'Внесены раньше срока, а срок ещё не наступил',
     countLabel: 'Оплат',
     ageTitle: 'Насколько раньше срока',
-    emptyText: 'Оплат раньше срока пока нет',
+    emptyText: 'Платежей, оплаченных за будущие сроки, нет',
     color: '#047857',
     data: timeliness.value?.early ?? EMPTY_TIMELINESS_SIDE,
   },
@@ -502,6 +516,10 @@ interface MonthData {
   pendingAmount: number   // полная сумма НЕоплаченных платежей месяца (осталось получить)
   planned: number         // весь план месяца = received + pendingAmount
   payments: number
+  /** Из них оплачено (по дате оплаты, включая первоначальные взносы). */
+  paidCount: number
+  /** Из них ещё не оплачено — срок в этом месяце. */
+  pendingCount: number
   earlyOffMonth: number
   lateOffMonth: number
   isCurrent: boolean
@@ -554,6 +572,8 @@ const yearMonths = computed((): MonthData[] => {
       pendingAmount,
       planned: received + pendingAmount,
       payments: (r?.paidCount ?? 0) + (r?.pendingCount ?? 0),
+      paidCount: r?.paidCount ?? 0,
+      pendingCount: r?.pendingCount ?? 0,
       earlyOffMonth: r?.earlyOffMonth ?? 0,
       lateOffMonth: r?.lateOffMonth ?? 0,
       isCurrent,
@@ -1059,24 +1079,34 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 // ── Расшифровка своевременности ──────────────────────────────────────────
 // Та же модалка, что у показателей сводки: вопрос один — «откуда эта цифра».
 // Отличается только источником строк, поэтому источник запоминаем: от него
-// зависит и догрузка, и подпись «5 платежей» вместо «5 сделок».
+// зависит догрузка. Список и там, и там — сделки: у своевременности это
+// сделки с платежами, попавшими в полосу возраста.
 const metricSource = ref<'deals' | 'timeliness'>('deals')
 const timelinessQuery = ref<{ side: 'overdue' | 'early'; bucket: TimelinessBucketKey | null } | null>(null)
-const metricUnit = computed<'deals' | 'payments'>(() =>
-  metricSource.value === 'timeliness' ? 'payments' : 'deals',
-)
+const metricUnit = computed<'deals' | 'payments'>(() => 'deals')
 
-/** Строка списка из платежа: сама сделка, клиент и чем этот платёж попал в выборку. */
+/** «45 дней» или «3–45 дней» — разброс по платежам сделки. */
+function daysRange(min: number, max: number): string {
+  return min === max ? `${max} ${pluralDays(max)}` : `${min}–${max} ${pluralDays(max)}`
+}
+
+/**
+ * Строка списка — сделка: сколько её платежей в выборке, на сколько дней и с
+ * какого срока. Отдельные платежи видны в самой сделке — по клику.
+ */
 function timelinessDetailRow(side: 'overdue' | 'early', p: TimelinessDetailRow) {
-  const parts = [
-    { label: 'платёж', value: `№${p.paymentNumber}` },
-    { label: 'срок', value: formatDate(p.dueDate) },
-    {
-      label: side === 'overdue' ? 'просрочен на' : 'раньше срока на',
-      value: `${p.days} ${pluralDays(p.days)}`,
-    },
-  ]
-  if (side === 'early' && p.paidAt) parts.push({ label: 'оплачен', value: formatDate(p.paidAt) })
+  const n = p.payments
+  const parts = side === 'overdue'
+    ? [
+        { label: '', value: `${n} ${pluralizeRu(n, 'платёж просрочен', 'платежа просрочено', 'платежей просрочено')}` },
+        { label: 'просрочка', value: daysRange(p.minDays, p.maxDays) },
+        { label: n > 1 ? 'с' : 'срок', value: formatDate(p.firstDue) },
+      ]
+    : [
+        { label: '', value: `${n} ${pluralizeRu(n, 'платёж оплачен заранее', 'платежа оплачено заранее', 'платежей оплачено заранее')}` },
+        { label: 'раньше срока на', value: daysRange(p.minDays, p.maxDays) },
+        { label: n > 1 ? 'ближайший срок' : 'срок', value: formatDate(p.firstDue) },
+      ]
   return {
     id: p.dealId,
     title: p.productName || 'Сделка',
@@ -1100,8 +1130,8 @@ async function openTimeliness(side: string, bucket: string | null) {
   timelinessQuery.value = { side: s, bucket: b }
   metricTitle.value = b ? `${meta.title} · ${TIMELINESS_LABELS[b]}` : meta.title
   metricHint.value = s === 'overdue'
-    ? 'Платежи, срок которых уже прошёл, а деньги не поступили. Нажмите на строку — откроется сделка.'
-    : 'Платежи, внесённые раньше своего срока. Нажмите на строку — откроется сделка.'
+    ? 'Сделки с платежами, срок которых уже прошёл, а деньги не поступили. Нажмите на строку — откроется сделка.'
+    : 'Сделки с платежами, внесёнными за ещё не наступившие сроки. Нажмите на строку — откроется сделка.'
   metricColor.value = meta.color
   metricItems.value = []
   metricTotal.value = 0
@@ -1496,7 +1526,10 @@ async function openTimeliness(side: string, bucket: string | null) {
         <!-- Column captions (desktop) -->
         <div class="yc-caption yc-caption--pay">
           <span class="yc-cap-month">Месяц</span>
-          <span class="yc-cap-num yc-cap-num--mid">Платежей</span>
+          <span class="yc-cap-num yc-cap-num--mid yc-cap-stack">
+            Платежей
+            <small class="yc-cap-sub">оплачено / осталось</small>
+          </span>
           <span class="yc-cap-num yc-cap-num--mid">Досрочно</span>
           <span class="yc-cap-num yc-cap-num--mid">С опозданием</span>
           <span class="yc-cap-num">Ожидается</span>
@@ -1558,15 +1591,29 @@ async function openTimeliness(side: string, bucket: string | null) {
               <span v-if="m.pendingAmount > 0" class="yc-mm--pending"><b>{{ formatCurrencyShort(m.pendingAmount) }}</b> осталось</span>
               <span v-if="m.partnerEarned > 0" class="yc-mm--net"><b>+{{ formatCurrencyShort(Math.max(0, m.partnerEarned)) }}</b> чисто</span>
               <span v-if="m.payments > 0">{{ m.payments }}&nbsp;плат.</span>
+              <span v-if="m.paidCount > 0" class="yc-mm--green">{{ m.paidCount }}&nbsp;оплачено</span>
+              <span v-if="m.pendingCount > 0" class="yc-mm--pending">{{ m.pendingCount }}&nbsp;осталось</span>
               <span v-if="m.earlyOffMonth > 0">{{ m.earlyOffMonth }}&nbsp;досрочно</span>
               <span v-if="m.lateOffMonth > 0">{{ m.lateOffMonth }}&nbsp;с&nbsp;опозданием</span>
             </div>
 
-            <!-- Платежи месяца: сколько всего, из них досрочно и с опозданием.
-                 Досрочные и опоздавшие оплачены не в свой месяц — их доход
-                 учтён там, где деньги реально пришли. -->
+            <!-- Платежи месяца: сколько всего, под ним — оплачено / осталось.
+                 Оплачено + осталось = всего: оплата считается в месяце, когда
+                 деньги пришли (как «Пришло»), неоплаченный — в месяце своего
+                 срока (как «Осталось»). Досрочные и опоздавшие оплачены не в
+                 свой месяц — их доход учтён там, где деньги реально пришли. -->
             <div class="yc-row-num yc-row-num--mid">
-              <span v-if="m.payments > 0" class="yc-num-count">{{ m.payments }}</span>
+              <template v-if="m.payments > 0">
+                <span class="yc-num-count">{{ m.payments }}</span>
+                <span
+                  class="yc-num-split"
+                  :title="`Оплачено ${m.paidCount} (включая первоначальные взносы по новым договорам), осталось ${m.pendingCount} — срок в этом месяце`"
+                >
+                  <span class="yc-num-split-paid">{{ m.paidCount }}</span>
+                  /
+                  <span class="yc-num-split-left">{{ m.pendingCount }}</span>
+                </span>
+              </template>
               <span v-else class="yc-num-empty">—</span>
             </div>
             <div class="yc-row-num yc-row-num--mid">
@@ -1726,14 +1773,14 @@ async function openTimeliness(side: string, bucket: string | null) {
                   :key="b.key"
                   class="tl-age"
                   :class="{ 'tl-age--click': b.count > 0 }"
-                  :title="b.count ? 'Показать платежи этого возраста' : ''"
+                  :title="b.count ? 'Показать сделки с платежами этого возраста' : ''"
                   @click="b.count && openTimeliness(side.key, b.key)"
                 >
                   <div class="tl-age-lbl">{{ TIMELINESS_LABELS[b.key] }}</div>
                   <div class="tl-age-bar-wrap">
                     <div
                       class="tl-age-bar"
-                      :style="{ width: barWidth(b, side.data.buckets), background: side.color }"
+                      :style="{ width: barWidth(b, side.data.buckets), background: side.key === 'overdue' ? OVERDUE_AGE_COLORS[b.key] : side.color }"
                     />
                   </div>
                   <div class="tl-age-val">
@@ -2631,6 +2678,22 @@ async function openTimeliness(side: string, bucket: string | null) {
   color: rgba(var(--v-theme-on-surface), 0.75);
 }
 .yc-num-count--early { color: #0369a1; }
+/* «Оплачено / осталось» под числом платежей: своих колонок не заводим —
+   таблица и так на пределе ширины. */
+.yc-num-split {
+  display: block; margin-top: 2px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: rgba(var(--v-theme-on-surface), 0.3);
+}
+.yc-num-split-paid { color: #047857; }
+.yc-num-split-left { color: rgba(var(--v-theme-on-surface), 0.5); }
+.yc-caption span.yc-cap-stack { display: flex; flex-direction: column; align-items: center; line-height: 1.25; }
+.yc-cap-sub {
+  font-size: 9.5px; font-weight: 500;
+  text-transform: none; letter-spacing: 0;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+}
 .yc-num-count--late { color: #b45309; }
 .yc-num-val--ci { color: rgba(var(--v-theme-on-surface), 0.55); }
 .yc-caption {

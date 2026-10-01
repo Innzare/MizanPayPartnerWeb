@@ -145,8 +145,13 @@ export function useDealProfit(
     const installmentMargin = d.markup
     const isFullMargin = d.profitSplitBase === 'FULL_MARGIN' && useWholesale
 
+    // Скидка — прощённый заработок: вычитается из делимой базы целиком, как
+    // в движке (profitBaseFor на бэкенде). Без этого карточка показывала бы
+    // доход и доли инвесторов так, будто скидки не было.
+    const discount = Math.max(Math.round(d.discount ?? 0), 0)
+
     // What gets split with PER_DEAL co-investors
-    const splitBase = isFullMargin ? retailMargin + installmentMargin : installmentMargin
+    const splitBase = Math.max(0, (isFullMargin ? retailMargin + installmentMargin : installmentMargin) - discount)
 
     // Sum of percent across PER_DEAL CIs (POOL handled separately, not
     // displayed in this card — the partner has /co-investors for that).
@@ -207,7 +212,10 @@ export function useDealProfit(
 
     // Realized fraction — how much of the deal's totalPrice has come in
     // (downPayment + paid payments). 1.0 = fully completed.
-    const ratio = d.totalPrice > 0 ? totalPaid.value / d.totalPrice : 0
+    // Клиент со скидкой платит договор за её вычетом — полностью оплаченная
+    // сделка должна показывать 100 %, а не долю от цены без скидки.
+    const payable = d.totalPrice - discount
+    const ratio = payable > 0 ? totalPaid.value / payable : 0
     const realizedPartner = Math.round(totalPartner * Math.min(1, Math.max(0, ratio)))
 
     return {
@@ -215,6 +223,7 @@ export function useDealProfit(
       isFullMargin,
       retailMargin,
       installmentMargin,
+      discount,
       splitBase,
       ciTotalPercent,
       ciAmount,

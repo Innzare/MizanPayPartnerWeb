@@ -50,6 +50,23 @@
         </div>
       </div>
 
+      <!-- Колонки, которых нет в шаблоне: импорт их не читает. Партнёр
+           дописывает свои колонки («Менеджер», «Доп телефон») и узнавал, что
+           данные не перенеслись, только после импорта. -->
+      <div v-if="unknownColumns.length" class="book-unknown">
+        <div class="book-unknown-title">
+          <v-icon icon="mdi-table-column-remove" size="16" />
+          Эти колонки не перенесутся — их нет в шаблоне
+        </div>
+        <div v-for="u in unknownColumns" :key="u.sheet" class="book-unknown-row">
+          <span class="book-unknown-sheet">{{ u.sheet }}:</span>
+          <span>{{ u.columns.map((c) => `«${c}»`).join(', ') }}</span>
+        </div>
+        <div class="book-unknown-hint">
+          Если в них нужные данные — переименуйте колонку как в шаблоне или перенесите значения в подходящую колонку.
+        </div>
+      </div>
+
       <!-- Что система достроит сама -->
       <div v-if="warnings.length" class="book-warnings">
         <div v-for="(w, i) in visibleWarnings" :key="i" class="book-warning">
@@ -99,14 +116,14 @@ const props = defineProps<{ summary: BookSummary; draftId: string }>()
 
 /** Порядок листов — как в шаблоне: сначала справочники, потом история. */
 const ORDER = [
-  'Кассы', 'Счета', 'Сотрудники', 'Инвесторы', 'Поставщики', 'Клиенты',
+  'Кассы', 'Счета', 'Сотрудники', 'Инвесторы', 'Поставщики', 'Папки', 'Клиенты',
   'Платежи', 'Поручители', 'Инвесторы в сделках',
   'Движения инвесторов', 'Движения по кассе', 'Выплаты поставщикам', 'Долги и займы',
 ]
-const REFERENCE = new Set(['Кассы', 'Счета', 'Сотрудники', 'Инвесторы', 'Поставщики'])
+const REFERENCE = new Set(['Кассы', 'Счета', 'Сотрудники', 'Инвесторы', 'Поставщики', 'Папки'])
 const WARN_LIMIT = 3
 /** Род для «1 новая касса» / «1 новый счёт». */
-const FEMININE = new Set(['Кассы'])
+const FEMININE = new Set(['Кассы', 'Папки'])
 
 type SheetInfo = BookSummary['sheets'][string]
 const sheets = computed(() =>
@@ -114,6 +131,14 @@ const sheets = computed(() =>
     const info: SheetInfo | undefined = props.summary.sheets[name]
     if (!info || !(info.rows > 0 || info.withErrors > 0 || info.missingRequired.length > 0)) return []
     return [{ name, info, reference: REFERENCE.has(name) }]
+  }),
+)
+
+/** Незнакомые колонки по листам — в порядке листов шаблона. */
+const unknownColumns = computed(() =>
+  ['Сделки', ...ORDER].flatMap((name) => {
+    const cols = props.summary.sheets[name]?.unknownColumns ?? []
+    return cols.length ? [{ sheet: name, columns: cols }] : []
   }),
 )
 
@@ -205,6 +230,18 @@ function plural(n: number, one: string, few: string, many: string) {
 .flag-error { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
 .flag-warn { background: rgba(245, 158, 11, 0.14); color: #b45309; }
 
+.book-unknown {
+  margin-top: 12px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(245, 158, 11, 0.08);
+  font-size: 12.5px; line-height: 1.45;
+}
+.book-unknown-title {
+  display: flex; align-items: center; gap: 6px;
+  font-weight: 700; color: #b45309; margin-bottom: 4px;
+}
+.book-unknown-row { color: rgba(var(--v-theme-on-surface), 0.8); }
+.book-unknown-sheet { font-weight: 600; margin-right: 4px; }
+.book-unknown-hint { margin-top: 4px; color: rgba(var(--v-theme-on-surface), 0.55); }
 .book-warnings { margin-top: 12px; display: flex; flex-direction: column; gap: 5px; }
 .book-warning {
   display: flex; align-items: flex-start; gap: 6px;

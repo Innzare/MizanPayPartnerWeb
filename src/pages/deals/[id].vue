@@ -241,6 +241,17 @@ const assignedStaffName = computed(() => {
   return s ? `${s.lastName ?? ''} ${s.firstName ?? ''}`.trim() || '—' : null
 })
 
+/**
+ * Кто оформил сделку. Пусто — её завёл сам партнёр; id без имени — сотрудника
+ * удалили из базы вовсе (удалённого только из команды сервер находит).
+ */
+const creatorName = computed(() => {
+  const d = deal.value
+  const s = d?.createdByStaff
+  if (s) return `${s.lastName ?? ''} ${s.firstName ?? ''}`.trim() || 'Сотрудник'
+  return d?.createdByStaffId ? 'Удалённый сотрудник' : 'Владелец'
+})
+
 // Остаток долга поставщику по этой сделке (0, если погашен/оплачен при покупке).
 const supplierDebtRemaining = computed(() => {
   const d = deal.value?.supplierDebt
@@ -377,6 +388,9 @@ interface MoneyRow {
   accent?: 'key' | 'alert'
 }
 
+/** Скидка по договору — из окна скидки или из файла импорта. */
+const dealDiscount = computed(() => Math.max(Math.round(deal.value?.discount ?? 0), 0))
+
 const moneyGroups = computed<MoneyRow[][]>(() => {
   const d = deal.value
   if (!d) return []
@@ -411,6 +425,15 @@ const moneyGroups = computed<MoneyRow[][]>(() => {
       value: formatCurrency(d.totalPrice), accent: 'key',
     },
   )
+  // Скидка не меняет цену договора — клиент просто платит меньше. Показываем
+  // её рядом с ценой, иначе «Осталось оплатить» не сходилось бы с ценой.
+  if (dealDiscount.value > 0) {
+    price.push({
+      id: 'discount', icon: 'mdi-sale-outline', tone: 'info',
+      title: 'Скидка по договору', sub: 'клиент её не платит',
+      value: `− ${formatCurrency(dealDiscount.value)}`,
+    })
+  }
 
   const terms: MoneyRow[] = [
     {
@@ -975,8 +998,15 @@ async function saveComment() {
 // Не путать с прощением при досрочном закрытии: здесь договор продолжает
 // действовать, клиент просто должен меньше.
 const discountDialog = ref(false)
+/** Дать скидку или убрать уже данную — одно окно на оба действия. */
+const discountAction = ref<'apply' | 'remove'>('apply')
 /** Право то же, что и на прощение: это списание заработка партнёра. */
 const canDiscount = computed(() => authStore.can('payments.forgive'))
+
+function openDiscount(action: 'apply' | 'remove') {
+  discountAction.value = action
+  discountDialog.value = true
+}
 
 /** После скидки перечитываем и сделку, и график: изменились обе стороны. */
 async function onDiscountApplied() {
@@ -1215,10 +1245,20 @@ async function confirmReopen() {
             <button
               v-if="canDiscount && deal.status === 'ACTIVE'"
               class="status-action-btn status-action-btn--ghost"
-              @click="discountDialog = true"
+              @click="openDiscount('apply')"
             >
               <v-icon icon="mdi-sale-outline" size="16" />
               Дать скидку
+            </button>
+            <!-- Скидку снимает только эта кнопка: отмена оплаты её не
+                 возвращает в платежи. -->
+            <button
+              v-if="canDiscount && deal.status === 'ACTIVE' && dealDiscount > 0"
+              class="status-action-btn status-action-btn--ghost"
+              @click="openDiscount('remove')"
+            >
+              <v-icon icon="mdi-tag-off-outline" size="16" />
+              Убрать скидку
             </button>
             <button
               v-if="statusAction"
@@ -1412,6 +1452,15 @@ async function confirmReopen() {
                 <div class="pf-row-value">{{ formatCurrency(dealProfitBreakdown.installmentMargin) }}</div>
               </div>
 
+              <!-- Скидка — прощённый заработок: делится уже то, что осталось. -->
+              <div v-if="dealProfitBreakdown.discount > 0" class="pf-row">
+                <div class="pf-row-name">
+                  Скидка по договору
+                  <span class="pf-row-formula">прощено клиенту</span>
+                </div>
+                <div class="pf-row-value">− {{ formatCurrency(dealProfitBreakdown.discount) }}</div>
+              </div>
+
               <div v-if="dealProfitBreakdown.useWholesale" class="pf-hint">
                 <v-icon
                   :icon="dealProfitBreakdown.isFullMargin ? 'mdi-account-group' : 'mdi-account'"
@@ -1556,6 +1605,17 @@ async function confirmReopen() {
                 </v-card>
               </v-menu>
             </div>
+            <!-- Кто заключил сделку: по нему считаются показатели сотрудника.
+                 Ответственный выше может смениться, автор — нет. -->
+            <div class="d-flex align-center ga-3 deal-creator">
+              <div class="ci-header-icon" style="background: rgba(14, 116, 144, 0.10); color: #0e7490;">
+                <v-icon icon="mdi-file-sign" size="20" />
+              </div>
+              <div style="min-width: 0;">
+                <div class="ci-header-title">Оформил сделку</div>
+                <div class="ci-header-sub">{{ creatorName }}</div>
+              </div>
+            </div>
           </v-card>
 
           <!-- Supplier (Партнёры, partner-only) -->
@@ -1578,6 +1638,10 @@ async function confirmReopen() {
                   class="sup-debt-badge sup-debt-badge--open"
                 >
                   <v-icon icon="mdi-cash-minus" size="14" /> Долг {{ formatCurrency(supplierDebtRemaining) }}
+                  <!-- Часть уже отдана (при покупке или выплатами) — видно, из чего долг. -->
+                  <template v-if="(deal.supplierDebt?.paidAmount ?? 0) > 0">
+                    · оплачено {{ formatCurrency(deal.supplierDebt!.paidAmount) }} из {{ formatCurrency(deal.supplierDebt!.amount) }}
+                  </template>
                 </span>
                 <span
                   v-else-if="deal.supplierDebt && deal.supplierDebt.status === 'SETTLED'"
@@ -2077,11 +2141,13 @@ async function confirmReopen() {
         @paid="onQuickPayDone"
       />
 
-      <!-- Скидка на остаток договора: долг уменьшается, договор действует. -->
+      <!-- Скидка на остаток договора: долг уменьшается, договор действует.
+           То же окно убирает скидку — сумма возвращается в график. -->
       <DealDiscountDialog
         v-model="discountDialog"
         :deal="deal"
         :schedule="payments"
+        :action="discountAction"
         :fullscreen="isMobile"
         @applied="onDiscountApplied"
       />
@@ -3735,6 +3801,11 @@ async function confirmReopen() {
   display: flex; align-items: center; justify-content: space-between;
   padding: 18px 20px;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+.deal-creator {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 .ci-header-icon {
   width: 40px; height: 40px; min-width: 40px; border-radius: 10px;

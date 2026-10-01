@@ -102,27 +102,37 @@ export interface AnalyticsTimeliness {
   early: TimelinessSide
 }
 
-/** Один платёж за цифрой своевременности. */
+/**
+ * Одна сделка за цифрой своевременности — с платежами, попавшими в выборку
+ * (полосу возраста или всю сторону).
+ */
 export interface TimelinessDetailRow {
-  paymentId: string
   dealId: string
   dealNumber: number
-  paymentNumber: number
   productName: string
   clientName: string
+  /** Сколько платежей сделки в выборке. */
+  payments: number
+  /** Их сумма. */
   amount: number
-  /** Дней просрочки — либо на сколько дней платёж опередил срок. */
-  days: number
-  dueDate: string
-  paidAt: string | null
+  /** Наибольшая и наименьшая просрочка (или опережение срока), дней. */
+  maxDays: number
+  minDays: number
+  /** Самый ранний и самый поздний срок среди этих платежей. */
+  firstDue: string
+  lastDue: string
+  /** Когда внесена последняя из этих оплат (для «заранее»). */
+  lastPaidAt: string | null
 }
 
 /**
- * Расшифровка: платежи страницами, итоги — по всей выборке, а не по странице.
+ * Расшифровка: сделки страницами, итоги — по всей выборке, а не по странице.
+ * `count` — сделок (строк списка), `payments` — платежей за ними.
  */
 export interface TimelinessDetails {
   items: TimelinessDetailRow[]
   count: number
+  payments: number
   total: number
   deals: number
   clients: number

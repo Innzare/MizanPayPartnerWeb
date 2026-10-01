@@ -27,6 +27,27 @@
     </div>
 
     <template v-else-if="draft">
+      <!-- Итог отмены: что удалено насовсем и что оставлено, потому что
+           партнёр успел этим воспользоваться. Черновик — для повтора. -->
+      <div v-if="lastCancel" class="cancel-banner mb-4">
+        <div class="cancel-banner-icon">
+          <v-icon icon="mdi-undo-variant" size="20" />
+        </div>
+        <div class="cancel-banner-body">
+          <div class="cancel-banner-title">Импорт отменён</div>
+          <div class="cancel-banner-sub">
+            Удалено насовсем: {{ lastCancel.deals }} {{ plural(lastCancel.deals, 'сделка', 'сделки', 'сделок') }}
+            и {{ lastCancel.profiles }} {{ plural(lastCancel.profiles, 'клиент', 'клиента', 'клиентов') }}<template
+              v-if="lastCancel.restored">, возвращено к прежнему виду: {{ lastCancel.restored }}
+              {{ plural(lastCancel.restored, 'сделка', 'сделки', 'сделок') }}</template>.
+            Черновик остался — можно поправить и запустить импорт снова.
+          </div>
+          <ul v-if="lastCancel.kept.length" class="cancel-banner-kept">
+            <li v-for="(k, i) in lastCancel.kept" :key="i">{{ k }}</li>
+          </ul>
+        </div>
+      </div>
+
       <!-- Summary stats -->
       <div class="stats-row mb-5">
         <div class="stat-card">
@@ -140,14 +161,16 @@
               <strong>Недоплату считать долгом</strong>
               <span class="underpay-toggle-hint">
                 <template v-if="draft.stats.underpaymentAsDebt">
-                  Любая недоплата, даже в несколько рублей, станет строкой-долгом своего
-                  месяца, а следующие платежи останутся как по договору. В «Должники»
-                  клиент попадёт по порогам из настроек этого раздела; если недоплачен
-                  последний платёж — при любой сумме.
+                  Недоплата, даже в несколько рублей, станет строкой-долгом своего
+                  месяца — как «Оставить как долг» в окне оплаты. Следующая оплата
+                  сначала гасит долги, остаток идёт в ближайший месяц. Пока срок месяца
+                  не наступил, его долг не просрочен. В «Должники» клиент попадёт по
+                  порогам из настроек этого раздела; если недоплачен последний платёж
+                  графика — при любой сумме.
                 </template>
                 <template v-else>
-                  Сейчас недоплата переносится на последние платежи графика — клиент
-                  выглядит без долгов до конца договора.
+                  Сейчас недоплата переносится на следующий месяц — как в окне оплаты
+                  по умолчанию.
                 </template>
               </span>
             </span>
@@ -488,25 +511,40 @@
              без счётчика партнёр не отличал бы работу от зависания. -->
         <div v-if="importRunning" class="commit-progress">
           <div class="commit-progress-top">
-            <v-progress-circular indeterminate size="14" width="2" color="primary" />
+            <v-progress-circular indeterminate size="14" width="2" :color="cancelling ? 'error' : 'primary'" />
             <span class="commit-progress-label">
-              {{ isQueued ? 'Ожидает очереди…' : 'Импортируем сделки…' }}
+              {{ cancelling ? 'Отменяем импорт…' : isQueued ? 'Ожидает очереди…' : 'Импортируем сделки…' }}
             </span>
-            <span v-if="commitProgress && !isQueued" class="commit-progress-count">
+            <span v-if="cancelling" class="commit-progress-count commit-progress-count--cancel">
+              удалено {{ commitProgress?.cancel?.deals ?? 0 }}<template v-if="cancelTotal"> из {{ cancelTotal }}</template>
+            </span>
+            <span v-else-if="commitProgress && !isQueued" class="commit-progress-count">
               {{ commitProgress.processed }} из {{ commitProgress.total }}
             </span>
           </div>
           <v-progress-linear
-            :model-value="commitProgressPct"
-            :indeterminate="!commitProgress || isQueued"
-            color="primary"
+            :model-value="cancelling ? cancelPct : commitProgressPct"
+            :indeterminate="cancelling ? !cancelTotal : (!commitProgress || isQueued)"
+            :color="cancelling ? 'error' : 'primary'"
             height="6"
             rounded
           />
           <div class="commit-progress-hint">
-            <template v-if="isQueued">{{ queueHint }}</template>
+            <template v-if="cancelling">Удаляем всё, что импорт успел записать, — страницу можно закрыть</template>
+            <template v-else-if="isQueued">{{ queueHint }}</template>
             <template v-else>Импорт идёт на сервере — страницу можно закрыть</template>
           </div>
+          <!-- Остановить импорт и стереть записанное им: в системе не
+               останется ничего из этого файла. -->
+          <button
+            v-if="!cancelling"
+            class="commit-cancel-btn"
+            :disabled="cancelRequesting"
+            @click="onCancelImport"
+          >
+            <v-icon icon="mdi-stop-circle-outline" size="15" />
+            Отменить импорт
+          </button>
         </div>
 
         <v-tooltip v-else-if="!canCommit" location="top">
@@ -1217,6 +1255,28 @@ function onCellChanged(e: CellValueChangedEvent) {
 // минуты и падал по таймауту — партнёр получал 500 и не знал, что импортировалось.
 const commitProgress = ref<CommitProgress | null>(null)
 const importRunning = ref(false)
+// Отмена импорта: записанное удаляется на сервере, прогресс — тем же опросом.
+const cancelling = ref(false)
+const cancelRequesting = ref(false)
+/** Сколько сделок предстоит удалить — столько импорт успел создать. */
+const cancelTotal = computed(() => commitProgress.value?.created ?? 0)
+const cancelPct = computed(() => {
+  const total = cancelTotal.value
+  if (!total) return 0
+  return Math.min(100, Math.round(((commitProgress.value?.cancel?.deals ?? 0) / total) * 100))
+})
+/** Итог последней отмены — плашка над редактором. */
+const lastCancel = computed(() => {
+  const p = draft.value?.stats?.commitProgress
+  return p?.state === 'cancelled' && p.cancel ? p.cancel : null
+})
+function plural(n: number, one: string, few: string, many: string) {
+  const m10 = n % 10
+  const m100 = n % 100
+  if (m10 === 1 && m100 !== 11) return one
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few
+  return many
+}
 // Место в очереди: одновременных импортов ограниченное число (параллельные
 // прогоны упирались в память сервера и обрывали друг друга), поэтому файл
 // может ждать своей очереди. Без этого партнёр видел бы «импорт идёт» при
@@ -1265,6 +1325,7 @@ function finishImport(res: { created: number; updated: number; skipped: number }
 function failImport(message: string) {
   stopProgressPolling()
   importRunning.value = false
+  cancelling.value = false
   commitProgress.value = null
   queuePosition.value = null
   showToast(message, 'error')
@@ -1282,10 +1343,18 @@ function startProgressPolling() {
       const s = await fetchProgress(draftId.value)
       if (s.progress) commitProgress.value = s.progress
       queuePosition.value = s.queuePosition
-      if (s.status === 'COMMITTED') {
+      if (s.status === 'CANCELLING') {
+        // Отмена идёт — показываем её ход тем же баннером.
+        cancelling.value = true
+        importRunning.value = true
+      } else if (s.status === 'CANCELLED') {
+        finishCancel(null)
+      } else if (s.status === 'DRAFT' && s.progress?.state === 'cancelled') {
+        finishCancel(s.progress.cancel ?? null)
+      } else if (s.status === 'COMMITTED') {
         finishImport(s.progress ?? { created: 0, updated: 0, skipped: 0 })
       } else if (s.status === 'DRAFT') {
-        // Прогон упал — сервер вернул черновик в DRAFT и записал причину.
+        // Прогон (или отмена) упал — сервер вернул черновик в DRAFT и записал причину.
         failImport(s.progress?.error || 'Импорт прервался — попробуйте ещё раз')
       } else if (s.stale) {
         failImport('Импорт прервался на сервере — запустите его ещё раз')
@@ -1342,13 +1411,66 @@ async function onCommit() {
 }
 
 async function onCancel() {
-  if (!confirm('Отменить черновик? Данные не будут импортированы.')) return
+  if (!confirm('Отменить черновик? Если импорт уже успел что-то записать, это будет удалено.')) return
   try {
-    await cancel(draftId.value)
+    const res = await cancel(draftId.value)
+    if (res?.state === 'cancelling') {
+      startCancelWatch()
+      return
+    }
     router.push('/import')
   } catch (e: any) {
     showToast(e.message || 'Не удалось отменить', 'error')
   }
+}
+
+/**
+ * Отменить идущий импорт. Всё, что он записал, удаляется насовсем — без
+ * корзины: сделки, платежи, записи кассы, клиенты и справочники из файла.
+ */
+async function onCancelImport() {
+  const ok = confirm(
+    'Остановить импорт и удалить всё, что он успел записать?\n\n' +
+      'Сделки, платежи, клиенты и справочники из этого файла будут удалены насовсем — ' +
+      'без корзины. Черновик останется: его можно поправить и запустить снова.',
+  )
+  if (!ok) return
+  cancelRequesting.value = true
+  try {
+    const res = await cancel(draftId.value)
+    if (res?.state === 'cancelled') {
+      finishCancel(null)
+      return
+    }
+    startCancelWatch()
+  } catch (e: any) {
+    showToast(e.message || 'Не удалось отменить импорт', 'error')
+  } finally {
+    cancelRequesting.value = false
+  }
+}
+
+function startCancelWatch() {
+  cancelling.value = true
+  importRunning.value = true
+  startProgressPolling()
+}
+
+function finishCancel(report: { deals: number } | null) {
+  stopProgressPolling()
+  importRunning.value = false
+  cancelling.value = false
+  commitProgress.value = null
+  queuePosition.value = null
+  if (!report) {
+    // Импорт ничего не успел записать — черновик просто отменён.
+    showToast('Импорт отменён', 'success')
+    router.push('/import')
+    return
+  }
+  showToast(`Импорт отменён: удалено ${report.deals} ${plural(report.deals, 'сделка', 'сделки', 'сделок')}`, 'success')
+  // Черновик вернулся для повтора — перечитываем его вместе с итогом отмены.
+  fetchDraft(draftId.value).catch(() => {})
 }
 
 onMounted(() => {
@@ -1356,8 +1478,9 @@ onMounted(() => {
     .then(() => {
       // Партнёр вернулся на страницу (или обновил её) во время фонового
       // импорта — подхватываем идущий прогон вместо мёртвого редактора.
-      if (draft.value?.status === 'COMMITTING') {
+      if (draft.value?.status === 'COMMITTING' || draft.value?.status === 'CANCELLING') {
         importRunning.value = true
+        cancelling.value = draft.value.status === 'CANCELLING'
         commitProgress.value = draft.value.stats?.commitProgress ?? null
         startProgressPolling()
       }
@@ -2037,6 +2160,36 @@ watch(() => route.params.id, (id) => {
   font-size: 11px;
   color: rgba(var(--v-theme-on-surface), 0.45);
 }
+.commit-progress-count--cancel { color: #dc2626; }
+.dark .commit-progress-count--cancel { color: #f87171; }
+.commit-cancel-btn {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 8px;
+  font-size: 12px; font-weight: 600;
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+  transition: background 0.15s;
+}
+.commit-cancel-btn:hover:not(:disabled) { background: rgba(220, 38, 38, 0.14); }
+.commit-cancel-btn:disabled { opacity: 0.5; cursor: default; }
+.dark .commit-cancel-btn { color: #f87171; }
+.cancel-banner {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 16px 18px; border-radius: 12px;
+  background: rgba(220, 38, 38, 0.05);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+}
+.cancel-banner-icon {
+  width: 38px; height: 38px; min-width: 38px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(220, 38, 38, 0.1); color: #dc2626;
+}
+.cancel-banner-body { flex: 1; min-width: 0; }
+.cancel-banner-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.cancel-banner-sub { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.7); line-height: 1.5; }
+.cancel-banner-kept { margin: 8px 0 0 18px; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6); }
 </style>
 
 <style>

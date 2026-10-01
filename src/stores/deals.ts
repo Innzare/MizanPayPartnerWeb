@@ -276,6 +276,8 @@ export const useDealsStore = defineStore('deals', () => {
     // Партнёр-поставщик товара + оплачен ли он (false → создаётся долг).
     supplierId?: string
     paidToSupplier?: boolean
+    /** Сколько оплачено поставщику при покупке (частично). */
+    supplierPrepaid?: number
     supplierRequestId?: string
     // Phase 4: explicit co-investor participation, applied atomically at
     // creation (so the down-payment accrual already respects it). Omit to

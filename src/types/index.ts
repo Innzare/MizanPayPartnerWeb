@@ -309,6 +309,10 @@ export interface Deal {
   // Staff member assigned as the responsible party for this deal
   assignedStaffId?: string | null
   assignedStaff?: { id: string; firstName: string; lastName: string } | null
+  /** Кто оформил сделку. Пусто — сам партнёр. */
+  createdByStaffId?: string | null
+  /** Имя оформившего — сервер отдаёт и для удалённого из команды сотрудника. */
+  createdByStaff?: { id: string; firstName: string; lastName: string } | null
   // Supplier (Партнёры): store the deal was bought from + optional open debt
   supplierId?: string | null
   paidToSupplier?: boolean

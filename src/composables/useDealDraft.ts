@@ -65,6 +65,8 @@ export interface DealDraft {
   /** Партнёр-поставщик и отметка «оплачено ему». */
   selectedSupplierId?: string | null
   paidToSupplier?: boolean
+  supplierPartial?: boolean
+  supplierPrepaid?: number | null
   /** Кто из со-инвесторов участвует в этой сделке и с какими долями. */
   dealParticipants?: Array<Record<string, unknown>>
   profitSplitBase: 'MARKUP_ONLY' | 'FULL_MARGIN'

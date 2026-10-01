@@ -485,6 +485,45 @@ function openDelete(member: StaffMember) {
   deleteDialog.value = true
 }
 
+// ── Приглашение ──
+// Сотрудник, перенесённый из книги, заведён без письма: пригласить его партнёр
+// решает сам. Каждое приглашение — новый временный пароль, старый перестаёт
+// действовать. Пароль показываем и здесь: у сотрудника может не работать почта.
+const inviteTarget = ref<StaffMember | null>(null)
+const inviteDialog = ref(false)
+const inviteLoading = ref(false)
+const invitePassword = ref('')
+
+function openInvite(member: StaffMember) {
+  inviteTarget.value = member
+  invitePassword.value = ''
+  inviteDialog.value = true
+}
+
+async function confirmInvite() {
+  if (!inviteTarget.value) return
+  inviteLoading.value = true
+  try {
+    const res = await api.post<{ email: string; tempPassword: string }>(
+      `/auth/investor/staff/${inviteTarget.value.id}/invite`, {},
+    )
+    invitePassword.value = res.tempPassword
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось отправить приглашение')
+  } finally {
+    inviteLoading.value = false
+  }
+}
+
+async function copyInvitePassword() {
+  try {
+    await navigator.clipboard.writeText(invitePassword.value)
+    toast.success('Пароль скопирован')
+  } catch {
+    toast.error('Не удалось скопировать — выделите пароль вручную')
+  }
+}
+
 async function confirmDelete() {
   if (!deleteTarget.value) return
   deleteLoading.value = true
@@ -755,6 +794,10 @@ onBeforeUnmount(() => {
                   <button v-if="canManageStaff" class="sf-menu-item" @click="openEdit(m)">
                     <v-icon icon="mdi-pencil-outline" size="16" />
                     Доступы и роль
+                  </button>
+                  <button v-if="canManageStaff" class="sf-menu-item" @click="openInvite(m)">
+                    <v-icon icon="mdi-email-send-outline" size="16" />
+                    Отправить приглашение
                   </button>
                   <div class="sf-menu-sep" />
                   <button v-if="canManageStaff" class="sf-menu-item sf-menu-item--danger" @click="openDelete(m)">
@@ -1325,6 +1368,43 @@ onBeforeUnmount(() => {
       </v-card>
     </v-dialog>
 
+    <!-- Приглашение: сначала подтверждение, потом пароль -->
+    <v-dialog v-model="inviteDialog" max-width="420" :fullscreen="isMobile">
+      <v-card v-if="inviteTarget" rounded="lg" class="pa-6 text-center">
+        <div class="sf-invite-icon mb-4">
+          <v-icon :icon="invitePassword ? 'mdi-check-circle-outline' : 'mdi-email-send-outline'" size="28" color="#047857" />
+        </div>
+        <template v-if="!invitePassword">
+          <div class="text-h6 font-weight-bold mb-2">Отправить приглашение?</div>
+          <div class="text-body-2 text-medium-emphasis mb-6">
+            {{ inviteTarget.firstName }} {{ inviteTarget.lastName }} получит на {{ inviteTarget.email }}
+            письмо с временным паролем. Если раньше у сотрудника был пароль, он перестанет действовать.
+          </div>
+          <div class="d-flex ga-3">
+            <button class="btn-secondary flex-grow-1" @click="inviteDialog = false">Отмена</button>
+            <button class="btn-primary flex-grow-1" :disabled="inviteLoading" @click="confirmInvite">
+              <v-progress-circular v-if="inviteLoading" indeterminate size="16" width="2" color="white" class="mr-2" />
+              Отправить
+            </button>
+          </div>
+        </template>
+        <template v-else>
+          <div class="text-h6 font-weight-bold mb-2">Приглашение отправлено</div>
+          <div class="text-body-2 text-medium-emphasis mb-4">
+            Письмо ушло на {{ inviteTarget.email }}. Если оно не дойдёт, передайте временный пароль сами —
+            после входа сотрудник может сменить его в профиле.
+          </div>
+          <div class="sf-invite-password mb-6">
+            <span>{{ invitePassword }}</span>
+            <button class="sf-invite-copy" title="Скопировать" @click="copyInvitePassword">
+              <v-icon icon="mdi-content-copy" size="16" />
+            </button>
+          </div>
+          <button class="btn-primary w-100" @click="inviteDialog = false">Готово</button>
+        </template>
+      </v-card>
+    </v-dialog>
+
     <!-- Delete Dialog -->
     <v-dialog v-model="deleteDialog" max-width="400" :fullscreen="isMobile">
       <v-card v-if="deleteTarget" rounded="lg" class="pa-6 text-center">
@@ -1711,6 +1791,25 @@ onBeforeUnmount(() => {
 .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── Delete dialog icon ── */
+.sf-invite-icon {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: rgba(4, 120, 87, 0.08);
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto;
+}
+.sf-invite-password {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 12px 16px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.05);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px; font-weight: 600; letter-spacing: 0.04em;
+  user-select: all;
+}
+.sf-invite-copy {
+  display: inline-flex; padding: 6px; border-radius: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.sf-invite-copy:hover { background: rgba(var(--v-theme-on-surface), 0.08); }
 .sf-delete-icon {
   width: 56px; height: 56px; border-radius: 50%;
   background: rgba(239, 68, 68, 0.08);

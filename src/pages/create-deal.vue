@@ -54,6 +54,20 @@ const suppliersEnabled = computed(() => sections.visible('suppliers'))
 // Партнёр-поставщик, у которого выкуплен товар, и оплачен ли он.
 const selectedSupplierId = ref<string | null>(null)
 const paidToSupplier = ref(true)
+/**
+ * Оплачено ли поставщику частично: часть отдали при покупке, остаток — долг.
+ * Работает вместе с paidToSupplier=false; сумма — supplierPrepaid.
+ */
+const supplierPartial = ref(false)
+const supplierPrepaid = ref<number | null>(null)
+/** Оплата поставщику: полностью / частично / весь товар в долг. */
+const supplierPayMode = computed<'paid' | 'partial' | 'debt'>({
+  get: () => (paidToSupplier.value ? 'paid' : supplierPartial.value ? 'partial' : 'debt'),
+  set: (m) => {
+    paidToSupplier.value = m === 'paid'
+    supplierPartial.value = m === 'partial'
+  },
+})
 const supplierFormOpen = ref(false)
 // Если пришли из заявки поставщика — линкуем её при создании сделки.
 const fromSupplierRequestId = ref<string | null>(null)
@@ -61,9 +75,22 @@ const supplierItems = computed(() =>
   suppliersStore.rows.map((s) => ({ title: s.city ? `${s.name} · ${s.city}` : s.name, value: s.id })),
 )
 // Сумма долга = оптовая (если задана) иначе закупочная — как deployAmountFor на бэке.
-const supplierDebtAmount = computed(() =>
+/** Стоимость товара у поставщика: оптовая цена, если задана, иначе закупочная. */
+const supplierCost = computed(() =>
   useWholesalePrice.value && (wholesalePrice.value || 0) > 0 ? (wholesalePrice.value || 0) : (purchasePrice.value || 0),
 )
+/** Сколько останется должны поставщику. */
+const supplierDebtAmount = computed(() =>
+  Math.max(supplierCost.value - (supplierPayMode.value === 'partial' ? (supplierPrepaid.value || 0) : 0), 0),
+)
+/** «Частично» без суммы или на всю стоимость — так сделку не создать. */
+const supplierPrepaidError = computed(() => {
+  if (!selectedSupplierId.value || supplierPayMode.value !== 'partial') return ''
+  const p = supplierPrepaid.value || 0
+  if (p <= 0) return 'Укажите, сколько уже оплачено поставщику'
+  if (supplierCost.value > 0 && p >= supplierCost.value) return 'Это вся стоимость товара — выберите «Оплачено»'
+  return ''
+})
 async function onSupplierCreated() {
   await suppliersStore.fetchList({ sort: 'name' })
   toast.success('Партнёр добавлен — выберите его в списке')
@@ -1505,6 +1532,8 @@ async function applyDraftToForm(source?: DealDraft | null) {
     selectedCashBoxId.value = d.selectedCashBoxId
     selectedSupplierId.value = d.selectedSupplierId ?? null
     if (d.paidToSupplier !== undefined) paidToSupplier.value = d.paidToSupplier
+    supplierPartial.value = !!d.supplierPartial
+    supplierPrepaid.value = d.supplierPrepaid ?? null
     step.value = d.step
 
     // Эти значения нельзя ставить сразу: наблюдатели за ценой и кассой
@@ -1586,6 +1615,8 @@ function scheduleDraftSave() {
       manualDownPayment: manualDownPayment.value,
       selectedSupplierId: selectedSupplierId.value,
       paidToSupplier: paidToSupplier.value,
+      supplierPartial: supplierPartial.value,
+      supplierPrepaid: supplierPrepaid.value,
       dealParticipants: dealParticipants.value.map((p: DealParticipantRow) => ({ ...p })),
     })
   }, 500)
@@ -1693,7 +1724,8 @@ function getClientDisplayName(p: ClientProfile | null): string {
 }
 
 // Validation
-const step1Valid = computed(() => !!productName.value)
+// Поставщик «частично» без суммы — долг посчитать не из чего.
+const step1Valid = computed(() => !!productName.value && !supplierPrepaidError.value)
 // No need to gate on the down-payment error any more: the amount is clamped to
 // the total price on input, so it can never reach an invalid state. The error
 // is shown only as informational feedback.
@@ -1729,6 +1761,11 @@ function confirmOverdraftAndSubmit() {
 }
 
 async function submitDeal(acknowledgedOverdraft = false) {
+  // Цену закупа вводят после поставщика — сверяем «частично» с ней здесь.
+  if (!isEditMode.value && supplierPrepaidError.value) {
+    toast.error(supplierPrepaidError.value)
+    return
+  }
   // Insufficient-capital warning. Backend no longer blocks creation —
   // it just lets the cashbox go negative. Partners asked for a heads-up
   // so they don't accidentally overdraft. Edit mode skips the dialog
@@ -1895,6 +1932,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
       // Партнёр-поставщик + оплачен ли он. paidToSupplier=false создаёт долг.
       supplierId: selectedSupplierId.value || undefined,
       paidToSupplier: selectedSupplierId.value ? paidToSupplier.value : undefined,
+      // Частично: долг на всю стоимость, оплаченное — выплата при покупке.
+      supplierPrepaid:
+        selectedSupplierId.value && supplierPayMode.value === 'partial' ? (supplierPrepaid.value || 0) : undefined,
       supplierRequestId: fromSupplierRequestId.value || undefined,
       // Phase 4: when the partner customised participation, send the explicit
       // set WITH the create request so it's applied atomically — before the
@@ -2133,13 +2173,35 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 @create-new="supplierFormOpen = true"
               />
 
-              <div v-if="selectedSupplierId" class="sup-paid-row">
-                <label class="wholesale-checkbox-label">
-                  <input type="checkbox" :checked="paidToSupplier" @change="paidToSupplier = !paidToSupplier" />
-                  <span>Оплачено поставщику</span>
-                </label>
-                <span v-if="!paidToSupplier" class="sup-debt-hint">
-                  <v-icon icon="mdi-cash-minus" size="14" /> Долг поставщику: {{ formatCurrency(supplierDebtAmount) }}
+              <!-- Оплата поставщику: полностью, частично (предоплата) или весь
+                   товар в долг. «Частично» — долг на остаток, а оплаченное
+                   видно в выплатах поставщику. -->
+              <div v-if="selectedSupplierId" class="sup-pay">
+                <div class="markup-from-switch">
+                  <button type="button" class="markup-from-option" :class="{ active: supplierPayMode === 'paid' }" @click="supplierPayMode = 'paid'">Оплачено</button>
+                  <button type="button" class="markup-from-option" :class="{ active: supplierPayMode === 'partial' }" @click="supplierPayMode = 'partial'">Частично</button>
+                  <button type="button" class="markup-from-option" :class="{ active: supplierPayMode === 'debt' }" @click="supplierPayMode = 'debt'">В долг</button>
+                </div>
+                <div v-if="supplierPayMode === 'partial'" class="input-with-suffix">
+                  <input
+                    :value="maskedMoney(supplierPrepaid)"
+                    v-maska="CURRENCY_MASK"
+                    type="text"
+                    inputmode="numeric"
+                    class="field-input"
+                    :class="{ 'field-input--error': !!supplierPrepaidError && (supplierPrepaid || 0) > 0 }"
+                    placeholder="Сколько уже оплачено поставщику"
+                    @maska="(e: any) => supplierPrepaid = parseMasked(e)"
+                  />
+                  <span class="input-suffix">₽</span>
+                </div>
+                <div v-if="supplierPrepaidError && (supplierPrepaid || 0) > 0" class="sup-pay-error">{{ supplierPrepaidError }}</div>
+                <span v-if="supplierPayMode !== 'paid' && supplierDebtAmount > 0" class="sup-debt-hint">
+                  <v-icon icon="mdi-cash-minus" size="14" />
+                  <template v-if="supplierPayMode === 'partial' && (supplierPrepaid || 0) > 0 && !supplierPrepaidError">
+                    Оплачено {{ formatCurrency(supplierPrepaid || 0) }} из {{ formatCurrency(supplierCost) }}, долг поставщику: {{ formatCurrency(supplierDebtAmount) }}
+                  </template>
+                  <template v-else>Долг поставщику: {{ formatCurrency(supplierDebtAmount) }}</template>
                 </span>
               </div>
             </div>
@@ -3429,7 +3491,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
   color: #ef4444;
 }
 /* Партнёр-поставщик в форме сделки */
-.sup-paid-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
+.sup-pay { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.sup-pay .markup-from-switch { margin-bottom: 0; }
+.sup-pay-error { font-size: 12px; color: #dc2626; }
 .sup-debt-hint { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; color: #ef4444; }
 
 /* Plan-limit gate (blocks the form when over active-deal limit) */
