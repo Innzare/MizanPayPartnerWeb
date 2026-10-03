@@ -117,6 +117,38 @@ export function replaceVariables(html: string, deal: Deal, payments: Payment[], 
 }
 
 // A4 dimensions in pt: 595.28 x 841.89
+/**
+ * Где можно перевернуть страницу — в пикселях разметки от верха контейнера.
+ *
+ * PDF собирается из одной длинной картинки, нарезанной на листы. Раньше лист
+ * обрывался ровно по высоте страницы — посреди строки таблицы или посреди
+ * абзаца, и половина строки уезжала на следующую страницу. Теперь разрыв
+ * ставится по верхнему краю ближайшего блока: строки таблицы, абзаца, пункта
+ * списка, заголовка, картинки.
+ *
+ * Два исключения:
+ *  - блоки внутри ячейки таблицы — их край лежит посреди строки, разрыв там
+ *    снова разрезал бы строку пополам;
+ *  - блок сразу после заголовка — иначе заголовок остался бы последней
+ *    строкой страницы, оторванным от своего текста (разрыв уйдёт выше, перед
+ *    самим заголовком).
+ */
+function pageBreakCandidates(container: HTMLElement): number[] {
+  const top0 = container.getBoundingClientRect().top
+  const out = new Set<number>()
+  const blocks = container.querySelectorAll<HTMLElement>(
+    'p, li, tr, h1, h2, h3, h4, h5, h6, img, hr, blockquote, table, div[data-bordered]',
+  )
+  blocks.forEach((el) => {
+    if (el.tagName !== 'TR' && el.closest('td, th')) return
+    const prev = el.previousElementSibling
+    if (prev && /^H[1-6]$/.test(prev.tagName)) return
+    const y = Math.round(el.getBoundingClientRect().top - top0)
+    if (y > 0) out.add(y)
+  })
+  return [...out].sort((a, b) => a - b)
+}
+
 const A4_WIDTH_PT = 595.28
 const A4_HEIGHT_PT = 841.89
 const PX_PER_MM = 3.78
@@ -176,12 +208,19 @@ export async function exportTemplatePdf(
   document.body.appendChild(container)
 
   try {
+    // Места разрыва снимаем с живой разметки, пока контейнер в документе.
+    const breaksCss = pageBreakCandidates(container)
+    const containerHeightCss = container.getBoundingClientRect().height
+
     const canvas = await html2canvas(container, {
       scale: SCALE,
       useCORS: true,
       backgroundColor: '#ffffff',
       width: contentWidthPx,
     })
+    // Пиксели разметки → пиксели картинки.
+    const cssToCanvas = containerHeightCss > 0 ? canvas.height / containerHeightCss : SCALE
+    const breaks = breaksCss.map((y) => Math.floor(y * cssToCanvas))
 
     const pdf = new jsPDF('p', 'pt', 'a4')
 
@@ -204,7 +243,21 @@ export async function exportTemplatePdf(
     while (yOffset < canvas.height) {
       if (pageNum > 0) pdf.addPage()
 
-      const sliceHeight = Math.min(pageContentHeightPx, canvas.height - yOffset)
+      // Конец листа — по ближайшему месту разрыва не ниже края страницы. Если
+      // в нижней половине листа такого места нет (огромная картинка или
+      // таблица в одну строку), режем по краю, как раньше: пустая полстраницы
+      // хуже обрезанного края.
+      const limit = yOffset + pageContentHeightPx
+      let cut = limit
+      if (limit < canvas.height) {
+        const minCut = yOffset + pageContentHeightPx * 0.5
+        for (let i = breaks.length - 1; i >= 0; i--) {
+          const b = breaks[i]!
+          if (b <= limit && b > minCut) { cut = b; break }
+          if (b <= minCut) break
+        }
+      }
+      const sliceHeight = Math.min(cut, canvas.height) - yOffset
 
       // Create canvas slice for this page
       const pageCanvas = document.createElement('canvas')
@@ -219,7 +272,7 @@ export async function exportTemplatePdf(
       const imgData = pageCanvas.toDataURL('image/jpeg', 0.95)
       pdf.addImage(imgData, 'JPEG', marginLeftPt, marginTopPt, imgWidthPt, sliceHeightPt)
 
-      yOffset += pageContentHeightPx
+      yOffset = cut
       pageNum++
     }
 
