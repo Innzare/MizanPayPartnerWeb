@@ -17,9 +17,9 @@ import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { formatCurrency, formatCurrencyShort } from '@/utils/formatters'
 import AccountingTabs from '@/components/AccountingTabs.vue'
-import DateField from '@/components/DateField.vue'
-import { rangeForPreset, customLabel } from '@/composables/useReports'
-import type { PeriodPreset, PeriodRange } from '@/types/reports'
+import MonthYearPicker from '@/components/MonthYearPicker.vue'
+import { rangeForPreset } from '@/composables/useReports'
+import type { PeriodRange } from '@/types/reports'
 
 const store = useAccountingStore()
 const toast = useToast()
@@ -122,48 +122,11 @@ function dayLabel(date: string): string {
 }
 
 /**
- * Период — тем же механизмом, что в отчётах: список пресетов плюс «свой
- * период». Одинаковые вещи в разных разделах должны выбираться одинаково,
- * иначе человек каждый раз заново разбирается, где что.
+ * Период — тот же выбор, что в «Пополнениях и расходах» и журнале кассы:
+ * конкретный месяц, диапазон месяцев «от и до», год или всё время.
+ * Одинаковые вещи в разных разделах должны выбираться одинаково.
  */
-const PRESETS: Array<{ key: PeriodPreset; label: string }> = [
-  { key: 'all', label: 'За всё время' },
-  { key: 'month', label: 'Месяц' },
-  { key: 'quarter', label: 'Квартал' },
-  { key: 'half', label: 'Полугодие' },
-  { key: 'year', label: 'Год' },
-]
-
 const period = ref<PeriodRange>(rangeForPreset('all'))
-const customOpen = ref(false)
-// Поля своего периода стартуют с текущего месяца: у «за всё время» нижняя
-// граница техническая (2000 год) и в календаре смотрелась бы странно.
-const thisMonth = rangeForPreset('month')
-const customFrom = ref(thisMonth.from)
-const customTo = ref(thisMonth.to)
-
-/** Список для селекта: свой период появляется пунктом, только когда выбран. */
-const periodItems = computed(() => {
-  const list = PRESETS.map((p) => ({ title: p.label, value: p.key as string }))
-  if (period.value.preset === 'custom') list.push({ title: period.value.label, value: 'custom' })
-  return list
-})
-
-function pickPreset(p: PeriodPreset) {
-  // «Свой период» в списке — только показ текущего выбора: задают его кнопкой.
-  if (p === 'custom') return
-  period.value = rangeForPreset(p)
-}
-
-function applyCustom() {
-  if (!customFrom.value || !customTo.value) return
-  const [f, t] =
-    customFrom.value <= customTo.value
-      ? [customFrom.value, customTo.value]
-      : [customTo.value, customFrom.value]
-  period.value = { from: f, to: t, preset: 'custom', label: customLabel(f, t) }
-  customOpen.value = false
-}
 
 /** Пункты селектов: у Vuetify это {title, value}, а не option-разметка. */
 const accountItems = computed(() => [
@@ -254,39 +217,9 @@ function goToDeal(e: AccountEntryView) {
         <div class="hs-hint">Все движения денег по всем счетам</div>
       </div>
 
-      <!-- Период выбирается так же, как в отчётах: список готовых периодов и
-           кнопка своего. Одинаковые вещи в разных разделах должны работать
-           одинаково. -->
+      <!-- Период — общий компонент: месяц, диапазон «от и до», год, всё время. -->
       <div class="hs-period-ctl">
-        <v-select
-          :model-value="period.preset"
-          :items="periodItems"
-          density="compact"
-          variant="outlined"
-          hide-details
-          class="hs-vselect hs-vselect--period"
-          @update:model-value="pickPreset"
-        />
-        <v-menu v-model="customOpen" :close-on-content-click="false" location="bottom end">
-          <template #activator="{ props: menuProps }">
-            <button
-              v-bind="menuProps"
-              class="hs-custom-btn"
-              :class="{ 'hs-custom-btn--active': period.preset === 'custom' }"
-              type="button"
-            >
-              <v-icon icon="mdi-calendar-range" size="16" />
-              Свой период
-            </button>
-          </template>
-          <v-card min-width="280" class="pa-4">
-            <div class="text-caption text-medium-emphasis mb-2">С какой даты</div>
-            <DateField v-model="customFrom" :max="customTo || undefined" />
-            <div class="text-caption text-medium-emphasis mt-3 mb-2">По какую</div>
-            <DateField v-model="customTo" :min="customFrom || undefined" />
-            <v-btn color="primary" block class="mt-4" @click="applyCustom">Показать</v-btn>
-          </v-card>
-        </v-menu>
+        <MonthYearPicker v-model="period" class="hs-period" />
       </div>
     </div>
 
@@ -445,23 +378,6 @@ function goToDeal(e: AccountEntryView) {
 .hs-hint { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 3px; }
 
 .hs-period-ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.hs-custom-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 40px; padding: 0 14px; border-radius: 9px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  /* Поля и кнопки стоят на своём слое, а не сливаются с фоном страницы —
-     иначе непонятно, где вообще можно нажать. */
-  background: rgb(var(--v-theme-surface));
-  color: rgba(var(--v-theme-on-surface), 0.65);
-  font-size: 13px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s; white-space: nowrap;
-}
-.hs-custom-btn:hover { border-color: rgba(var(--v-theme-on-surface), 0.25); }
-.hs-custom-btn--active {
-  background: rgba(16, 185, 129, 0.08);
-  border-color: rgba(16, 185, 129, 0.32);
-  color: #10b981;
-}
 
 /* ── Фильтры ── */
 .hs-filters {
@@ -497,7 +413,6 @@ function goToDeal(e: AccountEntryView) {
    что это выбор из списка, а не подпись. */
 .hs-vselect { min-width: 180px; max-width: 210px; }
 .hs-vselect--wide { min-width: 210px; max-width: 240px; }
-.hs-vselect--period { min-width: 172px; }
 .hs-vselect :deep(.v-field) {
   border-radius: 9px; font-size: 13px; font-weight: 600;
   background: rgb(var(--v-theme-surface));
@@ -658,6 +573,6 @@ function goToDeal(e: AccountEntryView) {
   .hs-totals { grid-template-columns: repeat(2, 1fr); }
   .hs-vselect, .hs-vselect--wide { max-width: none; flex: 1 1 160px; }
   .hs-period-ctl { width: 100%; }
-  .hs-vselect--period { flex: 1; }
+  .hs-period { flex: 1 1 100%; justify-content: space-between; }
 }
 </style>

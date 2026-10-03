@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import BankLogo from '@/components/BankLogo.vue'
-import { useAccountingStore, type AccountView, type AccountType } from '@/stores/accounting'
+import { useAccountingStore, type AccountView, type AccountType, type ProfitSummary } from '@/stores/accounting'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useAuthStore } from '@/stores/auth'
@@ -56,8 +56,12 @@ const operationKind = ref<OperationKind>('DEPOSIT')
 const operationAccountId = ref<string | null>(null)
 
 /** Перевод — своё окно: там пара счетов и предпросмотр остатков. */
+/** Касса операции — задаётся только для «Снять прибыль» (снимается из кассы). */
+const operationCashBox = ref<string | null>(null)
+
 function pickOperation(kind: OperationKind, accountId: string | null = null) {
   operationAccountId.value = accountId
+  operationCashBox.value = null
   if (kind === 'TRANSFER') {
     showTransfer.value = true
     return
@@ -116,6 +120,7 @@ async function load() {
     // Доступные деньги — своим запросом: он собирает цифры из касс,
     // обязательств и счетов, и ради него не стоит задерживать список счетов.
     if (canSeeAvailable.value) void store.fetchAvailable().catch(() => {})
+    void loadProfit()
     if (!cashboxes.items.length) await cashboxes.fetchAll().catch(() => {})
   } catch (e: any) {
     toast.error(e?.message || 'Не удалось загрузить счета')
@@ -273,6 +278,47 @@ const canSeeBalance = computed(() => store.accounts.some((a) => a.balance !== nu
 const canSeeAvailable = computed(() => auth.can('finance.view') && auth.can('accounting.balanceView'))
 const avail = computed(() => store.available)
 const availOpen = ref(localStorage.getItem('accounting.availOpen') === '1')
+// ── Прибыль к снятию — на табе «Доступно сейчас» ──
+// Раньше была отдельной шапкой в «Пополнениях и расходах» и дублировала
+// «Доступно сейчас»: это одна цифра свободных денег, из которых прибыль —
+// заработанная часть (решение владельца 03.10.2026).
+const canSeeProfit = computed(() => auth.can('finance.capital') || auth.can('cashboxes.capitalView'))
+const canWithdrawProfit = computed(() => auth.can('finance.capital'))
+const profit = ref<ProfitSummary | null>(null)
+async function loadProfit() {
+  if (!canSeeProfit.value) return
+  try {
+    profit.value = await store.fetchProfit()
+  } catch {
+    profit.value = null
+  }
+}
+/** По выбранной кассе или по всем. */
+const profitTotal = computed(() => {
+  if (!profit.value) return null
+  if (!cashBoxFilter.value) return profit.value.total
+  return profit.value.cashBoxes.find((b) => b.cashBoxId === cashBoxFilter.value) ?? null
+})
+/** Доступные деньги сверх прибыли — вложенные (свои и инвесторов). */
+const restAvailable = computed(() =>
+  profitTotal.value ? Math.max(0, profitTotal.value.available - profitTotal.value.canWithdrawNow) : 0,
+)
+
+/**
+ * «Снять прибыль». Касса — выбранная, а если смотрим все — та, где прибыли
+ * можно снять больше всего: туда партнёр и пошёл бы.
+ */
+function withdrawProfit() {
+  const best = [...(profit.value?.cashBoxes ?? [])].sort((a, b) => b.canWithdrawNow - a.canWithdrawNow)[0]
+  operationAccountId.value = null
+  operationCashBox.value = cashBoxFilter.value || best?.cashBoxId || null
+  operationKind.value = 'WITHDRAW_PROFIT'
+  showOperation.value = true
+}
+
+/** Таб шапки: «Всего на счетах» или «Доступно сейчас». */
+const heroTab = ref<'accounts' | 'available'>('accounts')
+const hasAvailTab = computed(() => canSeeAvailable.value && !!avail.value && canSeeBalance.value)
 function toggleAvail() {
   availOpen.value = !availOpen.value
   localStorage.setItem('accounting.availOpen', availOpen.value ? '1' : '0')
@@ -609,9 +655,8 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
               </button>
             </template>
             <v-card rounded="lg" elevation="6" class="ac-opmenu">
-              <!-- Только работа со счетами: внести, снять, перевести. Всё
-                   остальное — в разделе «Временные операции», у него свой
-                   смысл и свой итог. -->
+              <!-- Быстрый вход: вложить, снять, перевести. Все виды прихода и
+                   расхода — в разделе «Пополнения и расходы». -->
               <AccountOperationItems :kinds="ACCOUNT_KINDS" @pick="pickOperation($event)" />
             </v-card>
           </v-menu>
@@ -686,8 +731,202 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
           </Teleport>
         </div>
 
-        <div class="ac-hero-label">{{ canSeeBalance ? 'Всего на счетах' : 'Счета' }}</div>
-        <template v-if="canSeeBalance">
+        <!-- Две цифры одного ответа — табами в одной шапке: сколько денег на
+             счетах и сколько из них можно тратить. Раньше «Доступно сейчас»
+             стояло отдельной карточкой ниже и читалось как другой раздел. -->
+        <div v-if="hasAvailTab" class="ac-hero-tabs">
+          <button class="ac-hero-tab" :class="{ 'ac-hero-tab--on': heroTab === 'accounts' }" @click="heroTab = 'accounts'">
+            Всего на счетах
+          </button>
+          <button class="ac-hero-tab" :class="{ 'ac-hero-tab--on': heroTab === 'available' }" @click="heroTab = 'available'">
+            Доступно сейчас
+          </button>
+        </div>
+        <div v-else class="ac-hero-label">{{ canSeeBalance ? 'Всего на счетах' : 'Счета' }}</div>
+
+        <!-- ── Доступно сейчас ── -->
+        <template v-if="hasAvailTab && heroTab === 'available' && avail">
+          <div class="ac-hero-amount" :class="{ 'ac-hero-amount--neg': avail.available < 0 }">
+            {{ formatCurrency(avail.available) }}
+          </div>
+          <div class="ac-hero-sub">
+            Из {{ formatCurrency(avail.cashInBox) }}, которые есть сейчас, свободно распорядиться можно этой суммой
+          </div>
+          <!-- Пока учёт не сходится, выдавать цифру за точную нельзя. -->
+          <div v-if="avail.warnings.includes('accountsExceedCash')" class="ac-hero-warn">
+            <v-icon icon="mdi-alert-outline" size="15" />
+            На счетах записано больше, чем есть в кассах — на
+            {{ formatCurrency(Math.abs(avail.notes.unallocated)) }}. Пока расхождение не устранено,
+            сумма приблизительная.
+          </div>
+          <!-- Из чего состоят доступные деньги: ваша прибыль (её можно снять)
+               и остальное — вложенные деньги. Одна разбивка вместо прежних
+               плашек, где одни и те же суммы повторялись по два-три раза. -->
+          <div v-if="canSeeProfit && profitTotal" class="ac-comp">
+            <div class="ac-comp-item ac-comp-item--profit">
+              <!-- Сумму повторяем, только если она отличается от «доступно»
+                   наверху: иначе это то же число второй раз. -->
+              <div class="ac-comp-text">
+                <template v-if="profitTotal.canWithdrawNow <= 0">
+                  <span class="ac-comp-title">Сейчас прибыли к снятию нет</span>
+                  <span class="ac-comp-label">Свободные деньги — вложенные, заработанное ещё не вернулось в кассу</span>
+                </template>
+                <template v-else-if="restAvailable > 0">
+                  <span class="ac-comp-label">
+                    Из них ваша прибыль — можно снять
+                    <template v-if="currentCashBox"> · {{ currentCashBox.name }}</template>
+                  </span>
+                  <b class="ac-comp-sum">{{ formatCurrency(profitTotal.canWithdrawNow) }}</b>
+                </template>
+                <template v-else>
+                  <span class="ac-comp-title">Всё доступное — ваша прибыль</span>
+                  <span class="ac-comp-label">
+                    Её можно снять целиком: вложенный капитал при этом не трогается
+                    <template v-if="currentCashBox"> · {{ currentCashBox.name }}</template>
+                  </span>
+                </template>
+              </div>
+              <button
+                v-if="canWithdrawProfit"
+                class="ac-profit-btn"
+                :disabled="profitTotal.canWithdrawNow <= 0"
+                @click="withdrawProfit"
+              >
+                <v-icon icon="mdi-cash-check" size="17" />
+                Снять прибыль
+              </button>
+            </div>
+            <div v-if="restAvailable > 0" class="ac-comp-item">
+              <div class="ac-comp-text">
+                <span class="ac-comp-label">Остальное — вложенные деньги</span>
+                <b class="ac-comp-sum">{{ formatCurrency(restAvailable) }}</b>
+              </div>
+            </div>
+          </div>
+          <!-- Прибыли заработано больше, чем можно снять сейчас, — где остальное.
+               Занятые деньги расписаны в разборе ниже, здесь — только итогом. -->
+          <div
+            v-if="canSeeProfit && profitTotal && profitTotal.withdrawableProfit > profitTotal.canWithdrawNow"
+            class="ac-comp-note"
+          >
+            Всего заработано и не снято — <b>{{ formatCurrency(profitTotal.withdrawableProfit) }}</b>.
+            <template v-if="profitTotal.inGoods > 0">
+              Ещё {{ formatCurrency(profitTotal.inGoods) }} в товаре — вернутся с платежами клиентов.
+            </template>
+            <template v-if="profitTotal.lockedAmount > 0">
+              {{ formatCurrency(profitTotal.lockedAmount) }} — в занятых деньгах.
+            </template>
+          </div>
+
+          <button class="ac-hero-how" @click="toggleAvail">
+            {{ availOpen ? 'Свернуть' : 'Подробнее: откуда эти суммы' }}
+            <v-icon :icon="availOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="16" />
+          </button>
+          <div v-if="availOpen" class="ac-hero-panel">
+            <!-- Цепочка: сначала как деньги появились, потом что из них занято.
+                 Свёрнута по умолчанию — ежедневно нужен итог, а разбор открывают,
+                 когда цифра удивила. -->
+            <div v-if="availOpen" class="av-chain">
+              <div class="av-chain-title">Сколько денег есть на самом деле</div>
+              <div v-for="s in availInflow" :key="s.key" class="av-step">
+                <div class="av-step-sign" :class="`av-step-sign--${s.sign === '-' ? 'minus' : 'plus'}`">
+                  {{ s.sign }}
+                </div>
+                <div class="av-step-body">
+                  <div class="av-step-title">{{ STEP_TEXT[s.key]?.title || s.key }}</div>
+                  <div class="av-step-note">{{ STEP_TEXT[s.key]?.note }}</div>
+                </div>
+                <div class="av-step-sum">{{ formatCurrency(s.amount) }}</div>
+              </div>
+
+              <div class="av-total">
+                <div class="av-total-title">Всего денег сейчас</div>
+                <div class="av-total-sum">{{ formatCurrency(avail.cashInBox) }}</div>
+              </div>
+
+              <div v-if="availLocked.length" class="av-chain-title av-chain-title--gap">
+                Что из них уже занято
+              </div>
+              <div v-for="s in availLocked" :key="s.key" class="av-step">
+                <div class="av-step-sign av-step-sign--minus">−</div>
+                <div class="av-step-body">
+                  <div class="av-step-title">{{ STEP_TEXT[s.key]?.title || s.key }}</div>
+                  <div class="av-step-note">{{ STEP_TEXT[s.key]?.note }}</div>
+                </div>
+                <div class="av-step-sum">{{ formatCurrency(s.amount) }}</div>
+              </div>
+
+              <div class="av-total av-total--final">
+                <div class="av-total-title">Доступно сейчас</div>
+                <div class="av-total-sum" :class="{ 'av-amount--neg': avail.available < 0 }">
+                  {{ formatCurrency(avail.available) }}
+                </div>
+              </div>
+
+              <!-- Как считается прибыль — в том же разборе, а не вторым
+                   раскрытием рядом. -->
+              <template v-if="canSeeProfit && profitTotal">
+                <div class="av-chain-title av-chain-title--gap">Как считается ваша прибыль</div>
+                <div class="av-step">
+                  <div class="av-step-sign av-step-sign--plus">+</div>
+                  <div class="av-step-body">
+                    <div class="av-step-title">Прибыль по сделкам</div>
+                    <div class="av-step-note">Ваша доля — после долей инвесторов.</div>
+                  </div>
+                  <div class="av-step-sum">{{ formatCurrency(profitTotal.dealProfit) }}</div>
+                </div>
+                <div class="av-step">
+                  <div class="av-step-sign av-step-sign--minus">−</div>
+                  <div class="av-step-body">
+                    <div class="av-step-title">Расходы по бизнесу</div>
+                    <div class="av-step-note">Прочие доходы сюда не входят: под ними часто записаны вложения.</div>
+                  </div>
+                  <div class="av-step-sum">{{ formatCurrency(profitTotal.businessExpenses) }}</div>
+                </div>
+                <div class="av-step">
+                  <div class="av-step-sign av-step-sign--minus">−</div>
+                  <div class="av-step-body">
+                    <div class="av-step-title">Уже снято</div>
+                  </div>
+                  <div class="av-step-sum">{{ formatCurrency(profitTotal.withdrawnProfit) }}</div>
+                </div>
+                <div class="av-total av-total--final">
+                  <div class="av-total-title">
+                    Заработано и не снято
+                    <div class="av-step-note">Снять сейчас можно не больше доступного — {{ formatCurrency(profitTotal.canWithdrawNow) }}</div>
+                  </div>
+                  <div class="av-total-sum">{{ formatCurrency(profitTotal.withdrawableProfit) }}</div>
+                </div>
+              </template>
+
+              <!-- Справки: в цепочке не участвуют, но без них цифры выглядят
+                   странно — «почему в сейфе больше, чем в кассе». -->
+              <div class="av-notes">
+                <div class="av-notes-title">Рядом, но в расчёт не входит</div>
+                <div v-if="avail.notes.inProgress > 0" class="av-note">
+                  <b>{{ formatCurrency(avail.notes.inProgress) }}</b> — в товаре по действующим сделкам.
+                  Эти деньги уже ушли из кассы, поэтому второй раз не вычитаются.
+                </div>
+                <div v-if="avail.notes.supplierDebt > 0" class="av-note">
+                  <b>{{ formatCurrency(avail.notes.supplierDebt) }}</b> — долг поставщикам. Касса списала
+                  закупку ещё при создании сделки, поэтому эти деньги у вас на руках есть, а в кассе
+                  их уже нет — вычитать их ещё раз значило бы отнять одну сумму дважды.
+                </div>
+                <div v-if="avail.notes.clientsOwe > 0" class="av-note">
+                  <b>{{ formatCurrency(avail.notes.clientsOwe) }}</b> — должны клиенты по действующим
+                  сделкам. Эти деньги ещё не пришли.
+                </div>
+                <div v-if="avail.notes.lentOut > 0" class="av-note">
+                  <b>{{ formatCurrency(avail.notes.lentOut) }}</b> — вам должны по выданным займам.
+                  Деньги из кассы уже ушли и вернутся позже.
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- ── Всего на счетах ── -->
+        <template v-else-if="canSeeBalance">
           <div class="ac-hero-amount">{{ formatCurrency(total) }}</div>
           <div class="ac-hero-sub">
             <template v-if="currentCashBox">
@@ -700,7 +939,7 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
           Суммы скрыты — у вас нет доступа к остаткам счетов
         </div>
 
-        <div v-if="canSeeBalance && totalByType.length" class="ac-hero-metrics">
+        <div v-if="canSeeBalance && totalByType.length && !(hasAvailTab && heroTab === 'available')" class="ac-hero-metrics">
           <template v-for="(g, i) in totalByType" :key="g.type">
             <div v-if="i" class="ac-hero-divider" />
             <div class="ac-hero-metric">
@@ -714,7 +953,7 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
         </div>
 
         <!-- Полоса долей: сколько денег наличными, сколько на картах -->
-        <div v-if="shares.length > 1" class="ac-hero-bar">
+        <div v-if="shares.length > 1 && !(hasAvailTab && heroTab === 'available')" class="ac-hero-bar">
           <div
             v-for="g in shares"
             :key="g.type"
@@ -723,7 +962,7 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
             :title="`${g.title} — ${g.pct}%`"
           />
         </div>
-        <div v-if="shares.length > 1" class="ac-hero-bar-legend">
+        <div v-if="shares.length > 1 && !(hasAvailTab && heroTab === 'available')" class="ac-hero-bar-legend">
           <span v-for="g in shares" :key="g.type" class="ac-hero-legend-item">
             <span class="ac-hero-legend-dot" :style="{ background: SHARE_COLORS[g.type] }" />
             {{ g.title }} {{ g.pct }}%
@@ -731,97 +970,6 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
         </div>
       </div>
 
-      <!-- Доступные деньги: главный ответ раздела. Одной суммы мало — рядом
-           обязана стоять цепочка, иначе это очередная цифра, которой нет
-           причины верить. -->
-      <div v-if="canSeeAvailable && avail && canSeeBalance" class="av-card">
-        <div class="av-head">
-          <div class="av-head-main">
-            <div class="av-label">Доступно сейчас</div>
-            <div class="av-amount" :class="{ 'av-amount--neg': avail.available < 0 }">
-              {{ formatCurrency(avail.available) }}
-            </div>
-            <div class="av-sub">
-              Из {{ formatCurrency(avail.cashInBox) }}, которые есть сейчас, свободно распорядиться можно этой суммой
-            </div>
-            <!-- Пока учёт не сходится, выдавать цифру за точную нельзя. -->
-            <div v-if="avail.warnings.includes('accountsExceedCash')" class="av-warn">
-              <v-icon icon="mdi-alert-outline" size="15" />
-              На счетах записано больше, чем есть в кассах — на
-              {{ formatCurrency(Math.abs(avail.notes.unallocated)) }}. Пока расхождение не устранено,
-              сумма приблизительная.
-            </div>
-          </div>
-          <button class="av-toggle" @click="toggleAvail">
-            {{ availOpen ? 'Свернуть' : 'Откуда эта сумма' }}
-            <v-icon :icon="availOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="16" />
-          </button>
-        </div>
-
-        <!-- Цепочка: сначала как деньги появились, потом что из них занято.
-             Свёрнута по умолчанию — ежедневно нужен итог, а разбор открывают,
-             когда цифра удивила. -->
-        <div v-if="availOpen" class="av-chain">
-          <div class="av-chain-title">Сколько денег есть на самом деле</div>
-          <div v-for="s in availInflow" :key="s.key" class="av-step">
-            <div class="av-step-sign" :class="`av-step-sign--${s.sign === '-' ? 'minus' : 'plus'}`">
-              {{ s.sign }}
-            </div>
-            <div class="av-step-body">
-              <div class="av-step-title">{{ STEP_TEXT[s.key]?.title || s.key }}</div>
-              <div class="av-step-note">{{ STEP_TEXT[s.key]?.note }}</div>
-            </div>
-            <div class="av-step-sum">{{ formatCurrency(s.amount) }}</div>
-          </div>
-
-          <div class="av-total">
-            <div class="av-total-title">Всего денег сейчас</div>
-            <div class="av-total-sum">{{ formatCurrency(avail.cashInBox) }}</div>
-          </div>
-
-          <div v-if="availLocked.length" class="av-chain-title av-chain-title--gap">
-            Что из них уже занято
-          </div>
-          <div v-for="s in availLocked" :key="s.key" class="av-step">
-            <div class="av-step-sign av-step-sign--minus">−</div>
-            <div class="av-step-body">
-              <div class="av-step-title">{{ STEP_TEXT[s.key]?.title || s.key }}</div>
-              <div class="av-step-note">{{ STEP_TEXT[s.key]?.note }}</div>
-            </div>
-            <div class="av-step-sum">{{ formatCurrency(s.amount) }}</div>
-          </div>
-
-          <div class="av-total av-total--final">
-            <div class="av-total-title">Доступно сейчас</div>
-            <div class="av-total-sum" :class="{ 'av-amount--neg': avail.available < 0 }">
-              {{ formatCurrency(avail.available) }}
-            </div>
-          </div>
-
-          <!-- Справки: в цепочке не участвуют, но без них цифры выглядят
-               странно — «почему в сейфе больше, чем в кассе». -->
-          <div class="av-notes">
-            <div class="av-notes-title">Рядом, но в расчёт не входит</div>
-            <div v-if="avail.notes.inProgress > 0" class="av-note">
-              <b>{{ formatCurrency(avail.notes.inProgress) }}</b> — в товаре по действующим сделкам.
-              Эти деньги уже ушли из кассы, поэтому второй раз не вычитаются.
-            </div>
-            <div v-if="avail.notes.supplierDebt > 0" class="av-note">
-              <b>{{ formatCurrency(avail.notes.supplierDebt) }}</b> — долг поставщикам. Касса списала
-              закупку ещё при создании сделки, поэтому эти деньги у вас на руках есть, а в кассе
-              их уже нет — вычитать их ещё раз значило бы отнять одну сумму дважды.
-            </div>
-            <div v-if="avail.notes.clientsOwe > 0" class="av-note">
-              <b>{{ formatCurrency(avail.notes.clientsOwe) }}</b> — должны клиенты по действующим
-              сделкам. Эти деньги ещё не пришли.
-            </div>
-            <div v-if="avail.notes.lentOut > 0" class="av-note">
-              <b>{{ formatCurrency(avail.notes.lentOut) }}</b> — вам должны по выданным займам.
-              Деньги из кассы уже ушли и вернутся позже.
-            </div>
-          </div>
-        </div>
-      </div>
 
       <!-- Пусто -->
       <div v-if="!visible.length" class="ac-empty">
@@ -1298,6 +1446,7 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
       v-model="showOperation"
       :kind="operationKind"
       :account-id="operationAccountId"
+      :cash-box-id="operationCashBox"
       @done="load"
     />
 
@@ -1485,6 +1634,70 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
    «снять на себя» и «расход по бизнесу» по названию похожи, а по последствиям
    для прибыли — нет. */
 .ac-opmenu { padding: 6px; min-width: 300px; max-width: 340px; }
+.ac-hero-tabs {
+  display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px;
+  background: rgba(0, 0, 0, 0.16);
+}
+.ac-hero-tab {
+  padding: 7px 14px; border-radius: 9px; border: none; cursor: pointer; background: none;
+  font-size: 12.5px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.65);
+}
+.ac-hero-tab:hover { color: #fff; }
+.ac-hero-tab--on, .ac-hero-tab--on:hover { background: rgba(255, 255, 255, 0.95); color: #065f46; }
+.ac-hero-amount--neg { color: #fecaca; }
+.ac-hero-warn {
+  display: flex; align-items: flex-start; gap: 7px; margin-top: 10px; max-width: 640px;
+  padding: 9px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+  background: rgba(251, 191, 36, 0.2); color: #fde68a;
+}
+.ac-profit-btn {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  padding: 10px 18px; border-radius: 11px; border: none; cursor: pointer;
+  background: #fff; color: #047857; font-size: 13.5px; font-weight: 700;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+.ac-profit-btn:hover:not(:disabled) { background: #ecfdf5; }
+.ac-profit-btn:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+.ac-hero-metric--link { color: inherit; text-decoration: none; border-radius: 6px; }
+.ac-hero-metric--link:hover .ac-hero-metric-label { color: rgba(255, 255, 255, 0.85); }
+.ac-comp {
+  display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 10px;
+  margin-top: 16px;
+}
+.ac-comp-item {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; border-radius: 13px;
+  background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.ac-comp-item--profit { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.22); }
+.ac-comp-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ac-comp-label { font-size: 12.5px; color: rgba(255, 255, 255, 0.75); }
+.ac-comp-title { font-size: 16px; font-weight: 700; }
+.ac-comp-sum { font-size: 22px; font-weight: 800; letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
+.ac-comp-note {
+  margin-top: 10px; max-width: 760px;
+  font-size: 12.5px; line-height: 1.5; color: rgba(255, 255, 255, 0.7);
+}
+.ac-comp-note b { color: #fff; }
+@media (max-width: 700px) {
+  .ac-comp { grid-template-columns: 1fr; }
+  .ac-comp-item--profit { flex-wrap: wrap; }
+  .ac-comp-item--profit .ac-profit-btn { width: 100%; justify-content: center; }
+}
+.ac-hero-how {
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 12px;
+  padding: 7px 13px; border-radius: 10px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff; font-size: 13px; font-weight: 600;
+}
+.ac-hero-how:hover { background: rgba(255, 255, 255, 0.24); }
+/* Разбор «Откуда эта сумма» — светлая подложка внутри шапки: у цепочки свои
+   цвета знаков и сумм, на зелёном они бы не читались. */
+.ac-hero-panel {
+  margin-top: 14px; padding: 4px 16px 14px; border-radius: 14px;
+  background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.9);
+}
 .ac-hero-label {
   font-size: 12.5px; font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;
   color: rgba(255, 255, 255, 0.62);

@@ -47,9 +47,15 @@ const groups = computed(() => {
   const allowed = OPERATION_KINDS.filter(
     (k) => auth.can(k.permission) && (!props.kinds || props.kinds.includes(k.kind)),
   )
+  // Порядок — как передан в `kinds`: там он задан по частоте (в расходах
+  // первым идёт расход по бизнесу, а не снятие капитала).
+  if (props.kinds) {
+    const order = props.kinds
+    allowed.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind))
+  }
   return [
     { title: 'Пополнение', items: allowed.filter((k) => k.direction === 'in') },
-    { title: 'Снятие', items: allowed.filter((k) => k.direction === 'out') },
+    { title: 'Расход', items: allowed.filter((k) => k.direction === 'out') },
     { title: 'Перевод', items: allowed.filter((k) => k.direction === 'move') },
   ].filter((g) => g.items.length)
 })

@@ -13,6 +13,9 @@
 import { computed, ref, watch } from 'vue'
 import AccountSelect from '@/components/AccountSelect.vue'
 import SelectField from '@/components/SelectField.vue'
+import DateField from '@/components/DateField.vue'
+import { api } from '@/api/client'
+import { useOperationDate } from '@/composables/useOperationDate'
 import { useAccountingStore, type AccountView } from '@/stores/accounting'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
@@ -28,6 +31,8 @@ const props = defineProps<{
   kind: OperationKind
   /** Счёт, с которого открыли форму. */
   accountId?: string | null
+  /** Касса, из которой открыли форму (раздел «Пополнения и расходы» по кассе). */
+  cashBoxId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -52,7 +57,135 @@ const cashBoxId = ref<string | null>(null)
 const categoryId = ref<string | null>(null)
 const note = ref('')
 const personName = ref('')
+const date = ref('')
 const saving = ref(false)
+/** Ключ защиты от двойной отправки — живёт одно открытие формы. */
+const idemKey = ref('')
+const opDate = useOperationDate()
+
+// ── Статьи дохода и расхода ──
+interface Category { id: string; name: string; type: 'INCOME' | 'EXPENSE'; color?: string | null }
+const categories = ref<Category[]>([])
+const newCategory = ref<string | null>(null)
+const creatingCategory = ref(false)
+async function loadCategories() {
+  try {
+    categories.value = await api.get<Category[]>('/finance/categories')
+  } catch {
+    categories.value = []
+  }
+}
+const categoryOptions = computed(() => {
+  const type = kind.value === 'INCOME' ? 'INCOME' : 'EXPENSE'
+  return categories.value
+    .filter((c) => c.type === type)
+    .map((c) => ({ value: c.id, label: c.name, color: c.color ?? undefined }))
+})
+async function addCategory() {
+  const name = (newCategory.value ?? '').trim()
+  if (!name) return
+  creatingCategory.value = true
+  try {
+    const created = await api.post<Category>('/finance/categories', {
+      name,
+      type: kind.value === 'INCOME' ? 'INCOME' : 'EXPENSE',
+    })
+    categories.value.push(created)
+    categoryId.value = created.id
+    newCategory.value = null
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось добавить статью')
+  } finally {
+    creatingCategory.value = false
+  }
+}
+
+// ── Капитал кассы: сколько вложено и сколько можно снять ──
+// Те же цифры, что были в окне «Капитал» карточки кассы: без них снятие
+// делали бы вслепую — непонятно, уменьшится ли капитал или уйдёт только доход.
+interface CapitalInfo {
+  investedCapital: number
+  withdrawableProfit: number
+  availableCapital: number
+  /** «Доступно сейчас» с «Баланса»: деньги кассы за вычетом занятых. */
+  available: number
+  canWithdrawNow: number
+  inGoods: number
+  lockedAmount: number
+  pendingCIPayout: number
+}
+const capital = ref<CapitalInfo | null>(null)
+const isWithdraw = computed(() => kind.value === 'WITHDRAW_OWNER' || kind.value === 'WITHDRAW_PROFIT')
+const isProfit = computed(() => kind.value === 'WITHDRAW_PROFIT')
+const isCapital = computed(() => kind.value === 'DEPOSIT' || isWithdraw.value)
+async function loadCapital() {
+  capital.value = null
+  if (!isCapital.value || !cashBoxId.value) return
+  const box = cashBoxId.value
+  try {
+    // Те же цифры, что в карточке кассы, одним запросом — и для тех, кто ведёт
+    // капитал без права смотреть карточку кассы.
+    const res = await store.fetchProfit(box)
+    if (cashBoxId.value !== box) return
+    const row = res.cashBoxes[0]
+    capital.value = row
+      ? {
+          investedCapital: row.investedCapital,
+          withdrawableProfit: row.withdrawableProfit,
+          availableCapital: row.availableCapital,
+          available: row.available,
+          canWithdrawNow: row.canWithdrawNow,
+          inGoods: row.inGoods,
+          lockedAmount: row.lockedAmount,
+          pendingCIPayout: row.pendingCIPayout,
+        }
+      : null
+  } catch {
+    // Нет права видеть капитал — операция всё равно проверяется сервером.
+    capital.value = null
+  }
+}
+/**
+ * Из чего снимается. «Снятие прибыли» — только заработанное. «Снятие
+ * капитала» — сначала вложенное, прибыль только если вложенного не хватило.
+ * Так же делит сервер; здесь — чтобы человек видел это до «Провести».
+ */
+const profitPart = computed(() => {
+  const a = amount.value ?? 0
+  if (isProfit.value) return a
+  const fromProfit = Math.max(0, a - Math.max(0, capital.value?.investedCapital ?? 0))
+  return Math.min(fromProfit, Math.max(0, capital.value?.withdrawableProfit ?? 0))
+})
+const capitalPart = computed(() => Math.max(0, (amount.value ?? 0) - profitPart.value))
+/** Сколько прибыли можно снять прямо сейчас — та же цифра, что в шапке раздела. */
+const profitNow = computed(() => capital.value?.canWithdrawNow ?? 0)
+const overProfit = computed(
+  () => isProfit.value && !!capital.value && (amount.value ?? 0) > capital.value.withdrawableProfit,
+)
+/**
+ * Предел снятия — «Доступно сейчас», как на «Балансе», а не вся касса: деньги
+ * на пунктах приёма или причитающиеся инвесторам на руки не возьмёшь.
+ */
+const overAvailable = computed(
+  () => isWithdraw.value && !!capital.value && (amount.value ?? 0) > Math.max(0, capital.value.available),
+)
+/** Почему больше снять нельзя — теми же словами, что в шапке раздела. */
+const overText = computed(() => {
+  const c = capital.value
+  if (!c) return ''
+  const parts = [`Сейчас доступно только ${formatCurrency(Math.max(0, c.available))}`]
+  const why: string[] = []
+  if (isProfit.value && c.inGoods > 0) why.push(`${formatCurrency(c.inGoods)} прибыли ещё в товаре`)
+  if (isProfit.value && c.lockedAmount > 0) why.push(`${formatCurrency(c.lockedAmount)} заняты (см. «Доступно сейчас» на «Балансе»)`)
+  return why.length ? `${parts[0]}: ${why.join(', ')}` : parts[0]
+})
+const belowReserve = computed(
+  () =>
+    isWithdraw.value && !!capital.value && capital.value.pendingCIPayout > 0 &&
+    capital.value.availableCapital - (amount.value ?? 0) < capital.value.pendingCIPayout,
+)
+/** Дата — там, где сервер её принимает: доход, расход и перевод. */
+const needsDate = computed(() => kind.value === 'EXPENSE' || kind.value === 'INCOME' || kind.value === 'TRANSFER')
 
 const current = computed(() => OPERATION_KINDS.find((k) => k.kind === kind.value) ?? null)
 /** Перевод — единственный вид с двумя счетами. */
@@ -93,7 +226,7 @@ const isPending = computed(() => kind.value === 'PENDING_IN' || kind.value === '
 const isLoan = computed(() => kind.value === 'BORROW' || kind.value === 'LEND')
 
 const canSave = computed(() => {
-  if (!kind.value || (amount.value ?? 0) <= 0 || notEnough.value) return false
+  if (!kind.value || (amount.value ?? 0) <= 0 || notEnough.value || overAvailable.value || overProfit.value) return false
   // Без имени второй стороны долг через месяц не восстановить по памяти.
   if (isLoan.value && !personName.value.trim()) return false
   if (needsTarget.value) return !!accountId.value && !!toAccountId.value && accountId.value !== toAccountId.value
@@ -108,13 +241,25 @@ watch(
     accountId.value = props.accountId ?? null
     toAccountId.value = null
     categoryId.value = null
+    newCategory.value = null
     note.value = ''
     personName.value = ''
+    date.value = ''
+    idemKey.value = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`
     if (!store.accounts.length) await store.fetchAccounts().catch(() => {})
     if (!cashboxes.items.length) await cashboxes.fetchAll().catch(() => {})
-    cashBoxId.value = cashboxes.items.find((b) => b.isDefault)?.id ?? cashboxes.items[0]?.id ?? null
+    cashBoxId.value =
+      (props.cashBoxId && cashboxes.items.some((b) => b.id === props.cashBoxId) ? props.cashBoxId : null) ??
+      cashboxes.items.find((b) => b.isDefault)?.id ?? cashboxes.items[0]?.id ?? null
+    if (needsCategory.value && !categories.value.length) void loadCategories()
+    void loadCapital()
   },
 )
+
+// Сменили кассу — цифры капитала другие.
+watch(cashBoxId, () => { if (props.modelValue) void loadCapital() })
 
 async function save() {
   if (!canSave.value) return
@@ -157,15 +302,17 @@ async function save() {
     }
 
     await store.createOperation({
-      kind: kind.value as 'DEPOSIT' | 'WITHDRAW_OWNER' | 'EXPENSE' | 'INCOME' | 'TRANSFER',
+      kind: kind.value as 'DEPOSIT' | 'WITHDRAW_OWNER' | 'WITHDRAW_PROFIT' | 'EXPENSE' | 'INCOME' | 'TRANSFER',
       amount: amount.value!,
       accountId: accountId.value,
       toAccountId: needsTarget.value ? toAccountId.value : null,
       cashBoxId: needsTarget.value ? null : cashBoxId.value,
       categoryId: needsCategory.value ? categoryId.value : null,
+      date: needsDate.value && date.value ? date.value : undefined,
       note: note.value.trim() || undefined,
+      ...(isCapital.value ? { idemKey: idemKey.value } : {}),
     })
-    toast.success('Операция проведена')
+    toast.success(isProfit.value ? 'Прибыль снята' : 'Операция проведена')
     open.value = false
     emit('done')
   } catch (e: any) {
@@ -203,12 +350,46 @@ async function save() {
             <div v-if="notEnough" class="op-error">
               На счёте только {{ formatCurrency(from!.balance!) }}
             </div>
+            <div v-else-if="overProfit" class="op-error">
+              Заработано и не снято только {{ formatCurrency(capital!.withdrawableProfit) }}
+            </div>
+            <div v-else-if="overAvailable" class="op-error">
+              {{ overText }}
+            </div>
+            <button
+              v-if="isProfit && capital && profitNow > 0"
+              type="button"
+              class="op-max"
+              @click="amount = profitNow"
+            >Снять всю доступную прибыль ({{ formatCurrency(profitNow) }})</button>
+            <button
+              v-else-if="kind === 'WITHDRAW_OWNER' && capital && Math.min(capital.investedCapital, capital.available) > 0"
+              type="button"
+              class="op-max"
+              @click="amount = Math.min(capital.investedCapital, capital.available)"
+            >Снять весь вложенный капитал ({{ formatCurrency(Math.min(capital.investedCapital, capital.available)) }})</button>
+          </div>
+
+          <!-- Капитал кассы: сколько вложено, сколько заработано и сколько денег
+               в кассе сейчас. Без них снятие делали бы вслепую. -->
+          <div v-if="isCapital && capital" class="op-cap">
+            <div class="op-cap-item" :class="{ 'op-cap-item--main': isProfit }">
+              <span>{{ isProfit ? 'Можно снять сейчас' : 'Прибыль к снятию' }}</span>
+              <strong>{{ formatCurrency(isProfit ? capital.canWithdrawNow : capital.withdrawableProfit) }}</strong>
+            </div>
+            <div class="op-cap-item" :class="{ 'op-cap-item--main': !isProfit && (kind === 'WITHDRAW_OWNER' || kind === 'DEPOSIT') }">
+              <span>{{ isProfit ? 'Заработано и не снято' : 'Вложено' }}</span>
+              <strong>{{ formatCurrency(isProfit ? capital.withdrawableProfit : capital.investedCapital) }}</strong>
+            </div>
+            <div class="op-cap-item">
+              <span>Доступно сейчас</span><strong>{{ formatCurrency(capital.available) }}</strong>
+            </div>
           </div>
 
           <!-- Касса стоит выше счёта: она отвечает, чьи это деньги, и от неё
                зависит, из каких счетов вообще можно выбирать. -->
           <div v-if="!needsTarget && cashBoxOptions.length > 1" class="op-field">
-            <label class="op-label">Чьи деньги</label>
+            <label class="op-label">{{ isCapital ? 'Касса' : 'Чьи деньги' }}</label>
             <SelectField v-model="cashBoxId" :options="cashBoxOptions" />
           </div>
 
@@ -233,15 +414,46 @@ async function save() {
 
           <div v-if="kind === 'PENDING_OUT' || isLoan" class="op-field">
             <label class="op-label">
-              {{ isLoan ? (kind === 'BORROW' ? 'У кого взяли' : 'Кому дали') : 'За кем числятся деньги' }}
+              {{ isLoan ? (kind === 'BORROW' ? 'Чьи деньги' : 'У кого деньги') : 'За кем числятся деньги' }}
             </label>
             <input v-model="personName" class="op-input" placeholder="Например: Ахмед (брат)" />
             <div class="op-hint">Через месяц по памяти это уже не восстановить</div>
           </div>
 
+          <div v-if="needsCategory" class="op-field">
+            <label class="op-label">Статья</label>
+            <SelectField
+              v-model="categoryId"
+              :options="categoryOptions"
+              empty-label="Без статьи"
+              placeholder="Без статьи"
+            />
+            <div v-if="newCategory === null" class="op-hint">
+              <button type="button" class="op-link" @click="newCategory = ''">+ Новая статья</button>
+            </div>
+            <div v-else class="op-newcat">
+              <input
+                v-model="newCategory"
+                class="op-input"
+                placeholder="Например: Аренда"
+                @keydown.enter.prevent="addCategory"
+              />
+              <button type="button" class="op-newcat-btn" :disabled="creatingCategory || !newCategory?.trim()" @click="addCategory">
+                Добавить
+              </button>
+            </div>
+          </div>
+
+          <div v-if="needsDate" class="op-field">
+            <label class="op-label">Дата</label>
+            <!-- Пусто — сегодня. Границы — те же, что у оплаты: сотрудник не
+                 проведёт расход закрытым месяцем. -->
+            <DateField v-model="date" :min="opDate.minDate.value" :max="opDate.maxDate.value" plain />
+          </div>
+
           <div class="op-field">
             <label class="op-label">Комментарий</label>
-            <input v-model="note" class="op-input" placeholder="Например: аренда за август" />
+            <input v-model="note" class="op-input" :placeholder="isWithdraw ? 'Например: на личные нужды' : 'Например: аренда за август'" />
           </div>
 
           <!-- Что произойдёт с капиталом. Пишем прямо: это то самое место,
@@ -252,9 +464,19 @@ async function save() {
               size="16"
             />
             <span v-if="kind === 'TRANSFER'">Капитал не изменится — меняется только место хранения</span>
-            <span v-else-if="kind === 'DEPOSIT'">Капитал вырастет на сумму операции</span>
-            <span v-else-if="kind === 'WITHDRAW_OWNER'">Капитал уменьшится: деньги ушли из бизнеса</span>
-            <span v-else-if="kind === 'EXPENSE'">Расход уменьшит доступные деньги и прибыль</span>
+            <span v-else-if="kind === 'DEPOSIT'">Вложенный капитал вырастет на сумму операции</span>
+            <span v-else-if="isProfit">
+              Снимается только заработанное — вложенный капитал не тронут
+            </span>
+            <span v-else-if="kind === 'WITHDRAW_OWNER' && capital && (amount ?? 0) > 0">
+              <template v-if="profitPart === 0">Вложенный капитал уменьшится на сумму снятия — прибыль не тронута</template>
+              <template v-else>
+                Вложенного не хватает: из капитала {{ formatCurrency(capitalPart) }}, из прибыли
+                {{ formatCurrency(profitPart) }}
+              </template>
+            </span>
+            <span v-else-if="kind === 'WITHDRAW_OWNER'">Вложенный капитал уменьшится — прибыль не тронута</span>
+            <span v-else-if="kind === 'EXPENSE'">Расход уменьшит деньги кассы</span>
             <span v-else-if="kind === 'BORROW'">
               Деньги появятся на счёте, но собственный капитал не вырастет —
               они чужие и в прибыли не участвуют
@@ -266,7 +488,15 @@ async function save() {
               Остаток счёта изменится сразу, а на прибыль это пока не влияет —
               до разбора неизвестно, чем операция была
             </span>
-            <span v-else>Доход увеличит доступные деньги</span>
+            <span v-else>Доход увеличит деньги кассы</span>
+          </div>
+          <!-- Не запрещаем — только предупреждаем, как прежнее окно кассы. -->
+          <div v-if="belowReserve" class="op-effect op-effect--out">
+            <v-icon icon="mdi-account-cash-outline" size="16" />
+            <span>
+              После снятия в кассе останется меньше, чем причитается инвесторам
+              ({{ formatCurrency(capital!.pendingCIPayout) }}). Сначала выплатите дивиденды.
+            </span>
           </div>
         </template>
       </div>
@@ -329,6 +559,29 @@ async function save() {
 .op-effect--in { background: rgba(16, 185, 129, 0.1); color: #047857; }
 .op-effect--out { background: rgba(245, 158, 11, 0.12); color: #b45309; }
 .op-effect--move { background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.6); }
+
+.op-max {
+  margin-top: 6px; padding: 0; border: none; background: none; cursor: pointer;
+  font-size: 12.5px; font-weight: 600; color: #047857;
+}
+.op-cap {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  margin-top: 12px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.035);
+}
+.op-cap-item { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.op-cap-item strong { font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.85); font-variant-numeric: tabular-nums; }
+.op-cap-item--main strong { color: #047857; }
+.op-link {
+  padding: 0; border: none; background: none; cursor: pointer;
+  font-size: 12.5px; font-weight: 600; color: #047857;
+}
+.op-newcat { display: flex; gap: 8px; margin-top: 8px; }
+.op-newcat-btn {
+  flex: none; padding: 0 14px; border-radius: 10px; border: none; cursor: pointer;
+  background: #047857; color: #fff; font-size: 13px; font-weight: 600;
+}
+.op-newcat-btn:disabled { opacity: 0.5; cursor: default; }
 
 .op-cancel, .op-confirm {
   flex: 1; padding: 11px 16px; border-radius: 10px; border: none;

@@ -150,7 +150,18 @@ export interface LiabilityView {
   overdue: boolean
 }
 
-/** Раздел «Временные операции»: всё, что не обычная работа со счетами. */
+/** Раздел «Пополнения и расходы»: все ручные движения денег. */
+/** Смысловая группа операции раздела «Пополнения и расходы». */
+export type FlowGroup = 'capital' | 'regular' | 'temporary' | 'pending' | 'transfer'
+
+/** Что можно сделать с операцией из ленты раздела. */
+export type FlowRef =
+  | { type: 'transaction'; id: string; categoryId: string | null; cashBoxId: string | null }
+  | { type: 'capital'; id: string; cashBoxId: string }
+  | { type: 'pending'; id: string }
+  | { type: 'liability'; id: string }
+  | { type: 'transfer'; id: string }
+
 export interface TemporarySummary {
   /** Незакрытое на сегодня — не зависит от выбранного периода. */
   open: {
@@ -168,6 +179,8 @@ export interface TemporarySummary {
       key: string
       title: string
       flow: 'in' | 'out'
+      /** Капитал · основное (доход/расход) · временное · неразобранное. */
+      group: FlowGroup
       count: number
       amount: number
     }>
@@ -196,9 +209,47 @@ export interface TemporarySummary {
     amount: number
     who: string
     note: string | null
+    group: FlowGroup
+    cashBoxName: string | null
     /** Долг не вернули или операцию не разнесли. */
     openItem: boolean
+    /** Разобранная неразобранная: чем оказалась. В итог не входит. */
+    resolvedAs: string | null
+    ref: FlowRef
+    /** Снятие, в котором были и прибыль, и капитал: две строки, одна операция. */
+    split: { total: number; profit: number; capital: number } | null
   }>
+}
+
+/** Прибыль к снятию по одной кассе — для «Снять прибыль». */
+export interface CashBoxProfit {
+  cashBoxId: string
+  name: string
+  /** Заработано и ещё не снято — после расходов по бизнесу. */
+  withdrawableProfit: number
+  /** Деньги в кассе по журналу. */
+  availableCapital: number
+  /** «Доступно сейчас» — та же цифра, что на «Балансе». */
+  available: number
+  investedCapital: number
+  /** Уже причитается со-инвесторам — снимать эти деньги не стоит. */
+  pendingCIPayout: number
+  /** Меньшее из прибыли и «Доступно сейчас». */
+  canWithdrawNow: number
+  /** Прибыли ещё нет в деньгах — она в товаре. */
+  inGoods: number
+  /** Деньги есть, но заняты (пункты приёма, долг инвесторам…). */
+  lockedAmount: number
+  /** Чем заняты — ключи шагов «Доступно сейчас» с «Баланса». */
+  locked: Array<{ key: string; amount: number }>
+  dealProfit: number
+  businessExpenses: number
+  withdrawnProfit: number
+}
+
+export interface ProfitSummary {
+  cashBoxes: CashBoxProfit[]
+  total: Omit<CashBoxProfit, 'cashBoxId' | 'name'>
 }
 
 /** Строка ленты операций по счёту. */
@@ -602,11 +653,18 @@ export const useAccountingStore = defineStore('accounting', () => {
     return available.value
   }
 
-  /** Итог и история возвратных денег за период — раздел «Временные операции». */
-  async function fetchTemporary(from: string, to: string) {
+  /** Итог и лента раздела «Пополнения и расходы» за период, по всем кассам или одной. */
+  async function fetchTemporary(from: string, to: string, cashBoxId?: string | null) {
+    const box = cashBoxId ? `&cashBoxId=${encodeURIComponent(cashBoxId)}` : ''
     return api.get<TemporarySummary>(
-      `/accounting/temporary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      `/accounting/temporary?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${box}`,
     )
+  }
+
+  /** Прибыль к снятию по кассам (или по одной). */
+  async function fetchProfit(cashBoxId?: string | null) {
+    const box = cashBoxId ? `?cashBoxId=${encodeURIComponent(cashBoxId)}` : ''
+    return api.get<ProfitSummary>(`/accounting/profit${box}`)
   }
 
   async function createLiability(payload: {
@@ -745,7 +803,7 @@ export const useAccountingStore = defineStore('accounting', () => {
    * работают на прежних экранах.
    */
   async function createOperation(payload: {
-    kind: 'DEPOSIT' | 'WITHDRAW_OWNER' | 'EXPENSE' | 'INCOME' | 'TRANSFER'
+    kind: 'DEPOSIT' | 'WITHDRAW_OWNER' | 'WITHDRAW_PROFIT' | 'EXPENSE' | 'INCOME' | 'TRANSFER'
     amount: number
     accountId?: string | null
     toAccountId?: string | null
@@ -753,6 +811,7 @@ export const useAccountingStore = defineStore('accounting', () => {
     categoryId?: string | null
     date?: string
     note?: string
+    idemKey?: string
   }) {
     const res = await api.post('/accounting/operations', payload)
     await fetchAccounts()
@@ -852,7 +911,7 @@ export const useAccountingStore = defineStore('accounting', () => {
     createAccount, updateAccount, toggleAccount,
     removeAccount,
     createTag, removeTag, checkBalances, recomputeBalances, fetchUnallocated, fetchCashBoxFree,
-    fetchHistory, fetchFeed, transfer, reconcile, fetchTransfers, fetchReconciliations, createOperation,
+    fetchHistory, fetchFeed, transfer, reconcile, fetchTransfers, fetchReconciliations, createOperation, fetchProfit,
     fetchLimits, fetchPending, createPending, resolvePending,
     fetchLiabilities, fetchTemporary, createLiability, repayLiability,
     fetchTurnover, fetchCashFlowReport, fetchAging,

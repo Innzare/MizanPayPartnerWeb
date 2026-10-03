@@ -30,6 +30,9 @@ const NAV_PERMISSION: Record<string, string> = {
   // доступа ко всей бухгалтерии.
   '/accounting/points': 'accounting.view|collections.view',
   '/accounting/reports': 'accounting.reports',
+  // «Пополнения и расходы»: ручные операции переехали сюда из карточки кассы —
+  // кто вёл их там, не должен потерять доступ.
+  '/accounting/temporary': 'accounting.view|finance.transactions|finance.capital',
   '/accounting/audit': 'accounting.audit',
   '/accounting': 'accounting.view',
   '/registry': 'registry.view',

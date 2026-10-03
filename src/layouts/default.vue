@@ -170,6 +170,14 @@ const activeTheme = computed(
 // Навигация: список разделов общий со страницей «Мой профиль».
 const mainNavRoutes = computed(() =>
   MAIN_NAV
+    // Сотрудник, который ведёт доходы, расходы или капитал без доступа ко всей
+    // бухгалтерии, попадает из меню сразу в «Пополнения и расходы» — раньше эти
+    // операции были у него в карточке кассы.
+    .map((r) =>
+      r.path === '/accounting' && !authStore.canAccess('/accounting') && authStore.canAccess('/accounting/temporary')
+        ? { ...r, path: '/accounting/temporary' }
+        : r,
+    )
     .filter((r) => {
       // Скрытый владельцем раздел исчезает ПОЛНОСТЬЮ — без короны и апселла.
       // Это принципиально отличается от тарифной блокировки ниже: там пункт
@@ -208,6 +216,7 @@ const routeTitles: Record<string, string> = {
   "/accounting/balance": "Бухгалтерия",
   "/accounting/points": "Бухгалтерия",
   "/accounting/history": "Бухгалтерия",
+  "/accounting/temporary": "Бухгалтерия",
   "/accounting/reports": "Бухгалтерия",
   "/accounting/audit": "Бухгалтерия",
   "/deals": "Сделки",
@@ -250,6 +259,7 @@ const routeSubtitles: Record<string, string> = {
   "/accounting/balance": "Сколько у вас денег и где они лежат",
   "/accounting/points": "Сколько лежит в пунктах приёма и давно ли забирали",
   "/accounting/history": "Все движения денег по всем счетам",
+  "/accounting/temporary": "Прибыль, капитал, доходы и расходы",
   "/accounting/reports": "Движение денег и взаиморасчёты",
   "/accounting/audit": "Проверка учёта и критичные операции",
   "/deals": "Управление сделками",

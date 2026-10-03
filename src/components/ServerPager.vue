@@ -28,6 +28,11 @@ const props = withDefaults(
     loaded?: number
     /** Есть ли что грузить дальше. */
     hasMore?: boolean
+    /**
+     * Компактный вид для узких панелей (карточка кассы): только страницы, без
+     * переключателя подгрузки и выбора размера — там они не настраиваются.
+     */
+    compact?: boolean
   }>(),
   {
     busy: false,
@@ -35,6 +40,7 @@ const props = withDefaults(
     autoLoad: false,
     loaded: 0,
     hasMore: false,
+    compact: false,
   },
 )
 
@@ -192,7 +198,7 @@ function onJumpStep(delta: number) {
 </script>
 
 <template>
-  <div v-if="total > 0" ref="root" class="sp-pager">
+  <div v-if="total > 0" ref="root" class="sp-pager" :class="{ 'sp-pager--compact': compact }">
     <div class="sp-info">
       <template v-if="autoLoad">
         Показано {{ loaded.toLocaleString('ru-RU') }} из {{ total.toLocaleString('ru-RU') }}
@@ -267,7 +273,7 @@ function onJumpStep(delta: number) {
       <!-- Возврат к началу списка: на тысяче строк прокрутка наверх занимает
            десятки экранов. Появляется, только когда есть куда возвращаться. -->
       <button
-        v-if="scrolled"
+        v-if="scrolled && !compact"
         type="button"
         class="sp-top"
         title="В начало списка"
@@ -278,7 +284,7 @@ function onJumpStep(delta: number) {
       </button>
 
       <!-- Переключатель режима: страницы или бесконечная лента. -->
-      <label class="sp-auto" :title="autoLoad ? 'Списки грузятся порциями по мере прокрутки' : 'Включить подгрузку при прокрутке'">
+      <label v-if="!compact" class="sp-auto" :title="autoLoad ? 'Списки грузятся порциями по мере прокрутки' : 'Включить подгрузку при прокрутке'">
         <input
           type="checkbox"
           :checked="autoLoad"
@@ -290,7 +296,7 @@ function onJumpStep(delta: number) {
 
       <!-- Размер порции отделён чертой: переключатель режима и выбор размера —
            разные вещи, без разделителя читались как один блок. -->
-      <div class="sp-size-group">
+      <div v-if="!compact" class="sp-size-group">
         <!-- Подпись одна на оба режима: в разделах она читается как «сколько
              строк за раз», и «Порция» выбивалась из общего словаря. -->
         <span class="sp-size-label">На странице</span>
@@ -353,6 +359,9 @@ function onJumpStep(delta: number) {
 }
 .sp-done { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.4); }
 
+/* Компактная — обычная строка под списком: в узкой панели прилипание к низу
+   прокрутки накладывало её на строки списка. */
+
 .sp-pager {
   position: sticky;
   bottom: 0;
@@ -372,6 +381,14 @@ function onJumpStep(delta: number) {
   /* Тень видна только в светлой теме; в тёмных панель отделяет граница выше —
      слои там различаются тоном, а не тенями. */
   box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.05);
+}
+.sp-pager--compact {
+  position: static;
+  margin: 10px 0 0;
+  padding: 12px 0 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .sp-info { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6); }

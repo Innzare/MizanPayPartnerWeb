@@ -2,7 +2,7 @@
   <div class="cfj">
     <!-- Header with filters -->
     <div class="cfj-toolbar">
-      <h3 class="cfj-title">Касса</h3>
+      <h3 class="cfj-title">Журнал кассы</h3>
 
       <div class="cfj-filters">
         <!-- Type filter (multi) -->
@@ -37,30 +37,9 @@
           </v-card>
         </v-menu>
 
-        <!-- Period filter -->
-        <v-menu :close-on-content-click="false">
-          <template #activator="{ props: act }">
-            <button v-bind="act" class="cfj-filter-btn" :class="{ 'cfj-filter-btn--active': periodKey !== 'all' }">
-              <v-icon icon="mdi-calendar-outline" size="14" />
-              <span>{{ periodLabel }}</span>
-              <v-icon icon="mdi-chevron-down" size="14" class="cfj-filter-caret" />
-            </button>
-          </template>
-          <v-card rounded="lg" elevation="4" class="cfj-menu">
-            <div class="cfj-menu-head">Период</div>
-            <button
-              v-for="p in PERIODS"
-              :key="p.key"
-              class="cfj-menu-item"
-              :class="{ 'cfj-menu-item--active': periodKey === p.key }"
-              @click="setPeriod(p.key)"
-            >
-              <v-icon icon="mdi-calendar-blank-outline" size="14" />
-              <span class="cfj-menu-item-name">{{ p.label }}</span>
-              <v-icon v-if="periodKey === p.key" icon="mdi-check" size="14" class="cfj-menu-item-check" />
-            </button>
-          </v-card>
-        </v-menu>
+        <!-- Период — тот же выбор «месяц / диапазон / год / всё время», что в
+             «Пополнениях и расходах». -->
+        <MonthYearPicker v-model="period" class="cfj-period" />
 
         <!-- Search -->
         <div class="cfj-search-wrap">
@@ -213,6 +192,9 @@ import { useDealLock } from '@/composables/useDealLock'
 import { useSections } from '@/composables/useSections'
 import { formatCurrency, formatCurrencyShort } from '@/utils/formatters'
 import ServerPager from '@/components/ServerPager.vue'
+import MonthYearPicker from '@/components/MonthYearPicker.vue'
+import { rangeForPreset } from '@/composables/useReports'
+import type { PeriodRange } from '@/types/reports'
 import { useAutoLoad } from '@/composables/useAutoLoad'
 import { useVirtualRows } from '@/composables/useVirtualRows'
 
@@ -260,19 +242,19 @@ const TYPE_META: Record<CashFlowEntryType, { label: string; icon: string; bg: st
   DEAL_DEPLOY:        { label: 'Закупка',       icon: 'mdi-cart-arrow-down', bg: 'rgba(239, 68, 68, 0.10)',  fg: '#dc2626' },
   PAYMENT_IN:         { label: 'Платёж',        icon: 'mdi-cash-plus',       bg: 'rgba(4, 120, 87, 0.10)',   fg: '#047857' },
   DIVIDEND_OUT:       { label: 'Дивиденд',      icon: 'mdi-account-cash',    bg: 'rgba(124, 58, 237, 0.10)', fg: '#7c3aed' },
-  CAPITAL_TOPUP_OWN:  { label: 'Пополнение капитала', icon: 'mdi-wallet-plus',  bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
+  CAPITAL_TOPUP_OWN:  { label: 'Вложение капитала', icon: 'mdi-wallet-plus',  bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
   CAPITAL_WITHDRAW_OWN: { label: 'Снятие капитала', icon: 'mdi-wallet-minus',   bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
-  MANUAL_INCOME:      { label: 'Ручной доход',  icon: 'mdi-cash-plus',       bg: 'rgba(16, 185, 129, 0.10)', fg: '#059669' },
-  MANUAL_EXPENSE:     { label: 'Ручной расход', icon: 'mdi-cash-minus',      bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
+  MANUAL_INCOME:      { label: 'Прочий доход',  icon: 'mdi-cash-plus',       bg: 'rgba(16, 185, 129, 0.10)', fg: '#059669' },
+  MANUAL_EXPENSE:     { label: 'Расход по бизнесу', icon: 'mdi-cash-minus',      bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
   CAPITAL_IN:         { label: 'Капитал +',     icon: 'mdi-bank-plus',       bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
   CAPITAL_OUT:        { label: 'Капитал −',     icon: 'mdi-bank-minus',      bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
   PROFIT_ACCRUED:     { label: 'Доля прибыли',  icon: 'mdi-percent',         bg: 'rgba(124, 58, 237, 0.10)', fg: '#7c3aed' },
   DIVIDEND_PAID:      { label: 'Получил выплату', icon: 'mdi-account-cash',  bg: 'rgba(4, 120, 87, 0.10)',   fg: '#047857' },
-  // Возвратные деньги — раздел «Временные операции».
-  LOAN_IN:            { label: 'Взяли в долг',  icon: 'mdi-hand-coin-outline', bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
-  LOAN_REPAY_OUT:     { label: 'Вернули долг',  icon: 'mdi-cash-refund',     bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
-  LENT_OUT:           { label: 'Дали в долг',   icon: 'mdi-hand-extended-outline', bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
-  LENT_REPAY_IN:      { label: 'Нам вернули',   icon: 'mdi-cash-refund',     bg: 'rgba(4, 120, 87, 0.10)',   fg: '#047857' },
+  // Временные пополнения и снятия — раздел «Пополнения и расходы».
+  LOAN_IN:            { label: 'Временное пополнение',  icon: 'mdi-hand-coin-outline', bg: 'rgba(59, 130, 246, 0.10)', fg: '#3b82f6' },
+  LOAN_REPAY_OUT:     { label: 'Возврат временного пополнения',  icon: 'mdi-cash-refund',     bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
+  LENT_OUT:           { label: 'Временное снятие',   icon: 'mdi-hand-extended-outline', bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
+  LENT_REPAY_IN:      { label: 'Возврат временного снятия',   icon: 'mdi-cash-refund',     bg: 'rgba(4, 120, 87, 0.10)',   fg: '#047857' },
 }
 
 /**
@@ -315,26 +297,23 @@ const typeGroups = computed(() =>
 // ─── Filters state ─────────────────────────────────────────────────────
 const activeTypes = ref<CashFlowEntryType[]>([])
 const searchInput = ref('')
-const periodKey = ref<'all' | 'today' | 'week' | 'month' | 'year'>('all')
+/** По умолчанию — всё время: журнал кассы открывают, чтобы найти операцию. */
+const period = ref<PeriodRange>(rangeForPreset('all'))
 
-const PERIODS = [
-  { key: 'all'   as const, label: 'Всё время' },
-  { key: 'today' as const, label: 'Сегодня' },
-  { key: 'week'  as const, label: 'Неделя' },
-  { key: 'month' as const, label: 'Месяц' },
-  { key: 'year'  as const, label: 'Год' },
-]
-const periodLabel = computed(() => PERIODS.find(p => p.key === periodKey.value)?.label ?? 'Всё время')
-
+/**
+ * Границы для сервера. Он сравнивает «≤ to» по метке времени, поэтому конец
+ * периода — последний момент последнего дня по времени партнёра, а не его
+ * полночь: иначе операции последнего дня пропадали бы.
+ * «Всё время» — без границ (в журнале бывают и записи будущей датой).
+ */
 function periodRange(): { from?: string; to?: string } {
-  if (periodKey.value === 'all') return {}
-  const now = new Date()
-  const from = new Date(now)
-  if (periodKey.value === 'today') from.setHours(0, 0, 0, 0)
-  else if (periodKey.value === 'week') from.setDate(now.getDate() - 7)
-  else if (periodKey.value === 'month') from.setMonth(now.getMonth() - 1)
-  else if (periodKey.value === 'year') from.setFullYear(now.getFullYear() - 1)
-  return { from: from.toISOString() }
+  if (period.value.preset === 'all') return {}
+  const [fy, fm, fd] = period.value.from.split('-').map(Number) as [number, number, number]
+  const [ty, tm, td] = period.value.to.split('-').map(Number) as [number, number, number]
+  return {
+    from: new Date(fy, fm - 1, fd, 0, 0, 0, 0).toISOString(),
+    to: new Date(ty, tm - 1, td, 23, 59, 59, 999).toISOString(),
+  }
 }
 
 function toggleType(t: CashFlowEntryType) {
@@ -343,9 +322,6 @@ function toggleType(t: CashFlowEntryType) {
   else activeTypes.value.push(t)
 }
 
-function setPeriod(p: typeof periodKey.value) {
-  periodKey.value = p
-}
 
 // Debounced search reload
 let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -389,7 +365,7 @@ async function reload() {
   else await load()
 }
 
-watch([activeTypes, periodKey], () => reload(), { deep: true })
+watch([activeTypes, period], () => reload(), { deep: true })
 watch([page, perPage], () => load())
 
 const hasMore = computed(() => entries.value.length < total.value)
@@ -509,6 +485,10 @@ onMounted(() => reload())
 }
 
 /* Filter chips */
+/* Выбор периода — под высоту соседних фильтров журнала. */
+.cfj-period { height: 32px; border-radius: 8px; border-color: rgba(var(--v-theme-on-surface), 0.10); }
+.cfj-period :deep(.myp-btn) { height: 26px; font-size: 12px; }
+.cfj-period :deep(.myp-step) { width: 24px; height: 24px; }
 .cfj-filter-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 10px;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * Подразделы «Бухгалтерии»: Баланс · Пункты · Временные · История · Отчёты · Аудит.
+ * Подразделы «Бухгалтерии»: Баланс · Пункты · Пополнения и расходы · История · Отчёты · Аудит.
  *
  * Один общий переключатель на все три страницы — чтобы вкладки не разъехались
  * при правке одной из них.
@@ -18,9 +18,10 @@ const TABS = [
   { path: '/accounting/balance', title: 'Баланс', icon: 'mdi-wallet-outline', permission: 'accounting.view' },
   // Инкассация живёт на этой же вкладке, поэтому её видно и по своему праву.
   { path: '/accounting/points', title: 'Пункты приёма', icon: 'mdi-storefront-outline', permission: 'accounting.view|collections.view' },
-  // Возвратные деньги: положил своё до зарплаты, дал в долг, взял в долг.
-  // Их за месяц набегает много, и партнёр подводит по ним итог отдельно.
-  { path: '/accounting/temporary', title: 'Временные', icon: 'mdi-swap-vertical-circle-outline', permission: 'accounting.view' },
+  // Все ручные движения денег: капитал, доходы и расходы, временные, под
+  // разбор. Открыт и тем, кто ведёт доходы, расходы или капитал без доступа
+  // ко всей бухгалтерии — раньше они делали это в карточке кассы.
+  { path: '/accounting/temporary', title: 'Пополнения и расходы', icon: 'mdi-swap-vertical-circle-outline', permission: 'accounting.view|finance.transactions|finance.capital' },
   { path: '/accounting/history', title: 'История', icon: 'mdi-timeline-text-outline', permission: 'accounting.view' },
   { path: '/accounting/reports', title: 'Отчёты', icon: 'mdi-file-chart-outline', permission: 'accounting.reports' },
   { path: '/accounting/audit', title: 'Аудит', icon: 'mdi-shield-check-outline', permission: 'accounting.audit' },

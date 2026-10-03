@@ -6,7 +6,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
 import DateField from '@/components/DateField.vue'
-import { useOperationDate } from '@/composables/useOperationDate'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
 import { useAccountingStore } from '@/stores/accounting'
@@ -15,7 +14,7 @@ import type { AnalyticsSummary, AnalyticsMonthlyRow } from '@/types/analytics'
 import { useToast } from '@/composables/useToast'
 import { usePageHeaderStore } from '@/stores/pageHeader'
 import { useIsDark } from '@/composables/useIsDark'
-import { formatCurrency, formatCurrencyShort, formatDate, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDate, formatPhone, CURRENCY_MASK, parseMasked, formatDateShort } from '@/utils/formatters'
 import type { CapitalSummary } from '@/types'
 import CashflowJournal from '@/components/CashflowJournal.vue'
 import AllocateUnallocatedDialog from '@/components/AllocateUnallocatedDialog.vue'
@@ -23,7 +22,6 @@ import CashBoxEditDialog from '@/components/CashBoxEditDialog.vue'
 
 const route = useRoute()
 // Границы даты денежной операции — те же, что при отметке оплаты.
-const opDate = useOperationDate()
 const sections = useSections()
 const router = useRouter()
 const toast = useToast()
@@ -131,6 +129,18 @@ interface CapitalDetails {
    */
   /** Число ручных операций кассы — для кнопки панели (список ленив). */
   manualCount?: number
+  /**
+   * Из чего сложилось сальдо ручных операций (manualBalance):
+   * −expense + income + transfers. Почти всегда это одни расходы по бизнесу,
+   * но у части касс есть и прочие доходы, а у старых — переводы между кассами.
+   */
+  manualBreakdown?: {
+    expense: number
+    expenseCount: number
+    income: number
+    incomeCount: number
+    transfers: number
+  }
   dealsStats?: {
     activeCount: number
     profitCount: number
@@ -443,7 +453,7 @@ const availableRows = computed(() => {
       hint: 'Ваши выводы денег из кассы', always: false,
     },
     {
-      key: 'manual', label: 'Ручные операции', value: b.manualBalance, base: false,
+      key: 'manual', label: 'Доходы и расходы', value: b.manualBalance, base: false,
       hint: 'Доходы минус расходы, внесённые вручную', always: false,
     },
     {
@@ -464,27 +474,105 @@ const loading = ref(true)
 
 const showEdit = ref(false)
 
-// Detail panel state (waterfall right column)
-// Страница кассы открывается с раскрытым первым разделом: пустая панель
-// справа выглядела как ошибка загрузки, и было неочевидно, что плитки жмутся.
 const pageHeader = usePageHeaderStore()
 
-const wfExpanded = ref<string | null>('capital')
+// Открывается журнал кассы: на странице кассы чаще всего ищут операцию.
+const wfExpanded = ref<string | null>('journal')
 
 /**
  * Разделы водопада: название раздела и пояснение к нему. Заголовок панели
  * справа берётся отсюда, чтобы совпадать с подписью на плитке — иначе не
  * понять, какой именно раздел сейчас открыт.
  */
-const WF_SECTIONS: Record<string, { label: string; hint: string }> = {
-  capital: { label: 'Общий капитал', hint: 'Сколько денег вложено в дело' },
-  profit: { label: 'Чистая прибыль', hint: 'Прибыль по сделкам кассы' },
-  deployed: { label: 'В работе', hint: 'Капитал в активных сделках' },
-  manual: { label: 'Ручные операции', hint: 'Доходы и расходы, внесённые вручную' },
-  available: { label: 'Доступный капитал', hint: 'Из чего сложились деньги в кассе' },
-  pendingCI: { label: 'Резерв для инвесторов', hint: 'Начислено инвесторам, но ещё не выплачено' },
+/** Значок и цвет шапки — те же, что у плитки: видно, чья это панель. */
+const WF_SECTIONS: Record<string, { label: string; hint: string; icon: string; color: string }> = {
+  capital: { label: 'Общий капитал', hint: 'Сколько денег вложено в дело', icon: 'mdi-bank-outline', color: '#6366f1' },
+  profit: { label: 'Чистая прибыль', hint: 'Прибыль по сделкам кассы', icon: 'mdi-trending-up', color: '#10b981' },
+  deployed: { label: 'В работе', hint: 'Капитал в активных сделках', icon: 'mdi-progress-clock', color: '#f59e0b' },
+  manual: { label: 'Расходы по бизнесу', hint: 'Аренда, зарплата, реклама — вносятся в Бухгалтерии', icon: 'mdi-cart-arrow-down', color: '#ef4444' },
+  available: { label: 'Доступный капитал', hint: 'Из чего сложились деньги в кассе', icon: 'mdi-safe-square-outline', color: '#047857' },
+  pendingCI: { label: 'Резерв для инвесторов', hint: 'Начислено инвесторам, но ещё не выплачено', icon: 'mdi-account-cash-outline', color: '#f59e0b' },
+  journal: { label: 'Журнал кассы', hint: 'Все движения денег кассы', icon: 'mdi-book-open-page-variant-outline', color: '#475569' },
 }
 const wfSection = computed(() => (wfExpanded.value ? WF_SECTIONS[wfExpanded.value] : null))
+
+/**
+ * Hero выбранной плитки — фирменный зелёный блок, как на «Балансе»: название,
+ * главная сумма и то, из чего она сложилась. Раньше эти цифры стояли серыми
+ * строками внутри раздела и не отделялись от списка под ними.
+ */
+interface HeroMetric { label: string; value: string }
+const wfHero = computed(() => {
+  const d = capitalDetails.value
+  const sec = wfSection.value
+  const key = wfExpanded.value
+  if (!d || !sec || !key) return null
+  const hero = {
+    title: sec.label,
+    hint: sec.hint,
+    icon: sec.icon,
+    amount: null as string | null,
+    metrics: [] as HeroMetric[],
+    note: null as string | null,
+  }
+  const money = (n: number) => formatCurrency(Math.round(n))
+  const signed = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${formatCurrency(Math.abs(Math.round(n)))}`
+  if (key === 'capital') {
+    const own = d.investedCapital ?? d.initialCapital
+    hero.amount = money(d.totalCapital)
+    hero.metrics.push({ label: 'Собственный капитал кассы', value: money(own) })
+    if (own !== d.initialCapital) hero.metrics.push({ label: 'Из них стартовый капитал', value: money(d.initialCapital) })
+    if (d.coInvestorCapital > 0) hero.metrics.push({ label: 'Капитал инвесторов', value: money(d.coInvestorCapital) })
+  } else if (key === 'profit') {
+    hero.amount = signed(d.partnerNetProfit ?? d.netProfit)
+    if ((d.coInvestorProfit ?? 0) > 0) {
+      hero.metrics.push({ label: 'Вся прибыль сделок', value: money(d.netProfit) })
+      hero.metrics.push({ label: 'Инвесторам', value: money(d.coInvestorProfit ?? 0) })
+    }
+    if (profitDeals.value.total) hero.metrics.push({ label: 'Сделок с прибылью', value: profitDeals.value.total.toLocaleString('ru-RU') })
+  } else if (key === 'deployed') {
+    hero.amount = money(d.inProgress)
+    hero.metrics.push({ label: 'Закупка по активным сделкам', value: money(activeDealsPurchaseTotal.value) })
+    hero.metrics.push({
+      label: 'Возврат закупки клиентами',
+      value: activeDealsCostRecovered.value > 0 ? `−${money(activeDealsCostRecovered.value)}` : money(0),
+    })
+    hero.metrics.push({ label: 'Активных сделок', value: (d.dealsStats?.activeCount ?? 0).toLocaleString('ru-RU') })
+    hero.note = 'Каждый платёж клиента делится на возврат закупки и прибыль в пропорции «наценка / итоговая цена». Прибыль учитывается отдельно.'
+  } else if (key === 'manual') {
+    const b = d.manualBreakdown
+    hero.amount = signed(d.manualBalance)
+    if (b) {
+      hero.metrics.push({ label: `Расходы по бизнесу · ${b.expenseCount}`, value: b.expense > 0 ? `−${money(b.expense)}` : money(0) })
+      if (b.income) hero.metrics.push({ label: `Прочие доходы · ${b.incomeCount}`, value: `+${money(b.income)}` })
+      if (b.transfers) hero.metrics.push({ label: 'Старые переводы между кассами', value: signed(b.transfers) })
+    }
+  } else if (key === 'available') {
+    hero.amount = money(d.availableCapital)
+    hero.note = 'Реальные деньги кассы на сейчас. Обязательства перед инвесторами сюда не заложены — они в «Резерве для инвесторов».'
+    if (d.pendingCIPayout > 0) hero.metrics.push({ label: 'Резерв для инвесторов (не вычтен)', value: money(d.pendingCIPayout) })
+  } else if (key === 'pendingCI') {
+    hero.amount = money(d.pendingCIPayout)
+    hero.metrics.push({ label: 'Инвесторов к выплате', value: pendingCiList.value.length.toLocaleString('ru-RU') })
+    hero.note = 'Деньги, причитающиеся инвесторам, но ещё физически в кассе. Из доступного капитала не вычитаются — уйдут при выплате дивидендов.'
+  }
+  return hero
+})
+
+/**
+ * Длинные списки в панели — по 20 строк, нашей обычной пагинацией: у кассы
+ * бывает несколько десятков инвесторов, и панель вытягивалась на экраны.
+ */
+const WF_PAGE = 20
+const ciPage = ref(1)
+const reservePage = ref(1)
+watch(wfExpanded, () => {
+  ciPage.value = 1
+  reservePage.value = 1
+})
+function pageOf<T>(list: T[], page: number): T[] {
+  return list.slice((page - 1) * WF_PAGE, page * WF_PAGE)
+}
 const expandedInProfit = ref<Set<string>>(new Set())
 const expandedInProgress = ref<Set<string>>(new Set())
 const expandedReserveCi = ref<Set<string>>(new Set())
@@ -494,8 +582,6 @@ function toggleReserveCi(id: string) {
   expandedReserveCi.value = next
 }
 
-// Bottom tabs
-const detailsTab = ref<'journal' | 'operations' | 'deals'>('journal')
 
 // ─── Loaders ──────────────────────────────────────────────────────────────
 async function loadAll() {
@@ -509,7 +595,6 @@ async function loadAll() {
       // Счета нужны для вкладки «где лежат деньги»; сбой не должен ронять кассу.
       canSeeCapital.value ? accounting.fetchAccounts().catch(() => {}) : Promise.resolve(),
       canSeeCapital.value ? refreshUnallocated() : Promise.resolve(),
-      canSeeCapital.value ? loadCategories() : Promise.resolve(),
       canSeeCapital.value ? loadCashBoxCoInvestors() : Promise.resolve(),
       canSeeCapital.value ? loadCapitalSummary() : Promise.resolve(),
     ])
@@ -577,7 +662,6 @@ async function refreshAfterMutation() {
     // Списки тоже устаревают: раньше их привозил тот же запрос, что и суммы.
     // Без этого удалённая операция оставалась на экране, а счётчик и итоги
     // уже показывали новое значение — экран спорил сам с собой.
-    loadOperations(),
     manualOperations.value.length || wfExpanded.value === 'manual' ? loadManualOperations() : Promise.resolve(),
   ])
   // Re-sync local `box` with the refreshed store data so the header values
@@ -589,13 +673,9 @@ async function refreshAfterMutation() {
 watch(() => id.value, () => {
   // Сбрасываем всё постраничное: в текущей навигации компонент пересоздаётся,
   // но если появится переход «соседняя касса», без сброса покажутся её данные.
-  operations.value = []
-  operationsTotal.value = 0
-  operationsPage.value = 1
   manualOperations.value = []
   profitDeals.value = emptySection()
   activeDeals.value = emptySection()
-  allDeals.value = emptySection()
   dealPayments.value = {}
   loadAll()
 })
@@ -716,14 +796,12 @@ function emptySection(): DealsSection {
 
 const profitDeals = ref<DealsSection>(emptySection())
 const activeDeals = ref<DealsSection>(emptySection())
-/** Вкладка «Сделки» — весь список кассы, тоже страницами. */
-const allDeals = ref<DealsSection>(emptySection())
 
 // Защита от гонок: блок можно свернуть и развернуть быстрее, чем придёт ответ.
-const dealsReq = { profit: 0, active: 0, all: 0 }
+const dealsReq = { profit: 0, active: 0 }
 
-async function loadDealsSection(kind: 'profit' | 'active' | 'all') {
-  const section = kind === 'profit' ? profitDeals : kind === 'active' ? activeDeals : allDeals
+async function loadDealsSection(kind: 'profit' | 'active') {
+  const section = kind === 'profit' ? profitDeals : activeDeals
   const req = ++dealsReq[kind]
   section.value.loading = true
   try {
@@ -778,338 +856,19 @@ watch(wfExpanded, (v) => {
   if (v === 'deployed' && !activeDeals.value.items.length) loadDealsSection('active')
   if (v === 'manual' && !manualOperations.value.length) loadManualOperations()
 })
-watch(detailsTab, (t) => {
-  if (t === 'deals' && !allDeals.value.items.length) loadDealsSection('all')
-  if (t === 'operations' && !operations.value.length) loadOperations()
-})
 watch(() => profitDeals.value.page, () => loadDealsSection('profit'))
 watch(() => activeDeals.value.page, () => loadDealsSection('active'))
-watch(() => allDeals.value.page, () => loadDealsSection('all'))
-
-/** Есть ли у кассы операции вообще — для текста пустого состояния. */
-const hasAnyOperations = computed(() => operationsTotal.value > 0 || !!opSearch.value || opKinds.value.length > 0)
-
-// ─── Categories (shared across all cashboxes for this investor) ───────────
-interface Category {
-  id: string
-  name: string
-  type: 'INCOME' | 'EXPENSE'
-  icon?: string
-  color?: string
-  _count: { transactions: number }
-}
-const CATEGORY_COLORS = [
-  '#6366f1', '#8b5cf6', '#a855f7', '#3b82f6', '#0ea5e9',
-  '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#047857',
-]
-const INCOME_COLOR = '#10b981'
-const EXPENSE_COLOR = '#ef4444'
-
-const categories = ref<Category[]>([])
-
-async function loadCategories() {
-  try {
-    categories.value = await api.get<Category[]>('/finance/categories')
-  } catch {
-    // silent — categories are optional
-  }
-}
-
-// ─── Manual operations CRUD (in "Все операции" tab) ───────────────────────
-const showTxDialog = ref(false)
-const txEditingId = ref<string | null>(null)
-const txForm = ref({
-  type: 'EXPENSE' as 'INCOME' | 'EXPENSE',
-  amount: 0,
-  description: '',
-  categoryId: '',
-  date: todayIso(),
-})
-const txSaving = ref(false)
-const txDeleteDialog = ref(false)
-const txDeletingId = ref<string | null>(null)
-const txDeleteLoading = ref(false)
-
-const filteredCategories = computed(() =>
-  categories.value.filter((c) => c.type === txForm.value.type),
-)
-const txSelectedCategory = computed(() =>
-  txForm.value.categoryId ? categories.value.find((c) => c.id === txForm.value.categoryId) ?? null : null,
-)
-
-function openCreateTransaction() {
-  txEditingId.value = null
-  txForm.value = {
-    type: 'EXPENSE',
-    amount: 0,
-    description: '',
-    categoryId: '',
-    date: todayIso(),
-  }
-  showTxDialog.value = true
-}
-
-function openEditTransaction(op: CapitalOperation) {
-  if (!op.transactionId) return
-  txEditingId.value = op.transactionId
-  txForm.value = {
-    type: op.type === 'INCOME' ? 'INCOME' : 'EXPENSE',
-    amount: op.amount,
-    description: op.description || '',
-    categoryId: op.category?.id || '',
-    date: op.date ? op.date.slice(0, 10) : todayIso(),
-  }
-  showTxDialog.value = true
-}
-
-async function saveTransaction() {
-  if (!txForm.value.amount || txForm.value.amount <= 0) {
-    toast.error('Укажите сумму больше 0')
-    return
-  }
-  txSaving.value = true
-  try {
-    const body: any = {
-      type: txForm.value.type,
-      amount: Number(txForm.value.amount),
-      description: txForm.value.description.trim() || undefined,
-      categoryId: txForm.value.categoryId || undefined,
-      date: txForm.value.date || undefined,
-      cashBoxId: id.value,
-    }
-    if (txEditingId.value) {
-      await api.patch(`/finance/transactions/${txEditingId.value}`, body)
-      toast.success('Операция обновлена')
-    } else {
-      await api.post('/finance/transactions', body)
-      toast.success('Операция добавлена')
-    }
-    showTxDialog.value = false
-    await refreshAfterMutation()
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка сохранения')
-  } finally {
-    txSaving.value = false
-  }
-}
-
-function confirmDeleteTransaction(id: string) {
-  txDeletingId.value = id
-  txDeleteDialog.value = true
-}
-
-async function deleteTransaction() {
-  if (!txDeletingId.value) return
-  txDeleteLoading.value = true
-  try {
-    await api.delete(`/finance/transactions/${txDeletingId.value}`)
-    toast.success('Операция удалена')
-    txDeleteDialog.value = false
-    await refreshAfterMutation()
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления')
-  } finally {
-    txDeleteLoading.value = false
-  }
-}
-
-// ─── Category CRUD ────────────────────────────────────────────────────────
-const showCategoryDialog = ref(false)
-const categoryEditingId = ref<string | null>(null)
-const categoryForm = ref({ name: '', type: 'EXPENSE' as 'INCOME' | 'EXPENSE', color: CATEGORY_COLORS[0] })
-const categoryLoading = ref(false)
-const showCategoriesManager = ref(false)
-const deleteCategoryDialog = ref(false)
-const deletingCategoryId = ref<string | null>(null)
-const deleteCategoryLoading = ref(false)
-
-function openCreateCategory() {
-  categoryEditingId.value = null
-  categoryForm.value = { name: '', type: txForm.value.type, color: CATEGORY_COLORS[0] }
-  showCategoryDialog.value = true
-}
-
-function openCreateCategoryFromManager(type: 'INCOME' | 'EXPENSE') {
-  categoryEditingId.value = null
-  categoryForm.value = { name: '', type, color: CATEGORY_COLORS[0] }
-  showCategoryDialog.value = true
-}
-
-function openEditCategory(cat: Category) {
-  categoryEditingId.value = cat.id
-  categoryForm.value = {
-    name: cat.name,
-    type: cat.type,
-    color: cat.color || CATEGORY_COLORS[0],
-  }
-  showCategoryDialog.value = true
-}
-
-async function saveCategory() {
-  if (!categoryForm.value.name.trim()) {
-    toast.error('Укажите название категории')
-    return
-  }
-  categoryLoading.value = true
-  try {
-    const body = {
-      name: categoryForm.value.name.trim(),
-      // Type isn't editable on existing categories (would invalidate linked
-      // transactions). Backend ignores type on PATCH; we omit it explicitly.
-      ...(categoryEditingId.value ? {} : { type: categoryForm.value.type }),
-      color: categoryForm.value.color || undefined,
-    }
-    if (categoryEditingId.value) {
-      const updated = await api.patch<Category>(`/finance/categories/${categoryEditingId.value}`, body)
-      const idx = categories.value.findIndex((c) => c.id === categoryEditingId.value)
-      if (idx >= 0) categories.value[idx] = { ...categories.value[idx], ...updated }
-      showCategoryDialog.value = false
-      toast.success('Категория обновлена')
-    } else {
-      const created = await api.post<Category>('/finance/categories', body)
-      categories.value.push(created)
-      // Auto-select the new category if the transaction dialog is open
-      if (showTxDialog.value) txForm.value.categoryId = created.id
-      showCategoryDialog.value = false
-      toast.success('Категория создана')
-    }
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка сохранения категории')
-  } finally {
-    categoryLoading.value = false
-  }
-}
-
-function confirmDeleteCategory(catId: string) {
-  deletingCategoryId.value = catId
-  deleteCategoryDialog.value = true
-}
-
-async function deleteCategory() {
-  if (!deletingCategoryId.value) return
-  deleteCategoryLoading.value = true
-  try {
-    await api.delete(`/finance/categories/${deletingCategoryId.value}`)
-    categories.value = categories.value.filter((c) => c.id !== deletingCategoryId.value)
-    deleteCategoryDialog.value = false
-    toast.success('Категория удалена')
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления категории')
-  } finally {
-    deleteCategoryLoading.value = false
-  }
-}
-
-// ─── Filters for "Все операции" tab ───────────────────────────────────────
-type OpKind = 'INCOME' | 'EXPENSE' | 'PAYOUT' | 'MANUAL'
-const opSearch = ref('')
-const opPeriod = ref<'all' | 'today' | 'week' | 'month' | 'year'>('all')
-const opKinds = ref<OpKind[]>([])
-
-const OP_PERIODS = [
-  { key: 'all' as const, label: 'Всё время' },
-  { key: 'today' as const, label: 'Сегодня' },
-  { key: 'week' as const, label: 'Неделя' },
-  { key: 'month' as const, label: 'Месяц' },
-  { key: 'year' as const, label: 'Год' },
-]
-const OP_KIND_CHIPS: { key: OpKind; label: string; color: string }[] = [
-  { key: 'INCOME', label: 'Поступления', color: '#10b981' },
-  { key: 'EXPENSE', label: 'Закупки', color: '#ef4444' },
-  { key: 'PAYOUT', label: 'Инвесторам', color: '#f59e0b' },
-  { key: 'MANUAL', label: 'Ручные', color: '#3b82f6' },
-]
-
-/** Без раздела со-инвесторов выплаты им не появляются — фильтр лишний. */
-const opKindChips = computed(() =>
-  sections.visible('coInvestors')
-    ? OP_KIND_CHIPS
-    : OP_KIND_CHIPS.filter((k) => k.key !== 'PAYOUT'),
-)
-
-function opPeriodFromDate(): Date | null {
-  if (opPeriod.value === 'all') return null
-  const from = new Date()
-  if (opPeriod.value === 'today') from.setHours(0, 0, 0, 0)
-  else if (opPeriod.value === 'week') from.setDate(from.getDate() - 7)
-  else if (opPeriod.value === 'month') from.setMonth(from.getMonth() - 1)
-  else if (opPeriod.value === 'year') from.setFullYear(from.getFullYear() - 1)
-  return from
-}
-
-const opPeriodLabel = computed(() => OP_PERIODS.find(p => p.key === opPeriod.value)?.label ?? 'Всё время')
-
-function toggleOpKind(k: OpKind) {
-  const idx = opKinds.value.indexOf(k)
-  if (idx >= 0) opKinds.value.splice(idx, 1)
-  else opKinds.value.push(k)
-}
-
-// ══════════════════════════════════════════════════════════════════
-// Лента операций — серверная страница
-//
-// Фильтры по типу, периоду и поиску выполняет база: в браузере лежит только
-// показанная страница, а операций у кассы 81 486.
-// ══════════════════════════════════════════════════════════════════
-
-const OPS_PAGE = 30
-const operations = ref<CapitalOperation[]>([])
-const operationsTotal = ref(0)
-const operationsPage = ref(1)
-const operationsLoading = ref(false)
-let opsReq = 0
-
-async function loadOperations() {
-  const req = ++opsReq
-  operationsLoading.value = true
-  try {
-    const qs = new URLSearchParams({
-      limit: String(OPS_PAGE),
-      offset: String((operationsPage.value - 1) * OPS_PAGE),
-    })
-    if (opKinds.value.length) qs.set('kinds', opKinds.value.join(','))
-    const from = opPeriodFromDate()
-    // Полная метка времени с зоной: сервер не должен угадывать часовой пояс
-    // партнёра. Раньше уходила только дата, и на сервере в UTC «Сегодня»
-    // начиналось в 03:00 по Москве.
-    if (from) qs.set('from', from.toISOString())
-    if (opSearch.value.trim()) qs.set('q', opSearch.value.trim())
-    const res = await api.get<{ items: CapitalOperation[]; total: number }>(
-      `/cashboxes/${id.value}/capital/operations?${qs}`,
-    )
-    if (req !== opsReq) return
-    operations.value = res.items
-    operationsTotal.value = res.total
-  } catch (e: any) {
-    if (req === opsReq) {
-      operations.value = []
-      operationsTotal.value = 0
-      toast.error(e?.message || 'Не удалось загрузить операции')
-    }
-  } finally {
-    if (req === opsReq) operationsLoading.value = false
-  }
-}
 
 
-// Лента приходит уже отфильтрованной сервером.
-const filteredOperations = computed<CapitalOperation[]>(() => operations.value)
 
-// Любая смена условий возвращает на первую страницу.
-watch([opKinds, opPeriod, opSearch], () => {
-  operationsPage.value = 1
-  loadOperations()
-}, { deep: true })
-watch(operationsPage, loadOperations)
-
-// Manual operations list (for the "Ручные операции" waterfall panel)
-// Ручные операции — отдельный короткий запрос: их единицы, но раньше они
-// вылавливались из полного списка всех операций кассы.
+// Последние расходы по бизнесу — для панели плитки. Весь список и правка — в
+// «Бухгалтерии → Пополнения и расходы», здесь только несколько свежих строк.
+const MANUAL_RECENT = 8
 const manualOperations = ref<CapitalOperation[]>([])
 async function loadManualOperations() {
   try {
     const res = await api.get<{ items: CapitalOperation[] }>(
-      `/cashboxes/${id.value}/capital/operations?kinds=MANUAL&limit=200`,
+      `/cashboxes/${id.value}/capital/operations?kinds=MANUAL_EXPENSE&limit=${MANUAL_RECENT}`,
     )
     manualOperations.value = res.items
   } catch {
@@ -1202,16 +961,9 @@ const pendingCiList = computed(() =>
     .sort((a, b) => b.pendingPayout - a.pendingPayout),
 )
 
-// ─── Partner capital: пополнить / снять ───────────────────────────────────
-const capDialog = ref(false)
-const capMode = ref<'topup' | 'withdraw'>('topup')
-const capAmount = ref(0)
-const capNote = ref('')
-// Ключ идемпотентности операции с капиталом (живёт на одно открытие диалога).
-const capIdemKey = ref('')
-const capSaving = ref(false)
-
-// Наглядные поля кассы (с фолбэком, если бэк ещё не отдал новые поля).
+// ─── Капитал кассы: вложенное, доход к снятию, доступно ──────────────────
+// Вложение и снятие капитала теперь вносятся в «Бухгалтерии → Приход и
+// расход» (кнопка в шапке ведёт туда), здесь — только цифры для карточки.
 const investedCapital = computed(() =>
   capitalSummary.value?.investedCapital ?? capitalDetails.value?.initialCapital ?? 0,
 )
@@ -1221,57 +973,28 @@ const withdrawableProfit = computed(() =>
 const availableCap = computed(() =>
   capitalSummary.value?.availableCapital ?? capitalDetails.value?.availableCapital ?? 0,
 )
-
-// Живой расклад снятия: сначала из ДОХОДА, остаток — из вложенного капитала.
-const capProfitPart = computed(() => Math.min(capAmount.value || 0, withdrawableProfit.value))
-const capCapitalPart = computed(() => Math.max(0, (capAmount.value || 0) - withdrawableProfit.value))
-// Капитал после снятия (уменьшается только на capitalPart).
-const capProjectedInvested = computed(() =>
-  capMode.value === 'topup'
-    ? investedCapital.value + (capAmount.value || 0)
-    : investedCapital.value - capCapitalPart.value,
-)
-// Лимит снятия = доступно всего (доход + вложенный).
-const capWithdrawLimit = computed(() => availableCap.value)
-const capTouchesCapital = computed(() => capMode.value === 'withdraw' && capCapitalPart.value > 0)
-
-// Обязательство перед со-инвесторами (cash-basis: деньги ещё в кассе). Снятие
-// сервер разрешает, но если после него в кассе останется меньше — предупреждаем.
+// Обязательство перед со-инвесторами (cash-basis: деньги ещё в кассе).
 const pendingCIPayout = computed(() => capitalDetails.value?.pendingCIPayout ?? 0)
-const capBelowCIReserve = computed(() =>
-  capMode.value === 'withdraw'
-  && pendingCIPayout.value > 0
-  && availableCap.value - (capAmount.value || 0) < pendingCIPayout.value,
-)
 
-function openCapDialog(mode: 'topup' | 'withdraw') {
-  capMode.value = mode
-  capAmount.value = 0
-  capNote.value = ''
-  // Ключ идемпотентности на одно открытие диалога — переживает ретраи отправки.
-  capIdemKey.value = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  capDialog.value = true
+// ─── Пополнения и расходы — в Бухгалтерии ─────────────────────────────────────
+// Все ручные движения денег (капитал, доходы и расходы, временные) ведутся в
+// одном разделе; из кассы открываем его уже отфильтрованным по этой кассе.
+const canOpenFlows = computed(() => auth.canAccess('/accounting/temporary'))
+function openFlows() {
+  void router.push({ path: '/accounting/temporary', query: { cashBoxId: id.value } })
+}
+/** Журнал кассы — в панели вкладки «Капитал кассы». */
+function openJournal() {
+  topTab.value = 'capital'
+  wfExpanded.value = 'journal'
 }
 
-async function submitCapital() {
-  const amount = capAmount.value || 0
-  if (amount <= 0) { toast.error('Сумма должна быть положительной'); return }
-  if (capMode.value === 'withdraw' && amount > capWithdrawLimit.value) {
-    toast.error(`Не больше доступного: ${formatCurrency(capWithdrawLimit.value)}`)
-    return
-  }
-  capSaving.value = true
-  try {
-    const signed = capMode.value === 'withdraw' ? -amount : amount
-    capitalSummary.value = await store.adjustPartnerCapital(id.value, signed, capNote.value, capIdemKey.value)
-    capDialog.value = false
-    toast.success(capMode.value === 'topup' ? 'Капитал пополнен' : 'Капитал снят')
-    await refreshAfterMutation()
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось изменить капитал')
-  } finally {
-    capSaving.value = false
-  }
+/** Все расходы по бизнесу этой кассы — сразу нужная ветка и «за всё время». */
+function openExpenses() {
+  void router.push({
+    path: '/accounting/temporary',
+    query: { cashBoxId: id.value, tab: 'out', section: 'main', kind: 'expense', period: 'all' },
+  })
 }
 
 // ─── Delete ──────────────────────────────────────────────────────────────
@@ -1341,15 +1064,24 @@ async function handleDelete() {
               {{ box.name }}
               <span v-if="box.isDefault" class="cb-header-badge">основная</span>
             </h1>
-            <div class="cb-header-meta">
+            <!-- Сделки кассы — на странице «Сделки» с фильтром по ней. -->
+            <router-link :to="{ path: '/deals', query: { cashBoxId: id, tab: '2' } }" class="cb-header-meta cb-header-deals">
               {{ box.dealsCount }} {{ box.dealsCount === 1 ? 'сделка' : 'сделок' }} · из них {{ box.activeDealsCount }} активны
-            </div>
+              <v-icon icon="mdi-arrow-right" size="13" />
+            </router-link>
           </div>
         </div>
         <div class="cb-header-actions">
-          <button class="cb-action-btn cb-action-btn--capital" @click="openCapDialog('topup')" title="Пополнить или снять капитал">
-            <v-icon icon="mdi-bank-outline" size="17" />
-            Капитал
+          <!-- Вложение и снятие капитала, доходы и расходы — в «Бухгалтерии →
+               Пополнения и расходы»: там все ручные движения денег в одном месте. -->
+          <button
+            v-if="canOpenFlows"
+            class="cb-action-btn cb-action-btn--capital"
+            title="Вложить или снять капитал, внести доход или расход"
+            @click="openFlows"
+          >
+            <v-icon icon="mdi-swap-vertical-circle-outline" size="17" />
+            Пополнения и расходы
           </button>
           <button class="cb-action-btn" @click="showEdit = true" title="Изменить кассу">
             <v-icon icon="mdi-pencil-outline" size="17" />
@@ -1404,6 +1136,16 @@ async function handleDelete() {
               Аналитика
             </button>
           </div>
+          <!-- Журнал кассы — отдельно от табов и плиток: это книга всех движений,
+               из которой сложены их цифры. Открывается в панели «Капитала кассы». -->
+          <button
+            class="cb-journal-btn"
+            :class="{ 'cb-journal-btn--on': topTab === 'capital' && wfExpanded === 'journal' }"
+            @click="openJournal"
+          >
+            <v-icon icon="mdi-book-open-page-variant-outline" size="17" />
+            Журнал кассы
+          </button>
         </div>
 
         <template v-if="topTab === 'where'">
@@ -1692,12 +1434,12 @@ async function handleDelete() {
         <template v-else>
 
         <div class="wf-split">
-          <!-- Left: vertical list -->
+          <!-- Плитки — горизонтальным рядом; детали выбранной — ниже. -->
           <div class="wf-left">
             <button
               class="wf-item"
               :class="{ 'wf-item--active': wfExpanded === 'capital' }"
-              @click="wfExpanded = wfExpanded === 'capital' ? null : 'capital'"
+              @click="wfExpanded = 'capital'"
             >
               <div class="wf-item-value">{{ formatCurrency(capitalDetails.totalCapital) }}</div>
               <div class="wf-item-label">Общий капитал</div>
@@ -1706,19 +1448,16 @@ async function handleDelete() {
             <button
               class="wf-item"
               :class="{ 'wf-item--active': wfExpanded === 'profit' }"
-              @click="wfExpanded = wfExpanded === 'profit' ? null : 'profit'"
+              @click="wfExpanded = 'profit'"
             >
               <div class="wf-item-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.partnerNetProfit ?? capitalDetails.netProfit) }}</div>
               <div class="wf-item-label">Чистая прибыль</div>
-              <div v-if="(capitalDetails.coInvestorProfit ?? 0) > 0" class="wf-item-sub">
-                валовая {{ formatCurrencyShort(capitalDetails.netProfit) }} · инвесторам {{ formatCurrencyShort(capitalDetails.coInvestorProfit!) }}
-              </div>
                           <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
             </button>
             <button
               class="wf-item"
               :class="{ 'wf-item--active': wfExpanded === 'deployed' }"
-              @click="wfExpanded = wfExpanded === 'deployed' ? null : 'deployed'"
+              @click="wfExpanded = 'deployed'"
             >
               <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.inProgress) }}</div>
               <div class="wf-item-label">В работе · {{ capitalDetails.dealsStats?.activeCount ?? 0 }}</div>
@@ -1728,19 +1467,36 @@ async function handleDelete() {
               v-if="capitalDetails.manualBalance !== 0 || (capitalDetails.manualCount ?? 0) > 0 || manualOperations.length > 0"
               class="wf-item"
               :class="{ 'wf-item--active': wfExpanded === 'manual' }"
-              @click="wfExpanded = wfExpanded === 'manual' ? null : 'manual'"
+              @click="wfExpanded = 'manual'"
             >
               <div class="wf-item-value" :style="{ color: capitalDetails.manualBalance > 0 ? '#3b82f6' : '#ef4444' }">
                 {{ capitalDetails.manualBalance > 0 ? '+' : '' }}{{ formatCurrency(capitalDetails.manualBalance) }}
               </div>
-              <div class="wf-item-label">Ручные операции · {{ capitalDetails.manualCount ?? manualOperations.length }}</div>
+              <div class="wf-item-label">
+                Расходы по бизнесу · {{ capitalDetails.manualBreakdown?.expenseCount ?? capitalDetails.manualCount ?? 0 }}
+              </div>
+              <!-- Сальдо почти всегда — одни расходы. Если были прочие доходы или
+                   старые переводы между кассами, показываем их, иначе цифра
+                   плитки не совпала бы с подписью. -->
+              <div
+                v-if="capitalDetails.manualBreakdown && (capitalDetails.manualBreakdown.income || capitalDetails.manualBreakdown.transfers)"
+                class="wf-item-sub"
+              >
+                расходы −{{ formatCurrencyShort(capitalDetails.manualBreakdown.expense) }}
+                <template v-if="capitalDetails.manualBreakdown.income">
+                  · прочие доходы +{{ formatCurrencyShort(capitalDetails.manualBreakdown.income) }}
+                </template>
+                <template v-if="capitalDetails.manualBreakdown.transfers">
+                  · переводы {{ capitalDetails.manualBreakdown.transfers > 0 ? '+' : '−' }}{{ formatCurrencyShort(Math.abs(capitalDetails.manualBreakdown.transfers)) }}
+                </template>
+              </div>
                           <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
             </button>
 
             <button
               class="wf-item wf-item--result"
               :class="{ 'wf-item--active': wfExpanded === 'available' }"
-              @click="wfExpanded = wfExpanded === 'available' ? null : 'available'"
+              @click="wfExpanded = 'available'"
             >
               <div class="wf-item-value wf-item-value--big" :style="{ color: box.color }">
                 {{ formatCurrency(capitalDetails.availableCapital) }}
@@ -1764,7 +1520,7 @@ async function handleDelete() {
                 'wf-item--active': wfExpanded === 'pendingCI',
                 'wf-item--reserve-danger': capitalDetails.availableCapital < capitalDetails.pendingCIPayout,
               }"
-              @click="wfExpanded = wfExpanded === 'pendingCI' ? null : 'pendingCI'"
+              @click="wfExpanded = 'pendingCI'"
             >
               <div class="wf-item-value" style="color: #f59e0b;">
                 {{ formatCurrency(capitalDetails.pendingCIPayout) }}
@@ -1783,24 +1539,60 @@ async function handleDelete() {
             </button>
           </div>
 
-          <!-- Right: details panel -->
+        <!-- Utilization bar -->
+        <div class="wf-utilization">
+          <div class="wf-utilization-header">
+            <span class="wf-utilization-label">Капитал в работе</span>
+            <span class="wf-utilization-percent">{{ capitalUtilization }}%</span>
+          </div>
+          <div class="wf-utilization-bar">
+            <div class="wf-utilization-fill" :style="{ width: capitalUtilization + '%', background: box.color }" />
+          </div>
+        </div>
+
+          <!-- Детали выбранной плитки — под рядом плиток, во всю ширину. -->
           <div class="wf-right">
-            <!-- Заголовок = подпись плитки: видно, какой раздел раскрыт. -->
-            <div v-if="wfSection" class="wf-right-head">
-              <div>
-                <div class="wf-right-title">{{ wfSection.label }}</div>
-                <div class="wf-right-hint">{{ wfSection.hint }}</div>
+            <!-- Hero выбранной плитки: название, главная сумма и из чего она
+                 сложилась — фирменным зелёным блоком, как на «Балансе». -->
+            <div v-if="wfHero" class="wf-hero">
+              <div class="wf-hero-top">
+                <span class="wf-hero-ico"><v-icon :icon="wfHero.icon" size="20" /></span>
+                <div class="wf-hero-titles">
+                  <div class="wf-hero-label">{{ wfHero.title }}</div>
+                  <div class="wf-hero-hint">{{ wfHero.hint }}</div>
+                </div>
+                <button
+                  v-if="wfExpanded === 'manual' && canOpenFlows"
+                  class="wf-hero-btn"
+                  @click="openExpenses"
+                >
+                  Смотреть все
+                  <v-icon icon="mdi-arrow-right" size="15" />
+                </button>
               </div>
-              <button
-                v-if="wfExpanded === 'manual'"
-                class="wf-panel-add"
-                @click="openCreateTransaction"
-              >
-                <v-icon icon="mdi-plus" size="14" />
-                Добавить
-              </button>
+              <div v-if="wfHero.amount" class="wf-hero-amount">{{ wfHero.amount }}</div>
+              <div v-if="wfHero.metrics.length" class="wf-hero-metrics">
+                <template v-for="(m, i) in wfHero.metrics" :key="m.label">
+                  <div v-if="i" class="wf-hero-divider" />
+                  <div class="wf-hero-metric">
+                    <div class="wf-hero-metric-value">{{ m.value }}</div>
+                    <div class="wf-hero-metric-label">{{ m.label }}</div>
+                  </div>
+                </template>
+              </div>
+              <div v-if="wfHero.note" class="wf-hero-note">
+                <v-icon icon="mdi-information-outline" size="14" />
+                <span>{{ wfHero.note }}</span>
+              </div>
             </div>
-            <template v-if="wfExpanded === 'available'">
+
+            <!-- Журнал — с общей шапкой панели; его фильтры и пагинация — свои. -->
+            <template v-if="wfExpanded === 'journal'">
+              <CashflowJournal class="wf-journal" :cash-box-id="id" @changed="refreshAfterMutation" />
+            </template>
+
+            <template v-else-if="wfExpanded === 'available'">
+              <div class="wf-expand-subtitle">Из чего сложились деньги кассы</div>
               <div v-if="availableRows.length" class="wf-flow">
                 <div
                   v-for="r in availableRows"
@@ -1820,41 +1612,11 @@ async function handleDelete() {
                   <div v-if="r.hint" class="wf-flow-hint">{{ r.hint }}</div>
                 </div>
 
-                <div class="wf-flow-row wf-flow-row--total">
-                  <div class="wf-flow-main">
-                    <span class="wf-flow-label">Доступный капитал</span>
-                    <span class="wf-flow-val" :style="{ color: box.color }">
-                      {{ formatCurrency(capitalDetails.availableCapital) }}
-                    </span>
-                  </div>
-                  <div class="wf-flow-hint">
-                    Реальные деньги кассы на сейчас. Обязательства перед инвесторами
-                    сюда не заложены — они показаны отдельной строкой «Резерв для инвесторов».
-                  </div>
-                </div>
               </div>
               <div v-else class="wf-expand-empty">Нет данных для разбора</div>
             </template>
 
             <template v-else-if="wfExpanded === 'capital'">
-              <div class="wf-expand-row">
-                <span>Собственный капитал кассы</span>
-                <span class="wf-expand-val">{{ formatCurrency(capitalDetails.investedCapital ?? capitalDetails.initialCapital) }}</span>
-              </div>
-              <div
-                v-if="(capitalDetails.investedCapital ?? capitalDetails.initialCapital) !== capitalDetails.initialCapital"
-                class="wf-expand-row wf-expand-row--sub"
-              >
-                <span>из них стартовый капитал</span>
-                <span class="wf-expand-val">{{ formatCurrency(capitalDetails.initialCapital) }}</span>
-              </div>
-              <!-- Phase 2: CI capital is part of the cashbox's total capital.
-                   Show it inline (sum) plus the per-CI breakdown below — same
-                   visual approach as the legacy finance.vue. -->
-              <div v-if="capitalDetails.coInvestorCapital > 0" class="wf-expand-row">
-                <span>Капитал инвесторов</span>
-                <span class="wf-expand-val">{{ formatCurrency(capitalDetails.coInvestorCapital) }}</span>
-              </div>
               <div v-if="cashBoxCoInvestors.length > 0" class="wf-ci-breakdown">
                 <div class="wf-ci-breakdown-head">
                   <span>Инвесторы кассы</span>
@@ -1863,9 +1625,9 @@ async function handleDelete() {
                     Управление
                   </router-link>
                 </div>
-                <div class="wf-ci-list">
+                <div class="wf-ci-list wf-scroll">
                   <router-link
-                    v-for="ci in cashBoxCoInvestors"
+                    v-for="ci in pageOf(cashBoxCoInvestors, ciPage)"
                     :key="ci.id"
                     :to="`/co-investors/${ci.id}`"
                     class="wf-ci-row"
@@ -1888,6 +1650,15 @@ async function handleDelete() {
                     <v-icon icon="mdi-arrow-right" size="14" class="wf-ci-arrow" />
                   </router-link>
                 </div>
+                <ServerPager
+                  compact
+                  v-if="cashBoxCoInvestors.length > WF_PAGE"
+                  :page="ciPage"
+                  :total="cashBoxCoInvestors.length"
+                  :per-page="WF_PAGE"
+                  :per-page-options="[WF_PAGE]"
+                  @update:page="ciPage = $event"
+                />
               </div>
             </template>
 
@@ -1895,6 +1666,7 @@ async function handleDelete() {
               <div v-if="profitDeals.loading && !profitDeals.items.length" class="d-flex justify-center pa-6">
                 <v-progress-circular indeterminate color="primary" size="28" />
               </div>
+              <div class="wf-scroll">
               <div
                 v-for="d in profitDeals.items"
                 :key="d.id"
@@ -1925,59 +1697,20 @@ async function handleDelete() {
                 </button>
 
                 <div v-if="expandedInProfit.has(d.id)" class="wf-acc-body">
-                  <!-- Прозрачный расклад: вся прибыль → доли инвесторов (и почему) → ваша -->
-                  <div v-if="(d.coInvestorBreakdown?.length ?? 0) > 0" class="ps-deal">
-                    <!-- Экономика сделки -->
-                    <div class="ps-econ">
-                      <div class="ps-econ-row">
-                        <span>Закупка</span>
-                        <span class="ps-econ-val">{{ formatCurrency(d.purchasePrice) }}</span>
-                      </div>
-                      <div class="ps-econ-row">
-                        <span>Цена с наценкой</span>
-                        <span class="ps-econ-val">{{ formatCurrency(d.totalPrice) }}</span>
-                      </div>
+                  <!-- Итог сделки одной строкой: у сделки бывают десятки инвесторов,
+                       и перечисление каждого раздувало раскрытие на экран. -->
+                  <div class="wf-deal-sum">
+                    <div class="wf-deal-sum-item">
+                      <span>Прибыль сделки</span>
+                      <b>{{ formatCurrency(dealProfitEarned(d)) }}</b>
                     </div>
-                    <div class="ps-deal-head">
-                      <span>Вся прибыль сделки</span>
-                      <span class="ps-deal-gross">{{ formatCurrency(dealProfitEarned(d)) }}</span>
+                    <div v-if="(d.coInvestorBreakdown?.length ?? 0) > 0" class="wf-deal-sum-item">
+                      <span>Инвесторам · {{ d.coInvestorBreakdown!.length }}</span>
+                      <b class="wf-deal-sum-ci">{{ formatCurrency(d.coInvestorProfit ?? 0) }}</b>
                     </div>
-                    <div class="ps-bar">
-                      <div class="ps-bar-you" :style="{ width: dealPartnerPct(d) + '%' }" />
-                    </div>
-                    <div class="ps-split-title">Как делится прибыль</div>
-                    <div v-for="ci in d.coInvestorBreakdown" :key="ci.id" class="ps-row">
-                      <span class="ps-dot ps-dot--ci" />
-                      <span class="ps-label">
-                        <span class="ps-name">{{ ci.name }}</span>
-                        <span class="ps-sub">{{ ci.modeLabel }}</span>
-                        <span v-if="isSoleCostFee(d)" class="ps-sub ps-sub--dim">
-                          {{ formatCurrencyShort(dealProfitEarned(d)) }} − {{ formatCurrencyShort(dealPartnerProfit(d)) }} (доля партнёра)
-                        </span>
-                        <span v-else-if="dealCiFormula(d, ci)" class="ps-sub ps-sub--dim">
-                          {{ dealCiFormula(d, ci) }}
-                        </span>
-                      </span>
-                      <span class="ps-val ps-val--ci">{{ formatCurrency(ci.amount) }}</span>
-                    </div>
-                    <div class="ps-row">
-                      <span class="ps-dot ps-dot--you" />
-                      <span class="ps-label">
-                        <span class="ps-name">Ваша прибыль</span>
-                        <span v-if="isSoleCostFee(d)" class="ps-sub">{{ d.costFeeRatePct }}% от закупки ({{ formatCurrencyShort(d.purchasePrice) }})</span>
-                        <span v-else class="ps-sub ps-sub--dim">
-                          остаток: {{ formatCurrencyShort(dealProfitEarned(d)) }} − {{ formatCurrencyShort(d.coInvestorProfit ?? 0) }} инвесторам
-                        </span>
-                      </span>
-                      <span class="ps-val ps-val--you">{{ formatCurrency(dealPartnerProfit(d)) }}</span>
-                    </div>
-                    <!-- Cost-fee: инвестор ещё и возвращает свою закупку -->
-                    <div v-if="isSoleCostFee(d)" class="ps-payout">
-                      <span class="ps-payout-label">
-                        <span class="ps-payout-name">Инвестору на руки</span>
-                        <span class="ps-payout-sub">возврат закупки {{ formatCurrencyShort(d.purchasePrice) }} + прибыль {{ formatCurrencyShort(d.coInvestorProfit ?? 0) }}</span>
-                      </span>
-                      <span class="ps-payout-val">{{ formatCurrency(d.purchasePrice + (d.coInvestorProfit ?? 0)) }}</span>
+                    <div class="wf-deal-sum-item wf-deal-sum-item--you">
+                      <span>Ваша прибыль</span>
+                      <b>{{ formatCurrency(dealPartnerProfit(d)) }}</b>
                     </div>
                   </div>
                   <div v-if="d.downPayment > 0" class="wf-pay-row">
@@ -2004,10 +1737,16 @@ async function handleDelete() {
                     <span v-if="p.status === 'PAID'" class="wf-pay-profit">+{{ formatCurrency(paymentProfit(d, p)) }}</span>
                     <span v-else class="wf-pay-profit-future">— ожидается {{ formatCurrencyShort(paymentProfit(d, p)) }}</span>
                   </div>
+                  <router-link :to="`/deals/${d.id}`" class="wf-deal-open">
+                    Открыть страницу сделки
+                    <v-icon icon="mdi-arrow-right" size="14" />
+                  </router-link>
                 </div>
+              </div>
               </div>
               <div v-if="!profitDeals.loading && !profitDeals.total" class="wf-expand-empty">Прибыли пока нет</div>
               <ServerPager
+                compact
                 v-if="profitDeals.total > DEALS_PAGE"
                 :page="profitDeals.page"
                 :total="profitDeals.total"
@@ -2019,28 +1758,11 @@ async function handleDelete() {
             </template>
 
             <template v-else-if="wfExpanded === 'deployed'">
-              <div class="wf-formula">
-                <div class="wf-formula-row">
-                  <span>Закупка по активным сделкам</span>
-                  <span class="wf-formula-val">{{ formatCurrency(activeDealsPurchaseTotal) }}</span>
-                </div>
-                <div class="wf-formula-row wf-formula-row--minus">
-                  <span>− Возврат закупки клиентами</span>
-                  <span class="wf-formula-val">{{ formatCurrency(activeDealsCostRecovered) }}</span>
-                </div>
-                <div class="wf-formula-row wf-formula-row--total">
-                  <span>В работе</span>
-                  <span class="wf-formula-val">{{ formatCurrency(capitalDetails.inProgress) }}</span>
-                </div>
-                <div class="wf-formula-hint">
-                  <v-icon icon="mdi-information-outline" size="13" />
-                  <span>Каждый платёж клиента делится на возврат закупки и прибыль в пропорции <b>наценка / итоговая цена</b>. Прибыль учитывается отдельно.</span>
-                </div>
-              </div>
               <div class="wf-expand-subtitle">По сделкам</div>
               <div v-if="activeDeals.loading && !activeDeals.items.length" class="d-flex justify-center pa-6">
                 <v-progress-circular indeterminate color="primary" size="28" />
               </div>
+              <div class="wf-scroll">
               <div v-for="d in activeDeals.items" :key="d.id" class="wf-acc">
                 <button class="wf-acc-head" @click="toggleProgressDeal(d.id)">
                   <v-icon
@@ -2090,10 +1812,16 @@ async function handleDelete() {
                       </tr>
                     </tbody>
                   </table>
+                  <router-link :to="`/deals/${d.id}`" class="wf-deal-open">
+                    Открыть страницу сделки
+                    <v-icon icon="mdi-arrow-right" size="14" />
+                  </router-link>
                 </div>
+              </div>
               </div>
               <div v-if="!activeDeals.loading && !activeDeals.total" class="wf-expand-empty">Нет активных сделок</div>
               <ServerPager
+                compact
                 v-if="activeDeals.total > DEALS_PAGE"
                 :page="activeDeals.page"
                 :total="activeDeals.total"
@@ -2105,51 +1833,31 @@ async function handleDelete() {
             </template>
 
             <template v-else-if="wfExpanded === 'manual'">
-              <div v-if="manualOperations.length === 0" class="wf-expand-empty">
-                Здесь будут ручные доходы и расходы по этой кассе
+              <div class="wf-expand-subtitle">Последние расходы</div>
+              <div v-if="!manualOperations.length" class="wf-expand-empty">Расходов пока нет</div>
+              <div v-for="(op, i) in manualOperations" :key="op.transactionId ?? i" class="wf-expand-row wf-exp-row">
+                <span class="wf-exp-main">
+                  <span class="wf-exp-title">{{ op.category?.name || op.description }}</span>
+                  <span class="wf-expand-dim">
+                    {{ formatDateShort(op.date) }}<template v-if="op.category?.name && op.description"> · {{ op.description }}</template>
+                  </span>
+                </span>
+                <span class="wf-expand-val" style="color: #ef4444;">−{{ formatCurrency(op.amount) }}</span>
               </div>
-              <div v-else class="wf-manual-list">
-                <div v-for="op in manualOperations" :key="op.transactionId" class="wf-manual-row">
-                  <div class="wf-manual-dot" :style="{
-                    background: op.category?.color || (op.type === 'INCOME' ? '#10b981' : '#ef4444')
-                  }" />
-                  <div class="wf-manual-info">
-                    <div class="wf-manual-title">{{ op.description }}</div>
-                    <div class="wf-manual-meta">
-                      <span v-if="op.category">{{ op.category.name }} · </span>
-                      <span>{{ formatDate(op.date) }}</span>
-                    </div>
-                  </div>
-                  <div class="wf-manual-amount" :style="{ color: op.type === 'INCOME' ? '#10b981' : '#ef4444' }">
-                    {{ op.type === 'INCOME' ? '+' : '-' }}{{ formatCurrency(op.amount) }}
-                  </div>
-                  <button class="wf-manual-icon-btn" @click="openEditTransaction(op)" title="Редактировать">
-                    <v-icon icon="mdi-pencil-outline" size="15" />
-                  </button>
-                  <button class="wf-manual-icon-btn wf-manual-icon-btn--danger" @click="confirmDeleteTransaction(op.transactionId!)" title="Удалить">
-                    <v-icon icon="mdi-delete-outline" size="15" />
-                  </button>
-                </div>
-              </div>
+              <button
+                v-if="canOpenFlows && (capitalDetails.manualBreakdown?.expenseCount ?? 0) > manualOperations.length"
+                class="wf-moved-btn"
+                @click="openExpenses"
+              >
+                Смотреть все {{ capitalDetails.manualBreakdown?.expenseCount }} в Бухгалтерии
+                <v-icon icon="mdi-arrow-right" size="14" />
+              </button>
             </template>
 
             <template v-else-if="wfExpanded === 'pendingCI'">
-              <div class="wf-formula">
-                <div class="wf-formula-row wf-formula-row--total">
-                  <span>Итого к выплате</span>
-                  <span class="wf-formula-val">{{ formatCurrency(capitalDetails.pendingCIPayout) }}</span>
-                </div>
-                <div class="wf-formula-hint">
-                  <v-icon icon="mdi-information-outline" size="13" />
-                  <span>
-                    Это деньги, причитающиеся инвесторам, но ещё физически находящиеся в кассе.
-                    Из доступного капитала они НЕ вычитаются — уйдут только при фактической выплате дивидендов.
-                  </span>
-                </div>
-              </div>
               <div class="wf-expand-subtitle">По инвесторам</div>
-              <div class="wf-ci-list">
-                <div v-for="ci in pendingCiList" :key="ci.id" class="wf-acc">
+              <div class="wf-ci-list wf-scroll">
+                <div v-for="ci in pageOf(pendingCiList, reservePage)" :key="ci.id" class="wf-acc">
                   <button class="wf-acc-head" @click="toggleReserveCi(ci.id)">
                     <v-icon :icon="expandedReserveCi.has(ci.id) ? 'mdi-chevron-down' : 'mdi-chevron-right'" size="16" class="wf-acc-chevron" />
                     <div class="wf-acc-title">
@@ -2218,6 +1926,15 @@ async function handleDelete() {
                   </div>
                 </div>
               </div>
+              <ServerPager
+                compact
+                v-if="pendingCiList.length > WF_PAGE"
+                :page="reservePage"
+                :total="pendingCiList.length"
+                :per-page="WF_PAGE"
+                :per-page-options="[WF_PAGE]"
+                @update:page="reservePage = $event"
+              />
             </template>
 
             <template v-else>
@@ -2229,358 +1946,10 @@ async function handleDelete() {
           </div>
         </div>
 
-        <!-- Utilization bar -->
-        <div class="wf-utilization">
-          <div class="wf-utilization-header">
-            <span class="wf-utilization-label">Капитал в работе</span>
-            <span class="wf-utilization-percent">{{ capitalUtilization }}%</span>
-          </div>
-          <div class="wf-utilization-bar">
-            <div class="wf-utilization-fill" :style="{ width: capitalUtilization + '%', background: box.color }" />
-          </div>
-        </div>
         </template>
       </div>
 
-      <!-- ============================ -->
-      <!-- Operations / Deals / Journal tabs -->
-      <!-- ============================ -->
-      <v-card v-if="capitalDetails" rounded="lg" elevation="0" border class="mb-6">
-        <div class="pa-4">
-          <div class="d-flex align-center ga-3 mb-4 flex-wrap">
-            <div class="fn-tabs">
-              <button class="fn-tab" :class="{ 'fn-tab--active': detailsTab === 'journal' }" @click="detailsTab = 'journal'">
-                Касса
-              </button>
-              <button class="fn-tab" :class="{ 'fn-tab--active': detailsTab === 'operations' }" @click="detailsTab = 'operations'">
-                Все операции
-              </button>
-              <button class="fn-tab" :class="{ 'fn-tab--active': detailsTab === 'deals' }" @click="detailsTab = 'deals'">
-                По сделкам
-              </button>
-            </div>
-          </div>
-
-          <!-- Journal: scoped via prop -->
-          <template v-if="detailsTab === 'journal'">
-            <CashflowJournal :cash-box-id="id" @changed="refreshAfterMutation" />
-          </template>
-
-          <!-- Operations list -->
-          <template v-else-if="detailsTab === 'operations'">
-            <!-- Filter toolbar — matches the Касса tab (CashflowJournal) -->
-            <div class="cfj-filters mb-3">
-              <!-- Type filter (multi) -->
-              <v-menu :close-on-content-click="false">
-                <template #activator="{ props: act }">
-                  <button v-bind="act" class="cfj-filter-btn" :class="{ 'cfj-filter-btn--active': opKinds.length }">
-                    <v-icon icon="mdi-filter-variant" size="14" />
-                    <span>{{ opKinds.length ? `${opKinds.length} типа` : 'Все типы' }}</span>
-                    <v-icon icon="mdi-chevron-down" size="14" class="cfj-filter-caret" />
-                  </button>
-                </template>
-                <v-card rounded="lg" elevation="4" class="cfj-menu">
-                  <div class="cfj-menu-head">Тип операции</div>
-                  <button
-                    v-for="k in opKindChips"
-                    :key="k.key"
-                    class="cfj-menu-item"
-                    :class="{ 'cfj-menu-item--active': opKinds.includes(k.key) }"
-                    @click="toggleOpKind(k.key)"
-                  >
-                    <span class="cfj-menu-item-dot" :style="{ background: k.color }" />
-                    <span class="cfj-menu-item-name">{{ k.label }}</span>
-                    <v-icon
-                      v-if="opKinds.includes(k.key)"
-                      icon="mdi-check"
-                      size="14"
-                      class="cfj-menu-item-check"
-                    />
-                  </button>
-                  <div class="cfj-menu-divider" />
-                  <button class="cfj-menu-clear" @click="opKinds = []">Сбросить</button>
-                </v-card>
-              </v-menu>
-
-              <!-- Period filter -->
-              <v-menu :close-on-content-click="false">
-                <template #activator="{ props: act }">
-                  <button v-bind="act" class="cfj-filter-btn" :class="{ 'cfj-filter-btn--active': opPeriod !== 'all' }">
-                    <v-icon icon="mdi-calendar-outline" size="14" />
-                    <span>{{ opPeriodLabel }}</span>
-                    <v-icon icon="mdi-chevron-down" size="14" class="cfj-filter-caret" />
-                  </button>
-                </template>
-                <v-card rounded="lg" elevation="4" class="cfj-menu">
-                  <div class="cfj-menu-head">Период</div>
-                  <button
-                    v-for="p in OP_PERIODS"
-                    :key="p.key"
-                    class="cfj-menu-item"
-                    :class="{ 'cfj-menu-item--active': opPeriod === p.key }"
-                    @click="opPeriod = p.key"
-                  >
-                    <v-icon icon="mdi-calendar-blank-outline" size="14" />
-                    <span class="cfj-menu-item-name">{{ p.label }}</span>
-                    <v-icon v-if="opPeriod === p.key" icon="mdi-check" size="14" class="cfj-menu-item-check" />
-                  </button>
-                </v-card>
-              </v-menu>
-
-              <!-- Search -->
-              <div class="cfj-search-wrap">
-                <v-icon icon="mdi-magnify" size="14" class="cfj-search-icon" />
-                <input
-                  v-model="opSearch"
-                  type="text"
-                  placeholder="Поиск..."
-                  class="cfj-search"
-                />
-              </div>
-
-              <button class="cfj-filter-btn" @click="showCategoriesManager = true" title="Управление категориями" style="margin-left: auto;">
-                <v-icon icon="mdi-tag-multiple-outline" size="14" />
-                Категории
-              </button>
-              <button class="cfj-add-btn" @click="openCreateTransaction">
-                <v-icon icon="mdi-plus" size="14" />
-                Добавить
-              </button>
-            </div>
-
-            <div v-if="filteredOperations.length === 0" class="fn-empty">
-              <div class="fn-empty-icon"><v-icon icon="mdi-wallet-outline" size="48" color="grey" /></div>
-              <div class="fn-empty-title">
-                {{ hasAnyOperations ? 'Ничего не найдено' : 'Нет операций' }}
-              </div>
-              <div class="fn-empty-subtitle">
-                {{ hasAnyOperations
-                  ? 'Попробуйте изменить фильтры'
-                  : 'Создайте сделку для этой кассы или добавьте операцию вручную' }}
-              </div>
-            </div>
-            <div v-else class="fn-transactions-list">
-              <div
-                v-for="(op, i) in filteredOperations"
-                :key="op.transactionId || `auto-${i}`"
-                class="fn-transaction-row"
-              >
-                <div class="fn-transaction-dot" :style="{
-                  background: op.isManual
-                    ? (op.category?.color || (op.type === 'INCOME' ? '#10b981' : '#ef4444'))
-                    : op.type === 'INCOME' ? '#10b981' : op.type === 'PAYOUT' ? '#f59e0b' : '#ef4444'
-                }" />
-                <div class="fn-transaction-info">
-                  <div class="fn-transaction-title">
-                    {{ op.description }}
-                    <span v-if="op.isManual" class="fn-op-badge fn-op-badge--manual">Вручную</span>
-                  </div>
-                  <div class="fn-transaction-meta">
-                    <span v-if="op.isManual && op.category">{{ op.category.name }} · </span>
-                    <span>{{ formatDate(op.date) }}</span>
-                  </div>
-                </div>
-                <div class="fn-transaction-amount" :class="{
-                  'fn-transaction-amount--income': op.type === 'INCOME',
-                  'fn-transaction-amount--expense': op.type !== 'INCOME',
-                }">
-                  {{ op.type === 'INCOME' ? '+' : '-' }}{{ formatCurrency(op.amount) }}
-                </div>
-
-                <!-- Actions: edit/delete for manual, open for deal-linked -->
-                <template v-if="op.isManual && op.transactionId">
-                  <button class="fn-icon-btn" @click="openEditTransaction(op)" title="Редактировать">
-                    <v-icon icon="mdi-pencil-outline" size="16" />
-                  </button>
-                  <button class="fn-icon-btn fn-icon-btn--danger" @click="confirmDeleteTransaction(op.transactionId)" title="Удалить">
-                    <v-icon icon="mdi-delete-outline" size="16" />
-                  </button>
-                </template>
-                <router-link v-else-if="op.dealId" :to="`/deals/${op.dealId}`" class="fn-op-link">
-                  <v-icon icon="mdi-open-in-new" size="14" />
-                </router-link>
-              </div>
-            </div>
-            <ServerPager
-              v-if="operationsTotal > 0"
-              :page="operationsPage"
-              :total="operationsTotal"
-              :per-page="OPS_PAGE"
-              :busy="operationsLoading"
-              :per-page-options="[OPS_PAGE]"
-              @update:page="operationsPage = $event"
-            />
-          </template>
-
-          <!-- Deals breakdown -->
-          <template v-if="detailsTab === 'deals'">
-            <div v-if="allDeals.loading && !allDeals.items.length" class="d-flex justify-center pa-8">
-              <v-progress-circular indeterminate color="primary" size="32" />
-            </div>
-            <div v-else-if="!allDeals.total" class="fn-empty">
-              <div class="fn-empty-icon"><v-icon icon="mdi-handshake-outline" size="48" color="grey" /></div>
-              <div class="fn-empty-title">В этой кассе пока нет сделок</div>
-            </div>
-            <div v-else class="cap-deals-list">
-              <div v-for="deal in allDeals.items" :key="deal.id" class="cap-deal-row">
-                <div class="cap-deal-info">
-                  <div class="cap-deal-name">
-                    <router-link :to="`/deals/${deal.id}`" class="cap-deal-link">{{ deal.productName }}</router-link>
-                  </div>
-                  <div class="cap-deal-meta">
-                    <span v-if="deal.client">{{ deal.client }}</span>
-                    <span>{{ deal.progress }}% оплачено</span>
-                  </div>
-                </div>
-                <div class="cap-deal-numbers">
-                  <div class="cap-deal-num">
-                    <div class="cap-deal-num-label">Закупка</div>
-                    <div class="cap-deal-num-value" style="color: #ef4444;">{{ formatCurrency(dealRealCost(deal)) }}</div>
-                  </div>
-                  <div class="cap-deal-num">
-                    <div class="cap-deal-num-label">Получено</div>
-                    <div class="cap-deal-num-value" style="color: #10b981;">{{ formatCurrency(deal.received) }}</div>
-                  </div>
-                  <div class="cap-deal-num">
-                    <div class="cap-deal-num-label">Прибыль</div>
-                    <div class="cap-deal-num-value">{{ formatCurrency(dealTotalMargin(deal)) }}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <ServerPager
-              v-if="allDeals.total > DEALS_PAGE"
-              :page="allDeals.page"
-              :total="allDeals.total"
-              :per-page="DEALS_PAGE"
-              :busy="allDeals.loading"
-              :per-page-options="[DEALS_PAGE]"
-              @update:page="allDeals.page = $event"
-            />
-          </template>
-        </div>
-      </v-card>
     </template>
-
-    <!-- ── Капитал кассы: пополнить / снять ── -->
-    <v-dialog v-model="capDialog" max-width="500" persistent :fullscreen="isMobile">
-      <v-card rounded="lg" elevation="0">
-        <div class="fn-dialog-header">
-          <div class="fn-dialog-title">Капитал кассы</div>
-          <button class="fn-dialog-close" @click="capDialog = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-        </div>
-
-        <div class="pa-5">
-          <!-- Наглядная сводка: вложенный / доход к снятию / доступно -->
-          <div class="cap-summary mb-4">
-            <div class="cap-summary-item">
-              <div class="cap-summary-label">Вложенный капитал</div>
-              <div class="cap-summary-value" style="color: #3b82f6;">{{ formatCurrency(investedCapital) }}</div>
-            </div>
-            <div class="cap-summary-item">
-              <div class="cap-summary-label">Доход к снятию</div>
-              <div class="cap-summary-value" style="color: #10b981;">{{ formatCurrency(withdrawableProfit) }}</div>
-            </div>
-            <div class="cap-summary-item">
-              <div class="cap-summary-label">Доступно всего</div>
-              <div class="cap-summary-value" :style="{ color: box?.color }">{{ formatCurrency(availableCap) }}</div>
-            </div>
-          </div>
-
-          <!-- Пополнить / Снять -->
-          <div class="fn-type-toggle mb-4">
-            <button
-              class="fn-type-btn"
-              :class="{ 'fn-type-btn--active fn-type-btn--income': capMode === 'topup' }"
-              @click="capMode = 'topup'"
-            >
-              <v-icon icon="mdi-arrow-down" size="16" class="mr-1" />
-              Пополнить
-            </button>
-            <button
-              class="fn-type-btn"
-              :class="{ 'fn-type-btn--active fn-type-btn--expense': capMode === 'withdraw' }"
-              @click="capMode = 'withdraw'"
-            >
-              <v-icon icon="mdi-arrow-up" size="16" class="mr-1" />
-              Снять
-            </button>
-          </div>
-
-          <!-- Сумма -->
-          <div class="mb-3">
-            <label class="fn-field-label">Сумма *</label>
-            <div class="fn-field-input-wrap">
-              <input
-                :value="capAmount || ''"
-                v-maska="CURRENCY_MASK"
-                @maska="(e: any) => capAmount = parseMasked(e)"
-                type="text"
-                inputmode="numeric"
-                placeholder="0"
-                class="fn-field-input"
-              />
-              <span class="fn-field-suffix">₽</span>
-            </div>
-            <button
-              v-if="capMode === 'withdraw' && availableCap > 0"
-              class="cap-max-btn"
-              @click="capAmount = availableCap"
-            >Снять всё ({{ formatCurrency(availableCap) }})</button>
-          </div>
-
-          <!-- Комментарий -->
-          <div class="mb-4">
-            <label class="fn-field-label">Комментарий</label>
-            <input v-model="capNote" type="text" placeholder="Например: довнесение оборотных" class="fn-field-input" />
-          </div>
-
-          <!-- Живой расклад -->
-          <div v-if="capAmount > 0" class="cap-calc" :class="capTouchesCapital ? 'cap-calc--warn' : 'cap-calc--ok'">
-            <template v-if="capMode === 'topup'">
-              <v-icon icon="mdi-arrow-down-circle-outline" size="16" />
-              <div>Вложенный капитал вырастет до <strong>{{ formatCurrency(capProjectedInvested) }}</strong>.</div>
-            </template>
-            <template v-else-if="!capTouchesCapital">
-              <v-icon icon="mdi-check-circle-outline" size="16" />
-              <div>Снимается из дохода — вложенный капитал не тронут (останется <strong>{{ formatCurrency(investedCapital) }}</strong>).</div>
-            </template>
-            <template v-else>
-              <v-icon icon="mdi-alert-circle-outline" size="16" />
-              <div>
-                Из дохода: <strong>{{ formatCurrency(capProfitPart) }}</strong>,
-                из вложенного капитала: <strong>{{ formatCurrency(capCapitalPart) }}</strong>.
-                Капитал уменьшится до <strong>{{ formatCurrency(capProjectedInvested) }}</strong>.
-              </div>
-            </template>
-          </div>
-
-          <!-- Не блокируем (сервер разрешает cash-basis), только предупреждаем:
-               после снятия в кассе останется меньше обязательства перед инвесторами. -->
-          <div v-if="capBelowCIReserve" class="cap-calc cap-calc--warn mt-3">
-            <v-icon icon="mdi-account-cash-outline" size="16" />
-            <div>
-              После снятия в кассе останется меньше, чем причитается инвесторам
-              (<strong>{{ formatCurrency(pendingCIPayout) }}</strong>). Сначала выплатите дивиденды.
-            </div>
-          </div>
-        </div>
-
-        <div class="fn-dialog-actions">
-          <button class="fn-btn fn-btn--ghost" @click="capDialog = false" :disabled="capSaving">Отмена</button>
-          <button
-            class="fn-btn fn-btn--primary"
-            :disabled="capSaving || capAmount <= 0 || (capMode === 'withdraw' && capAmount > capWithdrawLimit)"
-            @click="submitCapital"
-          >
-            <v-progress-circular v-if="capSaving" indeterminate size="16" width="2" class="mr-2" color="white" />
-            {{ capMode === 'topup' ? 'Пополнить' : 'Снять' }}
-          </button>
-        </div>
-      </v-card>
-    </v-dialog>
 
     <!-- Edit dialog -->
     <!-- Раскладываем по счетам именно этой кассы: чужие счета её деньги
@@ -2594,335 +1963,16 @@ async function handleDelete() {
 
     <CashBoxEditDialog v-model="showEdit" :cashbox="box" @saved="(b) => { box = b; loadDetails() }" />
 
-    <!-- ── Create/Edit Transaction Dialog (matches old finance.vue) ── -->
-    <v-dialog v-model="showTxDialog" max-width="520" persistent :fullscreen="isMobile">
-      <v-card rounded="lg" elevation="0">
-        <div class="fn-dialog-header">
-          <div class="fn-dialog-title">
-            {{ txEditingId ? 'Редактировать операцию' : 'Новая операция' }}
-          </div>
-          <button class="fn-dialog-close" @click="showTxDialog = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-        </div>
-
-        <div class="pa-5">
-          <!-- Type toggle -->
-          <div class="fn-type-toggle mb-5">
-            <button
-              class="fn-type-btn"
-              :class="{ 'fn-type-btn--active fn-type-btn--income': txForm.type === 'INCOME' }"
-              @click="txForm.type = 'INCOME'; txForm.categoryId = ''"
-            >
-              <v-icon icon="mdi-arrow-down" size="16" class="mr-1" />
-              Доход
-            </button>
-            <button
-              class="fn-type-btn"
-              :class="{ 'fn-type-btn--active fn-type-btn--expense': txForm.type === 'EXPENSE' }"
-              @click="txForm.type = 'EXPENSE'; txForm.categoryId = ''"
-            >
-              <v-icon icon="mdi-arrow-up" size="16" class="mr-1" />
-              Расход
-            </button>
-          </div>
-
-          <!-- Amount -->
-          <div class="mb-4">
-            <label class="fn-field-label">Сумма *</label>
-            <div class="fn-field-input-wrap">
-              <input
-                :value="txForm.amount || ''"
-                @input="(e: any) => txForm.amount = parseInt(String(e.target.value).replace(/\D/g, ''), 10) || 0"
-                type="text"
-                inputmode="numeric"
-                placeholder="0"
-                class="fn-field-input"
-              />
-              <span class="fn-field-suffix">₽</span>
-            </div>
-          </div>
-
-          <!-- Description -->
-          <div class="mb-4">
-            <label class="fn-field-label">Описание</label>
-            <input
-              v-model="txForm.description"
-              type="text"
-              placeholder="Краткое описание операции"
-              class="fn-field-input"
-            />
-          </div>
-
-          <!-- Category -->
-          <div class="mb-4">
-            <label class="fn-field-label">Категория</label>
-            <div class="d-flex ga-2 align-center">
-              <v-menu :close-on-content-click="true">
-                <template #activator="{ props: act }">
-                  <button v-bind="act" type="button" class="fn-field-select-btn">
-                    <template v-if="txSelectedCategory">
-                      <span class="fn-field-select-dot" :style="{ background: txSelectedCategory.color || (txForm.type === 'INCOME' ? INCOME_COLOR : EXPENSE_COLOR) }" />
-                      <span class="fn-field-select-value">{{ txSelectedCategory.name }}</span>
-                    </template>
-                    <span v-else class="fn-field-select-value fn-field-select-value--placeholder">
-                      Без категории
-                    </span>
-                    <v-icon icon="mdi-chevron-down" size="16" class="fn-field-select-chevron" />
-                  </button>
-                </template>
-                <v-card rounded="lg" elevation="4" class="cfj-menu fn-select-menu">
-                  <button
-                    class="cfj-menu-item"
-                    :class="{ 'cfj-menu-item--active': !txForm.categoryId }"
-                    @click="txForm.categoryId = ''"
-                  >
-                    <span class="cfj-menu-item-dot" style="background: rgba(var(--v-theme-on-surface), 0.15);" />
-                    <span class="cfj-menu-item-name">Без категории</span>
-                    <v-icon v-if="!txForm.categoryId" icon="mdi-check" size="14" class="cfj-menu-item-check" />
-                  </button>
-                  <div v-if="filteredCategories.length" class="cfj-menu-divider" />
-                  <button
-                    v-for="cat in filteredCategories"
-                    :key="cat.id"
-                    class="cfj-menu-item"
-                    :class="{ 'cfj-menu-item--active': txForm.categoryId === cat.id }"
-                    @click="txForm.categoryId = cat.id"
-                  >
-                    <span class="cfj-menu-item-dot" :style="{ background: cat.color || (txForm.type === 'INCOME' ? INCOME_COLOR : EXPENSE_COLOR) }" />
-                    <span class="cfj-menu-item-name">{{ cat.name }}</span>
-                    <v-icon v-if="txForm.categoryId === cat.id" icon="mdi-check" size="14" class="cfj-menu-item-check" />
-                  </button>
-                  <div v-if="!filteredCategories.length" class="cfj-menu-empty">
-                    Нет категорий — создайте новую
-                  </div>
-                </v-card>
-              </v-menu>
-              <button class="fn-icon-btn fn-icon-btn--add" @click="openCreateCategory" title="Новая категория">
-                <v-icon icon="mdi-plus" size="18" />
-              </button>
-            </div>
-          </div>
-
-          <!-- Date -->
-          <div class="mb-2">
-            <label class="fn-field-label">Дата</label>
-            <!-- Дата операции ограничена так же, как дата оплаты: сотрудник
-                 не может провести расход прошлым месяцем. -->
-            <DateField v-model="txForm.date" :min="opDate.minDate.value" :max="opDate.maxDate.value" plain />
-          </div>
-        </div>
-
-        <div class="fn-dialog-actions">
-          <button class="fn-btn fn-btn--ghost" @click="showTxDialog = false">Отмена</button>
-          <button
-            class="fn-btn fn-btn--primary"
-            :disabled="txSaving"
-            @click="saveTransaction"
-          >
-            <v-progress-circular v-if="txSaving" indeterminate size="16" width="2" class="mr-2" color="white" />
-            {{ txEditingId ? 'Сохранить' : 'Добавить' }}
-          </button>
-        </div>
-      </v-card>
-    </v-dialog>
-
-    <!-- ── Create / Edit Category Dialog ── -->
-    <v-dialog v-model="showCategoryDialog" max-width="420" persistent :fullscreen="isMobile">
-      <v-card rounded="lg" elevation="0">
-        <div class="fn-dialog-header">
-          <div class="fn-dialog-title">
-            {{ categoryEditingId ? 'Редактировать категорию' : 'Новая категория' }}
-          </div>
-          <button class="fn-dialog-close" @click="showCategoryDialog = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-        </div>
-
-        <div class="pa-5">
-          <!-- Type toggle: disabled in edit mode (would invalidate linked transactions) -->
-          <div class="fn-type-toggle mb-4" :class="{ 'fn-type-toggle--locked': categoryEditingId }">
-            <button
-              class="fn-type-btn"
-              :class="{ 'fn-type-btn--active fn-type-btn--income': categoryForm.type === 'INCOME' }"
-              :disabled="!!categoryEditingId"
-              @click="categoryForm.type = 'INCOME'"
-            >
-              Доход
-            </button>
-            <button
-              class="fn-type-btn"
-              :class="{ 'fn-type-btn--active fn-type-btn--expense': categoryForm.type === 'EXPENSE' }"
-              :disabled="!!categoryEditingId"
-              @click="categoryForm.type = 'EXPENSE'"
-            >
-              Расход
-            </button>
-          </div>
-
-          <div class="mb-4">
-            <label class="fn-field-label">Название *</label>
-            <input
-              v-model="categoryForm.name"
-              type="text"
-              placeholder="Например: Аренда"
-              class="fn-field-input"
-            />
-          </div>
-
-          <div class="mb-2">
-            <label class="fn-field-label">Цвет</label>
-            <div class="fn-color-picker">
-              <button
-                v-for="color in CATEGORY_COLORS"
-                :key="color"
-                class="fn-color-dot"
-                :class="{ 'fn-color-dot--active': categoryForm.color === color }"
-                :style="{ background: color }"
-                @click="categoryForm.color = color"
-              ></button>
-            </div>
-          </div>
-        </div>
-
-        <div class="fn-dialog-actions">
-          <button class="fn-btn fn-btn--ghost" @click="showCategoryDialog = false">Отмена</button>
-          <button
-            class="fn-btn fn-btn--primary"
-            :disabled="categoryLoading"
-            @click="saveCategory"
-          >
-            <v-progress-circular v-if="categoryLoading" indeterminate size="16" width="2" class="mr-2" color="white" />
-            {{ categoryEditingId ? 'Сохранить' : 'Создать' }}
-          </button>
-        </div>
-      </v-card>
-    </v-dialog>
-
-    <!-- ── Categories Manager Dialog ── -->
-    <v-dialog v-model="showCategoriesManager" max-width="520" :fullscreen="isMobile">
-      <v-card rounded="lg" elevation="0">
-        <div class="fn-dialog-header">
-          <div class="fn-dialog-title">Категории</div>
-          <button class="fn-dialog-close" @click="showCategoriesManager = false">
-            <v-icon icon="mdi-close" size="18" />
-          </button>
-        </div>
-
-        <div class="pa-5">
-          <div class="mb-5">
-            <div class="fn-cat-section-header">
-              <div class="fn-cat-section-title" style="color: #10b981;">
-                <v-icon icon="mdi-arrow-down" size="16" class="mr-1" />
-                Доходы
-              </div>
-              <button class="fn-cat-add-btn" @click="openCreateCategoryFromManager('INCOME')">
-                <v-icon icon="mdi-plus" size="14" />
-                Добавить
-              </button>
-            </div>
-            <div class="fn-cat-list">
-              <div
-                v-for="cat in categories.filter((c) => c.type === 'INCOME')"
-                :key="cat.id"
-                class="fn-cat-row"
-              >
-                <div class="fn-cat-dot" :style="{ background: cat.color || INCOME_COLOR }"></div>
-                <div class="fn-cat-name">{{ cat.name }}</div>
-                <div class="fn-cat-count">{{ cat._count.transactions }} оп.</div>
-                <button class="fn-icon-btn" @click="openEditCategory(cat)" title="Редактировать">
-                  <v-icon icon="mdi-pencil-outline" size="15" />
-                </button>
-                <button class="fn-icon-btn fn-icon-btn--danger" @click="confirmDeleteCategory(cat.id)" title="Удалить">
-                  <v-icon icon="mdi-delete-outline" size="15" />
-                </button>
-              </div>
-              <div v-if="!categories.filter((c) => c.type === 'INCOME').length" class="fn-cat-empty">
-                Нет категорий доходов
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div class="fn-cat-section-header">
-              <div class="fn-cat-section-title" style="color: #ef4444;">
-                <v-icon icon="mdi-arrow-up" size="16" class="mr-1" />
-                Расходы
-              </div>
-              <button class="fn-cat-add-btn" @click="openCreateCategoryFromManager('EXPENSE')">
-                <v-icon icon="mdi-plus" size="14" />
-                Добавить
-              </button>
-            </div>
-            <div class="fn-cat-list">
-              <div
-                v-for="cat in categories.filter((c) => c.type === 'EXPENSE')"
-                :key="cat.id"
-                class="fn-cat-row"
-              >
-                <div class="fn-cat-dot" :style="{ background: cat.color || EXPENSE_COLOR }"></div>
-                <div class="fn-cat-name">{{ cat.name }}</div>
-                <div class="fn-cat-count">{{ cat._count.transactions }} оп.</div>
-                <button class="fn-icon-btn" @click="openEditCategory(cat)" title="Редактировать">
-                  <v-icon icon="mdi-pencil-outline" size="15" />
-                </button>
-                <button class="fn-icon-btn fn-icon-btn--danger" @click="confirmDeleteCategory(cat.id)" title="Удалить">
-                  <v-icon icon="mdi-delete-outline" size="15" />
-                </button>
-              </div>
-              <div v-if="!categories.filter((c) => c.type === 'EXPENSE').length" class="fn-cat-empty">
-                Нет категорий расходов
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="fn-dialog-actions">
-          <button class="fn-btn fn-btn--ghost" @click="showCategoriesManager = false">Закрыть</button>
-        </div>
-      </v-card>
-    </v-dialog>
-
-    <!-- ── Delete Transaction Dialog ── -->
-    <v-dialog v-model="txDeleteDialog" max-width="400" persistent>
-      <v-card rounded="lg" elevation="0" class="pa-5 text-center">
-        <div class="fn-delete-icon mb-4">
-          <v-icon icon="mdi-delete-outline" size="32" color="error" />
-        </div>
-        <div class="fn-delete-title mb-2">Удалить операцию?</div>
-        <div class="fn-delete-subtitle mb-5">Это действие нельзя отменить</div>
-        <div class="d-flex justify-center ga-3">
-          <button class="fn-btn fn-btn--ghost" @click="txDeleteDialog = false">Отмена</button>
-          <button class="fn-btn fn-btn--danger" :disabled="txDeleteLoading" @click="deleteTransaction">
-            <v-progress-circular v-if="txDeleteLoading" indeterminate size="16" width="2" class="mr-2" color="white" />
-            Удалить
-          </button>
-        </div>
-      </v-card>
-    </v-dialog>
-
-    <!-- ── Delete Category Dialog ── -->
-    <v-dialog v-model="deleteCategoryDialog" max-width="400" persistent>
-      <v-card rounded="lg" elevation="0" class="pa-5 text-center">
-        <div class="fn-delete-icon mb-4">
-          <v-icon icon="mdi-tag-off-outline" size="32" color="error" />
-        </div>
-        <div class="fn-delete-title mb-2">Удалить категорию?</div>
-        <div class="fn-delete-subtitle mb-5">Операции останутся, но без категории</div>
-        <div class="d-flex justify-center ga-3">
-          <button class="fn-btn fn-btn--ghost" @click="deleteCategoryDialog = false">Отмена</button>
-          <button class="fn-btn fn-btn--danger" :disabled="deleteCategoryLoading" @click="deleteCategory">
-            <v-progress-circular v-if="deleteCategoryLoading" indeterminate size="16" width="2" class="mr-2" color="white" />
-            Удалить
-          </button>
-        </div>
-      </v-card>
-    </v-dialog>
   </div>
 </template>
 
 <style scoped>
 .cb-page { max-width: 1440px; margin: 0 auto; padding: 24px; }
+/* Пагинация журнала прилипает к низу экрана, как в «Сделках» и «Платежах»:
+   у v-card overflow: hidden, а внутри такого контейнера sticky не работает. */
+.cb-journal-card { overflow: visible; }
+.cb-header-deals { display: inline-flex; align-items: center; gap: 4px; text-decoration: none; }
+.cb-header-deals:hover { color: #047857; text-decoration: underline; }
 
 
 /* Read-only (locked) banner */
@@ -3042,7 +2092,20 @@ async function handleDelete() {
 }
 .wf-title-row {
   display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
   margin-bottom: 16px;
+}
+.cb-journal-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 40px; padding: 0 16px; border-radius: 10px; cursor: pointer;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgb(var(--v-theme-surface));
+  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.75);
+  transition: all 0.15s;
+}
+.cb-journal-btn:hover { border-color: rgba(4, 120, 87, 0.4); color: #047857; }
+.cb-journal-btn--on, .cb-journal-btn--on:hover {
+  background: rgba(4, 120, 87, 0.08); border-color: #047857; color: #047857;
 }
 .wf-title {
   font-size: 14px; font-weight: 700;
@@ -3051,15 +2114,45 @@ async function handleDelete() {
 }
 
 .wf-split {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 20px;
-}
-@media (max-width: 960px) {
-  .wf-split { grid-template-columns: 1fr; }
+  display: flex; flex-direction: column;
+  gap: 16px;
 }
 
-.wf-left { display: flex; flex-direction: column; gap: 8px; }
+/* Ряд плиток: сколько влезает в ширину, остальные переносятся. На телефоне —
+   одна строка с прокруткой вбок, чтобы выбранная деталь была сразу под ней. */
+.wf-left {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+@media (max-width: 700px) {
+  .wf-left {
+    display: flex; overflow-x: auto; scrollbar-width: none;
+    margin: 0 -24px; padding: 0 24px 2px;
+  }
+  .wf-left::-webkit-scrollbar { display: none; }
+  .wf-left .wf-item { flex: 0 0 168px; }
+}
+/* Шеврон «вправо» был подсказкой для вертикального списка с панелью справа. */
+.wf-left .wf-item-chevron { display: none; }
+/* Плитка читается сверху вниз: заголовок — главное, сумма под ним. Кнопка
+   по умолчанию центрирует содержимое по вертикали — прижимаем к верху. */
+.wf-left .wf-item {
+  display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch;
+  padding: 14px 16px;
+}
+.wf-left .wf-item-label {
+  order: -1; margin: 0 0 8px;
+  font-size: 13.5px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85);
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+}
+.wf-left .wf-item-value { font-size: 19px; }
+.wf-left .wf-item-value--big { font-size: 22px; }
+/* Выбранная плитка — с полосой снизу: её содержимое открыто под рядом. */
+.wf-item--active { box-shadow: inset 0 -3px 0 #047857; }
+.wf-item--journal .wf-item-value--journal {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 15px; color: rgba(var(--v-theme-on-surface), 0.85);
+}
 .wf-item {
   display: block; width: 100%;
   /* Шеврон-подсказка стоит абсолютом справа — отсюда relative и запас справа. */
@@ -3092,13 +2185,98 @@ async function handleDelete() {
   margin-top: 2px; font-weight: 500;
 }
 
+/* Детали плитки — на белом фоне карточки. От ряда плиток отделены полосой
+   во всю ширину карточки (фон страницы) и hero-блоком: сверху — что выбрать,
+   снизу — что выбрано. */
 .wf-right {
-  border-radius: 12px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  padding: 16px;
-  min-height: 220px;
+  min-height: 120px;
+  margin: 8px -24px 0;
+  padding: 24px 24px 0;
+  border-top: 8px solid rgba(var(--v-theme-on-surface), 0.035);
 }
+
+/* Hero выбранной плитки — тот же приём, что шапка «Баланса»: фирменный
+   зелёный градиент, крупная сумма, показатели через разделители. */
+.wf-hero {
+  position: relative;
+  padding: 20px 24px 18px; border-radius: 16px; margin-bottom: 20px;
+  background: linear-gradient(135deg, #047857 0%, #065f46 50%, #064e3b 100%);
+  color: #fff;
+}
+.dark .wf-hero { background: linear-gradient(135deg, #047857 0%, #064e3b 50%, #022c22 100%); }
+.wf-hero-top { display: flex; align-items: center; gap: 12px; }
+.wf-hero-ico {
+  width: 40px; height: 40px; border-radius: 11px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.16); color: #fff;
+}
+.wf-hero-titles { flex: 1; min-width: 0; }
+.wf-hero-label { font-size: 18px; font-weight: 800; letter-spacing: -0.2px; }
+.wf-hero-hint { font-size: 12.5px; color: rgba(255, 255, 255, 0.65); margin-top: 2px; }
+.wf-hero-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 15px; border-radius: 11px; cursor: pointer;
+  background: #fff; border: none; color: #047857; font-size: 13px; font-weight: 700;
+}
+.wf-hero-btn:hover { background: #ecfdf5; }
+.wf-hero-amount {
+  font-size: 32px; font-weight: 800; letter-spacing: -0.6px; margin-top: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.wf-hero-metrics {
+  display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+.wf-hero-divider { width: 1px; height: 30px; background: rgba(255, 255, 255, 0.16); }
+.wf-hero-metric-value { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wf-hero-metric-label { font-size: 11.5px; color: rgba(255, 255, 255, 0.6); margin-top: 2px; }
+.wf-hero-note {
+  display: flex; align-items: flex-start; gap: 7px; margin-top: 14px;
+  padding: 9px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+  background: rgba(0, 0, 0, 0.14); color: rgba(255, 255, 255, 0.82);
+}
+.wf-hero-note .v-icon { margin-top: 1px; flex: none; }
+@media (max-width: 700px) {
+  .wf-hero { padding: 16px; }
+  .wf-hero-top { flex-wrap: wrap; }
+  .wf-hero-btn { width: 100%; justify-content: center; order: 3; }
+  .wf-hero-amount { font-size: 26px; }
+  .wf-hero-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .wf-hero-divider { display: none; }
+}
+
+/* Итог раскрытой сделки и переход на неё. */
+.wf-deal-sum {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px;
+  margin-bottom: 10px;
+}
+.wf-deal-sum-item {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.wf-deal-sum-item b { font-size: 15px; color: rgba(var(--v-theme-on-surface), 0.9); font-variant-numeric: tabular-nums; }
+.wf-deal-sum-ci { color: #f59e0b !important; }
+.wf-deal-sum-item--you { background: rgba(16, 185, 129, 0.1); }
+.wf-deal-sum-item--you b { color: #047857; }
+.wf-deal-open {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 12px;
+  padding: 8px 14px; border-radius: 9px; text-decoration: none;
+  border: 1px solid rgba(4, 120, 87, 0.35); color: #047857; font-size: 12.5px; font-weight: 700;
+}
+.wf-deal-open:hover { background: rgba(4, 120, 87, 0.08); }
+/* У журнала своя маленькая шапка не нужна — её заменяет шапка панели. */
+.wf-journal :deep(.cfj-title) { display: none; }
+/* Пагинация журнала — во всю ширину карточки и вплотную к её низу: у неё
+   отрицательные поля под padding, а у панели своего padding больше нет. */
+.wf-right :deep(.sp-pager:not(.sp-pager--compact)) {
+  margin: 0 -24px -20px;
+  border-radius: 0 0 16px 16px;
+}
+.wf-exp-row { align-items: center; gap: 12px; }
+.wf-exp-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.wf-exp-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .wf-item-chevron {
   position: absolute;
   right: 8px;
@@ -3110,25 +2288,6 @@ async function handleDelete() {
 .wf-item:hover .wf-item-chevron { opacity: 0.6; }
 .wf-item--active .wf-item-chevron { opacity: 1; color: #047857; }
 
-.wf-right-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 10px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-}
-.wf-right-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.wf-right-hint {
-  font-size: 11px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-  margin-top: 2px;
-}
 
 .wf-panel-title {
   font-size: 13px; font-weight: 700;
@@ -3183,6 +2342,20 @@ async function handleDelete() {
 }
 .wf-item--result { cursor: pointer; }
 
+/* Ручные операции переехали в «Бухгалтерию → Пополнения и расходы» */
+.wf-moved {
+  display: flex; gap: 12px; padding: 14px; border-radius: 12px;
+  background: rgba(var(--v-theme-on-surface), 0.035);
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.wf-moved-title { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
+.wf-moved-text { font-size: 12.5px; line-height: 1.5; margin-top: 4px; }
+.wf-moved-btn {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 10px;
+  padding: 8px 12px; border-radius: 9px; border: none; cursor: pointer;
+  background: #047857; color: #fff; font-size: 12.5px; font-weight: 600;
+}
+
 .wf-expand-empty {
   padding: 24px; text-align: center;
   font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.4);
@@ -3218,9 +2391,23 @@ async function handleDelete() {
 }
 
 .wf-acc {
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+  margin-bottom: 6px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  background: rgb(var(--v-theme-surface));
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
-.wf-acc:last-child { border-bottom: none; }
+.wf-acc:last-child { margin-bottom: 0; }
+/* Наведение — понятно, что строка раскрывается. */
+.wf-acc:hover { border-color: rgba(4, 120, 87, 0.35); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05); }
+.wf-acc:hover .wf-acc-chevron { color: #047857; }
+/* Раскрытая — с зелёной рамкой и подложкой шапки. */
+.wf-acc:has(> .wf-acc-body) { border-color: rgba(4, 120, 87, 0.45); box-shadow: 0 4px 16px rgba(4, 120, 87, 0.08); }
+.wf-acc:has(> .wf-acc-body) > .wf-acc-head {
+  background: rgba(4, 120, 87, 0.05);
+  border-bottom: 1px solid rgba(4, 120, 87, 0.12);
+  border-radius: 11px 11px 0 0;
+}
+.wf-acc:has(> .wf-acc-body) .wf-acc-chevron { color: #047857; }
 
 /* Прозрачный расклад прибыли сделки: вся → полоска → инвесторам (и почему) → ваша */
 .ps-deal {
@@ -3303,7 +2490,7 @@ async function handleDelete() {
 .wf-rf-total .wf-rf-val { color: #f59e0b; font-weight: 800; }
 .wf-acc-head {
   display: flex; align-items: center; gap: 8px;
-  width: 100%; padding: 10px 0;
+  width: 100%; padding: 12px 14px;
   background: transparent; border: none; cursor: pointer;
   font-size: 13px;
 }
@@ -3327,7 +2514,7 @@ async function handleDelete() {
   text-transform: uppercase; letter-spacing: 0.3px;
 }
 .wf-acc-body {
-  padding: 8px 0 14px 24px;
+  padding: 12px 14px 14px 38px;
 }
 
 .wf-pay-row {
@@ -3383,7 +2570,7 @@ async function handleDelete() {
 }
 .wf-table-total td { font-weight: 800; border-bottom: none; padding-top: 12px; }
 
-.wf-utilization { margin-top: 18px; }
+.wf-utilization { margin-top: 0; }
 .wf-utilization-header {
   display: flex; justify-content: space-between; align-items: center;
   font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
@@ -3591,18 +2778,6 @@ async function handleDelete() {
 }
 
 /* Operations list */
-.fn-empty {
-  text-align: center; padding: 48px 20px;
-}
-.fn-empty-icon { margin-bottom: 12px; }
-.fn-empty-title {
-  font-size: 15px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
-.fn-empty-subtitle {
-  font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5);
-  margin-top: 4px;
-}
 
 .fn-transactions-list {
   display: flex; flex-direction: column;
@@ -3622,12 +2797,6 @@ async function handleDelete() {
   font-size: 13px; font-weight: 600;
   color: rgb(var(--v-theme-on-surface));
 }
-.fn-op-badge {
-  display: inline-block; font-size: 9px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.4px;
-  padding: 1px 6px; border-radius: 4px; margin-left: 6px;
-}
-.fn-op-badge--manual { background: rgba(59,130,246,0.12); color: #3b82f6; }
 .fn-transaction-meta {
   font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.55);
   margin-top: 2px;
@@ -3638,17 +2807,6 @@ async function handleDelete() {
 }
 .fn-transaction-amount--income { color: #10b981; }
 .fn-transaction-amount--expense { color: #ef4444; }
-.fn-op-link {
-  width: 30px; height: 30px; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  text-decoration: none;
-  transition: all 0.15s;
-}
-.fn-op-link:hover {
-  background: rgba(var(--v-theme-on-surface), 0.06);
-  color: rgb(var(--v-theme-on-surface));
-}
 .fn-load-more { text-align: center; margin-top: 12px; }
 .fn-load-more-btn {
   background: transparent; border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
@@ -3659,38 +2817,6 @@ async function handleDelete() {
 .fn-load-more-btn:hover { border-color: #047857; color: #047857; }
 
 /* Deals tab */
-.cap-deals-list { display: flex; flex-direction: column; }
-.cap-deal-row {
-  display: flex; align-items: center; gap: 16px;
-  padding: 14px 0;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-}
-.cap-deal-row:last-child { border-bottom: none; }
-.cap-deal-info { flex: 1; min-width: 0; }
-.cap-deal-name { font-size: 14px; font-weight: 700; }
-.cap-deal-link {
-  color: rgb(var(--v-theme-on-surface));
-  text-decoration: none;
-}
-.cap-deal-link:hover { color: #047857; }
-.cap-deal-meta {
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55);
-  margin-top: 2px;
-  display: flex; gap: 8px;
-}
-.cap-deal-meta span:not(:last-child)::after {
-  content: '·'; margin-left: 8px;
-  color: rgba(var(--v-theme-on-surface), 0.3);
-}
-.cap-deal-numbers {
-  display: flex; gap: 24px; flex-shrink: 0;
-}
-.cap-deal-num { text-align: right; }
-.cap-deal-num-label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px;
-  color: rgba(var(--v-theme-on-surface), 0.5); font-weight: 600;
-}
-.cap-deal-num-value { font-size: 13px; font-weight: 700; margin-top: 2px; }
 
 
 /* ─── Waterfall "Ручные операции" panel ──────────────────────────── */
@@ -3761,91 +2887,10 @@ async function handleDelete() {
 
 /* ─── Operations tab toolbar (filters) ───────────────────────────── */
 /* Mirrors the Касса tab (CashflowJournal.vue) for visual consistency. */
-.cfj-filters {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-}
-.cfj-filter-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
-  background: rgb(var(--v-theme-surface));
-  font-size: 12px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-  cursor: pointer; transition: all 0.15s;
-  font-family: inherit;
-}
-.cfj-filter-btn:hover {
-  border-color: rgba(var(--v-theme-primary), 0.30);
-  color: rgb(var(--v-theme-primary));
-}
-.cfj-filter-btn--active {
-  border-color: rgba(4, 120, 87, 0.30);
-  color: #047857;
-}
-.cfj-filter-caret { opacity: 0.4; }
 
-.cfj-search-wrap { position: relative; display: inline-flex; align-items: center; }
-.cfj-search-icon { position: absolute; left: 9px; color: rgba(var(--v-theme-on-surface), 0.35); pointer-events: none; }
-.cfj-search {
-  width: 180px;
-  height: 30px;
-  padding: 0 12px 0 28px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.10);
-  background: rgb(var(--v-theme-surface));
-  font-size: 12px;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  outline: none; font-family: inherit;
-}
-.cfj-search:focus { border-color: rgb(var(--v-theme-primary)); }
 
-.cfj-menu { min-width: 220px; padding: 4px; }
-.cfj-menu-head {
-  font-size: 11px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  text-transform: uppercase; letter-spacing: 0.04em;
-  padding: 8px 10px 4px;
-}
-.cfj-menu-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 10px;
-  border: none; background: transparent;
-  border-radius: 6px;
-  font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.85);
-  cursor: pointer; text-align: left;
-  font-family: inherit;
-  width: 100%;
-  transition: background 0.1s;
-}
-.cfj-menu-item:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
-.cfj-menu-item--active { background: rgba(4, 120, 87, 0.06); color: #047857; font-weight: 600; }
-.cfj-menu-item-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-.cfj-menu-item-name { flex: 1; min-width: 0; }
-.cfj-menu-item-check { color: currentColor; }
-.cfj-menu-divider { height: 1px; background: rgba(var(--v-theme-on-surface), 0.06); margin: 4px 0; }
-.cfj-menu-clear {
-  width: 100%; padding: 8px 10px; border: none; background: transparent;
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55);
-  cursor: pointer; font-family: inherit; border-radius: 6px;
-  text-align: center;
-}
-.cfj-menu-clear:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
 
 /* "Add" button uses the same compact pill style as filter-btn, but filled */
-.cfj-add-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  border: 1px solid #047857;
-  background: #047857;
-  color: #fff;
-  font-size: 12px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s;
-  font-family: inherit;
-}
-.cfj-add-btn:hover { background: #065f46; border-color: #065f46; }
 
 /* ─── Dialogs (mirrors old finance.vue look) ─────────────────────── */
 .fn-dialog-header {
@@ -3980,16 +3025,6 @@ async function handleDelete() {
   min-width: 0;
   width: 100%;
 }
-.cfj-menu-item-icon {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px;
-  flex-shrink: 0;
-}
-.cfj-menu-empty {
-  padding: 12px 14px;
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
-  text-align: center;
-}
 
 .fn-static-value {
   padding: 10px 14px; border-radius: 10px;
@@ -4109,33 +3144,6 @@ async function handleDelete() {
 }
 .fn-delete-subtitle {
   font-size: 14px; color: rgba(var(--v-theme-on-surface), 0.5);
-}
-
-/* ── Icon buttons (inline edit/delete in operations list, also +Category) ── */
-.fn-icon-btn {
-  display: flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; min-width: 32px;
-  border-radius: 8px; border: none;
-  background: transparent; cursor: pointer;
-  color: rgba(var(--v-theme-on-surface), 0.35);
-  transition: all 0.15s;
-  flex-shrink: 0;
-}
-.fn-icon-btn:hover {
-  background: rgba(var(--v-theme-on-surface), 0.06);
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
-.fn-icon-btn--danger:hover {
-  background: rgba(239, 68, 68, 0.08);
-  color: #ef4444;
-}
-.fn-icon-btn--add {
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-.fn-icon-btn--add:hover {
-  border-color: #047857; color: #047857;
-  background: rgba(4, 120, 87, 0.06);
 }
 
 /* ── Phase 2: waterfall CI section ── */
