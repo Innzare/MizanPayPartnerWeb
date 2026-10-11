@@ -246,8 +246,18 @@ const accountGroups = computed(() =>
   }).filter((g) => g.items.length > 0),
 )
 
-/** Все деньги кассы: то, что лежит на счетах, плюс то, что ещё не разложено. */
-const boxMoney = computed(() => onAccounts.value + Math.max(unallocated.value, 0))
+/**
+ * Все деньги кассы: то, что лежит на счетах, плюс то, что ещё не разложено.
+ *
+ * Касса в минусе (расходов больше, чем пришло) — показываем тот же минус, что
+ * на плитке «Деньги в кассе». Раньше здесь стоял ноль: «не разнесено» в
+ * минусе отбрасывалось, и две цифры одной кассы спорили (20 касс на проде).
+ */
+const boxMoney = computed(() => {
+  const cash = capitalDetails.value?.availableCapital
+  if (cash != null && cash < 0 && onAccounts.value <= 0) return Math.round(cash)
+  return onAccounts.value + Math.max(unallocated.value, 0)
+})
 
 /** Доля счёта в деньгах кассы — полосой, чтобы не считать проценты в уме. */
 function shareOfBox(amount: number | null): number {
@@ -490,7 +500,7 @@ const WF_SECTIONS: Record<string, { label: string; hint: string; icon: string; c
   profit: { label: 'Чистая прибыль', hint: 'Прибыль по сделкам кассы', icon: 'mdi-trending-up', color: '#10b981' },
   deployed: { label: 'В работе', hint: 'Капитал в активных сделках', icon: 'mdi-progress-clock', color: '#f59e0b' },
   manual: { label: 'Расходы по бизнесу', hint: 'Аренда, зарплата, реклама — вносятся в Бухгалтерии', icon: 'mdi-cart-arrow-down', color: '#ef4444' },
-  available: { label: 'Доступный капитал', hint: 'Из чего сложились деньги в кассе', icon: 'mdi-safe-square-outline', color: '#047857' },
+  available: { label: 'Деньги в кассе', hint: 'Из чего сложились деньги в кассе', icon: 'mdi-safe-square-outline', color: '#047857' },
   pendingCI: { label: 'Резерв для инвесторов', hint: 'Начислено инвесторам, но ещё не выплачено', icon: 'mdi-account-cash-outline', color: '#f59e0b' },
   journal: { label: 'Журнал кассы', hint: 'Все движения денег кассы', icon: 'mdi-book-open-page-variant-outline', color: '#475569' },
 }
@@ -554,7 +564,7 @@ const wfHero = computed(() => {
   } else if (key === 'pendingCI') {
     hero.amount = money(d.pendingCIPayout)
     hero.metrics.push({ label: 'Инвесторов к выплате', value: pendingCiList.value.length.toLocaleString('ru-RU') })
-    hero.note = 'Деньги, причитающиеся инвесторам, но ещё физически в кассе. Из доступного капитала не вычитаются — уйдут при выплате дивидендов.'
+    hero.note = 'Деньги, причитающиеся инвесторам, но ещё физически в кассе. Из денег кассы не вычитаются — уйдут при выплате дивидендов.'
   }
   return hero
 })
@@ -1502,7 +1512,7 @@ async function handleDelete() {
                 {{ formatCurrency(capitalDetails.availableCapital) }}
               </div>
               <div class="wf-item-label">
-                Доступный капитал
+                Деньги в кассе
                 <v-icon icon="mdi-information-outline" size="11" class="ml-1" />
               </div>
                           <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />

@@ -648,8 +648,10 @@ export const useAccountingStore = defineStore('accounting', () => {
    */
   const available = ref<AvailableMoney | null>(null)
 
-  async function fetchAvailable() {
-    available.value = await api.get<AvailableMoney>('/finance/available')
+  /** «Доступно сейчас»: по всем кассам или по одной — та же цифра, что на её карточке. */
+  async function fetchAvailable(cashBoxId?: string | null) {
+    const box = cashBoxId ? `?cashBoxId=${encodeURIComponent(cashBoxId)}` : ''
+    available.value = await api.get<AvailableMoney>(`/finance/available${box}`)
     return available.value
   }
 

@@ -36,6 +36,7 @@ declare module 'vue' {
     CoInvestorCashier: typeof import('./components/CoInvestorCashier.vue')['default']
     CoInvestorCreateDialog: typeof import('./components/CoInvestorCreateDialog.vue')['default']
     CoInvestorEditDialog: typeof import('./components/CoInvestorEditDialog.vue')['default']
+    CoInvestorMonthTable: typeof import('./components/CoInvestorMonthTable.vue')['default']
     CoInvestorRemoveDialog: typeof import('./components/CoInvestorRemoveDialog.vue')['default']
     CollectionRunsSection: typeof import('./components/accounting/CollectionRunsSection.vue')['default']
     ComboBox: typeof import('./components/ComboBox.vue')['default']

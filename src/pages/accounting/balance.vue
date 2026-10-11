@@ -119,7 +119,7 @@ async function load() {
     await store.fetchPending()
     // Доступные деньги — своим запросом: он собирает цифры из касс,
     // обязательств и счетов, и ради него не стоит задерживать список счетов.
-    if (canSeeAvailable.value) void store.fetchAvailable().catch(() => {})
+    if (canSeeAvailable.value) void store.fetchAvailable(cashBoxFilter.value || null).catch(() => {})
     void loadProfit()
     if (!cashboxes.items.length) await cashboxes.fetchAll().catch(() => {})
   } catch (e: any) {
@@ -494,7 +494,11 @@ async function refreshUnallocated() {
   }
 }
 
-watch(cashBoxFilter, () => { void refreshUnallocated() })
+watch(cashBoxFilter, () => {
+  void refreshUnallocated()
+  // «Доступно сейчас» — по выбранной кассе, как прибыль под ним.
+  if (canSeeAvailable.value) void store.fetchAvailable(cashBoxFilter.value || null).catch(() => {})
+})
 
 const unallocatedAmount = computed(() =>
   Math.round(

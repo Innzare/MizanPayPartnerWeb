@@ -197,7 +197,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
           <div class="cb-total-count">{{ store.items.length }} {{ store.items.length === 1 ? 'касса' : 'касс' }}</div>
         </div>
         <div class="cb-total-amount">{{ formatCurrency(capital?.availableCapital ?? total.balance) }}</div>
-        <div class="cb-total-sub">Доступный капитал по всем кассам</div>
+        <div class="cb-total-sub">Деньги во всех кассах</div>
 
         <div class="cb-total-metrics">
           <div class="cb-metric">

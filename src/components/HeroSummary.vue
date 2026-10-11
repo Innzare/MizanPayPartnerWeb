@@ -58,7 +58,7 @@ const progressWidth = computed(() => totalRevenue.value > 0 ? (received.value / 
       <v-icon icon="mdi-wallet-outline" size="18" />
       <div class="hs-capital-info">
         <div class="hs-capital-value">{{ formatCurrencyShort(displayCapital || 0) }}</div>
-        <div class="hs-capital-label">Доступный капитал</div>
+        <div class="hs-capital-label">Деньги в кассах</div>
       </div>
       <v-icon icon="mdi-arrow-right" size="16" class="hs-capital-arrow" />
     </router-link>

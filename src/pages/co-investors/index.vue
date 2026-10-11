@@ -14,6 +14,7 @@ import CoInvestorRemoveDialog from '@/components/CoInvestorRemoveDialog.vue'
 import PhoneField from '@/components/PhoneField.vue'
 import DateField from '@/components/DateField.vue'
 import CoInvestorEditDialog from '@/components/CoInvestorEditDialog.vue'
+import CoInvestorMonthTable from '@/components/CoInvestorMonthTable.vue'
 import type { InvestorPerson, PersonStake } from '@/types'
 
 // Способ деления прибыли инвестора В ЭТОЙ кассе — для бейджиков колонки «Кассы».
@@ -76,6 +77,19 @@ const persons = ref<InvestorPerson[]>([])
 const search = ref('')
 // Phase 2: filter chips by cashbox. null = "Все кассы" — same UX as analytics.
 const selectedCashBoxId = ref<string | null>(null)
+
+// Вид страницы: помесячная таблица кассы (как у партнёров в Excel) или
+// прежний список людей по всем кассам. Выбор запоминаем.
+type PageView = 'month' | 'list'
+function readView(): PageView {
+  try { return localStorage.getItem('ci:view') === 'list' ? 'list' : 'month' } catch { return 'month' }
+}
+const view = ref<PageView>(readView())
+watch(view, (v) => { try { localStorage.setItem('ci:view', v) } catch { /* приватный режим */ } })
+const monthTable = ref<InstanceType<typeof CoInvestorMonthTable> | null>(null)
+async function onMonthChanged() {
+  await Promise.all([refreshList(), fetchCapital()])
+}
 
 // Create dialog (new person OR new stake for an existing person)
 const showDialog = ref(false)
@@ -415,6 +429,7 @@ async function saveCoInvestor() {
       toast.success('Инвестор создан')
       showDialog.value = false
       await refreshList()
+      monthTable.value?.reload()
     }
   } catch (e: any) {
     toast.error(e.message || 'Ошибка сохранения')
@@ -484,6 +499,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
     toast.success(opts.mode === 'full' ? 'Инвестор удалён' : 'Инвестор исключён')
     rowDeleteDialog.value = false
     await refreshList()
+    monthTable.value?.reload()
   } catch (e: any) {
     toast.error(e.message || 'Не удалось удалить инвестора')
   } finally {
@@ -549,6 +565,34 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
         </div>
       </div>
 
+      <div class="ci-view-tabs mb-4">
+        <button type="button" class="ci-view-tab" :class="{ 'ci-view-tab--on': view === 'month' }" @click="view = 'month'">
+          <v-icon icon="mdi-table" size="16" />
+          По месяцам
+        </button>
+        <button type="button" class="ci-view-tab" :class="{ 'ci-view-tab--on': view === 'list' }" @click="view = 'list'">
+          <v-icon icon="mdi-account-group-outline" size="16" />
+          Все инвесторы
+        </button>
+        <v-spacer />
+        <button type="button" class="cb-scope-info" @click="showHelpDialog = true">
+          <v-icon icon="mdi-help-circle-outline" size="16" />
+          <span>Как работают кассы и инвесторы</span>
+        </button>
+      </div>
+
+      <CoInvestorMonthTable
+        v-if="view === 'month'"
+        ref="monthTable"
+        :persons="persons"
+        :is-mobile="isMobile"
+        @create="openCreate"
+        @edit="openEditPerson"
+        @remove="openDeletePerson"
+        @changed="onMonthChanged"
+      />
+
+      <template v-else>
       <!-- Cashbox scope chips — same pattern as analytics. Tap to filter the
            list by a single cashbox. Always visible (even with one cashbox) so
            the scope is explicit and consistent across the app. -->
@@ -581,14 +625,6 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             {{ b.name }}
           </button>
         </div>
-        <button
-          type="button"
-          class="cb-scope-info"
-          @click="showHelpDialog = true"
-        >
-          <v-icon icon="mdi-help-circle-outline" size="16" />
-          <span>Как работают кассы и инвесторы</span>
-        </button>
       </div>
 
       <!-- Main Card — MOBILE: person cards (tap → the person's profile card). -->
@@ -1034,6 +1070,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
           </v-card>
         </v-col>
       </v-row>
+      </template>
     </template>
 
     <!-- Create Dialog (new person OR new stake for an existing person). -->
@@ -1562,6 +1599,18 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
 }
 
 /* ── Add button ── */
+.ci-view-tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ci-view-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid transparent;
+  background: none; cursor: pointer; font-size: 13.5px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.ci-view-tab:hover { background: rgba(var(--v-theme-on-surface), 0.04); }
+.ci-view-tab--on {
+  background: rgb(var(--v-theme-surface)); color: #047857;
+  border-color: rgba(var(--v-theme-on-surface), 0.12);
+}
 .ci-add-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 9px 18px; border-radius: 10px; border: none;

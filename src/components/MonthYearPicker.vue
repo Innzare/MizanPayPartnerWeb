@@ -22,6 +22,8 @@ const props = defineProps<{
   modelValue: PeriodRange
   /** Сколько операций в каждом месяце: { 'YYYY-MM': n }. Необязательно. */
   counts?: Record<string, number>
+  /** Только один месяц: без диапазона, года и «за всё время». */
+  monthOnly?: boolean
 }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: PeriodRange): void }>()
 
@@ -92,6 +94,11 @@ function rangeOf(a: number, b: number): PeriodRange {
 
 function pickMonth(y: number, m: number) {
   const i = idx(y, m)
+  if (props.monthOnly) {
+    emit('update:modelValue', rangeOf(i, i))
+    open.value = false
+    return
+  }
   if (anchor.value == null) {
     // Первый клик: месяц выбран сразу, окно ждёт возможный конец диапазона.
     anchor.value = i
@@ -206,12 +213,12 @@ const isFuture = (y: number, m: number) => y > now.getFullYear() || (y === now.g
         </div>
 
         <!-- Подсказка о диапазоне: без неё второй клик никто не угадает. -->
-        <div class="myp-hint">
+        <div v-if="!monthOnly" class="myp-hint">
           <template v-if="anchor != null">Выберите месяц окончания — или закройте, чтобы оставить один месяц</template>
           <template v-else>Нажмите месяц, затем второй — получится период «от и до»</template>
         </div>
 
-        <div class="myp-footer">
+        <div v-if="!monthOnly" class="myp-footer">
           <button
             type="button"
             class="myp-quick"
