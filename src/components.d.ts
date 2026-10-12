@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AccountResetDialog: typeof import('./components/AccountResetDialog.vue')['default']
     AddressPicker: typeof import('./components/AddressPicker.vue')['default']
     CashBoxEditDialog: typeof import('./components/CashBoxEditDialog.vue')['default']
     CashBoxLimitBlock: typeof import('./components/CashBoxLimitBlock.vue')['default']

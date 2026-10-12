@@ -10,6 +10,7 @@ import { useSubscription } from '@/composables/useSubscription'
 import { useSections, HIDEABLE_SECTIONS } from '@/composables/useSections'
 import { api } from '@/api/client'
 import QRCode from 'qrcode'
+import AccountResetDialog from '@/components/AccountResetDialog.vue'
 
 const { isDark } = useIsDark()
 const toast = useToast()
@@ -288,6 +289,13 @@ async function exportExcel() {
   } finally {
     exporting.value = false
   }
+}
+
+// Очистка кабинета — окном с подтверждением словом и паролем.
+const resetDialog = ref(false)
+/** После очистки — перезагрузка: открытые разделы держат старые данные в памяти. */
+function reloadAfterReset() {
+  window.location.reload()
 }
 
 // Delete account
@@ -1072,6 +1080,25 @@ const plans = [
           </v-card>
         </v-col>
       </v-row>
+
+      <!-- Очистка кабинета: шаг мягче удаления аккаунта — сам аккаунт,
+           тариф и доступ остаются, стирается только работа. Только владельцу. -->
+      <div v-if="authStore.isOwner" class="delete-account-bar delete-account-bar--reset">
+        <div class="d-flex align-center ga-3">
+          <div class="delete-account-icon delete-account-icon--reset">
+            <v-icon icon="mdi-broom" size="18" />
+          </div>
+          <div>
+            <div class="delete-account-title">Очистить личный кабинет</div>
+            <div class="delete-account-desc">
+              Удалит сделки, платежи, клиентов и всю историю. Аккаунт и подписка останутся
+            </div>
+          </div>
+        </div>
+        <button class="delete-account-btn delete-account-btn--reset" @click="resetDialog = true">
+          Очистить
+        </button>
+      </div>
 
       <!-- Delete account -->
       <div class="delete-account-bar">
@@ -1956,6 +1983,9 @@ const plans = [
         </div>
       </v-dialog>
     </div>
+    <!-- Окно — на уровне страницы, а не внутри вкладки: иначе оно не
+         отрисовывается, и кнопка молча ничего не делает. -->
+    <AccountResetDialog v-model="resetDialog" @done="reloadAfterReset" />
   </div>
 </template>
 
@@ -2389,6 +2419,18 @@ const plans = [
 .dark .export-locked-feature { background: rgba(4, 120, 87, 0.08); }
 .dark .export-card { background: rgb(var(--v-theme-surface)); border-color: rgb(var(--v-theme-border)); }
 .dark .export-sheet { background: rgba(var(--v-theme-on-surface), 0.04); border-color: rgb(var(--v-theme-border)); }
+
+/* Очистка кабинета: тот же ряд, что и удаление аккаунта, но спокойнее по цвету. */
+.delete-account-bar--reset { border-color: rgba(var(--v-theme-on-surface), 0.12); }
+.delete-account-icon--reset {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.delete-account-btn--reset {
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.16);
+}
 
 /* Delete account */
 .delete-account-bar {
