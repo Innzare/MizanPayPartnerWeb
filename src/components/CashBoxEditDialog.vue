@@ -6,6 +6,8 @@ import type { CashBoxSummary } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
+import { useAuthStore } from '@/stores/auth'
+import { api } from '@/api/client'
 
 const sections = useSections()
 const props = defineProps<{
@@ -17,6 +19,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void
   (e: 'saved', box: CashBoxSummary): void
+  /** Владелец попросил очистить кассу — подтверждение открывает страница. */
+  (e: 'reset'): void
+  /** Попросили удалить кассу — подтверждение открывает страница. */
+  (e: 'delete'): void
 }>()
 
 const store = useCashBoxesStore()
@@ -25,6 +31,31 @@ const { isDark } = useIsDark()
 const { isMobile } = useIsMobile()
 
 const isEdit = computed(() => !!props.cashbox)
+const auth = useAuthStore()
+
+// Очистка кассы — в глубине окна изменения, а не на виду: показываем только
+// владельцу и только если в кассе есть что стирать.
+const hasContent = ref(false)
+async function loadContent() {
+  hasContent.value = false
+  if (!props.cashbox || !auth.isOwner) return
+  try {
+    const p = await api.get<Record<string, number>>(`/cashboxes/${props.cashbox.id}/reset/preview`)
+    hasContent.value = (p.deals ?? 0) + (p.journal ?? 0) + (p.transactions ?? 0) > 0
+  } catch {
+    hasContent.value = false
+  }
+}
+function askReset() {
+  emit('update:modelValue', false)
+  emit('reset')
+}
+// Удаление — тоже здесь, а не на виду. Основную кассу удалить нельзя.
+const canDelete = computed(() => !!props.cashbox && !props.cashbox.isDefault && auth.can('cashboxes.delete'))
+function askDelete() {
+  emit('update:modelValue', false)
+  emit('delete')
+}
 
 const name = ref('')
 const color = ref('#3b82f6')
@@ -74,7 +105,9 @@ watch(
       icon.value = props.cashbox.icon
       initialCapital.value = props.cashbox.initialCapital
       partnerParticipates.value = props.cashbox.partnerParticipatesByCapital ?? true
+      loadContent()
     } else {
+      hasContent.value = false
       name.value = ''
       color.value = '#3b82f6'
       icon.value = 'mdi-wallet-outline'
@@ -121,7 +154,7 @@ async function handleSave() {
     persistent
     :fullscreen="isMobile"
   >
-    <v-card rounded="lg" :class="{ 'cb-dialog': true, dark: isDark }">
+    <v-card rounded="lg" :class="{ 'cb-dialog': true, dark: isDark, full: isMobile }">
       <div class="cb-header">
         <div class="cb-header-icon" :style="{ background: color + '22', color }">
           <v-icon :icon="icon" size="22" />
@@ -256,6 +289,23 @@ async function handleSave() {
             </button>
           </div>
         </div>
+
+        <div v-if="isEdit && (hasContent || canDelete)" class="cb-danger-zone">
+          <div v-if="hasContent" class="cb-danger">
+            <div class="cb-danger-text">
+              <div class="cb-danger-title">Очистить кассу</div>
+              <div class="cb-danger-sub">Удалит сделки, платежи и операции этой кассы. Сама касса останется</div>
+            </div>
+            <button type="button" class="cb-danger-btn" :disabled="submitting" @click="askReset">Очистить…</button>
+          </div>
+          <div v-if="canDelete" class="cb-danger">
+            <div class="cb-danger-text">
+              <div class="cb-danger-title">Удалить кассу</div>
+              <div class="cb-danger-sub">Только пустую: без сделок, инвесторов и остатка</div>
+            </div>
+            <button type="button" class="cb-danger-btn" :disabled="submitting" @click="askDelete">Удалить…</button>
+          </div>
+        </div>
       </div>
 
       <div class="cb-footer">
@@ -272,7 +322,16 @@ async function handleSave() {
 </template>
 
 <style scoped>
-.cb-dialog { background: #fff; }
+.cb-dialog {
+  background: #fff;
+  /* Шапка и кнопки на месте, прокручивается только содержимое. */
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+.cb-dialog.full { height: 100%; max-height: 100%; }
+.cb-dialog > .cb-header,
+.cb-dialog > .cb-footer { flex: none; }
 .cb-dialog.dark { background: rgb(var(--v-theme-surface-elevated)); }
 
 /* Header */
@@ -305,6 +364,7 @@ async function handleSave() {
 
 /* Body */
 .cb-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
   padding: 20px;
   display: flex; flex-direction: column; gap: 18px;
 }
@@ -391,6 +451,22 @@ async function handleSave() {
 .cb-dialog.dark .cb-icon-btn:hover { border-color: rgba(var(--v-theme-on-surface), 0.38); color: rgba(var(--v-theme-on-surface), 0.92); }
 
 /* Footer */
+.cb-danger-zone { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.cb-danger {
+  display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  padding: 12px 14px; border-radius: 12px;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+.cb-danger-title { font-size: 13.5px; font-weight: 600; color: #dc2626; }
+.cb-danger-sub { font-size: 12px; margin-top: 2px; color: #737373; }
+.cb-dialog.dark .cb-danger-sub { color: rgba(var(--v-theme-on-surface), 0.6); }
+.cb-danger-btn {
+  flex: none; height: 34px; padding: 0 14px; border-radius: 9px; cursor: pointer;
+  border: 1px solid rgba(239, 68, 68, 0.4); background: transparent;
+  color: #dc2626; font-size: 13px; font-weight: 600;
+}
+.cb-danger-btn:hover:not(:disabled) { background: rgba(239, 68, 68, 0.08); }
+.cb-danger-btn:disabled { opacity: 0.5; cursor: default; }
 .cb-footer {
   display: flex; gap: 10px; justify-content: flex-end;
   padding: 14px 20px;

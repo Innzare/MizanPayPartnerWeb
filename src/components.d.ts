@@ -13,8 +13,10 @@ declare module 'vue' {
   export interface GlobalComponents {
     AccountResetDialog: typeof import('./components/AccountResetDialog.vue')['default']
     AddressPicker: typeof import('./components/AddressPicker.vue')['default']
+    CashBoxDeleteDialog: typeof import('./components/CashBoxDeleteDialog.vue')['default']
     CashBoxEditDialog: typeof import('./components/CashBoxEditDialog.vue')['default']
     CashBoxLimitBlock: typeof import('./components/CashBoxLimitBlock.vue')['default']
+    CashBoxResetDialog: typeof import('./components/CashBoxResetDialog.vue')['default']
     CashflowJournal: typeof import('./components/CashflowJournal.vue')['default']
     ChatPanel: typeof import('./components/ChatPanel.vue')['default']
     ClientPicker: typeof import('./components/ClientPicker.vue')['default']

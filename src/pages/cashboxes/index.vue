@@ -7,6 +7,8 @@ import { useIsDark } from '@/composables/useIsDark'
 import { useCapital } from '@/composables/useCapital'
 import { formatCurrency } from '@/utils/formatters'
 import CashBoxEditDialog from '@/components/CashBoxEditDialog.vue'
+import CashBoxResetDialog from '@/components/CashBoxResetDialog.vue'
+import CashBoxDeleteDialog from '@/components/CashBoxDeleteDialog.vue'
 import CashBoxLimitBlock from '@/components/CashBoxLimitBlock.vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -30,6 +32,17 @@ const { capital, fetchCapital } = useCapital()
 
 const showCreate = ref(false)
 const editing = ref<CashBoxSummary | null>(null)
+// Очистка кассы из окна «Изменить» — подтверждение словом и паролем.
+const resetBox = ref<CashBoxSummary | null>(null)
+const showReset = ref(false)
+function askReset() {
+  resetBox.value = editing.value
+  showReset.value = !!resetBox.value
+}
+function afterReset() {
+  // Перезагрузка: суммы касс и списки держат старые данные.
+  window.location.reload()
+}
 
 // Any non-archived cashbox pushed into read-only because the active count
 // exceeds the plan limit (e.g. after a downgrade). Drives the top warning block.
@@ -78,23 +91,13 @@ function openDetail(id: string) {
   router.push(`/cashboxes/${id}`)
 }
 
-async function handleDelete(box: CashBoxSummary, e: Event) {
-  e.stopPropagation()
-  if (box.isDefault) {
-    toast.error('Нельзя удалить основную кассу')
-    return
-  }
-  if (box.dealsCount > 0) {
-    toast.error(`В кассе ${box.dealsCount} сделок. Перенесите их в другую кассу или удалите.`)
-    return
-  }
-  if (!confirm(`Удалить кассу «${box.name}»? Действие необратимо.`)) return
-  try {
-    await store.remove(box.id)
-    toast.success('Касса удалена')
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить')
-  }
+// Удаление — с подтверждением словом (окно CashBoxDeleteDialog).
+const deleteBox = ref<CashBoxSummary | null>(null)
+const showDelete = ref(false)
+function handleDelete(box: CashBoxSummary, e?: Event) {
+  e?.stopPropagation()
+  deleteBox.value = box
+  showDelete.value = true
 }
 
 function cashboxProgressPct(box: CashBoxSummary): number {
@@ -328,7 +331,15 @@ async function openInfo(box: CashBoxSummary, e: Event) {
     </template>
 
     <!-- Create/edit dialog -->
-    <CashBoxEditDialog v-model="showCreate" :cashbox="editing" />
+    <CashBoxEditDialog v-model="showCreate" :cashbox="editing" @reset="askReset" @delete="editing && handleDelete(editing)" />
+    <CashBoxResetDialog
+      v-if="resetBox"
+      v-model="showReset"
+      :cash-box-id="resetBox.id"
+      :name="resetBox.name"
+      @done="afterReset"
+    />
+    <CashBoxDeleteDialog v-if="deleteBox" v-model="showDelete" :cashbox="deleteBox" />
 
     <!-- "В работе" breakdown modal -->
     <v-dialog v-model="showInfo" max-width="560" scrollable>
