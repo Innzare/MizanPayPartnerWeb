@@ -219,9 +219,81 @@ let waTimeout: ReturnType<typeof setTimeout> | null = null
 
 const connected = computed(() => waStatus.value === 'connected')
 
+/*
+ * Подключение идёт в три шага, и первые два у Green бывают долгими — до
+ * минуты и больше. Одна крутилка с «Загрузка QR-кода…» выглядела как
+ * зависание, поэтому показываем, что именно сейчас происходит:
+ *   creating — для кабинета создаётся своё подключение к WhatsApp;
+ *   starting — подключение запускается, ждём от него QR-код;
+ *   qr       — QR-код готов, ждём сканирования.
+ * Слово «инстанс» клиенту ничего не говорит — в тексте только «подключение».
+ */
+type WaPhase = 'creating' | 'starting' | 'qr'
+const waPhase = ref<WaPhase>('creating')
+const WA_STEPS: Array<{ key: WaPhase; label: string }> = [
+  { key: 'creating', label: 'Создаём подключение' },
+  { key: 'starting', label: 'Запускаем WhatsApp' },
+  { key: 'qr', label: 'QR-код готов' },
+]
+const WA_PHASE_TEXT: Record<Exclude<WaPhase, 'qr'>, { title: string; desc: string }> = {
+  creating: {
+    title: 'Создаём подключение к WhatsApp',
+    desc: 'Готовим отдельное подключение для вашего кабинета — через него сообщения будут уходить с вашего номера.',
+  },
+  starting: {
+    title: 'Запускаем WhatsApp',
+    desc: 'Подключение создано. Запускаем его и готовим QR-код для вашего телефона.',
+  },
+}
+const waStepIndex = computed(() => WA_STEPS.findIndex((s) => s.key === waPhase.value))
+
+// Часы для полосы и таймера: тикают, только пока идёт подключение.
+const waNow = ref(Date.now())
+const waStartedAt = ref(0)
+const waPhaseAt = ref(0)
+let waClock: ReturnType<typeof setInterval> | null = null
+function startWaClock() {
+  stopWaClock()
+  waClock = setInterval(() => { waNow.value = Date.now() }, 250)
+}
+function stopWaClock() {
+  if (waClock) { clearInterval(waClock); waClock = null }
+}
+function setWaPhase(phase: WaPhase) {
+  waPhase.value = phase
+  waPhaseAt.value = Date.now()
+  waNow.value = Date.now()
+}
+const waElapsed = computed(() => Math.max(0, Math.floor((waNow.value - waStartedAt.value) / 1000)))
+const waElapsedText = computed(() => {
+  const s = waElapsed.value
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+})
+/**
+ * Полоса — оценка, а не точный счёт: сколько займёт шаг, Green не сообщает.
+ * Внутри шага она быстро идёт вначале и замедляется к его концу, но не
+ * упирается в него — следующий шаг сдвигает её дальше.
+ */
+const WA_PHASE_SPAN: Record<Exclude<WaPhase, 'qr'>, [number, number, number]> = {
+  creating: [4, 55, 14], // от, до, «постоянная времени» в секундах
+  starting: [55, 95, 10],
+}
+const waProgress = computed(() => {
+  if (waPhase.value === 'qr') return 100
+  const [from, to, tau] = WA_PHASE_SPAN[waPhase.value]
+  const t = Math.max(0, (waNow.value - waPhaseAt.value) / 1000)
+  return from + (to - from) * 0.95 * (1 - Math.exp(-t / tau))
+})
+const waHint = computed(() => {
+  if (waElapsed.value >= 60) return 'Сервис WhatsApp сейчас отвечает медленнее обычного — продолжаем, не закрывайте страницу.'
+  if (waElapsed.value >= 20) return 'Обычно это занимает до минуты. Не закрывайте страницу.'
+  return 'Это займёт немного времени.'
+})
+
 function stopPolling() {
   if (waPolling) { clearInterval(waPolling); waPolling = null }
   if (waTimeout) { clearTimeout(waTimeout); waTimeout = null }
+  stopWaClock()
 }
 
 async function checkStatus() {
@@ -233,76 +305,158 @@ async function checkStatus() {
   }
 }
 
+/**
+ * Что-то пошло не так — окно не пропадает молча, а объясняет и предлагает
+ * повторить. Повтор безопасен: если Green уже создал подключение, сервер
+ * подхватит его, а не создаст второе.
+ */
+const waError = ref<{ title: string; desc: string; retry: string } | null>(null)
+function giveUp(title: string, desc: string, retry = 'Попробовать ещё раз') {
+  stopPolling()
+  if (waStatus.value !== 'connecting') return
+  waQrCode.value = null
+  waError.value = { title, desc, retry }
+}
+
+/** QR показан: с этого момента у человека 2 минуты, чтобы отсканировать. */
+function startScanTimer() {
+  if (waTimeout) clearTimeout(waTimeout)
+  waTimeout = setTimeout(
+    () => giveUp(
+      'QR-код больше не действует',
+      'Время на сканирование вышло. Покажем новый QR-код — отсканируйте его в течение 2 минут.',
+      'Показать новый QR-код',
+    ),
+    120_000,
+  )
+}
+
 async function connect() {
+  stopPolling()
   waStatus.value = 'connecting'
   waQrCode.value = null
+  waError.value = null
+  waStartedAt.value = Date.now()
+  setWaPhase('creating')
+  startWaClock()
+  // Пока QR не готов, ждём до 3 минут: создание и запуск у Green бывают долгими.
+  waTimeout = setTimeout(
+    () => giveUp(
+      'WhatsApp отвечает слишком долго',
+      'Подключение могло уже создаться — нажмите «Попробовать ещё раз», мы продолжим с того же места.',
+    ),
+    180_000,
+  )
   try {
     await api.post('/whatsapp/session')
-    await refreshQr()
+    if (waStatus.value !== 'connecting') return // нажали «Отмена»
+    setWaPhase('starting')
 
-    // Poll status; refresh the QR every few ticks since Green's QR expires
-    // (~20s) and regenerates. The backend returns a ready data-URL image.
+    // QR и состояние спрашиваем НЕЗАВИСИМО: Green бывает отвечает на запрос
+    // состояния по полминуты, и пока QR ждал его в очереди, экран застревал
+    // на «Запускаем WhatsApp», хотя QR уже был готов. Каждый запрос — не
+    // больше одного в полёте, чтобы при медленном Green они не копились.
+    // Пока QR нет — спрашиваем каждые 3 с; потом — раз в ~15 с (QR у Green
+    // живёт ~20 с). Ответ на QR сам сообщает, если телефон уже подключён.
     let tick = 0
-    waPolling = setInterval(async () => {
+    waPolling = setInterval(() => {
       tick++
-      try {
-        const status = await api.get<{ status: string; connected: boolean }>('/whatsapp/session/status')
-        if (status.connected) {
-          stopPolling()
-          waStatus.value = 'connected'
-          waQrCode.value = null
-          toast.success('WhatsApp подключён!')
-          loadPreview()
-          loadWaSettings()
-          activeTab.value = 'send'
-          return
-        }
-        if (tick % 5 === 0) await refreshQr() // ~every 15s
-      } catch { /* keep polling */ }
+      if (!waQrCode.value || tick % 5 === 0) void refreshQr()
+      void pollStatus()
     }, 3000)
-
-    // Give up after 2 minutes — the user can retry.
-    waTimeout = setTimeout(() => {
-      stopPolling()
-      if (waStatus.value === 'connecting') {
-        waStatus.value = 'disconnected'
-        waQrCode.value = null
-        toast.error('Время ожидания истекло. Попробуйте снова.')
-      }
-    }, 120_000)
+    void refreshQr()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка подключения')
-    waStatus.value = 'disconnected'
+    giveUp('Не удалось подключить WhatsApp', e?.message || 'Сервис WhatsApp не ответил. Попробуйте ещё раз через минуту.')
   }
+}
+
+let statusBusy = false
+async function pollStatus() {
+  if (statusBusy) return
+  statusBusy = true
+  try {
+    const status = await api.get<{ status: string; connected: boolean }>('/whatsapp/session/status')
+    if (status.connected && waStatus.value === 'connecting') onConnected()
+  } catch { /* следующий тик спросит снова */ } finally {
+    statusBusy = false
+  }
+}
+
+function onConnected() {
+  stopPolling()
+  waStatus.value = 'connected'
+  waQrCode.value = null
+  waError.value = null
+  toast.success('WhatsApp подключён!')
+  loadPreview()
+  loadWaSettings()
+  activeTab.value = 'send'
+}
+
+function cancelConnect() {
+  stopPolling()
+  waStatus.value = 'disconnected'
+  waQrCode.value = null
+  waError.value = null
+  checkStatus()
 }
 
 // Fetch the current QR. Backend returns it as a ready `data:image/png;base64`
 // URL, or status 'connected' if the instance is already authorized.
+let qrBusy = false
 async function refreshQr() {
+  if (qrBusy) return
+  qrBusy = true
   try {
     const res = await api.get<{ qr: string | null; status: string }>('/whatsapp/session/qr')
+    if (waStatus.value !== 'connecting') return
     if (res.status === 'connected') {
-      stopPolling()
-      waStatus.value = 'connected'
-      waQrCode.value = null
-      loadPreview()
-      loadWaSettings()
+      onConnected()
       return
     }
-    if (res.qr) waQrCode.value = res.qr
-  } catch { /* keep current QR */ }
+    if (res.qr) {
+      waQrCode.value = res.qr
+      if (waPhase.value !== 'qr') {
+        setWaPhase('qr')
+        stopWaClock()
+        startScanTimer()
+      }
+    }
+  } catch { /* keep current QR */ } finally {
+    qrBusy = false
+  }
+}
+
+/*
+ * Отключение — окном с объяснением, а не системным confirm: что перестанет
+ * работать, что будет с идущей рассылкой. Сервер отключает сразу (Green
+ * доделывает удаление в фоне), поэтому ждать приходится доли секунды —
+ * но кнопка всё равно показывает «Отключаем…», а ошибка остаётся в окне.
+ */
+const showDisconnect = ref(false)
+const disconnecting = ref(false)
+const disconnectError = ref('')
+
+function askDisconnect() {
+  disconnectError.value = ''
+  showDisconnect.value = true
 }
 
 async function disconnect() {
-  if (!confirm('Отключить WhatsApp? Авто-напоминания и рассылки перестанут отправляться.')) return
+  if (disconnecting.value) return
+  disconnecting.value = true
+  disconnectError.value = ''
   try {
     await api.delete('/whatsapp/session')
     stopPolling()
     waStatus.value = 'disconnected'
     waQrCode.value = null
+    showDisconnect.value = false
     toast.success('WhatsApp отключён')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка отключения')
+    disconnectError.value = e?.message || 'Не удалось отключить WhatsApp. Попробуйте ещё раз.'
+  } finally {
+    disconnecting.value = false
   }
 }
 
@@ -1284,22 +1438,60 @@ function goConnect() { activeTab.value = 'connection' }
             </div>
             <span class="bc-conn-badge">Активен</span>
           </div>
-          <button class="bc-btn bc-btn--danger" @click="disconnect"><v-icon icon="mdi-link-off" size="16" /> Отключить</button>
+          <button class="bc-btn bc-btn--danger" @click="askDisconnect"><v-icon icon="mdi-link-off" size="16" /> Отключить</button>
         </div>
 
-        <!-- Connecting (QR) -->
+        <!-- Connecting: подготовка подключения, затем QR -->
         <div v-else-if="waStatus === 'connecting'" class="bc-conn bc-conn--center">
-          <div class="bc-conn-title">Отсканируйте QR-код</div>
-          <div class="bc-conn-desc">Откройте WhatsApp → Связанные устройства → Привязать устройство</div>
-          <div class="bc-qr-wrap">
-            <img v-if="waQrCode" :src="waQrCode" class="bc-qr-img" alt="QR" />
-            <template v-else>
-              <v-progress-circular indeterminate size="40" color="primary" />
-              <div class="bc-conn-desc mt-3">Загрузка QR-кода…</div>
-            </template>
-          </div>
-          <div class="bc-conn-hint">Ожидание подключения, до 2 минут…</div>
-          <button class="bc-btn bc-btn--ghost" @click="checkStatus(); waStatus = 'disconnected'; stopPolling()">Отмена</button>
+          <template v-if="waError">
+            <div class="bc-prep-ico bc-prep-ico--warn"><v-icon icon="mdi-alert-circle-outline" size="32" /></div>
+            <div class="bc-conn-title">{{ waError.title }}</div>
+            <div class="bc-conn-desc">{{ waError.desc }}</div>
+            <button class="bc-btn bc-btn--primary" @click="connect"><v-icon icon="mdi-refresh" size="18" /> {{ waError.retry }}</button>
+          </template>
+
+          <template v-else-if="waPhase !== 'qr'">
+            <div class="bc-prep-ico"><v-icon icon="mdi-whatsapp" size="32" /></div>
+            <div class="bc-conn-title">{{ WA_PHASE_TEXT[waPhase].title }}</div>
+            <div class="bc-conn-desc">{{ WA_PHASE_TEXT[waPhase].desc }}</div>
+
+            <div class="bc-prep">
+              <div class="bc-prep-bar" role="progressbar" :aria-valuenow="Math.round(waProgress)" aria-valuemin="0" aria-valuemax="100">
+                <div class="bc-prep-fill" :style="{ width: waProgress + '%' }" />
+              </div>
+              <div class="bc-prep-meta">
+                <span>Шаг {{ waStepIndex + 1 }} из {{ WA_STEPS.length }}</span>
+                <span class="bc-prep-time">{{ waElapsedText }}</span>
+              </div>
+              <ol class="bc-prep-steps">
+                <li
+                  v-for="(step, i) in WA_STEPS"
+                  :key="step.key"
+                  class="bc-prep-step"
+                  :class="{ done: i < waStepIndex, active: i === waStepIndex }"
+                >
+                  <span class="bc-prep-dot">
+                    <v-icon v-if="i < waStepIndex" icon="mdi-check" size="13" />
+                    <v-progress-circular v-else-if="i === waStepIndex" indeterminate size="12" width="2" />
+                  </span>
+                  {{ step.label }}
+                </li>
+              </ol>
+            </div>
+
+            <div class="bc-conn-hint">{{ waHint }}</div>
+          </template>
+
+          <template v-else>
+            <div class="bc-conn-title">Отсканируйте QR-код</div>
+            <div class="bc-conn-desc">Откройте WhatsApp → Связанные устройства → Привязать устройство</div>
+            <div class="bc-qr-wrap">
+              <img v-if="waQrCode" :src="waQrCode" class="bc-qr-img" alt="QR" />
+            </div>
+            <div class="bc-conn-hint">QR-код обновляется сам. Ждём сканирования — до 2 минут.</div>
+          </template>
+
+          <button class="bc-btn bc-btn--ghost" @click="cancelConnect">Отмена</button>
         </div>
 
         <!-- Disconnected -->
@@ -1311,6 +1503,37 @@ function goConnect() { activeTab.value = 'connection' }
         </div>
       </v-card>
     </template>
+
+    <!-- ══════════════ Отключение WhatsApp ══════════════ -->
+    <v-dialog v-model="showDisconnect" max-width="440" :persistent="disconnecting">
+      <v-card rounded="lg" class="bc-dc">
+        <div class="bc-dc-head">
+          <div class="bc-dc-ico"><v-icon icon="mdi-link-off" size="22" /></div>
+          <div>
+            <div class="bc-dc-title">Отключить WhatsApp?</div>
+            <div class="bc-dc-sub">Ваш номер отвяжется от кабинета</div>
+          </div>
+        </div>
+        <ul class="bc-dc-list">
+          <li>Перестанут уходить напоминания — и ручные, и автоматические.</li>
+          <li>Переписка с клиентами в кабинете перестанет обновляться.</li>
+          <li>Чтобы подключиться снова, нужно будет отсканировать QR-код.</li>
+        </ul>
+        <div v-if="campaignActive" class="bc-dc-warn">
+          <v-icon icon="mdi-pause-circle-outline" size="16" />
+          <span>Сейчас идёт рассылка. Она остановится и продолжится, когда вы снова подключите WhatsApp.</span>
+        </div>
+        <div v-if="disconnectError" class="bc-dc-error">{{ disconnectError }}</div>
+        <div class="bc-dc-actions">
+          <button class="bc-btn bc-btn--ghost" :disabled="disconnecting" @click="showDisconnect = false">Отмена</button>
+          <button class="bc-btn bc-btn--danger" :disabled="disconnecting" @click="disconnect">
+            <v-progress-circular v-if="disconnecting" indeterminate size="15" width="2" />
+            <v-icon v-else icon="mdi-link-off" size="16" />
+            {{ disconnecting ? 'Отключаем…' : 'Отключить' }}
+          </button>
+        </div>
+      </v-card>
+    </v-dialog>
 
     <!-- ══════════════ Анти-бан памятка ══════════════ -->
     <v-dialog v-model="showGuide" max-width="680" scrollable>
@@ -1984,6 +2207,52 @@ function goConnect() { activeTab.value = 'connection' }
 .bc-conn-desc { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6); margin-top: 4px; max-width: 460px; }
 .bc-conn-badge { padding: 5px 12px; border-radius: 999px; background: #25d366; color: #fff; font-size: 12px; font-weight: 700; }
 .bc-conn-hint { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.bc-dc { padding: 20px; }
+.bc-dc-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.bc-dc-ico {
+  width: 40px; height: 40px; border-radius: 11px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(239,68,68,0.1); color: #dc2626;
+}
+.bc-dc-title { font-size: 16px; font-weight: 700; }
+.bc-dc-sub { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.55); margin-top: 2px; }
+.bc-dc-list { margin: 0 0 12px; padding-left: 18px; font-size: 13px; line-height: 1.55; color: rgba(var(--v-theme-on-surface), 0.75); }
+.bc-dc-list li + li { margin-top: 4px; }
+.bc-dc-warn {
+  display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px;
+  padding: 10px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+  background: rgba(245,158,11,0.1); color: #b45309;
+}
+.bc-dc-error { margin-bottom: 10px; font-size: 12.5px; color: #dc2626; }
+.bc-dc-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.bc-prep-ico {
+  width: 64px; height: 64px; border-radius: 18px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(37,211,102,0.14); color: #1eb558;
+  animation: bc-prep-pulse 1.8s ease-in-out infinite;
+}
+@keyframes bc-prep-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37,211,102,0.28); }
+  50% { box-shadow: 0 0 0 12px rgba(37,211,102,0); }
+}
+@media (prefers-reduced-motion: reduce) { .bc-prep-ico { animation: none; } }
+.bc-prep-ico--warn { background: rgba(245,158,11,0.14); color: #d97706; animation: none; }
+.bc-prep { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 10px; }
+.bc-prep-bar { height: 8px; border-radius: 999px; overflow: hidden; background: rgba(var(--v-theme-on-surface), 0.08); }
+.bc-prep-fill { height: 100%; border-radius: inherit; background: #25d366; transition: width 0.3s linear; }
+.bc-prep-meta { display: flex; justify-content: space-between; font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.bc-prep-time { font-variant-numeric: tabular-nums; }
+.bc-prep-steps { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.bc-prep-step { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.45); }
+.bc-prep-step.active { color: rgb(var(--v-theme-on-surface)); font-weight: 600; }
+.bc-prep-step.done { color: rgba(var(--v-theme-on-surface), 0.7); }
+.bc-prep-dot {
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1.5px solid rgba(var(--v-theme-on-surface), 0.18); color: #1eb558;
+}
+.bc-prep-step.active .bc-prep-dot { border-color: #25d366; }
+.bc-prep-step.done .bc-prep-dot { border-color: #25d366; background: #25d366; color: #fff; }
 .bc-qr-wrap { width: 260px; height: 260px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid rgba(var(--v-theme-on-surface), 0.1); border-radius: 16px; padding: 12px; background: #fff; }
 .bc-qr-img { width: 100%; height: 100%; }
 
