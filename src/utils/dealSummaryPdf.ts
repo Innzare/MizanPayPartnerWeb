@@ -4,6 +4,7 @@ import pdfMake from 'pdfmake/build/pdfmake'
 import pdfFonts from 'pdfmake/build/vfs_fonts'
 import type { Deal, Payment, User } from '@/types'
 import { formatDate } from './formatters'
+import { contractNumberOf } from './contractNumber'
 
 pdfMake.vfs = pdfFonts
 
@@ -102,7 +103,7 @@ export function generateDealSummary(
                 bold: true,
                 color: deal.status === 'ACTIVE' ? '#047857' : deal.status === 'COMPLETED' ? '#3b82f6' : '#dc2626',
               },
-              { text: `ID: ${deal.id.slice(0, 8).toUpperCase()}`, alignment: 'right' as const, fontSize: 9, color: '#888', margin: [0, 4, 0, 0] },
+              { text: `Договор № ${contractNumberOf(deal)}`, alignment: 'right' as const, fontSize: 9, color: '#888', margin: [0, 4, 0, 0] },
             ],
           },
         ],
