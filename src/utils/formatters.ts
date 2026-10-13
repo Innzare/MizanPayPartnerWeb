@@ -25,6 +25,16 @@ export function formatDate(dateString: string): string {
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
+/**
+ * «5 мая 2026» — месяц словом, год обязателен: сделки одного партнёра идут
+ * годами, и без года «12 окт» после «1 янв» выглядит ошибкой сортировки.
+ */
+export function formatDateShortYear(dateString: string | Date): string {
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\s?г\.$/, '');
+}
+
 export function formatDateShort(dateString: string): string {
   const date = new Date(dateString);
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });

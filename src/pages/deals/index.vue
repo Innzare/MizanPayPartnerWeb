@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
-import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShortYear, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type DealFolder, type Payment, userName, clientProfileName } from '@/types'
 import { useRoute, useRouter } from 'vue-router'
@@ -438,7 +438,11 @@ function dealLastPaymentTs(deal: Deal): number | null {
 }
 function dealLastPaymentLabel(deal: Deal): string {
   const t = dealLastPaymentTs(deal)
-  return t ? formatDateShort(new Date(t).toISOString()) : '—'
+  return t ? formatDateShortYear(new Date(t)) : '—'
+}
+/** Свежие — «2 ч назад», старше недели — дата с годом, как в соседних колонках. */
+function createdLabel(createdAt: string): string {
+  return Date.now() - new Date(createdAt).getTime() < 7 * 86_400_000 ? timeAgo(createdAt) : formatDateShortYear(createdAt)
 }
 function dealTermLabel(deal: Deal): string {
   return `${deal.numberOfPayments} ${INTERVAL_UNIT[deal.paymentInterval] ?? 'мес'}`
@@ -633,6 +637,16 @@ const TRASH_SORT_KEYS: Record<string, string> = {
   remaining: 'remainingAmount',
   downPayment: 'downPayment',
   dealDate: 'dealDate',
+  createdAt: 'createdAt',
+}
+
+/**
+ * Сортируемая ли колонка на текущей вкладке. В корзине — только то, что
+ * умеет сервер: раньше стрелки были у всех колонок, но «Клиент», «Статус»
+ * и прочие порядок не меняли — он оставался по дате удаления.
+ */
+function isSortable(c: DealColumn): boolean {
+  return c.sortable && (!isTrashTab.value || c.key in TRASH_SORT_KEYS)
 }
 
 /** Загрузить страницу корзины теми же условиями, что видит партнёр. */
@@ -1373,13 +1387,13 @@ async function refreshSelectedDeal(dealId: string) {
               <th
                 v-for="c in shownColumns"
                 :key="c.key"
-                :class="[`text-${c.align === 'end' ? 'end' : c.align === 'center' ? 'center' : 'start'}`, { 'th-sortable': c.sortable, 'th-sorted': sortCol === c.key }]"
-                @click="c.sortable && toggleSort(c.key)"
+                :class="[`text-${c.align === 'end' ? 'end' : c.align === 'center' ? 'center' : 'start'}`, { 'th-sortable': isSortable(c), 'th-sorted': isSortable(c) && sortCol === c.key }]"
+                @click="isSortable(c) && toggleSort(c.key)"
               >
                 <span class="th-inner">
                   {{ c.label }}
                   <v-icon
-                    v-if="c.sortable"
+                    v-if="isSortable(c)"
                     :icon="sortCol === c.key ? (sortDir === 'asc' ? 'mdi-arrow-up' : 'mdi-arrow-down') : 'mdi-unfold-more-horizontal'"
                     size="14"
                     class="th-sort-ico"
@@ -1456,8 +1470,8 @@ async function refreshSelectedDeal(dealId: string) {
                 </div>
               </td>
 
-              <td v-if="isColVisible('createdAt')" class="text-end text-medium-emphasis text-no-wrap">{{ timeAgo(deal.createdAt) }}</td>
-              <td v-if="isColVisible('dealDate')" class="text-end text-medium-emphasis text-no-wrap">{{ deal.dealDate ? formatDateShort(deal.dealDate) : '—' }}</td>
+              <td v-if="isColVisible('createdAt')" class="text-end text-medium-emphasis text-no-wrap">{{ createdLabel(deal.createdAt) }}</td>
+              <td v-if="isColVisible('dealDate')" class="text-end text-medium-emphasis text-no-wrap">{{ deal.dealDate ? formatDateShortYear(deal.dealDate) : '—' }}</td>
               <td v-if="isColVisible('lastPayment')" class="text-end text-medium-emphasis text-no-wrap">{{ dealLastPaymentLabel(deal) }}</td>
 
               <td v-if="isTrashTab" class="text-end text-no-wrap" @click.stop>
@@ -1612,12 +1626,12 @@ async function refreshSelectedDeal(dealId: string) {
               >
                 <div class="schedule-num">{{ p.number }}</div>
                 <div class="schedule-info">
-                  <div class="schedule-date">{{ formatDateShort(p.dueDate) }}</div>
-                  <div v-if="p.paidAt" class="schedule-paid-at">Оплачено {{ formatDateShort(p.paidAt) }}</div>
+                  <div class="schedule-date">{{ formatDateShortYear(p.dueDate) }}</div>
+                  <div v-if="p.paidAt" class="schedule-paid-at">Оплачено {{ formatDateShortYear(p.paidAt) }}</div>
                   <!-- След переноса — как на странице платежей. -->
                   <div v-if="p.rescheduledFrom" class="schedule-rescheduled">
                     <v-icon icon="mdi-calendar-arrow-right" size="11" />
-                    с {{ formatDateShort(p.rescheduledFrom) }}
+                    с {{ formatDateShortYear(p.rescheduledFrom) }}
                   </div>
                 </div>
                 <div class="schedule-amount">{{ formatCurrency(p.amount) }}</div>
