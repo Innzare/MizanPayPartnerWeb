@@ -19,6 +19,8 @@ import type { CapitalSummary } from '@/types'
 import CashflowJournal from '@/components/CashflowJournal.vue'
 import AllocateUnallocatedDialog from '@/components/AllocateUnallocatedDialog.vue'
 import CashBoxEditDialog from '@/components/CashBoxEditDialog.vue'
+import CashBoxResetDialog from '@/components/CashBoxResetDialog.vue'
+import CashBoxDeleteDialog from '@/components/CashBoxDeleteDialog.vue'
 
 const route = useRoute()
 // Границы даты денежной операции — те же, что при отметке оплаты.
@@ -1007,25 +1009,18 @@ function openExpenses() {
   })
 }
 
-// ─── Delete ──────────────────────────────────────────────────────────────
-async function handleDelete() {
-  if (!box.value || box.value.isDefault) {
-    toast.error('Нельзя удалить основную кассу')
-    return
-  }
-  if (box.value.dealsCount > 0) {
-    toast.error(`В кассе ${box.value.dealsCount} сделок. Перенесите их в другую кассу или удалите.`)
-    return
-  }
-  if (!confirm(`Удалить кассу «${box.value.name}»? Действие необратимо.`)) return
-  try {
-    await store.remove(box.value.id)
-    toast.success('Касса удалена')
-    router.push('/cashboxes')
-  } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить')
-  }
+// ─── Очистка кассы ───────────────────────────────────────────────────────
+// Кнопка — в окне «Изменить кассу», только владельцу; здесь — подтверждение
+// словом и паролем. Сервер проверяет то же.
+const showReset = ref(false)
+function afterReset() {
+  // Перезагрузка: сводка, журнал и списки сделок держат старые данные.
+  window.location.reload()
 }
+
+// ─── Удаление ────────────────────────────────────────────────────────────
+// Кнопка — в окне «Изменить кассу», подтверждение — словом в отдельном окне.
+const showDelete = ref(false)
 </script>
 
 <template>
@@ -1096,14 +1091,6 @@ async function handleDelete() {
           <button class="cb-action-btn" @click="showEdit = true" title="Изменить кассу">
             <v-icon icon="mdi-pencil-outline" size="17" />
             Изменить
-          </button>
-          <button
-            v-if="!box.isDefault"
-            class="cb-action-btn cb-action-btn--danger"
-            @click="handleDelete"
-            title="Удалить кассу"
-          >
-            <v-icon icon="mdi-delete-outline" size="17" />
           </button>
         </div>
       </div>
@@ -1971,7 +1958,9 @@ async function handleDelete() {
       @done="() => { void accounting.fetchAccounts(); void refreshUnallocated(); void loadDetails() }"
     />
 
-    <CashBoxEditDialog v-model="showEdit" :cashbox="box" @saved="(b) => { box = b; loadDetails() }" />
+    <CashBoxEditDialog v-model="showEdit" :cashbox="box" @saved="(b) => { box = b; loadDetails() }" @reset="showReset = true" @delete="showDelete = true" />
+    <CashBoxResetDialog v-if="box" v-model="showReset" :cash-box-id="box.id" :name="box.name" @done="afterReset" />
+    <CashBoxDeleteDialog v-if="box" v-model="showDelete" :cashbox="box" @deleted="router.push('/cashboxes')" />
 
   </div>
 </template>
