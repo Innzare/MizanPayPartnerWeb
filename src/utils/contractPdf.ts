@@ -4,6 +4,7 @@ import pdfMake from 'pdfmake/build/pdfmake'
 import pdfFonts from 'pdfmake/build/vfs_fonts'
 import type { Deal, Payment, User } from '@/types'
 import { formatDate } from './formatters'
+import { contractNumberOf } from './contractNumber'
 import { dealGuarantors } from './dealGuarantors'
 
 pdfMake.vfs = pdfFonts
@@ -36,7 +37,7 @@ export function generateContract(
     : deal.client
       ? deal.client
       : { firstName: deal.externalClientName || '', lastName: '', phone: deal.externalClientPhone || '' }
-  const contractNumber = deal.id.slice(0, 8).toUpperCase()
+  const contractNumber = contractNumberOf(deal)
   const today = formatDate(new Date().toISOString())
 
   // Все поручители сделки (по порядку, первый = основной). Если поручителей

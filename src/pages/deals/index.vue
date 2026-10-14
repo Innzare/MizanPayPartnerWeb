@@ -2,7 +2,7 @@
 import SearchInput from '@/components/SearchInput.vue'
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
-import { formatCurrency, formatDate, formatDateShort, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShortYear, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { todayIso } from '@/utils/dateInput'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type DealFolder, type Payment, userName, clientProfileName } from '@/types'
@@ -822,7 +822,11 @@ function dealLastPaymentTs(deal: Deal): number | null {
 }
 function dealLastPaymentLabel(deal: Deal): string {
   const t = dealLastPaymentTs(deal)
-  return t ? formatDateShort(new Date(t).toISOString()) : '—'
+  return t ? formatDateShortYear(new Date(t)) : '—'
+}
+/** Свежие — «2 ч назад», старше недели — дата с годом, как в соседних колонках. */
+function createdLabel(createdAt: string): string {
+  return Date.now() - new Date(createdAt).getTime() < 7 * 86_400_000 ? timeAgo(createdAt) : formatDateShortYear(createdAt)
 }
 function dealTermLabel(deal: Deal): string {
   return `${deal.numberOfPayments} ${INTERVAL_UNIT[deal.paymentInterval] ?? 'мес'}`
@@ -1073,6 +1077,16 @@ const TRASH_SORT_KEYS: Record<string, string> = {
   remaining: 'remainingAmount',
   downPayment: 'downPayment',
   dealDate: 'dealDate',
+  createdAt: 'createdAt',
+}
+
+/**
+ * Сортируемая ли колонка на текущей вкладке. В корзине — только то, что
+ * умеет сервер: раньше стрелки были у всех колонок, но «Клиент», «Статус»
+ * и прочие порядок не меняли — он оставался по дате удаления.
+ */
+function isSortable(c: { key: string; sortable?: boolean }): boolean {
+  return !!c.sortable && (!isTrashTab.value || c.key in TRASH_SORT_KEYS)
 }
 
 /** Загрузить страницу корзины теми же условиями, что видит партнёр. */
@@ -1434,7 +1448,7 @@ function payButtonTitle(deal: Deal): string {
   if (!np) return 'Отметить оплату'
   const amount = formatCurrency(np.amount)
   if (isNextOverdue(deal)) return `${amount} · просрочен на ${overdueDays(deal)} дн.`
-  return `${amount} · до ${formatDateShort(np.dueDate)}`
+  return `${amount} · до ${formatDateShortYear(np.dueDate)}`
 }
 
 /**
@@ -2004,9 +2018,9 @@ async function refreshSelectedDeal(dealId: string) {
                 draggable="true"
                 :class="[
                   `text-${c.align === 'end' ? 'end' : c.align === 'center' ? 'center' : 'start'}`,
-                  { 'th-sortable': c.sortable, 'th-sorted': sortCol === c.key, 'th-dragging': dragColKey === c.key },
+                  { 'th-sortable': isSortable(c), 'th-sorted': isSortable(c) && sortCol === c.key, 'th-dragging': dragColKey === c.key },
                 ]"
-                @click="c.sortable && toggleSort(c.key)"
+                @click="isSortable(c) && toggleSort(c.key)"
                 @dragstart="onColDragStart(c.key, $event)"
                 @dragover="onColDragOver(c.key, $event)"
                 @dragend="onColDragEnd"
@@ -2015,7 +2029,7 @@ async function refreshSelectedDeal(dealId: string) {
                 <span class="th-inner">
                   {{ c.label }}
                   <v-icon
-                    v-if="c.sortable"
+                    v-if="isSortable(c)"
                     :icon="sortCol === c.key ? (sortDir === 'asc' ? 'mdi-arrow-up' : 'mdi-arrow-down') : 'mdi-unfold-more-horizontal'"
                     size="14"
                     class="th-sort-ico"
@@ -2136,8 +2150,8 @@ async function refreshSelectedDeal(dealId: string) {
                   </div>
                 </template>
 
-                <template v-else-if="c.key === 'createdAt'">{{ timeAgo(deal.createdAt) }}</template>
-                <template v-else-if="c.key === 'dealDate'">{{ deal.dealDate ? formatDateShort(deal.dealDate) : '—' }}</template>
+                <template v-else-if="c.key === 'createdAt'">{{ createdLabel(deal.createdAt) }}</template>
+                <template v-else-if="c.key === 'dealDate'">{{ deal.dealDate ? formatDateShortYear(deal.dealDate) : '—' }}</template>
                 <template v-else-if="c.key === 'lastPayment'">{{ dealLastPaymentLabel(deal) }}</template>
 
                 <!-- ── Договор ── -->
@@ -2166,7 +2180,7 @@ async function refreshSelectedDeal(dealId: string) {
 
                 <!-- ── Клиент ── -->
                 <template v-else-if="c.key === 'clientBirthDate'">
-                  {{ deal.clientBirthDate ? formatDateShort(deal.clientBirthDate) : '—' }}
+                  {{ deal.clientBirthDate ? formatDateShortYear(deal.clientBirthDate) : '—' }}
                 </template>
                 <template v-else-if="c.key === 'clientAddress'">
                   <span v-if="deal.clientAddress" :title="deal.clientAddress">{{ deal.clientAddress }}</span>

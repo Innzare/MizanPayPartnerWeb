@@ -5,6 +5,7 @@ import { exportReceiptTemplatePdf } from './receiptTemplatePdf'
 import pdfFonts from 'pdfmake/build/vfs_fonts'
 import type { Deal, Payment, User } from '@/types'
 import { formatDate } from './formatters'
+import { contractNumberOf } from './contractNumber'
 
 pdfMake.vfs = pdfFonts
 
@@ -197,7 +198,7 @@ export function generateReceipt(
             ],
             [
               { text: 'Договор', color: '#777', border: [false, false, false, true] },
-              { text: `№ ${deal.id.slice(0, 8).toUpperCase()} от ${formatDate(deal.dealDate || deal.createdAt)}`, border: [false, false, false, true] },
+              { text: `№ ${contractNumberOf(deal)} от ${formatDate(deal.dealDate || deal.createdAt)}`, border: [false, false, false, true] },
             ],
           ],
         },
@@ -301,7 +302,7 @@ export function generateReceipt(
 
       // Confirmation text
       {
-        text: `Настоящим подтверждается получение оплаты в размере ${curr(payment.amount)} по Договору мурабаха № ${deal.id.slice(0, 8).toUpperCase()}.`,
+        text: `Настоящим подтверждается получение оплаты в размере ${curr(payment.amount)} по Договору мурабаха № ${contractNumberOf(deal)}.`,
         margin: [0, 0, 0, 6],
       },
       {

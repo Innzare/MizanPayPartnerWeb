@@ -2,6 +2,7 @@ import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import type { Deal, Payment, User } from '@/types'
 import { formatDate } from './formatters'
+import { contractNumberOf } from './contractNumber'
 import { dealGuarantors } from './dealGuarantors'
 
 function curr(amount: number): string {
@@ -93,7 +94,7 @@ export function replaceVariables(html: string, deal: Deal, payments: Payment[], 
     '{{взнос}}': deal.downPayment ? curr(deal.downPayment) : 'без взноса',
     '{{остаток}}': curr(deal.totalPrice - (deal.downPayment || 0)),
     '{{срок}}': String(deal.numberOfPayments),
-    '{{номер_договора}}': deal.id.slice(0, 8).toUpperCase(),
+    '{{номер_договора}}': contractNumberOf(deal),
     '{{дата_договора}}': formatDate(deal.dealDate || deal.createdAt),
     '{{график_платежей}}': buildPaymentTable(payments),
   }

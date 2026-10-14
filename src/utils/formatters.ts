@@ -47,6 +47,16 @@ export function formatDateShort(dateString?: string | number | Date | null): str
   return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 }
 
+/**
+ * «5 мая 2026» — месяц словом, год обязателен: сделки одного партнёра идут
+ * годами, и без года «12 окт» после «1 янв» выглядит ошибкой сортировки.
+ */
+export function formatDateShortYear(dateString?: string | number | Date | null): string {
+  const date = parseDate(dateString);
+  if (!date) return EMPTY_DATE;
+  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\s?г\.$/, '');
+}
+
 export function formatPhone(phone: string): string {
   const raw = (phone || '').trim();
   const cleaned = raw.replace(/\D/g, '');
