@@ -306,10 +306,14 @@ async function deleteSelected() {
     if (selectAllMatching.value) {
       await deleteWholeSelection()
     } else {
-      const result = await api.post<{ deleted: number; total: number }>('/deals/delete-batch', {
+      const result = await api.post<{ deleted: number; total: number; skippedClosedMonth?: number }>('/deals/delete-batch', {
         ids: Array.from(selectedIds.value),
       })
       toast.success(`${result.deleted} сделок перемещено в корзину`)
+      // Сделки с деньгами закрытых месяцев остались на месте — говорим прямо.
+      if (result.skippedClosedMonth) {
+        toast.error(`${result.skippedClosedMonth} сдел. не удалены: в них деньги закрытых месяцев. Откройте месяц в «Инвесторы → По месяцам».`)
+      }
     }
     await Promise.all([refreshList(), dealsStore.fetchTrashCount(), isTrashTab.value ? dealsStore.refreshTrash() : Promise.resolve()])
   } catch (e: any) {
@@ -348,17 +352,26 @@ function filterPayload(): Record<string, unknown> {
 
 /** Сколько сделок попадёт под удаление — спрашиваем тем же запросом. */
 async function countWholeSelection(): Promise<number> {
-  const res = await api.post<{ deleted: number; remaining: number }>('/deals/delete-by-filter', {
+  const res = await api.post<{ deleted: number; remaining: number; closedMonthDeals?: number }>('/deals/delete-by-filter', {
     ...filterPayload(),
     excludeIds: Array.from(excludedIds.value),
     dryRun: true,
   })
+  // Сделки закрытых месяцев удалить нельзя — сервер откажет на всю выборку.
+  // Говорим до подтверждения, а не после.
+  if (res.closedMonthDeals) {
+    throw new Error(
+      `В выборке ${res.closedMonthDeals.toLocaleString('ru-RU')} сдел. с деньгами закрытых месяцев — их удалить нельзя. ` +
+      'Сузьте выборку или откройте месяц в «Инвесторы → По месяцам».',
+    )
+  }
   return res.remaining
 }
 
 async function deleteWholeSelection() {
   bulkProgress.value = { done: 0, total: selectionCount.value }
   let guard = 0
+  try {
   for (;;) {
     const res = await api.post<{ deleted: number; remaining: number }>('/deals/delete-by-filter', {
       ...filterPayload(),
@@ -375,9 +388,12 @@ async function deleteWholeSelection() {
     if (res.deleted === 0) break
     if (++guard > 500) break // страховка от бесконечного цикла
   }
-  const done = bulkProgress.value.done
-  bulkProgress.value = null
-  toast.success(`${done.toLocaleString('ru-RU')} сделок перемещено в корзину`)
+  } finally {
+    // Отказ сервера посреди цикла не должен оставлять висящую полосу.
+    const done = bulkProgress.value?.done ?? 0
+    bulkProgress.value = null
+    if (done) toast.success(`${done.toLocaleString('ru-RU')} сделок перемещено в корзину`)
+  }
 }
 
 // Прогресс массового удаления: на 15 000 сделок это десятки запросов, и без
@@ -388,8 +404,11 @@ async function restoreSelected() {
   if (!selectedIds.value.size) return
   deleting.value = true
   try {
-    await dealsStore.restoreBatch(Array.from(selectedIds.value))
-    toast.success(`${selectedIds.value.size} сделок восстановлено`)
+    const res = await dealsStore.restoreBatch(Array.from(selectedIds.value))
+    toast.success(`${res?.restored ?? selectedIds.value.size} сделок восстановлено`)
+    if (res?.skippedClosedMonth) {
+      toast.error(`${res.skippedClosedMonth} сдел. не восстановлены: в них деньги закрытых месяцев.`)
+    }
     // И список, и корзина серверные — обе стороны надо перечитать, иначе на
     // месте восстановленных строк останется дырка, а страницы съедут.
     await Promise.all([refreshList(), dealsStore.refreshTrash()])

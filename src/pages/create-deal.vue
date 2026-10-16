@@ -39,6 +39,7 @@ import { useSuppliersStore } from '@/stores/suppliers'
 import { useSubscription } from '@/composables/useSubscription'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
+import { useMonthLocks } from '@/composables/useMonthLocks'
 import DateField from '@/components/DateField.vue'
 import CreateClientDialog from '@/components/CreateClientDialog.vue'
 import SupplierFormDialog from '@/components/SupplierFormDialog.vue'
@@ -287,6 +288,38 @@ const profitSplitBase = ref<'MARKUP_ONLY' | 'FULL_MARGIN'>('MARKUP_ONLY')
 // CI accruals, so the partner needs to acknowledge).
 const initialClientProfileId = ref<string | null>(null)
 const initialWholesalePrice = ref<number | null>(null)
+// Закрытые месяцы: цену сделки с их оплатами менять можно (так решили —
+// мягкий режим), но с предупреждением: доход тех месяцев пересчитается.
+const monthLocks = useMonthLocks()
+const initialTotalPrice = ref<number | null>(null)
+const initialPurchasePrice = ref<number | null>(null)
+const initialDownPayment = ref<number>(0)
+const initialDealDate = ref<string | null>(null)
+const closedPaidMonths = ref<string[]>([])
+/**
+ * Дата сделки и взнос — деньги месяца сделки; в закрытом месяце их менять
+ * нельзя (сервер откажет). Объясняем прямо под полем даты.
+ */
+const dealDateLockMsg = computed(() => {
+  const box = selectedCashBoxId.value
+  if (!box || !dealDate.value) return ''
+  const at = (ymd: string) => `${ymd}T12:00:00`
+  const locked = (ymd: string | null) => !!ymd && monthLocks.isLocked(box, at(ymd))
+  if (!isEditMode.value) {
+    return locked(dealDate.value)
+      ? `${monthLocks.monthTitle(at(dealDate.value))} в этой кассе закрыт — сделку этой датой создать нельзя.`
+      : ''
+  }
+  const was = initialDealDate.value
+  if (was && was.slice(0, 7) !== dealDate.value.slice(0, 7) && (locked(was) || locked(dealDate.value))) {
+    const m = locked(was) ? was : dealDate.value
+    return `${monthLocks.monthTitle(at(m))} закрыт — перенести сделку из него или в него нельзя.`
+  }
+  if (was && locked(was) && (downPayment.value || 0) !== initialDownPayment.value) {
+    return `${monthLocks.monthTitle(at(was))} закрыт — первоначальный взнос сделки этого месяца менять нельзя.`
+  }
+  return ''
+})
 const initialProfitSplitBase = ref<'MARKUP_ONLY' | 'FULL_MARGIN'>('MARKUP_ONLY')
 
 // Retail margin = purchasePrice - wholesalePrice (when wholesalePrice
@@ -468,6 +501,22 @@ onMounted(async () => {
       }
       // Snapshot for change detection in submit (Phase 4 confirm).
       initialWholesalePrice.value = deal.wholesalePrice ?? null
+      initialTotalPrice.value = deal.totalPrice ?? null
+      initialPurchasePrice.value = deal.purchasePrice ?? null
+      initialDownPayment.value = deal.downPayment || 0
+      initialDealDate.value = deal.dealDate ? new Date(deal.dealDate).toISOString().slice(0, 10) : null
+      // Месяцы оплат сделки, которые уже закрыты в её кассе.
+      try {
+        const pays = await api.get<Array<{ status: string; paidAt?: string | null }>>(`/payments/deal/${editId.value}`)
+        const box = (deal as any).cashBoxId as string | undefined
+        closedPaidMonths.value = [...new Set(
+          pays
+            .filter((p) => p.status === 'PAID' && p.paidAt && monthLocks.isLocked(box, p.paidAt))
+            .map((p) => monthLocks.monthTitle(p.paidAt!)),
+        )]
+      } catch {
+        closedPaidMonths.value = []
+      }
       initialProfitSplitBase.value = deal.profitSplitBase ?? 'MARKUP_ONLY'
       // Load the deal's actual co-investor participation (overrides the default
       // set the cashbox watcher built when selectedCashBoxId was assigned above).
@@ -1799,6 +1848,35 @@ async function submitDeal(acknowledgedOverdraft = false) {
       }
     }
 
+    // Цена меняется у сделки с оплатами в закрытых месяцах: разрешаем, но
+    // предупреждаем — их доход и доли инвесторов пересчитаются, и итоги
+    // закрытых месяцев разойдутся с сохранёнными.
+    if (dealDateLockMsg.value) {
+      toast.error(dealDateLockMsg.value)
+      return
+    }
+    // Месяцы, деньги которых пересчитает правка цены: оплаты сделки плюс
+    // месяц самой сделки (начисление инвесторам с взноса).
+    const dealMonthLocked =
+      isEditMode.value && initialDealDate.value && monthLocks.isLocked(selectedCashBoxId.value, `${initialDealDate.value}T12:00:00`)
+    const affectedMonths = [...new Set([
+      ...closedPaidMonths.value,
+      ...(dealMonthLocked && (initialDownPayment.value || 0) > 0 ? [monthLocks.monthTitle(`${initialDealDate.value}T12:00:00`)] : []),
+    ])]
+    const priceChanged =
+      (initialTotalPrice.value != null && Math.round(totalPrice.value) !== Math.round(initialTotalPrice.value)) ||
+      (initialPurchasePrice.value != null && Math.round(purchasePrice.value || 0) !== Math.round(initialPurchasePrice.value)) ||
+      (useWholesalePrice.value ? (wholesalePrice.value || 0) : null) !== initialWholesalePrice.value ||
+      profitSplitBase.value !== initialProfitSplitBase.value
+    if (isEditMode.value && affectedMonths.length && priceChanged) {
+      const ok = window.confirm(
+        `У сделки есть деньги в закрытых месяцах: ${affectedMonths.join(', ')}.\n\n` +
+        'Изменение цены, закупки или распределения прибыли пересчитает доход этих месяцев и доли инвесторов — ' +
+        'итоги закрытых месяцев разойдутся с сохранёнными.\n\nПродолжить?',
+      )
+      if (!ok) return
+    }
+
     // Phase 4: catch a bad per-deal override before we hit the server, so the
     // partner gets a clear message instead of a swallowed 400 after save.
     const overrideError = validateParticipantOverrides()
@@ -2730,6 +2808,10 @@ async function submitDeal(acknowledgedOverdraft = false) {
               <div class="form-field full-width">
                 <label class="field-label">Дата заключения сделки</label>
                 <DateField v-model="dealDate" plain />
+                <div v-if="dealDateLockMsg" class="deal-month-locked">
+                  <v-icon icon="mdi-lock-outline" size="14" />
+                  {{ dealDateLockMsg }}
+                </div>
               </div>
 
               <div class="form-field full-width">
@@ -3327,6 +3409,10 @@ async function submitDeal(acknowledgedOverdraft = false) {
 </template>
 
 <style scoped>
+.deal-month-locked {
+  display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; padding: 8px 10px; border-radius: 8px;
+  background: rgba(239, 68, 68, 0.08); color: #b91c1c; font-size: 12.5px; line-height: 1.4;
+}
 /* Программа рассрочки: подсказка под селектом и блокировка полей у строгой. */
 .program-hint { margin-top: 6px; }
 .program-hint--warn { color: #b45309; }

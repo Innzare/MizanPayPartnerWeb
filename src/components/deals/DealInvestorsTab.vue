@@ -12,7 +12,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSections } from '@/composables/useSections'
-import { formatCurrency, formatCurrencyShort, formatPercent } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDateShortYear, formatPercent } from '@/utils/formatters'
 import type { Deal } from '@/types'
 import type { useDealProfit } from '@/composables/useDealProfit'
 
@@ -82,6 +82,9 @@ const {
           <div class="iv-person-text">
             <div class="iv-name">{{ ci.name }}</div>
             <div v-if="ci.phone" class="iv-phone">{{ ci.phone }}</div>
+            <!-- Подключён позже создания сделки («во всех сделках кассы»):
+                 оплаты до этой даты делятся без него. -->
+            <div v-if="ci.activeFrom" class="iv-phone">Участвует с {{ formatDateShortYear(ci.activeFrom) }}</div>
           </div>
         </div>
 

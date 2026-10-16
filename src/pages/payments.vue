@@ -1,4 +1,6 @@
 <script lang="ts" setup>
+import UnmarkPaidDialog from '@/components/UnmarkPaidDialog.vue'
+import { useMonthLocks } from '@/composables/useMonthLocks'
 import SearchInput from '@/components/SearchInput.vue'
 import { usePaymentsStore } from '@/stores/payments'
 import { useDealsStore } from '@/stores/deals'
@@ -1141,18 +1143,32 @@ async function onMarkPaidDone() {
 
 const unpaidLoading = ref<string | null>(null)
 
-async function handleUnmarkPaid(e: Event, payment: Payment) {
+// Отмена оплаты — через окно подтверждения с причиной (UnmarkPaidDialog).
+const unmarkTarget = ref<Payment | null>(null)
+const unmarkOpen = ref(false)
+const unmarkDealLabel = computed(() => {
+  const p = unmarkTarget.value
+  if (!p) return null
+  const client = getClientName(p)
+  return [getDealName(p), client !== '—' ? client : null].filter(Boolean).join(' · ')
+})
+
+// Закрытые месяцы касс: у их оплат отмена недоступна (сервер тоже откажет).
+const monthLocks = useMonthLocks()
+function unmarkLocked(payment: Payment): boolean {
+  return monthLocks.isLocked(getDealForPayment(payment)?.cashBoxId, payment.paidAt)
+}
+
+function handleUnmarkPaid(e: Event, payment: Payment) {
   e.stopPropagation()
-  unpaidLoading.value = payment.id
-  try {
-    await paymentsStore.unmarkPaid(payment.id, payment.dealId)
-    toast.success('Оплата отменена')
-    await refreshList()
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка при отмене оплаты')
-  } finally {
-    unpaidLoading.value = null
-  }
+  if (unmarkLocked(payment)) return
+  unmarkTarget.value = payment
+  unmarkOpen.value = true
+}
+
+async function onUnmarkDone() {
+  unmarkTarget.value = null
+  await refreshList()
 }
 
 function openReschedule(e: Event, payment: Payment) {
@@ -1676,7 +1692,7 @@ async function onRescheduled() {
                     <div v-else class="d-flex align-center justify-center">
                       <v-tooltip text="Отменить оплату" location="top">
                         <template #activator="{ props }">
-                          <button v-bind="props" class="action-btn action-btn--danger" :disabled="unpaidLoading === p.id" @click.stop="handleUnmarkPaid($event, p)">
+                          <button v-bind="props" class="action-btn action-btn--danger" :disabled="unpaidLoading === p.id || unmarkLocked(p)" :title="unmarkLocked(p) ? monthLocks.lockReason(p.paidAt!) : undefined" @click.stop="handleUnmarkPaid($event, p)">
                             <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
                             <v-icon v-else icon="mdi-undo" size="16" />
                           </button>
@@ -1943,7 +1959,7 @@ async function onRescheduled() {
                 <div v-else class="d-flex align-center justify-center">
                   <v-tooltip text="Отменить оплату" location="top">
                     <template #activator="{ props }">
-                      <button v-bind="props" class="action-btn action-btn--danger" :disabled="unpaidLoading === row.payment.id" @click="handleUnmarkPaid($event, row.payment)">
+                      <button v-bind="props" class="action-btn action-btn--danger" :disabled="unpaidLoading === row.payment.id || unmarkLocked(row.payment)" :title="unmarkLocked(row.payment) ? monthLocks.lockReason(row.payment.paidAt!) : undefined" @click="handleUnmarkPaid($event, row.payment)">
                         <v-progress-circular v-if="unpaidLoading === row.payment.id" indeterminate size="12" width="2" />
                         <v-icon v-else icon="mdi-undo" size="16" />
                       </button>
@@ -2038,7 +2054,8 @@ async function onRescheduled() {
               <button
                 v-if="p.status === 'PAID'"
                 class="action-btn action-btn--danger"
-                :disabled="unpaidLoading === p.id"
+                :disabled="unpaidLoading === p.id || unmarkLocked(p)"
+                :title="unmarkLocked(p) ? monthLocks.lockReason(p.paidAt!) : undefined"
                 @click="handleUnmarkPaid($event, p)"
               >
                 <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
@@ -2137,6 +2154,7 @@ async function onRescheduled() {
       @remove-preset="filters.removePreset($event)"
     />
 
+  <UnmarkPaidDialog v-model="unmarkOpen" :payment="unmarkTarget" :deal-label="unmarkDealLabel" @done="onUnmarkDone" />
 </template>
 
 <style scoped>

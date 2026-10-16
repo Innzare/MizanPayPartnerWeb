@@ -20,6 +20,7 @@ import { rangeForPreset } from '@/composables/useReports'
 import { formatCurrency, maskedMoney, parseMasked, CURRENCY_MASK } from '@/utils/formatters'
 import MonthYearPicker from '@/components/MonthYearPicker.vue'
 import SelectField from '@/components/SelectField.vue'
+import { useMonthLocks } from '@/composables/useMonthLocks'
 import type { PeriodRange } from '@/types/reports'
 import type { InvestorPerson } from '@/types'
 
@@ -56,6 +57,8 @@ interface MonthRow {
   earned: number
   paid: number
   reinvested: number
+  /** Из них проведено автоматически (авто-реинвест в день расчёта). */
+  reinvestedAuto?: number
   owedStart: number
   owedEnd: number
   owedNow: number
@@ -78,6 +81,19 @@ interface MonthData {
   }
   rows: MonthRow[]
   totals: Record<string, number>
+  /** Закрытие месяца: состояние и что с ним можно сделать сейчас. */
+  close?: {
+    closed: { closedAt: string; closedByName: string | null; snapshot: CloseSnapshot | null } | null
+    lastClosed: string | null
+    canClose: boolean
+    closeBlocked: string | null
+    canReopen: boolean
+  }
+}
+/** Итоги месяца на момент закрытия. */
+interface CloseSnapshot {
+  partner?: { earned?: number }
+  rows?: Array<{ id: string; name: string; capitalEnd: number; earned: number; paid: number; reinvested: number; owedEnd: number }>
 }
 
 const route = useRoute()
@@ -180,6 +196,71 @@ function dayMonth(iso: string | null) {
   const d = new Date(iso)
   return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}`
 }
+
+// ── Закрытие месяца ──
+// После «Расчёта за месяц» месяц закрывают: его оплаты, выплаты и удаление
+// сделок становятся недоступны, пока владелец его не откроет. Закрывают по
+// порядку; открыть можно только последний закрытый.
+const monthLocks = useMonthLocks()
+const closeInfo = computed(() => data.value?.close ?? null)
+const isClosed = computed(() => !!closeInfo.value?.closed)
+const closeDialog = ref<'close' | 'reopen' | null>(null)
+const closingBusy = ref(false)
+
+async function confirmCloseAction() {
+  if (!data.value || !closeDialog.value || closingBusy.value) return
+  const action = closeDialog.value
+  closingBusy.value = true
+  try {
+    data.value = await api.post<MonthData>(`/co-investors/month/${action === 'close' ? 'close' : 'reopen'}`, {
+      cashBoxId: data.value.cashBox.id,
+      month: month.value,
+      tz: TZ,
+    })
+    closeDialog.value = null
+    void monthLocks.refresh()
+    toast.success(action === 'close' ? `${monthLabel.value} закрыт` : `${monthLabel.value} открыт`)
+    emit('changed')
+  } catch (e: any) {
+    toast.error(e?.message || 'Не получилось')
+  } finally {
+    closingBusy.value = false
+  }
+}
+
+function closedWhen(iso: string) {
+  return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+}
+
+/**
+ * Что изменилось после закрытия: сравниваем итоги на момент закрытия с
+ * нынешними. Деньги закрытого месяца менять нельзя, но правка цены сделки и
+ * условий инвестора разрешена — и она пересчитывает прошлые месяцы.
+ */
+const snapshotDiff = computed(() => {
+  const snap = closeInfo.value?.closed?.snapshot
+  // Только владельцу: сотрудник с доступом к части сделок видит доход партнёра
+  // по своим сделкам, и сравнение с полным снимком показало бы ложные изменения.
+  if (!auth.isOwner || !snap?.rows || !data.value) return []
+  const now = new Map(data.value.rows.map((r) => [r.id, r]))
+  const out: Array<{ name: string; label: string; was: number; now: number }> = []
+  const fields: Array<[keyof NonNullable<CloseSnapshot['rows']>[number], string]> = [
+    ['earned', 'начислено'], ['paid', 'выплачено'], ['reinvested', 'реинвест'], ['owedEnd', 'долг на конец'],
+  ]
+  for (const was of snap.rows) {
+    const cur = now.get(was.id)
+    for (const [k, label] of fields) {
+      const a = Number(was[k] ?? 0)
+      const b = Number((cur as any)?.[k] ?? 0)
+      if (Math.round(a) !== Math.round(b)) out.push({ name: was.name, label, was: a, now: b })
+    }
+  }
+  const pWas = snap.partner?.earned
+  if (pWas != null && Math.round(pWas) !== Math.round(data.value.partner.earned)) {
+    out.push({ name: 'Вам', label: 'доход', was: pWas, now: data.value.partner.earned })
+  }
+  return out
+})
 function personOf(r: MonthRow) { return props.persons.find((p) => p.id === r.personId) ?? null }
 function openRow(r: MonthRow) { if (r.personId) router.push(`/co-investors/person/${r.personId}`) }
 
@@ -370,11 +451,27 @@ async function submitSettle() {
         v-if="auth.can('coinvestors.dividends')"
         type="button"
         class="cim-btn cim-btn--primary"
-        :disabled="!data || data.isFuture || !activeRows.length"
+        :disabled="!data || data.isFuture || !activeRows.length || isClosed"
+        :title="isClosed ? 'Месяц закрыт — сначала откройте его' : undefined"
         @click="openSettle"
       >
         <v-icon icon="mdi-calculator-variant-outline" size="18" />
         <span>Расчёт за месяц</span>
+      </button>
+      <span v-if="isClosed" class="cim-closed-chip">
+        <v-icon icon="mdi-lock-outline" size="15" />
+        Закрыт
+      </span>
+      <button
+        v-else-if="auth.can('coinvestors.closeMonth') && data && !data.isFuture && closeInfo"
+        type="button"
+        class="cim-btn"
+        :disabled="!closeInfo.canClose"
+        :title="closeInfo.closeBlocked || 'Зафиксировать месяц: его оплаты и выплаты станут недоступны'"
+        @click="closeDialog = 'close'"
+      >
+        <v-icon icon="mdi-lock-outline" size="18" />
+        <span>Закрыть месяц</span>
       </button>
       <button v-if="auth.can('coinvestors.create')" type="button" class="cim-btn" @click="emit('create')">
         <v-icon icon="mdi-plus" size="18" />
@@ -428,6 +525,33 @@ async function submitSettle() {
       <div v-if="data.isFuture" class="cim-note">
         <v-icon icon="mdi-information-outline" size="16" />
         Месяц ещё не наступил — показаны только записи, уже сделанные на эти даты.
+      </div>
+
+      <div v-if="closeInfo?.closed" class="cim-closed">
+        <div class="cim-closed-main">
+          <v-icon icon="mdi-lock-outline" size="18" />
+          <div>
+            <div class="cim-closed-title">
+              {{ monthLabel }} закрыт {{ closedWhen(closeInfo.closed.closedAt) }}<template v-if="closeInfo.closed.closedByName"> · {{ closeInfo.closed.closedByName }}</template>
+            </div>
+            <div class="cim-closed-sub">Оплаты, выплаты инвесторам и удаление сделок этого месяца недоступны.</div>
+          </div>
+          <button
+            v-if="auth.isOwner && closeInfo.canReopen"
+            type="button"
+            class="cim-btn cim-btn--sm"
+            @click="closeDialog = 'reopen'"
+          >Открыть месяц</button>
+        </div>
+        <div v-if="snapshotDiff.length" class="cim-closed-diff">
+          <div class="cim-closed-diff-title">
+            <v-icon icon="mdi-alert-outline" size="15" />
+            После закрытия цифры изменились — скорее всего, поменяли цену сделки или условия инвестора:
+          </div>
+          <div v-for="(d, i) in snapshotDiff" :key="i" class="cim-closed-diff-row">
+            {{ d.name }}, {{ d.label }}: было {{ formatCurrency(d.was) }}, стало {{ formatCurrency(d.now) }}
+          </div>
+        </div>
       </div>
 
       <div class="cim-scroll" :class="{ 'cim-scroll--loading': loading }">
@@ -524,7 +648,12 @@ async function submitSettle() {
               </td>
               <td class="cim-num" :class="{ 'cim-c-out': r.owedStart < 0 }">{{ money(r.owedStart) }}</td>
               <td class="cim-num">{{ money(r.paid) }}</td>
-              <td class="cim-num">{{ money(r.reinvested) }}</td>
+              <td class="cim-num">
+                {{ money(r.reinvested) }}
+                <div v-if="r.reinvestedAuto" class="cim-sub" title="Проведено автоматически в день расчёта">
+                  авто {{ formatCurrency(r.reinvestedAuto) }}
+                </div>
+              </td>
               <td class="cim-num cim-strong">
                 <template v-if="r.owedEnd < 0">
                   <div class="cim-c-out">{{ formatCurrency(r.owedEnd) }}</div>
@@ -594,6 +723,40 @@ async function submitSettle() {
     <div v-else class="cim-loading">
       <v-progress-circular indeterminate color="primary" size="32" />
     </div>
+
+    <!-- Закрытие / открытие месяца -->
+    <v-dialog :model-value="!!closeDialog" max-width="440" :persistent="closingBusy" @update:model-value="(v) => { if (!v) closeDialog = null }">
+      <v-card rounded="lg" class="cim-cd">
+        <div class="cim-cd-title">
+          {{ closeDialog === 'close' ? `Закрыть ${monthLabel.toLowerCase()}?` : `Открыть ${monthLabel.toLowerCase()}?` }}
+        </div>
+        <template v-if="closeDialog === 'close'">
+          <ul class="cim-cd-list">
+            <li>Оплаты с датой этого месяца нельзя будет отметить или отменить.</li>
+            <li>Расчёт за месяц, выплаты и реинвест за него станут недоступны.</li>
+            <li>Сделки с деньгами этого месяца нельзя будет удалить, отменить или перенести в другую кассу.</li>
+            <li>Итоги месяца сохранятся — если цифры потом изменятся, это будет видно.</li>
+          </ul>
+          <div v-if="!closeInfo?.lastClosed" class="cim-cd-note mb-2">
+            Это первое закрытие в кассе. Месяцы до него останутся открытыми — их изменения могут сдвинуть
+            «долг на начало» закрытого месяца. Дальше месяцы закрываются строго по порядку.
+          </div>
+          <div class="cim-cd-note">Открыть месяц сможет только владелец.</div>
+        </template>
+        <template v-else>
+          <div class="cim-cd-note">
+            Оплаты и выплаты этого месяца снова можно будет менять. Сохранённые итоги закрытия удалятся.
+          </div>
+        </template>
+        <div class="cim-cd-actions">
+          <button type="button" class="cim-btn" :disabled="closingBusy" @click="closeDialog = null">Отмена</button>
+          <button type="button" class="cim-btn cim-btn--primary" :disabled="closingBusy" @click="confirmCloseAction">
+            <v-progress-circular v-if="closingBusy" indeterminate size="15" width="2" color="white" />
+            {{ closeDialog === 'close' ? 'Закрыть месяц' : 'Открыть месяц' }}
+          </button>
+        </div>
+      </v-card>
+    </v-dialog>
 
     <!-- Расчёт за месяц -->
     <v-dialog v-model="settleOpen" max-width="1040" scrollable :fullscreen="isMobile">
@@ -785,6 +948,27 @@ async function submitSettle() {
 .cim-kpi-val { font-size: 21px; font-weight: 800; margin-top: 3px; font-variant-numeric: tabular-nums; letter-spacing: -0.2px; }
 .cim-kpi-note { font-size: 11.5px; color: #dc2626; margin-top: 2px; }
 
+.cim-closed-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 36px; padding: 0 12px;
+  border-radius: 10px; font-size: 13px; font-weight: 600;
+  background: rgba(var(--v-theme-on-surface), 0.06); color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.cim-closed {
+  margin: 0 16px 12px; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12); background: rgba(var(--v-theme-on-surface), 0.03);
+}
+.cim-closed-main { display: flex; align-items: center; gap: 10px; }
+.cim-closed-main > div { flex: 1; min-width: 0; }
+.cim-closed-title { font-size: 13.5px; font-weight: 600; }
+.cim-closed-sub { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6); margin-top: 2px; }
+.cim-closed-diff { margin-top: 10px; padding-top: 10px; border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.15); font-size: 12.5px; }
+.cim-closed-diff-title { display: flex; gap: 6px; align-items: center; color: #b45309; font-weight: 600; margin-bottom: 4px; }
+.cim-closed-diff-row { color: rgba(var(--v-theme-on-surface), 0.75); padding-left: 21px; }
+.cim-cd { padding: 20px; }
+.cim-cd-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+.cim-cd-list { margin: 0 0 10px; padding-left: 18px; font-size: 13px; line-height: 1.55; color: rgba(var(--v-theme-on-surface), 0.75); }
+.cim-cd-note { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6); }
+.cim-cd-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
 .cim-note {
   display: flex; align-items: center; gap: 6px; margin: 12px 16px 0;
   font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.65);
@@ -794,16 +978,21 @@ async function submitSettle() {
 .cim-scroll--loading { opacity: 0.55; pointer-events: none; }
 .cim-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .cim-table thead th {
-  text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  padding: 10px 12px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.1); white-space: nowrap;
-  background: rgb(var(--v-theme-surface));
+  text-align: left; font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  color: rgba(var(--v-theme-on-surface), 0.72);
+  padding: 12px 12px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.16); white-space: nowrap;
+  vertical-align: middle;
+  /* Подложка поверх фона карточки: шапка отделена от строк и при прокрутке. */
+  background: linear-gradient(rgba(var(--v-theme-on-surface), 0.04), rgba(var(--v-theme-on-surface), 0.04)), rgb(var(--v-theme-surface));
 }
 .cim-table tbody td, .cim-table tfoot td {
-  padding: 10px 12px; vertical-align: top; font-size: 13.5px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05);
+  padding: 10px 12px; vertical-align: middle; font-size: 14px; font-weight: 500;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
   white-space: nowrap;
 }
+/* Цвет значений — с нулевым весом селектора: цветные классы на самой ячейке
+   (переплата, доля партнёра, «остаток») должны его перекрывать. */
+:where(.cim-table) :where(tbody, tfoot) :where(td) { color: rgba(var(--v-theme-on-surface), 0.87); }
 .cim-table tfoot td {
   font-weight: 700; border-top: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-bottom: none;
   background: rgba(var(--v-theme-on-surface), 0.02);

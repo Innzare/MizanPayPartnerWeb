@@ -103,6 +103,8 @@ const layoutReady = computed(() =>
 // this cashbox? true = partner invests alongside co-investors; false = partner
 // only manages (their cut comes from each CI's commission).
 const partnerParticipates = ref(true)
+// Вес партнёра в делёже: начальный капитал кассы или фактический на начало месяца.
+const partnerCapitalActual = ref(false)
 const submitting = ref(false)
 
 // Palette of preset colors + icons — consistent with deal folders
@@ -143,6 +145,7 @@ watch(
       icon.value = props.cashbox.icon
       initialCapital.value = props.cashbox.initialCapital
       partnerParticipates.value = props.cashbox.partnerParticipatesByCapital ?? true
+      partnerCapitalActual.value = props.cashbox.partnerCapitalActual ?? false
       loadContent()
     } else {
       hasContent.value = false
@@ -151,6 +154,7 @@ watch(
       icon.value = 'mdi-wallet-outline'
       initialCapital.value = null
       partnerParticipates.value = true
+      partnerCapitalActual.value = false
     }
   },
 )
@@ -176,6 +180,7 @@ async function handleSave() {
       icon: icon.value,
       initialCapital: initialCapital.value ?? 0,
       partnerParticipatesByCapital: partnerParticipates.value,
+      partnerCapitalActual: partnerParticipates.value && partnerCapitalActual.value,
     }
     const box = props.cashbox
       ? await store.update(props.cashbox.id, payload)
@@ -369,7 +374,37 @@ async function handleSave() {
             Комиссия задаётся отдельно у каждого инвестора «по вкладу» и работает в <b>обоих</b> режимах —
             вы забираете её с доли инвестора независимо от этого переключателя.
           </div>
-          <div v-if="partnerParticipates && !(initialCapital && initialCapital > 0)" class="cb-warn">
+          <template v-if="partnerParticipates">
+            <label class="cb-label cb-label--sub">Ваш капитал в делёже</label>
+            <div class="cb-part-toggle">
+              <button
+                type="button"
+                class="cb-part-opt"
+                :class="{ active: !partnerCapitalActual }"
+                @click="partnerCapitalActual = false"
+              >
+                <v-icon icon="mdi-lock-outline" size="18" />
+                <span class="cb-part-name">Начальный капитал</span>
+                <span class="cb-part-sub">Всегда сумма начального капитала кассы</span>
+              </button>
+              <button
+                type="button"
+                class="cb-part-opt"
+                :class="{ active: partnerCapitalActual }"
+                @click="partnerCapitalActual = true"
+              >
+                <v-icon icon="mdi-chart-timeline-variant" size="18" />
+                <span class="cb-part-name">Фактический</span>
+                <span class="cb-part-sub">На начало месяца: вложено + прибыль − снято − расходы</span>
+              </button>
+            </div>
+            <div class="cb-hint">
+              «Фактический» — как в Excel: ваша прибыль, которую вы не сняли, работает в кассе и увеличивает
+              ваш вес в делёже, а снятия и расходы бизнеса — уменьшают. Действует с 1-го числа следующего
+              месяца, прошлые начисления не пересчитываются.
+            </div>
+          </template>
+          <div v-if="partnerParticipates && !partnerCapitalActual && !(initialCapital && initialCapital > 0)" class="cb-warn">
             <v-icon icon="mdi-alert-outline" size="14" />
             Начальный капитал кассы — 0. При «Вкладываю капитал» ваш вклад в делёж по вкладу тоже 0,
             поэтому вся прибыль «по вкладу» уйдёт инвесторам. Укажите ваш капитал выше или переключитесь на «Только управляю».
@@ -571,6 +606,7 @@ async function handleSave() {
 .cb-part-opt.active .cb-part-sub { color: #047857; }
 .cb-dialog.dark .cb-part-opt { border-color: rgb(var(--v-theme-surface-elevated)); color: rgba(var(--v-theme-on-surface), 0.65); }
 .cb-dialog.dark .cb-part-opt.active { border-color: #047857; color: #10b981; }
+.cb-label--sub { display: block; margin-top: 12px; }
 .cb-warn {
   display: flex; align-items: flex-start; gap: 6px;
   margin-top: 8px; padding: 8px 10px; border-radius: 8px;

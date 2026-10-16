@@ -378,10 +378,11 @@ export const useDealsStore = defineStore('deals', () => {
   }
 
   async function restoreBatch(ids: string[]) {
-    await api.post('/deals/trash/restore-batch', { ids })
+    const res = await api.post<{ restored: number; skippedClosedMonth?: number }>('/deals/trash/restore-batch', { ids })
     trash.value = trash.value.filter((d) => !ids.includes(d.id))
     trashTotal.value = Math.max(0, trashTotal.value - ids.length)
     trashCount.value = Math.max(0, trashCount.value - ids.length)
+    return res
   }
 
   async function permanentDelete(id: string) {

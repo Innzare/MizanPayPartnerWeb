@@ -351,7 +351,7 @@ function openCreate() {
   }
   // Preselect the scoped/default cashbox as the first block (Task 3).
   cashBoxBlocks.value = preselectedCashBoxId
-    ? [{ cashBoxId: preselectedCashBoxId, capital: 0, shareType: 'WEIGHT', profitPercent: 30, managementFeePct: 0, costFeeDefaultRatePct: null }]
+    ? [{ cashBoxId: preselectedCashBoxId, capital: 0, shareType: 'WEIGHT', profitPercent: 30, managementFeePct: 0, costFeeDefaultRatePct: null, allCashboxDeals: false, autoReinvest: autoReinvestDefault.value }]
     : []
   showDialog.value = true
 }
@@ -393,6 +393,8 @@ async function saveCoInvestor() {
         payoutSchedule: form.value.payoutSchedule,
         nextPayoutDate: form.value.nextPayoutDate ? new Date(form.value.nextPayoutDate).toISOString() : null,
         cashBoxId: first.cashBoxId,
+        allCashboxDeals: first?.shareType !== 'COST_FEE' && !!first?.allCashboxDeals,
+        autoReinvest: !!first?.autoReinvest,
       })
       let personId = created.personId ?? null
 
@@ -421,6 +423,8 @@ async function saveCoInvestor() {
                   ? Number(b.costFeeDefaultRatePct)
                   : null,
               payoutSchedule: form.value.payoutSchedule,
+              allCashboxDeals: b.shareType !== 'COST_FEE' && b.allCashboxDeals,
+              autoReinvest: b.autoReinvest,
             }),
           ),
         )
@@ -447,8 +451,37 @@ type CashBoxBlock = {
   profitPercent: number
   managementFeePct: number
   costFeeDefaultRatePct: number | null
+  /** Участие во всех сделках кассы, включая созданные до вступления. */
+  allCashboxDeals: boolean
+  /** Авто-реинвест невыплаченного в день расчёта. */
+  autoReinvest: boolean
 }
 const cashBoxBlocks = ref<CashBoxBlock[]>([])
+
+// ── Настройки инвесторов: авто-реинвест по умолчанию для новых ──
+const autoReinvestDefault = ref(false)
+const savingAutoDefault = ref(false)
+async function loadInvestorSettings() {
+  try {
+    const r = await api.get<{ autoReinvestDefault: boolean }>('/co-investors/settings')
+    autoReinvestDefault.value = !!r.autoReinvestDefault
+  } catch { /* без настроек — по умолчанию выключено */ }
+}
+async function setAutoReinvestDefault(v: boolean | null) {
+  const next = !!v
+  if (savingAutoDefault.value || next === autoReinvestDefault.value) return
+  savingAutoDefault.value = true
+  try {
+    const r = await api.patch<{ autoReinvestDefault: boolean }>('/co-investors/settings', { autoReinvestDefault: next })
+    autoReinvestDefault.value = !!r.autoReinvestDefault
+    toast.success(next ? 'Новым инвесторам авто-реинвест будет включён' : 'Новым инвесторам авто-реинвест будет выключен')
+  } catch (e: any) {
+    toast.error(e?.message || 'Не удалось сохранить настройку')
+  } finally {
+    savingAutoDefault.value = false
+  }
+}
+void loadInvestorSettings()
 
 // Cashboxes the create dialog can offer (all non-archived — a brand-new
 // investor participates nowhere yet).
@@ -472,6 +505,8 @@ function toggleCashBox(id: string) {
       profitPercent: 30,
       managementFeePct: 0,
       costFeeDefaultRatePct: null,
+      allCashboxDeals: false,
+      autoReinvest: autoReinvestDefault.value,
     })
   }
 }
@@ -637,6 +672,32 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             <div class="text-caption text-medium-emphasis mr-2">
               {{ filteredPersons.length }} из {{ persons.length }}
             </div>
+            <v-menu :close-on-content-click="false" location="bottom end">
+              <template #activator="{ props }">
+                <button v-bind="props" class="ci-settings-btn" title="Настройки инвесторов">
+                  <v-icon icon="mdi-cog-outline" size="18" />
+                </button>
+              </template>
+              <v-card rounded="lg" class="ci-settings-card">
+                <div class="ci-settings-title">Для новых инвесторов</div>
+                <label class="ci-auto">
+                  <div class="ci-auto-text">
+                    <div class="ci-auto-title">Авто-реинвест по умолчанию</div>
+                    <div class="ci-field-hint">Включается у каждого нового инвестора; потом его можно поменять в карточке.</div>
+                  </div>
+                  <v-switch
+                    :model-value="autoReinvestDefault"
+                    :loading="savingAutoDefault"
+                    :disabled="savingAutoDefault"
+                    color="primary"
+                    inset
+                    density="compact"
+                    hide-details
+                    @update:model-value="setAutoReinvestDefault"
+                  />
+                </label>
+              </v-card>
+            </v-menu>
             <button class="ci-add-btn" @click="openCreate">
               <v-icon icon="mdi-plus" size="18" />
               <span class="d-none d-sm-inline">Добавить инвестора</span>
@@ -831,6 +892,32 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             <div class="text-caption text-medium-emphasis mr-2">
               {{ filteredPersons.length }} из {{ persons.length }}
             </div>
+            <v-menu :close-on-content-click="false" location="bottom end">
+              <template #activator="{ props }">
+                <button v-bind="props" class="ci-settings-btn" title="Настройки инвесторов">
+                  <v-icon icon="mdi-cog-outline" size="18" />
+                </button>
+              </template>
+              <v-card rounded="lg" class="ci-settings-card">
+                <div class="ci-settings-title">Для новых инвесторов</div>
+                <label class="ci-auto">
+                  <div class="ci-auto-text">
+                    <div class="ci-auto-title">Авто-реинвест по умолчанию</div>
+                    <div class="ci-field-hint">Включается у каждого нового инвестора; потом его можно поменять в карточке.</div>
+                  </div>
+                  <v-switch
+                    :model-value="autoReinvestDefault"
+                    :loading="savingAutoDefault"
+                    :disabled="savingAutoDefault"
+                    color="primary"
+                    inset
+                    density="compact"
+                    hide-details
+                    @update:model-value="setAutoReinvestDefault"
+                  />
+                </label>
+              </v-card>
+            </v-menu>
             <button class="ci-add-btn" @click="openCreate">
               <v-icon icon="mdi-plus" size="18" />
               <span>Добавить инвестора</span>
@@ -1241,6 +1328,39 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
                 <span class="ci-field-suffix">%</span>
               </div>
             </div>
+
+            <!-- Участие в сделках -->
+            <div v-if="block.shareType !== 'COST_FEE'" class="ci-field ci-scope mb-1">
+              <label class="ci-field-label">Участие в сделках</label>
+              <div class="ci-seg">
+                <button
+                  type="button"
+                  class="ci-seg-btn"
+                  :class="{ 'ci-seg-btn--active': !block.allCashboxDeals }"
+                  @click="block.allCashboxDeals = false"
+                >Только новые сделки</button>
+                <button
+                  type="button"
+                  class="ci-seg-btn"
+                  :class="{ 'ci-seg-btn--active': block.allCashboxDeals }"
+                  @click="block.allCashboxDeals = true"
+                >Все сделки кассы</button>
+              </div>
+              <div class="ci-field-hint">
+                {{ block.allCashboxDeals
+                  ? 'Доля и со сделок, созданных до вступления, — с оплат начиная с сегодняшнего дня.'
+                  : 'Доля только со сделок, созданных после вступления.' }}
+              </div>
+            </div>
+
+            <!-- Авто-реинвест -->
+            <label class="ci-auto">
+              <div class="ci-auto-text">
+                <div class="ci-auto-title">Авто-реинвест</div>
+                <div class="ci-field-hint">В день «Следующей выплаты» невыплаченная прибыль за прошлый месяц сама добавится к капиталу.</div>
+              </div>
+              <v-switch v-model="block.autoReinvest" color="primary" inset density="compact" hide-details />
+            </label>
           </div>
 
           <!-- Payout schedule -->
@@ -1541,6 +1661,32 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
 </template>
 
 <style scoped>
+.ci-auto {
+  display: flex; align-items: center; gap: 12px; margin-top: 12px; cursor: pointer;
+  padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.ci-auto-text { flex: 1; min-width: 0; }
+.ci-auto-title { font-size: 13px; font-weight: 600; }
+.ci-auto .ci-field-hint { margin-top: 3px; }
+.ci-settings-btn {
+  width: 38px; height: 38px; border-radius: 10px; cursor: pointer; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12); background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+}
+.ci-settings-card { padding: 14px; width: 340px; max-width: calc(100vw - 32px); }
+.ci-settings-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.ci-settings-card .ci-auto { margin-top: 8px; }
+.ci-scope { margin-top: 14px; }
+.ci-seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px;
+  border-radius: 10px; background: rgba(var(--v-theme-on-surface), 0.05);
+}
+.ci-seg-btn {
+  height: 34px; border: none; border-radius: 8px; cursor: pointer; background: transparent;
+  font-size: 12.5px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.ci-seg-btn--active { background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.92); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
 /* ── Stats row (same pattern as other pages) ── */
 .stats-row {
   display: grid;

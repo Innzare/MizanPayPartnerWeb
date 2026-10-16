@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { api } from '@/api/client'
 import { computed, ref, watch } from 'vue'
 import { vMaska } from 'maska/vue'
 import { useCoInvestors } from '@/composables/useCoInvestors'
@@ -67,10 +68,19 @@ type StakeBlock = {
   profitPercent: number
   managementFeePct: number
   costFeeDefaultRatePct: number | null
+  /** Участие во всех сделках кассы, а не только в новых. */
+  allCashboxDeals: boolean
+  /** Как было при открытии — чтобы объяснить, что сделает переключение. */
+  baseAllCashboxDeals: boolean
+  /** Авто-реинвест невыплаченного в день расчёта. */
+  autoReinvest: boolean
 }
 
 const loading = ref(false)
 const saving = ref(false)
+// Авто-реинвест для кассы, которую добавляют инвестору здесь же, — по
+// умолчанию кабинета (страница «Инвесторы» → Настройки).
+const autoReinvestDefault = ref(false)
 
 // ── Person section ──
 const pName = ref('')
@@ -113,6 +123,9 @@ watch(
         ? new Date(detail.person.nextPayoutDate).toISOString().slice(0, 10)
         : ''
       pShowPartnerShare.value = !!detail.person.showPartnerShareToInvestor
+      api.get<{ autoReinvestDefault: boolean }>('/co-investors/settings')
+        .then((r) => { autoReinvestDefault.value = !!r.autoReinvestDefault })
+        .catch(() => {})
 
       blocks.value = detail.stakes.map((s) => ({
         stakeId: s.id,
@@ -126,6 +139,9 @@ watch(
         profitPercent: s.profitPercent != null && s.profitPercent > 0 ? s.profitPercent : 30,
         managementFeePct: s.managementFeePct ?? 0,
         costFeeDefaultRatePct: s.costFeeDefaultRatePct ?? null,
+        allCashboxDeals: !!s.allCashboxDeals,
+        baseAllCashboxDeals: !!s.allCashboxDeals,
+        autoReinvest: !!s.autoReinvest,
       }))
       usedCashBoxIds.value = new Set(detail.stakes.map((s) => s.cashBox.id))
     } catch (e: any) {
@@ -169,8 +185,26 @@ function toggleCashBox(b: CashBoxSummary) {
       profitPercent: 30,
       managementFeePct: 0,
       costFeeDefaultRatePct: null,
+      allCashboxDeals: false,
+      baseAllCashboxDeals: false,
+      autoReinvest: autoReinvestDefault.value,
     })
   }
+}
+
+/** Подсказка под переключателем «Участие в сделках» — что произойдёт при сохранении. */
+function dealScopeHint(b: StakeBlock): string {
+  if (b.allCashboxDeals && !b.baseAllCashboxDeals) {
+    return b.stakeId
+      ? 'Подключим к уже существующим сделкам кассы — доля с их оплат начиная с сегодняшнего дня. Прошлые оплаты не пересчитываются.'
+      : 'Инвестор получит долю и со сделок, созданных до него, — с оплат начиная с сегодняшнего дня.'
+  }
+  if (!b.allCashboxDeals && b.baseAllCashboxDeals) {
+    return 'Новые сделки по-прежнему подключатся сами. Уже подключённые старые сделки останутся — убрать инвестора из конкретной сделки можно в самой сделке.'
+  }
+  return b.allCashboxDeals
+    ? 'Доля со всех сделок кассы — и созданных до вступления, и новых.'
+    : 'Доля только со сделок, созданных после вступления.'
 }
 
 function removeNewBlock(block: StakeBlock) {
@@ -218,6 +252,9 @@ function sharePayload(b: StakeBlock) {
       b.shareType === 'COST_FEE' && b.costFeeDefaultRatePct != null
         ? Number(b.costFeeDefaultRatePct)
         : null,
+    // «Комиссия от закупки» — всегда единственный участник своих сделок.
+    allCashboxDeals: b.shareType !== 'COST_FEE' && b.allCashboxDeals,
+    autoReinvest: b.autoReinvest,
   }
 }
 
@@ -495,6 +532,38 @@ async function save() {
               <span class="ced-suffix">%</span>
             </div>
           </div>
+
+          <!-- Участие в сделках -->
+          <div v-if="block.shareType !== 'COST_FEE'" class="ced-field ced-scope mb-1">
+            <label class="ced-label">Участие в сделках</label>
+            <div class="ced-seg">
+              <button
+                type="button"
+                class="ced-seg-btn"
+                :class="{ 'ced-seg-btn--active': !block.allCashboxDeals }"
+                @click="block.allCashboxDeals = false"
+              >Только новые сделки</button>
+              <button
+                type="button"
+                class="ced-seg-btn"
+                :class="{ 'ced-seg-btn--active': block.allCashboxDeals }"
+                @click="block.allCashboxDeals = true"
+              >Все сделки кассы</button>
+            </div>
+            <div class="ced-scope-hint">{{ dealScopeHint(block) }}</div>
+          </div>
+
+          <!-- Авто-реинвест -->
+          <label class="ced-auto">
+            <div class="ced-auto-text">
+              <div class="ced-auto-title">Авто-реинвест</div>
+              <div class="ced-scope-hint">
+                В день «Следующей выплаты» невыплаченная прибыль за прошлый месяц сама добавится к капиталу — доля инвестора растёт. Без даты — 1-го числа.
+                Что вы выплатили или реинвестировали сами до этого дня, не трогается.
+              </div>
+            </div>
+            <v-switch v-model="block.autoReinvest" color="primary" inset density="compact" hide-details />
+          </label>
         </div>
 
       </div>
@@ -511,6 +580,24 @@ async function save() {
 </template>
 
 <style scoped>
+.ced-scope { margin-top: 14px; }
+.ced-auto {
+  display: flex; align-items: center; gap: 12px; margin-top: 14px; cursor: pointer;
+  padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.ced-auto-text { flex: 1; min-width: 0; }
+.ced-auto-title { font-size: 13px; font-weight: 600; }
+.ced-auto .ced-scope-hint { margin-top: 3px; }
+.ced-seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px;
+  border-radius: 10px; background: rgba(var(--v-theme-on-surface), 0.05);
+}
+.ced-seg-btn {
+  height: 34px; border: none; border-radius: 8px; cursor: pointer; background: transparent;
+  font-size: 12.5px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.ced-seg-btn--active { background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.92); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
+.ced-scope-hint { margin-top: 6px; font-size: 12px; line-height: 1.45; color: rgba(var(--v-theme-on-surface), 0.55); }
 .ced-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 20px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);

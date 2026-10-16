@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useMonthLocks } from '@/composables/useMonthLocks'
 /**
  * Быстрая оплата из строки списка сделок.
  *
@@ -673,9 +674,15 @@ const shortfallUnhandled = computed(
     !forgivingValid.value,
 )
 
+// Дата оплаты в закрытом месяце кассы — сервер откажет; объясняем сразу.
+const monthLocks = useMonthLocks()
+const paidInClosedMonth = computed(() =>
+  !!paidAt.value && monthLocks.isLocked(target.value?.deal?.cashBoxId ?? null, `${paidAt.value}T12:00:00`),
+)
 const confirmDisabled = computed(
   () =>
     submitting.value ||
+    paidInClosedMonth.value ||
     !enteredAmount.value ||
     enteredAmount.value <= 0 ||
     forgiveBlocked.value ||
@@ -756,7 +763,7 @@ async function confirm_() {
         label: 'Отменить',
         handler: async () => {
           try {
-            await paymentsStore.unmarkPaid(paidId, dealId)
+            await paymentsStore.unmarkPaid(paidId, dealId, 'Отменено сразу после отметки')
             toast.success('Отметка снята')
             emit('paid', dealId)
           } catch (e: any) {
@@ -1243,6 +1250,11 @@ async function confirm_() {
             class="qp-late mt-1"
           >
             Оплата с задержкой — повлияет на рейтинг клиента
+          </div>
+
+          <div v-if="paidInClosedMonth" class="qp-closed mt-2">
+            <v-icon icon="mdi-lock-outline" size="15" />
+            <span>{{ monthLocks.lockReason(`${paidAt}T12:00:00`) }}. Выберите дату в открытом месяце, например сегодня.</span>
           </div>
 
           <div v-if="offMonth" class="qp-offmonth mt-2">
@@ -1817,6 +1829,10 @@ async function confirm_() {
   font-size: 12.5px; color: #0369a1;
   background: rgba(14, 165, 233, 0.07);
   border-radius: 10px; padding: 9px 12px;
+}
+.qp-closed {
+  display: flex; gap: 6px; align-items: flex-start; padding: 8px 10px; border-radius: 8px;
+  background: rgba(239, 68, 68, 0.08); color: #b91c1c; font-size: 12.5px; line-height: 1.4;
 }
 .qp-offmonth {
   display: flex; align-items: flex-start; gap: 7px;

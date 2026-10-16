@@ -56,6 +56,8 @@ export function useCoInvestors() {
       managementFeePct?: number
       costFeeMode?: boolean
       costFeeDefaultRatePct?: number | null
+      allCashboxDeals?: boolean
+      autoReinvest?: boolean
       name?: string
       phone?: string
       payoutSchedule?: string

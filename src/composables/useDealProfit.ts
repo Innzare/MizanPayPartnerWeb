@@ -31,6 +31,8 @@ export interface CoInvestorInfo {
   costFeeMode?: boolean
   costFeeDefaultRatePct?: number | null
   costFeeRatePct?: number | null
+  /** Подключён к сделке позже её создания — делит оплаты только с этой даты. */
+  activeFrom?: string | null
   }
 
 export interface DealCoInvestorsResponse {

@@ -120,6 +120,7 @@ declare module 'vue' {
     SupplierSelect: typeof import('./components/SupplierSelect.vue')['default']
     SuppliersListPanel: typeof import('./components/suppliers/SuppliersListPanel.vue')['default']
     SupplierSparkline: typeof import('./components/suppliers/SupplierSparkline.vue')['default']
+    UnmarkPaidDialog: typeof import('./components/UnmarkPaidDialog.vue')['default']
     UpgradePrompt: typeof import('./components/UpgradePrompt.vue')['default']
   }
 }

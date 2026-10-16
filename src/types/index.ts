@@ -423,6 +423,10 @@ export interface CoInvestor {
   // investor gets the rest of the markup. Actual rate is per-deal.
   costFeeMode?: boolean
   costFeeDefaultRatePct?: number | null
+  // Участвует во всех сделках кассы (и созданных до вступления), а не только в новых.
+  allCashboxDeals?: boolean
+  // Невыплаченная прибыль сама переходит в капитал в день расчёта.
+  autoReinvest?: boolean
   cashBoxId: string
   payoutSchedule?: PayoutSchedule
   // Planned date of the next dividend payout. Auto-advances after each
@@ -454,6 +458,8 @@ export interface PersonStake {
   managementFeePct?: number
   costFeeMode?: boolean
   costFeeDefaultRatePct?: number | null
+  allCashboxDeals?: boolean
+  autoReinvest?: boolean
   // Распределение прибыли по этой кассе (для раскрытия списка).
   coInvestorShare?: number
   myShare?: number
@@ -530,6 +536,8 @@ export interface AddStakeInput {
   managementFeePct?: number
   costFeeMode?: boolean
   costFeeDefaultRatePct?: number | null
+  allCashboxDeals?: boolean
+  autoReinvest?: boolean
   payoutSchedule?: PayoutSchedule
   nextPayoutDate?: string | null
 }
@@ -671,6 +679,8 @@ export interface DealParticipant {
   costFeeMode?: boolean
   costFeeDefaultRatePct?: number | null
   costFeeRatePct?: number | null
+  // Подключён к сделке позже её создания: делит оплаты только с этой даты.
+  activeFrom?: string | null
 }
 
 // GET/PUT co-investors/deal/:dealId response.

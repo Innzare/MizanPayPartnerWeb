@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import UnmarkPaidDialog from '@/components/UnmarkPaidDialog.vue'
+import { useMonthLocks } from '@/composables/useMonthLocks'
 import { useDealsStore } from '@/stores/deals'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { usePaymentsStore } from '@/stores/payments'
@@ -97,6 +99,8 @@ onMounted(async () => {
 })
 
 const deal = computed(() => dealsStore.getDeal(dealId.value))
+// Закрытые месяцы касс: у их оплат «Отменить оплату» недоступна.
+const monthLocks = useMonthLocks()
 // Процент наценки так, как считал партнёр: в режиме «от остатка после взноса» —
 // от (закупка − взнос), иначе — хранимый «от закупки».
 const markupShownPercent = computed(() => {
@@ -908,20 +912,17 @@ function toDateInput(d: string | Date): string {
 
 const unpaidLoading = ref<string | null>(null)
 
-async function confirmUnmarkPaid(p: typeof payments.value[0]) {
-  unpaidLoading.value = p.id
-  try {
-    await paymentsStore.unmarkPaid(p.id, p.dealId)
-    // Refresh THIS deal so paidPayments/remainingAmount/status update on the
-    // page without a hard reload. Single-deal fetch is much cheaper than
-    // fetchDeals() (which loads the partner's entire portfolio).
-    await dealsStore.fetchDeal(p.dealId)
-    toast.success('Оплата отменена')
-  } catch (e: any) {
-    toast.error(e.message || 'Ошибка при отмене оплаты')
-  } finally {
-    unpaidLoading.value = null
-  }
+// Отмена оплаты — через окно подтверждения с причиной (UnmarkPaidDialog).
+const unmarkTarget = ref<Payment | null>(null)
+const unmarkOpen = ref(false)
+function confirmUnmarkPaid(p: typeof payments.value[0]) {
+  unmarkTarget.value = p as Payment
+  unmarkOpen.value = true
+}
+async function onUnmarkDone(p: Payment) {
+  unmarkTarget.value = null
+  // Сделку перечитываем: paidPayments/remainingAmount/статус меняются.
+  await dealsStore.fetchDeal(p.dealId)
 }
 
 // Удалять строки графика из этого окна нельзя: договор заключён на N
@@ -1855,11 +1856,12 @@ async function confirmReopen() {
               <div v-else-if="p.status === 'PAID'" class="d-flex align-center justify-center">
                 <button
                   class="action-btn action-btn--danger"
-                  title="Отменить оплату"
-                  :disabled="unpaidLoading === p.id"
+                  :title="monthLocks.isLocked(deal?.cashBoxId, p.paidAt) ? monthLocks.lockReason(p.paidAt!) : 'Отменить оплату'"
+                  :disabled="unpaidLoading === p.id || monthLocks.isLocked(deal?.cashBoxId, p.paidAt)"
                   @click="confirmUnmarkPaid(p)"
                 >
                   <v-progress-circular v-if="unpaidLoading === p.id" indeterminate size="12" width="2" />
+                  <v-icon v-else-if="monthLocks.isLocked(deal?.cashBoxId, p.paidAt)" icon="mdi-lock-outline" size="16" />
                   <v-icon v-else icon="mdi-undo" size="16" />
                   <span class="sched-action-label">Отменить оплату</span>
                 </button>
@@ -2274,6 +2276,7 @@ async function confirmReopen() {
       </v-card>
     </v-dialog>
   </div>
+  <UnmarkPaidDialog v-model="unmarkOpen" :payment="unmarkTarget" @done="onUnmarkDone" />
 </template>
 
 <style scoped>

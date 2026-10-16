@@ -20,6 +20,8 @@ export interface CashBoxSummary {
   // cashbox (true) or partner only manages, taking a cut via each CI's
   // commission (false).
   partnerParticipatesByCapital: boolean
+  // Вес партнёра в делёже — фактический капитал на начало месяца, а не начальный.
+  partnerCapitalActual?: boolean
   balance: number
   inProgress: number
   activeDealsCount: number
@@ -46,6 +48,7 @@ export interface CreateCashBoxInput {
   icon?: string
   initialCapital?: number
   partnerParticipatesByCapital?: boolean
+  partnerCapitalActual?: boolean
 }
 
 export type UpdateCashBoxInput = Partial<CreateCashBoxInput>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useMonthLocks } from '@/composables/useMonthLocks'
 /**
  * Скидка на остаток договора — дать или убрать.
  *
@@ -32,6 +33,15 @@ const props = defineProps<{
   /** `remove` — убрать скидку целиком. По умолчанию — дать скидку. */
   action?: 'apply' | 'remove'
 }>()
+
+// Закрытые месяцы, в которые попадают оплаты сделки.
+const monthLocks = useMonthLocks()
+const closedMonths = computed(() => [...new Set(
+  (props.schedule ?? [])
+    .filter((p) => p.status === 'PAID' && p.paidAt && monthLocks.isLocked(props.deal?.cashBoxId, p.paidAt))
+    .map((p) => monthLocks.monthTitle(p.paidAt!)),
+)])
+
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
@@ -327,6 +337,13 @@ async function submit() {
         <div v-if="!isRemove && valid && outstandingAfter === 0" class="dd-note">
           <v-icon icon="mdi-flag-checkered" size="16" />
           <span>Скидка покрывает весь остаток — договор будет закрыт</span>
+        </div>
+        <!-- Скидка пересчитывает доход всех оплат сделки — и тех, что в
+             закрытых месяцах (мягко: можно, но итоги месяца разойдутся). -->
+        <div v-if="closedMonths.length" class="dd-note dd-note--warn">
+          <v-icon icon="mdi-lock-outline" size="14" />
+          У сделки есть оплаты в закрытых месяцах ({{ closedMonths.join(', ') }}). Скидка пересчитает их доход и доли
+          инвесторов — итоги этих месяцев разойдутся с сохранёнными при закрытии.
         </div>
         <div v-if="deal?.coInvestors?.length" class="dd-note dd-note--warn">
           <v-icon icon="mdi-account-multiple-outline" size="16" />

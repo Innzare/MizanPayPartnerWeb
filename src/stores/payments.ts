@@ -259,9 +259,10 @@ export const usePaymentsStore = defineStore('payments', () => {
     }
   }
 
-  async function unmarkPaid(paymentId: string, dealId: string) {
+  /** @param reason причина отмены — пишется в журнал и видна в истории сделки. */
+  async function unmarkPaid(paymentId: string, dealId: string, reason?: string) {
     try {
-      await api.patch<Payment>(`/payments/${paymentId}/unpaid`)
+      await api.patch<Payment>(`/payments/${paymentId}/unpaid`, reason ? { reason } : undefined)
       // Same reason as markAsPaid: backend redistributes PENDING amounts and
       // rewrites remainingAfter for every payment of this deal. Single-row
       // cache update would leave sister payments stale.
