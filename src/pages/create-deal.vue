@@ -201,7 +201,20 @@ const termMonths = ref(6)
 const paymentType = ref<PaymentType>('EQUAL')
 const paymentInterval = ref('MONTHLY')
 const dealDate = ref(new Date().toISOString().slice(0, 10))
+// Поле даты браузера пропускает недонабранный год: «05.05.26» становится
+// 05.05.0026, и такая сделка выпадала из итогов главной. Те же границы
+// проверяет сервер (common/sane-date.ts).
+const DATE_MIN = '2000-01-01'
+const DATE_MAX = '2100-12-31'
+function yearError(value: string | null | undefined, what: string): string {
+  if (!value) return ''
+  const y = Number(String(value).slice(0, String(value).indexOf('-')))
+  if (!Number.isFinite(y) || (y >= 2000 && y <= 2100)) return ''
+  return `${what}: год ${y} — похоже на опечатку. Укажите год полностью, например ${new Date().getFullYear()}`
+}
+const dealDateYearError = computed(() => yearError(dealDate.value, 'Дата заключения сделки'))
 const customFirstPayment = ref('')
+const firstPaymentYearError = computed(() => yearError(customFirstPayment.value, 'Дата первого платежа'))
 
 // Wholesale price (what partner actually paid the supplier) and
 // profit-split mode. Both optional — when wholesalePrice is null the
@@ -1229,6 +1242,12 @@ function confirmOverdraftAndSubmit() {
 }
 
 async function submitDeal(acknowledgedOverdraft = false) {
+  // Год, набранный не полностью: поле даты браузера превращает «26» в 0026.
+  const yearError = dealDateYearError.value || firstPaymentYearError.value
+  if (yearError) {
+    toast.error(yearError)
+    return
+  }
   // Insufficient-capital warning. Backend no longer blocks creation —
   // it just lets the cashbox go negative. Partners asked for a heads-up
   // so they don't accidentally overdraft. Edit mode skips the dialog
@@ -1936,12 +1955,14 @@ async function submitDeal(acknowledgedOverdraft = false) {
 
               <div class="form-field full-width">
                 <label class="field-label">Дата заключения сделки</label>
-                <input v-model="dealDate" type="date" class="field-input" />
+                <input v-model="dealDate" type="date" class="field-input" :min="DATE_MIN" :max="DATE_MAX" />
+                <div v-if="dealDateYearError" class="field-error-text">{{ dealDateYearError }}</div>
               </div>
 
               <div class="form-field full-width">
                 <label class="field-label">Дата первого платежа <span class="text-medium-emphasis">(необязательно)</span></label>
-                <input v-model="customFirstPayment" type="date" class="field-input" :placeholder="firstPaymentDate" />
+                <input v-model="customFirstPayment" type="date" class="field-input" :min="DATE_MIN" :max="DATE_MAX" :placeholder="firstPaymentDate" />
+                <div v-if="firstPaymentYearError" class="field-error-text">{{ firstPaymentYearError }}</div>
                 <div class="first-payment-hint">
                   <div class="first-payment-hint__icon">
                     <v-icon icon="mdi-calendar-clock" size="14" />
