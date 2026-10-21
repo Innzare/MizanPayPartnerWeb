@@ -430,6 +430,8 @@ function onRow(h: HistoryRow) {
       categoryId: h.ref.categoryId,
       cashBoxId: h.ref.cashBoxId,
       date: h.date,
+      affectsInvestors: h.ref.affectsInvestors,
+      fromCapital: h.ref.fromCapital,
     }
     showEditTx.value = true
   } else if (action === 'cancel') {

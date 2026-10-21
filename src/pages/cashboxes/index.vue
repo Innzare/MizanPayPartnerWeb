@@ -282,8 +282,10 @@ async function openInfo(box: CashBoxSummary, e: Event) {
             </v-menu>
           </div>
 
-          <div class="cb-card-amount">{{ formatCurrency(box.balance) }}</div>
-          <div class="cb-card-sub">Текущий баланс</div>
+          <div class="cb-card-amount" :class="{ 'cb-card-amount--neg': Math.round(box.balance) < 0 }">{{ formatCurrency(box.balance) }}</div>
+          <div class="cb-card-sub" :class="{ 'cb-card-sub--neg': Math.round(box.balance) < 0 }">
+            {{ Math.round(box.balance) < 0 ? 'Касса в минусе' : 'Текущий баланс' }}
+          </div>
           <div class="cb-card-total">
             <v-icon icon="mdi-cash-multiple" size="13" />
             Общий капитал: <b>{{ formatCurrency(cashboxTotalCapital(box)) }}</b>
@@ -596,6 +598,9 @@ async function openInfo(box: CashBoxSummary, e: Event) {
 }
 .cb-card-sub { font-size: 11px; color: #737373; margin-top: 2px; }
 .cb-page.dark .cb-card-amount { color: rgba(var(--v-theme-on-surface), 0.92); }
+.cb-card-amount--neg,
+.cb-page.dark .cb-card-amount--neg { color: #dc2626; }
+.cb-card-sub--neg { color: #dc2626; font-weight: 600; }
 
 .cb-card-total {
   display: inline-flex; align-items: center; gap: 5px;

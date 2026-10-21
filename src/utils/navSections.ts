@@ -46,6 +46,10 @@ export const SECONDARY_NAV: NavSection[] = [
   // Копии — с Бизнеса (1 копия), на Премиуме их 5. Ниже пункт показывается с
   // короной: раньше он был открыт на любом тарифе, а сервер потом отказывал.
   { path: '/backups', title: 'Резервные копии', icon: 'mdi-content-save-outline', requiredFeature: 'backups' },
+  // История действий — из шапки сюда, под копии: в шапке только частые действия.
+  { path: '/activity', title: 'История действий', icon: 'mdi-history', requiredFeature: 'activity' },
+  // Калькулятор — из шапки сюда: в шапке остаются только частые действия.
+  { path: '/calculator', title: 'Калькулятор', icon: 'mdi-calculator' },
   { path: '/help', title: 'Справка', icon: 'mdi-help-circle-outline' },
   { path: '/settings', title: 'Настройки', icon: 'mdi-cog' },
 ]

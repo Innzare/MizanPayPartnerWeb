@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import BankLogo from '@/components/BankLogo.vue'
-import { useAccountingStore, type AccountView, type AccountType, type ProfitSummary } from '@/stores/accounting'
+import { isAccountNegative, useAccountingStore, type AccountView, type AccountType, type ProfitSummary } from '@/stores/accounting'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useAuthStore } from '@/stores/auth'
@@ -613,6 +613,13 @@ async function remove(a: AccountView) {
   }
 }
 
+/**
+ * Счета в минусе — по всем кассам, а не только по выбранной: фильтр не должен
+ * прятать проблему. Операции в минус разрешены, поэтому сигналом служит эта
+ * плашка и подсветка самих счетов.
+ */
+const negativeAccounts = computed(() => store.accounts.filter((a) => isAccountNegative(a)))
+
 function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
   if (a.disabledAt) return { label: a.disabledReason || 'Отключён', kind: 'off' }
   return null
@@ -640,6 +647,27 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
       <button v-if="canEdit" class="ac-alert-btn" :disabled="fixing" @click="recompute">
         {{ fixing ? 'Считаю…' : 'Пересчитать по операциям' }}
       </button>
+    </div>
+
+    <!-- Счёт в минусе: операции не запрещены, но минус не должен прятаться
+         до сверки — чаще всего забыли записать приход или перевод. -->
+    <div v-if="negativeAccounts.length" class="ac-alert ac-alert--neg">
+      <v-icon icon="mdi-trending-down" size="20" />
+      <div class="ac-alert-body">
+        <div class="ac-alert-title">
+          {{ negativeAccounts.length === 1 ? 'Счёт в минусе' : `Счета в минусе: ${negativeAccounts.length}` }}
+        </div>
+        <div class="ac-alert-text">
+          <template v-for="(a, n) in negativeAccounts" :key="a.id">
+            <span v-if="n">, </span>
+            <button type="button" class="ac-alert-link" @click="openAccount(a)">{{ a.name }}</button>
+            — {{ formatCurrency(a.balance!) }}
+          </template>
+        </div>
+        <div class="ac-alert-text ac-alert-hint">
+          Расходов по счёту записано больше, чем пришло. Проверьте, не забыли ли записать поступление или перевод.
+        </div>
+      </div>
     </div>
 
     <div v-if="store.loading && !store.accounts.length" class="ac-loading">
@@ -1145,7 +1173,7 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
                 v-for="a in g.items"
                 :key="a.id"
                 class="ac-tr ac-tr--link"
-                :class="{ 'ac-tr--muted': !!a.disabledAt }"
+                :class="{ 'ac-tr--muted': !!a.disabledAt, 'ac-tr--neg': isAccountNegative(a) }"
                 @click="openAccount(a)"
               >
                 <div>
@@ -1165,7 +1193,8 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
                   />
                   <div class="ac-td-account-body">
                     <div class="ac-td-name" :title="a.name">{{ a.name }}</div>
-                    <div v-if="a.isDefaultForCash || a.isDefaultForBank || statusOf(a)" class="ac-td-badges">
+                    <div v-if="a.isDefaultForCash || a.isDefaultForBank || statusOf(a) || isAccountNegative(a)" class="ac-td-badges">
+                      <span v-if="isAccountNegative(a)" class="ac-neg-badge">в минусе</span>
                       <span v-if="a.isDefaultForCash || a.isDefaultForBank" class="ac-default">по умолчанию</span>
                       <span
                         v-if="statusOf(a)"
@@ -1217,7 +1246,7 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
                     {{ readyOf(a).label }}
                   </span>
                 </div>
-                <div class="ac-td--right ac-td-amount">
+                <div class="ac-td--right ac-td-amount" :class="{ 'ac-amount--neg': isAccountNegative(a) }">
                   {{ a.balance !== null ? formatCurrency(a.balance) : '—' }}
                   <!-- Самое узкое место по лимитам: если карта скоро упрётся в
                        потолок, узнать об этом лучше заранее. -->
@@ -1293,7 +1322,7 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
                 v-for="a in g.items"
                 :key="a.id"
                 class="ac-c"
-                :class="{ 'ac-c--muted': !!a.disabledAt }"
+                :class="{ 'ac-c--muted': !!a.disabledAt, 'ac-c--neg': isAccountNegative(a) }"
                 :style="{ '--ac-accent': accentOf(a) }"
                 @click="openAccount(a)"
               >
@@ -1371,7 +1400,11 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
                 </div>
 
                 <div v-if="a.balance !== null" class="ac-c-money">
-                  <div class="ac-c-sum">{{ formatCurrency(a.balance) }}</div>
+                  <div class="ac-c-sum" :class="{ 'ac-amount--neg': isAccountNegative(a) }">{{ formatCurrency(a.balance) }}</div>
+                  <div v-if="isAccountNegative(a)" class="ac-c-neg">
+                    <v-icon icon="mdi-alert-circle" size="13" />
+                    Счёт в минусе
+                  </div>
                   <!-- Доля счёта в общих деньгах: главный вопрос к списку счетов —
                        «где сосредоточены деньги», и по одним суммам он читается
                        медленнее, чем по полоске одной длины у всех карточек. -->
@@ -1510,6 +1543,26 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
 }
 .ac-alert-btn:hover:not(:disabled) { background: rgba(239, 68, 68, 0.22); }
 .ac-alert-btn:disabled { opacity: 0.6; cursor: default; }
+.ac-alert-link {
+  padding: 0; border: none; background: none; color: inherit;
+  font: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.ac-alert-hint { margin-top: 4px; opacity: 0.75; }
+
+/* Счёт в минусе — та же красная гамма, что у кассы в минусе. */
+.ac-amount--neg { color: #dc2626; }
+.ac-c--neg { border-color: rgba(239, 68, 68, 0.45); background: rgba(239, 68, 68, 0.045); }
+.ac-c--neg:hover { border-color: rgba(239, 68, 68, 0.65); background: rgba(239, 68, 68, 0.07); }
+.ac-c-neg {
+  display: flex; align-items: center; gap: 4px; margin-top: 6px;
+  font-size: 12px; font-weight: 600; color: #dc2626;
+}
+.ac-tr--neg { box-shadow: inset 3px 0 0 #ef4444; background: rgba(239, 68, 68, 0.04); }
+.ac-tr--neg.ac-tr--link:hover { background: rgba(239, 68, 68, 0.07); }
+.ac-neg-badge {
+  padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700;
+  background: rgba(239, 68, 68, 0.13); color: #dc2626;
+}
 
 .ac-off-card { padding: 22px 24px 18px; }
 .ac-off-title { font-size: 16px; font-weight: 700; }
@@ -2210,5 +2263,8 @@ function statusOf(a: AccountView): { label: string; kind: 'off' } | null {
 .ac-page.dark .ac-default { background: rgba(52, 211, 153, 0.14); color: #34d399; }
 .ac-page.dark .ac-status--off { background: rgba(251, 191, 36, 0.14); color: #fbbf24; }
 .ac-page.dark .ac-alert { color: #fca5a5; }
+.ac-page.dark .ac-amount--neg,
+.ac-page.dark .ac-c-neg,
+.ac-page.dark .ac-neg-badge { color: #f87171; }
 .ac-page.dark .ac-menu-item--danger { color: #f87171; }
 </style>

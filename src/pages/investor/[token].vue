@@ -18,6 +18,7 @@ import { api } from '@/api/client'
 import { useIsDark } from '@/composables/useIsDark'
 import ServerPager from '@/components/ServerPager.vue'
 import { formatCurrency, formatDate, formatPhone } from '@/utils/formatters'
+import { monthAccusative } from '@/utils/paymentAttribution'
 import type { CoInvestorJournalEntry, CoInvestorJournal, PayoutSchedule, ShareBreakdown } from '@/types'
 import { PAYOUT_SCHEDULE_LABELS } from '@/types'
 
@@ -359,6 +360,13 @@ function isReversal(e: { type: string; amount: number; meta?: unknown }): boolea
 }
 function entryMeta(e: { type: string; amount: number; meta?: unknown }) {
   const base = TYPE_META[e.type] ?? { label: e.type, color: '#71717a', icon: 'mdi-circle', sign: 1 }
+  // Выплата вернула авто-реинвест — деньги пришли инвестору, капитал меньше с даты выплаты.
+  const m = (e.meta ?? {}) as { reason?: string; reinvestMonth?: string }
+  if (e.type === 'CAPITAL_OUT' && m.reason === 'reinvestReturn') {
+    const [y, mo] = String(m.reinvestMonth ?? '').split('-').map(Number)
+    const month = y && mo ? ` за ${monthAccusative(y, mo - 1, new Date().getFullYear())}` : ''
+    return { label: `Возврат авто-реинвеста${month}`, color: '#6366f1', icon: 'mdi-undo-variant', sign: base.sign }
+  }
   if (!isReversal(e)) return base
   const reversalLabels: Record<string, string> = {
     PROFIT_ACCRUED: 'Отмена начисления прибыли',

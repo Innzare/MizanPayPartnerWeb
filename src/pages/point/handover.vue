@@ -117,8 +117,10 @@ function dateLabel(iso: string) {
         suffix="₽"
         hide-details
       />
-      <div v-if="overBalance" class="text-caption text-error mt-2">
-        В кассе пункта {{ formatCurrency(balance) }} — больше передать нечего
+      <!-- Не запрет: наличные могли принять раньше, чем записали. -->
+      <div v-if="overBalance" class="text-caption text-warning mt-2">
+        В кассе пункта записано {{ formatCurrency(balance) }} — после передачи касса пункта уйдёт в минус.
+        Проверьте сумму.
       </div>
       <div v-else class="text-caption text-medium-emphasis mt-2">
         В кассе пункта {{ formatCurrency(balance) }}
@@ -130,7 +132,7 @@ function dateLabel(iso: string) {
         size="large"
         class="mt-4"
         :loading="saving"
-        :disabled="!amount || amount <= 0 || overBalance"
+        :disabled="!amount || amount <= 0"
         @click="submit"
       >
         {{ stop.status === 'HANDED' ? 'Изменить сумму' : 'Отметить передачу' }}

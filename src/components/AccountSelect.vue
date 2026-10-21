@@ -11,7 +11,7 @@ import { computed } from 'vue'
 import { useAnchoredMenu } from '@/composables/useAnchoredMenu'
 import BankLogo from '@/components/BankLogo.vue'
 import { formatCurrency } from '@/utils/formatters'
-import { useAccountingStore, type AccountView } from '@/stores/accounting'
+import { isAccountNegative, useAccountingStore, type AccountView } from '@/stores/accounting'
 
 const props = withDefaults(
   defineProps<{
@@ -119,8 +119,9 @@ function pick(id: string | null) {
         <template v-if="current">
           {{ current.name }}
           <span v-if="unavailable(current)" class="as-full">{{ unavailable(current) }}</span>
+          <span v-if="isAccountNegative(current)" class="as-full">в минусе</span>
           <span class="as-label-sub">
-            {{ current.code }}<template v-if="current.balance !== null"> · {{ formatCurrency(current.balance) }}</template>
+            {{ current.code }}<template v-if="current.balance !== null"> · <span :class="{ 'as-neg': isAccountNegative(current) }">{{ formatCurrency(current.balance) }}</span></template>
           </span>
         </template>
         <template v-else>{{ placeholder }}</template>
@@ -172,12 +173,17 @@ function pick(id: string | null) {
               <span class="as-item-title">
                 {{ a.name }}
                 <span v-if="unavailable(a)" class="as-full">{{ unavailable(a) }}</span>
+                <span v-if="isAccountNegative(a)" class="as-full">в минусе</span>
               </span>
               <span class="as-item-hint">
                 {{ a.code }}<template v-if="a.bank"> · {{ a.bank.name }}</template>
               </span>
             </span>
-            <span v-if="a.balance !== null" class="as-item-balance">{{ formatCurrency(a.balance) }}</span>
+            <span
+              v-if="a.balance !== null"
+              class="as-item-balance"
+              :class="{ 'as-neg': isAccountNegative(a) }"
+            >{{ formatCurrency(a.balance) }}</span>
           </button>
         </template>
       </div>
@@ -261,7 +267,7 @@ function pick(id: string | null) {
 .as-item-hint { display: block; font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
 /* Счёт выбрать можно — пометка предупреждает, а не запрещает. */
 .as-full {
-  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px;
+  display: inline-block; margin: 0 4px 0 6px; padding: 1px 6px; border-radius: 5px;
   font-size: 10.5px; font-weight: 700; letter-spacing: 0.01em; white-space: nowrap;
   background: rgba(239, 68, 68, 0.13); color: #dc2626;
 }
@@ -271,4 +277,6 @@ function pick(id: string | null) {
   color: rgba(var(--v-theme-on-surface), 0.6);
 }
 .as-item:last-child { margin-bottom: 0; }
+/* Минус на счёте виден в любом окне, где выбирают счёт. */
+.as-neg { color: #dc2626; font-weight: 600; }
 </style>

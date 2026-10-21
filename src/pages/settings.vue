@@ -25,9 +25,12 @@ const settingsPlanLabels: Record<string, string> = { PRO: 'Стандарт', BU
 
 // Tabs
 const route = useRoute()
-const validTabs = ['profile', 'security', 'sections', 'whatsapp', 'contract', 'programs', 'subscription'] as const
+const validTabs = ['profile', 'security', 'sections', 'whatsapp', 'contract', 'programs', 'subscription', 'import', 'zakat'] as const
 type TabId = typeof validTabs[number]
-const initTab = validTabs.includes(route.query.tab as TabId) ? route.query.tab as TabId : 'profile'
+// Сотруднику «Настройки» открыты только ради импорта — сразу на нём.
+const initTab = authStore.isStaff
+  ? 'import'
+  : validTabs.includes(route.query.tab as TabId) ? route.query.tab as TabId : 'profile'
 const activeTab = ref<TabId>(initTab)
 
 // WhatsApp settings moved to /broadcasts — redirect any deep link there.
@@ -199,7 +202,8 @@ function insertVar(
 onMounted(() => {
   // Статус WhatsApp спрашиваем, только если раздел вообще доступен: иначе
   // запрос уходил при каждом открытии настроек и падал в консоль ошибкой.
-  if (sectionsState.visible('whatsapp')) checkWhatsAppStatus()
+  // Сотруднику «Настройки» открыты только ради импорта — данные владельца не грузим.
+  if (!authStore.isStaff && sectionsState.visible('whatsapp')) checkWhatsAppStatus()
   if (authStore.isOwner) loadSectionBlockers()
   // Переход по ссылке из письма: файл скачивается сразу, но только после
   // входа — до кабинета такой адрес просто не доведёт. `backup` — новые
@@ -307,8 +311,23 @@ const tabs = [
   { id: 'sections' as const, label: 'Разделы', icon: 'mdi-eye-off-outline' },
   { id: 'contract' as const, label: 'Документы', icon: 'mdi-file-cog-outline' },
   { id: 'programs' as const, label: 'Тарифы', icon: 'mdi-percent-outline' },
+  // Редкие инструменты — сюда из шапки и меню «Создать»: в шапке остаются
+  // только частые действия. Отдельные страницы /import и /zakat работают как
+  // раньше (на них ведут черновики импорта и справка).
+  { id: 'import' as const, label: 'Импорт из Excel', icon: 'mdi-file-upload-outline' },
+  { id: 'zakat' as const, label: 'Закят', icon: 'mdi-moon-waning-crescent' },
+  // Подписка — последней.
   { id: 'subscription' as const, label: 'Подписка', icon: 'mdi-crown-outline' },
 ]
+// Импорт, скрытый в «Разделах», не показываем и здесь.
+// Сотрудник видит только импорт: остальные вкладки — настройки владельца.
+const visibleTabs = computed(() =>
+  authStore.isStaff
+    ? tabs.filter((t) => t.id === 'import')
+    : tabs.filter((t) => t.id !== 'import' || !sectionsState.isHidden('import')))
+// Страницы целиком — грузятся, только когда вкладку открыли.
+const ImportPage = defineAsyncComponent(() => import('@/pages/import/index.vue'))
+const ZakatPage = defineAsyncComponent(() => import('@/pages/zakat.vue'))
 
 // ── Окно дат для сотрудников ──
 // Сотрудник не должен уводить оплату в закрытый месяц: доход и остаток кассы
@@ -754,7 +773,7 @@ const plans = [
     <!-- Tabs -->
     <div class="page-tabs">
       <button
-        v-for="tab in tabs"
+        v-for="tab in visibleTabs"
         :key="tab.id"
         class="page-tab"
         :class="{ active: activeTab === tab.id }"
@@ -1651,6 +1670,22 @@ const plans = [
 
     <!-- Бланк квитанции: сама настройка на отдельной странице, здесь вход. -->
     <!-- Subscription Tab -->
+    <div v-if="activeTab === 'import'" class="tab-content tab-content--embed">
+      <ImportPage v-if="canAccessFeature('import')" />
+      <div v-else class="embed-locked">
+        <v-icon icon="mdi-crown" size="22" color="#e8b931" />
+        <div class="embed-locked-text">
+          <div class="embed-locked-title">Импорт из Excel — с тарифа «Стандарт»</div>
+          <div class="embed-locked-sub">Перенесите сделки и клиентов из своей таблицы одним файлом.</div>
+        </div>
+        <button class="embed-locked-btn" @click="activeTab = 'subscription'">Выбрать тариф</button>
+      </div>
+    </div>
+
+    <div v-if="activeTab === 'zakat'" class="tab-content tab-content--embed">
+      <ZakatPage />
+    </div>
+
     <div v-if="activeTab === 'subscription'" class="tab-content">
       <!-- Current plan -->
       <div v-if="authStore.user?.subscriptionPlan && authStore.user.subscriptionPlan !== 'FREE'" class="current-plan-banner">
@@ -1964,6 +1999,20 @@ const plans = [
 }
 .page-subtitle {
   font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.45);
+}
+
+/* Вкладки-страницы (импорт, закят): у страницы свои поля, настройки их уже дали. */
+.tab-content--embed :deep(.at-page) { padding: 0; }
+.embed-locked {
+  display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-radius: 14px;
+  border: 1px solid rgba(232, 185, 49, 0.35); background: rgba(232, 185, 49, 0.08);
+}
+.embed-locked-text { flex: 1; min-width: 0; }
+.embed-locked-title { font-size: 15px; font-weight: 700; }
+.embed-locked-sub { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.6); margin-top: 2px; }
+.embed-locked-btn {
+  height: 38px; padding: 0 16px; border-radius: 10px; border: none; cursor: pointer;
+  background: #047857; color: #fff; font-size: 13.5px; font-weight: 600;
 }
 
 /* Табы раздела — общий стиль, см. styles/page-tabs.css */

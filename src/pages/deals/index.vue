@@ -29,11 +29,29 @@ import { useCoInvestors } from '@/composables/useCoInvestors'
 import { useSuppliersStore } from '@/stores/suppliers'
 import DealsFilterPanel from '@/components/DealsFilterPanel.vue'
 import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
+import DealGroupShareDialog from '@/components/DealGroupShareDialog.vue'
 
 const router = useRouter()
 const route = useRoute()
 const { isDark, statusStyle } = useIsDark()
 const toast = useToast()
+
+/**
+ * Текст сделки для рабочей группы — одно окно: готовый текст (можно поправить),
+ * копирование и отметка «отправлено в группу».
+ */
+const groupShareDeal = ref<Deal | null>(null)
+const groupShareOpen = ref(false)
+function openGroupShare(deal: Deal) {
+  groupShareDeal.value = deal
+  groupShareOpen.value = true
+}
+async function onGroupSentChanged(v: { id: string; groupSentAt: string | null }) {
+  const row = displayedDeals.value.find((d) => d.id === v.id)
+  if (row) row.groupSentAt = v.groupSentAt
+  // Список отфильтрован по этой отметке — строка должна уйти из выборки.
+  if (filters.state.value.groupSent) await refreshList()
+}
 const dealsStore = useDealsStore()
 const authStore = useAuthStore()
 /** Подсказку про адрес показываем только тем, кто по нему реально ищет. */
@@ -559,6 +577,8 @@ const ALL_COLUMNS: DealColumn[] = [
   { key: 'createdBy', label: 'Оформил', align: 'start', sortable: false, group: 'deal', tdClass: 'text-no-wrap' },
   { key: 'supplier', label: 'Поставщик', align: 'start', sortable: false, group: 'deal', extra: 'supplier', tdClass: 'text-no-wrap' },
   { key: 'comment', label: 'Комментарий', align: 'start', sortable: false, group: 'deal', tdStyle: 'min-width: 220px;' },
+  // Скрыта по умолчанию: включается в «Колонках» тем, кто пересылает сделки в рабочую группу.
+  { key: 'groupSent', label: 'В группе', align: 'center', sortable: false, group: 'deal', tdClass: 'text-center text-no-wrap' },
 
   // ── Клиент ──
   { key: 'client', label: 'Клиент', align: 'start', sortable: true, group: 'client', tdStyle: 'min-width: 300px;' },
@@ -2170,6 +2190,21 @@ async function refreshSelectedDeal(dealId: string) {
                 </template>
 
                 <template v-else-if="c.key === 'createdAt'">{{ createdLabel(deal.createdAt) }}</template>
+                <template v-else-if="c.key === 'groupSent'">
+                  <button
+                    type="button"
+                    class="group-sent-cell"
+                    :class="{ 'group-sent-cell--on': deal.groupSentAt }"
+                    :title="deal.groupSentAt ? 'Отправлено в группу — открыть текст' : 'Открыть текст для рабочей группы'"
+                    @click.stop="openGroupShare(deal)"
+                  >
+                    <template v-if="deal.groupSentAt">
+                      <v-icon icon="mdi-check-circle" size="15" />
+                      {{ formatDateShortYear(deal.groupSentAt) }}
+                    </template>
+                    <template v-else>не отправлено</template>
+                  </button>
+                </template>
                 <template v-else-if="c.key === 'dealDate'">{{ deal.dealDate ? formatDateShortYear(deal.dealDate) : '—' }}</template>
                 <template v-else-if="c.key === 'lastPayment'">{{ dealLastPaymentLabel(deal) }}</template>
 
@@ -2332,6 +2367,11 @@ async function refreshSelectedDeal(dealId: string) {
                       <button class="row-more-item" @click="goToDeal(deal)">
                         <v-icon icon="mdi-file-document-outline" size="17" />
                         Договор и документы
+                      </button>
+                      <button class="row-more-item" @click="openGroupShare(deal)">
+                        <v-icon :icon="deal.groupSentAt ? 'mdi-send-check-outline' : 'mdi-send-outline'" size="17" />
+                        Текст для рабочей группы
+                        <v-icon v-if="deal.groupSentAt" icon="mdi-check" size="15" class="row-more-done" title="Уже отправлено в группу" />
                       </button>
                     </v-card>
                   </v-menu>
@@ -2517,6 +2557,12 @@ async function refreshSelectedDeal(dealId: string) {
 
     <!-- Перенос даты — общий компонент. Сделку не передаём: в превью и так
          видно, о каком договоре речь. -->
+    <DealGroupShareDialog
+      v-model="groupShareOpen"
+      :deal="groupShareDeal"
+      :fullscreen="isMobile"
+      @changed="onGroupSentChanged"
+    />
     <ReschedulePaymentDialog
       v-model="rescheduleDialog"
       :payment="rescheduleTarget"
@@ -3742,4 +3788,17 @@ async function refreshSelectedDeal(dealId: string) {
     max-width: none !important;
   }
 }
+
+/* Колонка «В группе»: отметка «информация отправлена в рабочую группу» — нажатием открывает окно текста. */
+.group-sent-cell {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+  background: transparent; border: 1px dashed rgba(var(--v-theme-on-surface), 0.2);
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.group-sent-cell:hover { background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.7); }
+.group-sent-cell--on { color: #047857; background: rgba(4, 120, 87, 0.1); border: 1px solid rgba(4, 120, 87, 0.25); font-weight: 600; }
+.group-sent-cell--on:hover { background: rgba(4, 120, 87, 0.16); color: #047857; }
+.row-more-done { margin-left: auto; color: #047857; }
 </style>

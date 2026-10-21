@@ -2,44 +2,21 @@
 import SearchInput from '@/components/SearchInput.vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
-import { dateToIso } from '@/utils/dateInput'
+import { dateToIso, todayIso } from '@/utils/dateInput'
 import { useAuthStore } from '@/stores/auth'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
-import { formatCurrency, formatCurrencyShort, formatPhone, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
 import { useToast } from '@/composables/useToast'
-import { useCapital } from '@/composables/useCapital'
 import { useCoInvestors } from '@/composables/useCoInvestors'
 import CoInvestorRemoveDialog from '@/components/CoInvestorRemoveDialog.vue'
 import PhoneField from '@/components/PhoneField.vue'
 import DateField from '@/components/DateField.vue'
 import CoInvestorEditDialog from '@/components/CoInvestorEditDialog.vue'
 import CoInvestorMonthTable from '@/components/CoInvestorMonthTable.vue'
+import InfoTip from '@/components/InfoTip.vue'
 import type { InvestorPerson, PersonStake } from '@/types'
 
-// Способ деления прибыли инвестора В ЭТОЙ кассе — для бейджиков колонки «Кассы».
-function stakeModeShort(s: PersonStake): string {
-  if (s.costFeeMode) return s.costFeeDefaultRatePct != null ? `Закупка ${s.costFeeDefaultRatePct}%` : 'От закупки'
-  if (s.profitPercent != null && s.profitPercent > 0) return `Фикс ${s.profitPercent}%`
-  return (s.managementFeePct ?? 0) > 0 ? `Вклад · ${s.managementFeePct}%` : 'По вкладу'
-}
-function stakeModeIcon(s: PersonStake): string {
-  if (s.costFeeMode) return 'mdi-tag-outline'
-  if (s.profitPercent != null && s.profitPercent > 0) return 'mdi-percent-outline'
-  return 'mdi-scale-balance'
-}
-// Распределение прибыли ПО КОНКРЕТНОЙ КАССЕ (стейку) — для полосы под кассой.
-function stakeTotalProfit(s: PersonStake): number {
-  return (s.coInvestorShare ?? 0) + (s.myShare ?? 0)
-}
-function stakeInvestorPct(s: PersonStake): number {
-  const t = stakeTotalProfit(s)
-  return t > 0 ? Math.round(((s.coInvestorShare ?? 0) / t) * 100) : Math.round(s.effectivePct ?? 0)
-}
-import { Bar } from 'vue-chartjs'
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Tooltip, Legend } from 'chart.js'
-
-ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -51,23 +28,10 @@ function updateMobile() { isMobile.value = window.innerWidth < 768 }
 onMounted(() => window.addEventListener('resize', updateMobile))
 onUnmounted(() => window.removeEventListener('resize', updateMobile))
 
-// Инлайн-раскрытие строки инвестора: краткая сводка по кассам + метрики,
-// без ухода на отдельную страницу (переход остаётся ссылкой внутри).
-const expandedPersons = ref<Set<string>>(new Set())
-function togglePersonExpand(id: string) {
-  const n = new Set(expandedPersons.value)
-  n.has(id) ? n.delete(id) : n.add(id)
-  expandedPersons.value = n
-}
 const toast = useToast()
 const cashboxesStore = useCashBoxesStore()
 const { fetchPersons, deletePerson, addStake } = useCoInvestors()
-const { capital, isCapitalSet, fetchCapital } = useCapital()
 
-const poolContribution = computed(() => {
-  if (!capital.value || capital.value.totalCapital <= 0) return 0
-  return Math.round((capital.value.coInvestorCapital / capital.value.totalCapital) * 100)
-})
 
 // ── State ──
 
@@ -88,7 +52,7 @@ const view = ref<PageView>(readView())
 watch(view, (v) => { try { localStorage.setItem('ci:view', v) } catch { /* приватный режим */ } })
 const monthTable = ref<InstanceType<typeof CoInvestorMonthTable> | null>(null)
 async function onMonthChanged() {
-  await Promise.all([refreshList(), fetchCapital()])
+  await refreshList()
 }
 
 // Create dialog (new person OR new stake for an existing person)
@@ -146,18 +110,8 @@ function shareTypeOption(v: 'FIXED' | 'WEIGHT' | 'COST_FEE') {
   return SHARE_TYPE_OPTIONS.find((o) => o.value === v) ?? SHARE_TYPE_OPTIONS[0]
 }
 
-// Avatar colors
-const AVATAR_COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#047857', '#3b82f6', '#0ea5e9', '#ec4899', '#f59e0b']
 
-function getAvatarColor(name: string) {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
-}
 
-function getInitials(name: string) {
-  return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2) || '?'
-}
 
 // ── Fetch ──
 
@@ -177,31 +131,14 @@ async function fetchData() {
   }
 }
 
-// Phase 4: the old partner-level pool contract (PARTICIPATING vs MANAGING) is
-// gone — the model is now per-cashbox (partnerParticipatesByCapital, set in the
-// cashbox editor) and per-CI (managementFeePct, set on each co-investor). No
-// global pool dialog anymore.
+// Партнёр участвует в делёже, пока его капитал в кассе больше нуля; комиссия —
+// per-CI (managementFeePct, в карточке инвестора).
 const showHelpDialog = ref(false)
 
-onMounted(() => { fetchData(); fetchCapital() })
+onMounted(() => { fetchData() })
 
 // ── Computed ──
 
-// Persons filtered by search + (optional) cashbox scope. A person matches a
-// cashbox filter if ANY of their stakes lives in that cashbox.
-const filteredPersons = computed(() => {
-  let list = persons.value
-  if (selectedCashBoxId.value) {
-    list = list.filter((p) => p.stakes.some((s) => s.cashBox.id === selectedCashBoxId.value))
-  }
-  if (search.value) {
-    const s = search.value.toLowerCase()
-    list = list.filter(
-      (p) => p.name.toLowerCase().includes(s) || (p.phone && p.phone.includes(s))
-    )
-  }
-  return list
-})
 
 // Silent refresh of just the persons list — no full-page spinner, so the
 // desktop table doesn't flash. Used after create/attach.
@@ -211,16 +148,6 @@ async function refreshList() {
   } catch { /* silent — keep the current list on transient errors */ }
 }
 
-// ── Row helpers ──
-const SIDEBAR_AVATAR_COLORS = ['#6366f1', '#8b5cf6', '#a855f7', '#047857', '#3b82f6', '#0ea5e9', '#ec4899', '#f59e0b']
-function ciAvatarColor(name: string) {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  return SIDEBAR_AVATAR_COLORS[Math.abs(hash) % SIDEBAR_AVATAR_COLORS.length]
-}
-function ciInitials(name: string) {
-  return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2) || '?'
-}
 
 // Lookup helper used by the dialog picker.
 function getCashBox(id: string | null | undefined): CashBoxSummary | undefined {
@@ -228,105 +155,13 @@ function getCashBox(id: string | null | undefined): CashBoxSummary | undefined {
   return cashboxesStore.items.find((b) => b.id === id)
 }
 
-const summaryStats = computed(() => {
-  const all = persons.value
-  return {
-    totalCapital: all.reduce((s, p) => s + p.totals.currentCapital, 0),
-    totalShared: all.reduce((s, p) => s + p.totals.realizedProfit, 0),
-    balanceOwed: all.reduce((s, p) => s + p.totals.balanceOwed, 0),
-    count: all.length,
-  }
-})
 
 // ── Chart data (per person, by aggregated totals) ──
 
-const CHART_COLORS = ['#6366f1', '#8b5cf6', '#a78bfa', '#c4b5fd', '#7c3aed', '#4f46e5']
 
-const capitalChartData = computed(() => {
-  const items = persons.value.filter((p) => p.totals.currentCapital > 0)
-  return {
-    labels: items.map((p) => p.name.split(' ')[0] || p.name),
-    datasets: [{
-      label: 'Капитал',
-      data: items.map((p) => p.totals.currentCapital),
-      backgroundColor: items.map((_, i) => CHART_COLORS[i % CHART_COLORS.length] + '40'),
-      borderColor: items.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]),
-      borderWidth: 2,
-      borderRadius: 8,
-    }],
-  }
-})
 
-const profitChartData = computed(() => {
-  const items = persons.value.filter((p) => p.totals.realizedProfit > 0 || p.totals.balanceOwed > 0)
-  return {
-    labels: items.map((p) => p.name.split(' ')[0] || p.name),
-    datasets: [
-      {
-        label: 'Начислено',
-        data: items.map((p) => p.totals.realizedProfit),
-        backgroundColor: '#6366f1' + '60',
-        borderColor: '#6366f1',
-        borderWidth: 2,
-        borderRadius: 8,
-      },
-      {
-        label: 'К выплате',
-        data: items.map((p) => p.totals.balanceOwed),
-        backgroundColor: '#f59e0b' + '40',
-        borderColor: '#f59e0b',
-        borderWidth: 2,
-        borderRadius: 8,
-      },
-    ],
-  }
-})
 
-const barOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: { display: false },
-    tooltip: {
-      backgroundColor: '#1a1a2e',
-      titleColor: '#fff',
-      bodyColor: '#fff',
-      padding: 12,
-      cornerRadius: 8,
-      callbacks: {
-        label: (ctx: any) => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}`,
-      },
-    },
-  },
-  scales: {
-    x: {
-      grid: { display: false },
-      ticks: { color: '#9ca3af', font: { size: 12 } },
-      border: { display: false },
-    },
-    y: {
-      grid: { color: 'rgba(0,0,0,0.04)' },
-      ticks: {
-        color: '#9ca3af',
-        font: { size: 12 },
-        callback: (v: any) => formatCurrencyShort(v),
-      },
-      border: { display: false },
-    },
-  },
-}
 
-const profitBarOptions = {
-  ...barOptions,
-  plugins: {
-    ...barOptions.plugins,
-    legend: {
-      display: true,
-      position: 'top' as const,
-      labels: { usePointStyle: true, pointStyle: 'circle', padding: 16, font: { size: 12 } },
-    },
-  },
-}
 
 // ── Create ──
 
@@ -351,7 +186,7 @@ function openCreate() {
   }
   // Preselect the scoped/default cashbox as the first block (Task 3).
   cashBoxBlocks.value = preselectedCashBoxId
-    ? [{ cashBoxId: preselectedCashBoxId, capital: 0, shareType: 'WEIGHT', profitPercent: 30, managementFeePct: 0, costFeeDefaultRatePct: null, allCashboxDeals: false, autoReinvest: autoReinvestDefault.value }]
+    ? [{ cashBoxId: preselectedCashBoxId, capital: 0, shareType: 'WEIGHT', profitPercent: 30, managementFeePct: 0, costFeeDefaultRatePct: null, allCashboxDeals: false, autoReinvest: autoReinvestDefault.value, profitFrom: todayIso() }]
     : []
   showDialog.value = true
 }
@@ -383,6 +218,7 @@ async function saveCoInvestor() {
         name: form.value.name.trim(),
         phone: form.value.phone.trim() || undefined,
         capital: Number(first.capital),
+        profitFrom: first?.profitFrom || undefined,
         profitPercent: first.shareType === 'FIXED' ? Number(first.profitPercent) : null,
         managementFeePct: first.shareType === 'WEIGHT' ? Number(first.managementFeePct || 0) : 0,
         costFeeMode: first.shareType === 'COST_FEE',
@@ -415,6 +251,7 @@ async function saveCoInvestor() {
             addStake(personId!, {
               cashBoxId: b.cashBoxId,
               capital: Number(b.capital),
+              profitFrom: b.profitFrom || undefined,
               profitPercent: b.shareType === 'FIXED' ? Number(b.profitPercent) : null,
               managementFeePct: b.shareType === 'WEIGHT' ? Number(b.managementFeePct || 0) : 0,
               costFeeMode: b.shareType === 'COST_FEE',
@@ -455,6 +292,8 @@ type CashBoxBlock = {
   allCashboxDeals: boolean
   /** Авто-реинвест невыплаченного в день расчёта. */
   autoReinvest: boolean
+  /** С какого дня капитал приносит прибыль (ГГГГ-ММ-ДД); по умолчанию — сегодня. */
+  profitFrom: string
 }
 const cashBoxBlocks = ref<CashBoxBlock[]>([])
 
@@ -507,6 +346,7 @@ function toggleCashBox(id: string) {
       costFeeDefaultRatePct: null,
       allCashboxDeals: false,
       autoReinvest: autoReinvestDefault.value,
+      profitFrom: todayIso(),
     })
   }
 }
@@ -551,73 +391,8 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
     </div>
 
     <template v-else>
-      <!-- Summary Cards (KPI) — скрываются у ролей без права coinvestors.kpi -->
-      <div v-if="authStore.can('coinvestors.kpi')" class="stats-row mb-6">
-        <div class="stat-card">
-          <div class="stat-icon" style="background: rgba(99, 102, 241, 0.1); color: #6366f1;">
-            <v-icon icon="mdi-safe" size="20" />
-          </div>
-          <div>
-            <div class="stat-value">{{ formatCurrency(summaryStats.totalCapital) }}</div>
-            <div class="stat-label">Общий капитал</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
-            <v-icon icon="mdi-arrow-top-right" size="20" />
-          </div>
-          <div>
-            <div class="stat-value">{{ formatCurrency(summaryStats.totalShared) }}</div>
-            <div class="stat-label">Доля инвесторов (начислено)</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
-            <v-icon icon="mdi-cash-clock" size="20" />
-          </div>
-          <div>
-            <div class="stat-value">{{ formatCurrency(summaryStats.balanceOwed) }}</div>
-            <div class="stat-label">К выплате</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon" style="background: rgba(99, 102, 241, 0.1); color: #6366f1;">
-            <v-icon icon="mdi-account-group-outline" size="20" />
-          </div>
-          <div>
-            <div class="stat-value">{{ summaryStats.count }}</div>
-            <div class="stat-label">Инвесторов</div>
-          </div>
-        </div>
-        <div v-if="isCapitalSet && capital" class="stat-card" @click="router.push('/cashboxes')" style="cursor: pointer;">
-          <div class="stat-icon" style="background: rgba(124, 58, 237, 0.1); color: #7c3aed;">
-            <v-icon icon="mdi-chart-pie" size="20" />
-          </div>
-          <div>
-            <div class="stat-value" style="color: #7c3aed;">{{ poolContribution }}%</div>
-            <div class="stat-label">Вклад в пул капитала</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="ci-view-tabs mb-4">
-        <button type="button" class="ci-view-tab" :class="{ 'ci-view-tab--on': view === 'month' }" @click="view = 'month'">
-          <v-icon icon="mdi-table" size="16" />
-          По месяцам
-        </button>
-        <button type="button" class="ci-view-tab" :class="{ 'ci-view-tab--on': view === 'list' }" @click="view = 'list'">
-          <v-icon icon="mdi-account-group-outline" size="16" />
-          Все инвесторы
-        </button>
-        <v-spacer />
-        <button type="button" class="cb-scope-info" @click="showHelpDialog = true">
-          <v-icon icon="mdi-help-circle-outline" size="16" />
-          <span>Как работают кассы и инвесторы</span>
-        </button>
-      </div>
-
+      <!-- Одна таблица по месяцам: строка раскрывается подробностями инвестора. -->
       <CoInvestorMonthTable
-        v-if="view === 'month'"
         ref="monthTable"
         :persons="persons"
         :is-mobile="isMobile"
@@ -625,539 +400,38 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
         @edit="openEditPerson"
         @remove="openDeletePerson"
         @changed="onMonthChanged"
-      />
-
-      <template v-else>
-      <!-- Cashbox scope chips — same pattern as analytics. Tap to filter the
-           list by a single cashbox. Always visible (even with one cashbox) so
-           the scope is explicit and consistent across the app. -->
-      <div v-if="cashboxesStore.items.length > 0" class="cb-scope mb-4">
-        <div class="cb-scope-label">Касса:</div>
-        <div class="cb-scope-chips">
-          <button
-            class="cb-scope-chip"
-            :class="{ 'cb-scope-chip--active': selectedCashBoxId === null }"
-            type="button"
-            @click="selectedCashBoxId = null"
-          >
-            <v-icon icon="mdi-view-grid-outline" size="14" />
-            Все кассы
+      >
+        <!-- В шестерёнке таблицы: настройки для новых инвесторов и справка -->
+        <template #settings>
+          <div v-if="authStore.can('coinvestors.edit')" class="cim-set-sec">
+            <div class="ci-set-title">Для новых инвесторов</div>
+            <div class="ci-set-row">
+              <span class="ci-set-label">Авто-реинвест по умолчанию</span>
+              <InfoTip>
+                1-го числа невыплаченная прибыль становится капиталом инвестора. Включается у каждого нового
+                инвестора; потом его можно поменять в карточке.
+              </InfoTip>
+              <v-spacer />
+              <v-switch
+                :model-value="autoReinvestDefault"
+                :loading="savingAutoDefault"
+                :disabled="savingAutoDefault"
+                color="primary"
+                inset
+                density="compact"
+                hide-details
+                @update:model-value="setAutoReinvestDefault"
+              />
+            </div>
+          </div>
+        </template>
+        <template #settings-actions="{ close }">
+          <button type="button" class="cim-set-item" @click="close(); showHelpDialog = true">
+            <v-icon icon="mdi-help-circle-outline" size="18" />
+            <span>Как работают кассы и инвесторы</span>
           </button>
-          <button
-            v-for="b in cashboxesStore.items.filter((x) => !x.archivedAt)"
-            :key="b.id"
-            class="cb-scope-chip"
-            :class="{ 'cb-scope-chip--active': selectedCashBoxId === b.id }"
-            :style="selectedCashBoxId === b.id ? {
-              borderColor: b.color,
-              color: b.color,
-              background: b.color + '14',
-            } : {}"
-            type="button"
-            @click="selectedCashBoxId = b.id"
-          >
-            <v-icon :icon="b.icon" size="14" :style="{ color: b.color }" />
-            {{ b.name }}
-          </button>
-        </div>
-      </div>
-
-      <!-- Main Card — MOBILE: person cards (tap → the person's profile card). -->
-      <v-card v-if="isMobile" rounded="lg" elevation="0" border>
-        <div class="pa-4">
-          <!-- Header row -->
-          <div class="d-flex align-center ga-3 mb-4 flex-wrap ci-toolbar">
-            <SearchInput v-model="search" placeholder="Поиск по имени или телефону..." class="ci-toolbar-search" style="max-width: 360px;" />
-            <v-spacer />
-            <div class="text-caption text-medium-emphasis mr-2">
-              {{ filteredPersons.length }} из {{ persons.length }}
-            </div>
-            <v-menu :close-on-content-click="false" location="bottom end">
-              <template #activator="{ props }">
-                <button v-bind="props" class="ci-settings-btn" title="Настройки инвесторов">
-                  <v-icon icon="mdi-cog-outline" size="18" />
-                </button>
-              </template>
-              <v-card rounded="lg" class="ci-settings-card">
-                <div class="ci-settings-title">Для новых инвесторов</div>
-                <label class="ci-auto">
-                  <div class="ci-auto-text">
-                    <div class="ci-auto-title">Авто-реинвест по умолчанию</div>
-                    <div class="ci-field-hint">Включается у каждого нового инвестора; потом его можно поменять в карточке.</div>
-                  </div>
-                  <v-switch
-                    :model-value="autoReinvestDefault"
-                    :loading="savingAutoDefault"
-                    :disabled="savingAutoDefault"
-                    color="primary"
-                    inset
-                    density="compact"
-                    hide-details
-                    @update:model-value="setAutoReinvestDefault"
-                  />
-                </label>
-              </v-card>
-            </v-menu>
-            <button class="ci-add-btn" @click="openCreate">
-              <v-icon icon="mdi-plus" size="18" />
-              <span class="d-none d-sm-inline">Добавить инвестора</span>
-              <span class="d-sm-none">Добавить</span>
-            </button>
-          </div>
-
-          <!-- Empty state -->
-          <div v-if="!filteredPersons.length" class="ci-empty">
-            <div class="ci-empty-icon">
-              <v-icon icon="mdi-account-group-outline" size="48" color="grey" />
-            </div>
-            <div class="ci-empty-title">Нет инвесторов</div>
-            <div class="ci-empty-subtitle">
-              Добавьте партнёра, чтобы распределять прибыль по сделкам
-            </div>
-            <button class="ci-add-btn mt-4" @click="openCreate">
-              <v-icon icon="mdi-plus" size="18" />
-              Добавить первого инвестора
-            </button>
-          </div>
-
-          <!-- Persons list -->
-          <div v-else class="ci-list">
-            <div
-              v-for="p in filteredPersons"
-              :key="p.id"
-              class="ci-card"
-              :class="{ 'ci-card--expanded': expandedPersons.has(p.id) }"
-              @click="togglePersonExpand(p.id)"
-            >
-              <div class="ci-header">
-                <button class="ci-td-chevron" :class="{ 'ci-td-chevron--open': expandedPersons.has(p.id) }" @click.stop="togglePersonExpand(p.id)">
-                  <v-icon icon="mdi-chevron-down" size="20" />
-                </button>
-                <div class="ci-avatar" :style="{ background: getAvatarColor(p.name) }">
-                  {{ getInitials(p.name) }}
-                </div>
-
-                <div class="ci-main">
-                  <span class="ci-name">{{ p.name }}</span>
-                </div>
-
-                <div class="ci-card-menu" @click.stop>
-                  <button class="ci-row-act" title="Открыть карточку инвестора" @click="router.push(`/co-investors/person/${p.id}`)">
-                    <v-icon icon="mdi-open-in-new" size="19" />
-                  </button>
-                  <v-menu :close-on-content-click="true" offset="4" location="bottom end">
-                    <template #activator="{ props: menuProps }">
-                      <button class="ci-row-act" title="Действия" v-bind="menuProps">
-                        <v-icon icon="mdi-dots-vertical" size="20" />
-                      </button>
-                    </template>
-                    <div class="ci-row-menu">
-                      <button class="ci-menu-item" @click="router.push(`/co-investors/person/${p.id}`)">
-                        <v-icon icon="mdi-open-in-new" size="18" />
-                        <span>Открыть</span>
-                      </button>
-                      <button class="ci-menu-item" @click="openEditPerson(p)">
-                        <v-icon icon="mdi-pencil-outline" size="18" />
-                        <span>Редактировать</span>
-                      </button>
-                      <div class="ci-menu-divider" />
-                      <button class="ci-menu-item ci-menu-item--danger" @click="openDeletePerson(p)">
-                        <v-icon icon="mdi-trash-can-outline" size="18" />
-                        <span>Удалить инвестора</span>
-                      </button>
-                    </div>
-                  </v-menu>
-                </div>
-              </div>
-
-              <!-- Раскрытая часть: контакт + сводка + доли + кассы + переход -->
-              <div v-if="expandedPersons.has(p.id)" class="ci-card-expand" @click.stop>
-                <!-- Контакт + участие -->
-                <div v-if="p.phone || p.cashBoxCount" class="ci-exp-meta">
-                  <a v-if="p.phone" :href="`tel:+7${p.phone}`" class="ci-exp-meta-item" @click.stop>
-                    <v-icon icon="mdi-phone-outline" size="14" />
-                    {{ formatPhone(p.phone) }}
-                  </a>
-                  <span class="ci-exp-meta-item">
-                    <v-icon icon="mdi-wallet-outline" size="14" />
-                    {{ p.cashBoxCount }} касс{{ p.cashBoxCount === 1 ? 'а' : (p.cashBoxCount < 5 ? 'ы' : '') }}
-                  </span>
-                </div>
-
-                <!-- Сводка: капитал / начислено / выплачено / к выплате -->
-                <div class="ci-exp-stats">
-                  <div class="ci-stat-m">
-                    <div class="ci-stat-m-label">Капитал</div>
-                    <div class="ci-stat-m-value">{{ formatCurrency(p.totals.currentCapital) }}</div>
-                  </div>
-                  <div class="ci-stat-m">
-                    <div class="ci-stat-m-label">Начислено</div>
-                    <div class="ci-stat-m-value" style="color: #047857;">{{ formatCurrency(p.totals.realizedProfit) }}</div>
-                  </div>
-                  <div class="ci-stat-m">
-                    <div class="ci-stat-m-label">Выплачено</div>
-                    <div class="ci-stat-m-value" style="color: #7c3aed;">{{ formatCurrency(p.totals.totalPayout) }}</div>
-                  </div>
-                  <div class="ci-stat-m">
-                    <div class="ci-stat-m-label">К выплате</div>
-                    <div class="ci-stat-m-value" style="color: #f59e0b;">{{ formatCurrency(p.totals.balanceOwed) }}</div>
-                  </div>
-                </div>
-
-                <!-- KPI: доля инвестора / моя доля -->
-                <div class="ci-kpi-row">
-                  <div class="ci-kpi">
-                    <div class="ci-kpi-label">Доля инвестора</div>
-                    <div class="ci-kpi-val" style="color: #6366f1;">{{ formatCurrency(p.distribution?.coInvestorShare ?? 0) }}</div>
-                  </div>
-                  <div class="ci-kpi">
-                    <div class="ci-kpi-label">Моя доля</div>
-                    <div class="ci-kpi-val" style="color: #047857;">{{ formatCurrency(p.distribution?.myShare ?? 0) }}</div>
-                  </div>
-                </div>
-
-                <!-- Кассы: сверху вниз, под каждой — распределение прибыли -->
-                <div class="ci-section-title">Кассы</div>
-                <div class="ci-stakes-list">
-                  <div v-for="s in p.stakes" :key="s.id" class="ci-stake-card">
-                    <div class="ci-stake-card-head ci-stake-card-head--static">
-                      <div class="ci-stake-chip-icon" :style="{ background: s.cashBox.color, color: '#fff' }">
-                        <v-icon :icon="s.cashBox.icon || 'mdi-wallet-outline'" size="16" />
-                      </div>
-                      <div class="ci-stake-chip-body">
-                        <div class="ci-stake-chip-name">{{ s.cashBox.name }}</div>
-                        <div class="ci-stake-chip-mode">{{ stakeModeShort(s) }} · капитал {{ formatCurrency(s.currentCapital) }}</div>
-                      </div>
-                      <div class="ci-stake-chip-owed" v-if="s.balanceOwed > 0">
-                        <span class="ci-stake-chip-owed-val">{{ formatCurrencyShort(s.balanceOwed) }}</span>
-                        <span class="ci-stake-chip-owed-label">к выплате</span>
-                      </div>
-                    </div>
-                    <div v-if="stakeTotalProfit(s) > 0" class="ci-stake-dist">
-                      <div class="ci-stake-dist-head">
-                        <span class="ci-stake-dist-title">Распределение прибыли</span>
-                        <span class="ci-stake-dist-right">
-                          <v-tooltip location="left" open-on-click max-width="300">
-                            <template #activator="{ props }">
-                              <button type="button" v-bind="props" class="ci-dist-help" @click.stop aria-label="Что это за число">
-                                <v-icon icon="mdi-help-circle" size="15" />
-                              </button>
-                            </template>
-                            <div style="font-size: 12.5px; line-height: 1.55;">
-                              Это <b>вся прибыль (наценка)</b> по всем сделкам инвестора в этой кассе — и по активным, и по завершённым, за всё время.<br /><br />
-                              <span style="color: #a5b4fc;">■</span> синим — сколько получает <b>инвестор</b>;<br />
-                              <span style="color: #6ee7b7;">■</span> зелёным — сколько остаётся <b>вам</b>.<br /><br />
-                              Это накопительный итог, а не «деньги в работе».
-                            </div>
-                          </v-tooltip>
-                          <span class="ci-stake-dist-total">{{ formatCurrency(stakeTotalProfit(s)) }}</span>
-                        </span>
-                      </div>
-                      <div class="ci-dist-bar">
-                        <div class="ci-dist-fill" :style="{ width: stakeInvestorPct(s) + '%' }" />
-                      </div>
-                      <div class="ci-dist-legend">
-                        <div class="ci-dist-leg">
-                          <span class="ci-dist-leg-pct" style="color: #6366f1;">Инвестору · {{ stakeInvestorPct(s) }}%</span>
-                          <span class="ci-dist-leg-amt" style="color: #6366f1;">{{ formatCurrency(s.coInvestorShare ?? 0) }}</span>
-                        </div>
-                        <div class="ci-dist-leg ci-dist-leg--right">
-                          <span class="ci-dist-leg-pct" style="color: #047857;">Моя доля · {{ 100 - stakeInvestorPct(s) }}%</span>
-                          <span class="ci-dist-leg-amt" style="color: #047857;">{{ formatCurrency(s.myShare ?? 0) }}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div v-if="!p.stakes.length" class="ci-stake-none">Инвестор не участвует ни в одной кассе</div>
-                </div>
-
-                <div class="ci-expanded-actions">
-                  <router-link :to="`/co-investors/person/${p.id}`" class="ci-expanded-btn">
-                    Открыть карточку инвестора
-                    <v-icon icon="mdi-arrow-right" size="16" />
-                  </router-link>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </v-card>
-
-      <!-- DESKTOP: full-width table. Row = a PERSON; click → their profile card. -->
-      <v-card v-else rounded="lg" elevation="0" border>
-        <div class="pa-4">
-          <div class="d-flex align-center ga-3 mb-4 flex-wrap ci-toolbar">
-            <SearchInput v-model="search" placeholder="Поиск по имени или телефону..." style="max-width: 360px;" />
-            <v-spacer />
-            <div class="text-caption text-medium-emphasis mr-2">
-              {{ filteredPersons.length }} из {{ persons.length }}
-            </div>
-            <v-menu :close-on-content-click="false" location="bottom end">
-              <template #activator="{ props }">
-                <button v-bind="props" class="ci-settings-btn" title="Настройки инвесторов">
-                  <v-icon icon="mdi-cog-outline" size="18" />
-                </button>
-              </template>
-              <v-card rounded="lg" class="ci-settings-card">
-                <div class="ci-settings-title">Для новых инвесторов</div>
-                <label class="ci-auto">
-                  <div class="ci-auto-text">
-                    <div class="ci-auto-title">Авто-реинвест по умолчанию</div>
-                    <div class="ci-field-hint">Включается у каждого нового инвестора; потом его можно поменять в карточке.</div>
-                  </div>
-                  <v-switch
-                    :model-value="autoReinvestDefault"
-                    :loading="savingAutoDefault"
-                    :disabled="savingAutoDefault"
-                    color="primary"
-                    inset
-                    density="compact"
-                    hide-details
-                    @update:model-value="setAutoReinvestDefault"
-                  />
-                </label>
-              </v-card>
-            </v-menu>
-            <button class="ci-add-btn" @click="openCreate">
-              <v-icon icon="mdi-plus" size="18" />
-              <span>Добавить инвестора</span>
-            </button>
-          </div>
-
-          <!-- Empty state -->
-          <div v-if="!filteredPersons.length" class="ci-empty">
-            <div class="ci-empty-icon">
-              <v-icon icon="mdi-account-group-outline" size="48" color="grey" />
-            </div>
-            <div class="ci-empty-title">Нет инвесторов</div>
-            <div class="ci-empty-subtitle">
-              {{ search || selectedCashBoxId ? 'Ничего не найдено по фильтру' : 'Добавьте партнёра, чтобы распределять прибыль по сделкам' }}
-            </div>
-            <button v-if="!search && !selectedCashBoxId" class="ci-add-btn mt-4" @click="openCreate">
-              <v-icon icon="mdi-plus" size="18" />
-              Добавить первого инвестора
-            </button>
-          </div>
-
-          <table v-else class="ci-table">
-            <thead>
-              <tr>
-                <th>Инвестор</th>
-                <th class="ci-th-num">Капитал</th>
-                <th class="ci-th-num">Кассы</th>
-                <th class="ci-th-num">Начислено</th>
-                <th class="ci-th-num">К выплате</th>
-                <th class="ci-th-act"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="p in filteredPersons" :key="p.id">
-              <tr
-                class="ci-trow"
-                :class="{ 'ci-trow--expanded': expandedPersons.has(p.id) }"
-                @click="togglePersonExpand(p.id)"
-              >
-                <td>
-                  <div class="ci-td-investor">
-                    <button class="ci-td-chevron" :class="{ 'ci-td-chevron--open': expandedPersons.has(p.id) }" @click.stop="togglePersonExpand(p.id)">
-                      <v-icon icon="mdi-chevron-down" size="20" />
-                    </button>
-                    <div class="ci-row-avatar" :style="{ background: ciAvatarColor(p.name) }">
-                      {{ ciInitials(p.name) }}
-                    </div>
-                    <div class="ci-td-idn">
-                      <div class="ci-td-name">{{ p.name }}</div>
-                      <div v-if="p.phone" class="ci-td-phone">{{ formatPhone(p.phone) }}</div>
-                    </div>
-                  </div>
-                </td>
-                <td class="ci-td-num">{{ formatCurrency(p.totals.currentCapital) }}</td>
-                <td class="ci-td-right">
-                  <div class="ci-cb-chips">
-                    <span
-                      v-for="s in p.stakes"
-                      :key="s.id"
-                      class="ci-cb-mini"
-                      :style="{ color: s.cashBox.color, background: s.cashBox.color + '14', borderColor: s.cashBox.color + '40' }"
-                      :title="s.cashBox.name + ' · ' + stakeModeShort(s)"
-                    >
-                      <v-icon :icon="stakeModeIcon(s)" size="12" />
-                      <span class="ci-cb-mini-name">{{ s.cashBox.name }}</span>
-                      <span class="ci-cb-mini-mode">{{ stakeModeShort(s) }}</span>
-                    </span>
-                    <span v-if="p.stakes.length === 0" class="ci-cb-none">Нет касс</span>
-                  </div>
-                </td>
-                <td class="ci-td-num" style="color: #047857;">{{ formatCurrency(p.totals.realizedProfit) }}</td>
-                <td class="ci-td-num" style="color: #f59e0b;">{{ formatCurrency(p.totals.balanceOwed) }}</td>
-                <td class="ci-td-actions" @click.stop>
-                  <div class="ci-td-actions-row">
-                    <button class="ci-row-act" title="Открыть карточку инвестора" @click="router.push(`/co-investors/person/${p.id}`)">
-                      <v-icon icon="mdi-open-in-new" size="18" />
-                    </button>
-                    <v-menu :close-on-content-click="true" offset="4" location="bottom end">
-                      <template #activator="{ props: menuProps }">
-                        <button class="ci-row-act" title="Действия" v-bind="menuProps">
-                          <v-icon icon="mdi-dots-vertical" size="18" />
-                        </button>
-                      </template>
-                      <div class="ci-row-menu">
-                        <button class="ci-menu-item" @click="router.push(`/co-investors/person/${p.id}`)">
-                          <v-icon icon="mdi-open-in-new" size="18" />
-                          <span>Открыть</span>
-                        </button>
-                        <button class="ci-menu-item" @click="openEditPerson(p)">
-                          <v-icon icon="mdi-pencil-outline" size="18" />
-                          <span>Редактировать</span>
-                        </button>
-                        <div class="ci-menu-divider" />
-                        <button class="ci-menu-item ci-menu-item--danger" @click="openDeletePerson(p)">
-                          <v-icon icon="mdi-trash-can-outline" size="18" />
-                          <span>Удалить инвестора</span>
-                        </button>
-                      </div>
-                    </v-menu>
-                  </div>
-                </td>
-              </tr>
-              <!-- Раскрытая строка: краткая сводка по кассам + метрики -->
-              <tr v-if="expandedPersons.has(p.id)" class="ci-trow-expand">
-                <td colspan="6">
-                  <div class="ci-expanded" @click.stop>
-                    <!-- Метрики -->
-                    <div class="ci-extra-stats">
-                      <div class="ci-stat-m">
-                        <div class="ci-stat-m-label">Начислено</div>
-                        <div class="ci-stat-m-value" style="color: #047857;">{{ formatCurrency(p.totals.realizedProfit) }}</div>
-                      </div>
-                      <div class="ci-stat-m">
-                        <div class="ci-stat-m-label">Выплачено</div>
-                        <div class="ci-stat-m-value" style="color: #7c3aed;">{{ formatCurrency(p.totals.totalPayout) }}</div>
-                      </div>
-                      <div class="ci-stat-m">
-                        <div class="ci-stat-m-label">К выплате</div>
-                        <div class="ci-stat-m-value" style="color: #f59e0b;">{{ formatCurrency(p.totals.balanceOwed) }}</div>
-                      </div>
-                    </div>
-
-                    <!-- KPI: капитал / доля инвестора / моя доля -->
-                    <div class="ci-kpi-row">
-                      <div class="ci-kpi">
-                        <div class="ci-kpi-label">Капитал</div>
-                        <div class="ci-kpi-val">{{ formatCurrency(p.totals.currentCapital) }}</div>
-                      </div>
-                      <div class="ci-kpi">
-                        <div class="ci-kpi-label">Доля инвестора</div>
-                        <div class="ci-kpi-val" style="color: #6366f1;">{{ formatCurrency(p.distribution?.coInvestorShare ?? 0) }}</div>
-                      </div>
-                      <div class="ci-kpi">
-                        <div class="ci-kpi-label">Моя доля</div>
-                        <div class="ci-kpi-val" style="color: #047857;">{{ formatCurrency(p.distribution?.myShare ?? 0) }}</div>
-                      </div>
-                    </div>
-
-                    <!-- Кассы: перечисление сверху вниз, под каждой — распределение прибыли -->
-                    <div class="ci-section-title">Кассы</div>
-                    <div class="ci-stakes-list">
-                      <div v-for="s in p.stakes" :key="s.id" class="ci-stake-card">
-                        <div class="ci-stake-card-head ci-stake-card-head--static">
-                          <div class="ci-stake-chip-icon" :style="{ background: s.cashBox.color, color: '#fff' }">
-                            <v-icon :icon="s.cashBox.icon || 'mdi-wallet-outline'" size="16" />
-                          </div>
-                          <div class="ci-stake-chip-body">
-                            <div class="ci-stake-chip-name">{{ s.cashBox.name }}</div>
-                            <div class="ci-stake-chip-mode">{{ stakeModeShort(s) }} · капитал {{ formatCurrency(s.currentCapital) }}</div>
-                          </div>
-                          <div class="ci-stake-chip-owed" v-if="s.balanceOwed > 0">
-                            <span class="ci-stake-chip-owed-val">{{ formatCurrencyShort(s.balanceOwed) }}</span>
-                            <span class="ci-stake-chip-owed-label">к выплате</span>
-                          </div>
-                        </div>
-                        <div v-if="stakeTotalProfit(s) > 0" class="ci-stake-dist">
-                          <div class="ci-stake-dist-head">
-                            <span class="ci-stake-dist-title">Распределение прибыли</span>
-                            <span class="ci-stake-dist-right">
-                              <v-tooltip location="left" open-on-click max-width="300">
-                                <template #activator="{ props }">
-                                  <button type="button" v-bind="props" class="ci-dist-help" @click.stop aria-label="Что это за число">
-                                    <v-icon icon="mdi-help-circle" size="15" />
-                                  </button>
-                                </template>
-                                <div style="font-size: 12.5px; line-height: 1.55;">
-                                  Это <b>вся прибыль (наценка)</b> по всем сделкам инвестора в этой кассе — и по активным, и по завершённым, за всё время.<br /><br />
-                                  <span style="color: #a5b4fc;">■</span> синим — сколько получает <b>инвестор</b>;<br />
-                                  <span style="color: #6ee7b7;">■</span> зелёным — сколько остаётся <b>вам</b>.<br /><br />
-                                  Это накопительный итог, а не «деньги в работе».
-                                </div>
-                              </v-tooltip>
-                              <span class="ci-stake-dist-total">{{ formatCurrency(stakeTotalProfit(s)) }}</span>
-                            </span>
-                          </div>
-                          <div class="ci-dist-bar">
-                            <div class="ci-dist-fill" :style="{ width: stakeInvestorPct(s) + '%' }" />
-                          </div>
-                          <div class="ci-dist-legend">
-                            <div class="ci-dist-leg">
-                              <span class="ci-dist-leg-pct" style="color: #6366f1;">Инвестору · {{ stakeInvestorPct(s) }}%</span>
-                              <span class="ci-dist-leg-amt" style="color: #6366f1;">{{ formatCurrency(s.coInvestorShare ?? 0) }}</span>
-                            </div>
-                            <div class="ci-dist-leg ci-dist-leg--right">
-                              <span class="ci-dist-leg-pct" style="color: #047857;">Моя доля · {{ 100 - stakeInvestorPct(s) }}%</span>
-                              <span class="ci-dist-leg-amt" style="color: #047857;">{{ formatCurrency(s.myShare ?? 0) }}</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div v-if="!p.stakes.length" class="ci-stake-none">Инвестор не участвует ни в одной кассе</div>
-                    </div>
-
-                    <div class="ci-expanded-actions">
-                      <router-link :to="`/co-investors/person/${p.id}`" class="ci-expanded-btn" @click.stop>
-                        Открыть карточку инвестора
-                        <v-icon icon="mdi-arrow-right" size="16" />
-                      </router-link>
-                    </div>
-                  </div>
-                </td>
-              </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-      </v-card>
-
-
-      <!-- Charts (moved below the list) -->
-      <v-row v-if="persons.length > 0" class="mt-5">
-        <v-col cols="12" lg="6">
-          <v-card rounded="lg" elevation="0" border class="pa-5">
-            <div class="d-flex align-center justify-space-between mb-4">
-              <div>
-                <div class="chart-title">Капитал по партнёрам</div>
-                <div class="chart-subtitle">Вложенные средства</div>
-              </div>
-              <div class="chart-total">{{ formatCurrency(summaryStats.totalCapital) }}</div>
-            </div>
-            <div style="height: 240px;">
-              <Bar :data="capitalChartData" :options="barOptions" />
-            </div>
-          </v-card>
-        </v-col>
-        <v-col cols="12" lg="6">
-          <v-card rounded="lg" elevation="0" border class="pa-5">
-            <div class="d-flex align-center justify-space-between mb-4">
-              <div>
-                <div class="chart-title">Доходность по партнёрам</div>
-                <div class="chart-subtitle">Распределение прибыли</div>
-              </div>
-            </div>
-            <div style="height: 240px;">
-              <Bar :data="profitChartData" :options="profitBarOptions" />
-            </div>
-          </v-card>
-        </v-col>
-      </v-row>
-      </template>
+        </template>
+      </CoInvestorMonthTable>
     </template>
 
     <!-- Create Dialog (new person OR new stake for an existing person). -->
@@ -1245,6 +519,12 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
                 />
                 <span class="ci-field-suffix">₽</span>
               </div>
+            </div>
+            <!-- Схема v2: деньги приходят сегодня, в долях — с этой даты -->
+            <div v-if="block.capital > 0" class="ci-field mb-3">
+              <label class="ci-field-label">Приносит прибыль с</label>
+              <DateField v-model="block.profitFrom" plain />
+              <div class="ci-field-hint">По умолчанию — сразу. Если указать дату позже, до неё капитал лежит в кассе, но в долях не участвует.</div>
             </div>
 
             <!-- Share mode (cost-fee first, as everywhere) -->
@@ -1357,7 +637,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
             <label class="ci-auto">
               <div class="ci-auto-text">
                 <div class="ci-auto-title">Авто-реинвест</div>
-                <div class="ci-field-hint">В день «Следующей выплаты» невыплаченная прибыль за прошлый месяц сама добавится к капиталу.</div>
+                <div class="ci-field-hint">1-го числа невыплаченная прибыль за прошлый месяц сама добавится к капиталу.</div>
               </div>
               <v-switch v-model="block.autoReinvest" color="primary" inset density="compact" hide-details />
             </label>
@@ -1668,15 +948,9 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
 .ci-auto-text { flex: 1; min-width: 0; }
 .ci-auto-title { font-size: 13px; font-weight: 600; }
 .ci-auto .ci-field-hint { margin-top: 3px; }
-.ci-settings-btn {
-  width: 38px; height: 38px; border-radius: 10px; cursor: pointer; flex: none;
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12); background: transparent;
-  color: rgba(var(--v-theme-on-surface), 0.65);
-}
-.ci-settings-card { padding: 14px; width: 340px; max-width: calc(100vw - 32px); }
-.ci-settings-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; color: rgba(var(--v-theme-on-surface), 0.5); }
-.ci-settings-card .ci-auto { margin-top: 8px; }
+.ci-set-title { font-size: 12px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: rgba(var(--v-theme-on-surface), 0.55); margin-bottom: 6px; }
+.ci-set-row { display: flex; align-items: center; gap: 6px; }
+.ci-set-label { font-size: 13.5px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.85); }
 .ci-scope { margin-top: 14px; }
 .ci-seg {
   display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px;
@@ -2867,28 +2141,6 @@ a.ci-exp-meta-item { color: rgb(var(--v-theme-primary)); }
 .md-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── Help info button next to cashbox chips ── */
-.cb-scope-info {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 14px;
-  border-radius: 8px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.30);
-  background: rgba(var(--v-theme-primary), 0.06);
-  color: rgb(var(--v-theme-primary));
-  font-size: 13px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s;
-  font-family: inherit;
-  flex-shrink: 0; margin-left: auto;
-  white-space: nowrap;
-}
-.cb-scope-info:hover {
-  background: rgba(var(--v-theme-primary), 0.12);
-  border-color: rgb(var(--v-theme-primary));
-}
-@media (max-width: 600px) {
-  .cb-scope-info span { display: none; }
-  .cb-scope-info { padding: 7px 10px; }
-}
-
 /* Help dialog: explainer for cashboxes, CI types, profit distribution */
 .help-card { overflow: hidden; }
 .help-head {
@@ -3073,12 +2325,6 @@ a.ci-exp-meta-item { color: rgb(var(--v-theme-primary)); }
     align-items: center;
     padding: 10px 12px;
     row-gap: 10px;
-  }
-  /* Info-кнопка прижимается направо в первой строке, рядом с лейблом «Касса:». */
-  .cb-scope-info {
-    margin-left: auto;
-    padding: 6px 12px;
-    font-size: 12px;
   }
   /* Чипы — отдельной строкой во всю ширину под лейблом и info-кнопкой. */
   .cb-scope-chips {

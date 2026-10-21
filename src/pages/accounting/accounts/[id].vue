@@ -10,7 +10,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import BankLogo from '@/components/BankLogo.vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAccountingStore, type AccountEntryView, type AccountView, type PointDetail } from '@/stores/accounting'
+import { isAccountNegative, useAccountingStore, type AccountEntryView, type AccountView, type PointDetail } from '@/stores/accounting'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { usePageHeaderStore } from '@/stores/pageHeader'
@@ -288,6 +288,7 @@ function goToDeal(e: AccountEntryView) {
               <span v-else-if="account.pickup?.contactName">{{ account.pickup.contactName }}</span>
               <span v-else>Наличные</span>
               <span v-if="account.isDefaultForCash || account.isDefaultForBank" class="ad-badge">по умолчанию</span>
+              <span v-if="isAccountNegative(account)" class="ad-badge ad-badge--neg">в минусе</span>
               <span v-if="account.disabledAt" class="ad-badge ad-badge--off">
                 {{ account.disabledReason || 'Отключён' }}
               </span>
@@ -295,8 +296,13 @@ function goToDeal(e: AccountEntryView) {
           </div>
         </div>
 
-        <div v-if="account.balance !== null" class="ad-amount">{{ formatCurrency(account.balance) }}</div>
+        <div v-if="account.balance !== null" class="ad-amount" :class="{ 'ad-amount--neg': isAccountNegative(account) }">{{ formatCurrency(account.balance) }}</div>
         <div class="ad-amount-label">Сейчас на счёте</div>
+        <!-- Минус разрешён, но прятать его нельзя: обычно это незаписанный приход. -->
+        <div v-if="isAccountNegative(account)" class="ad-neg-note">
+          <v-icon icon="mdi-alert-circle" size="14" />
+          Счёт в минусе: расходов записано больше, чем пришло. Проверьте, не забыли ли записать поступление или перевод.
+        </div>
 
         <!-- Чья касса: счёт отвечает, где деньги лежат, касса — чьи они. -->
         <div class="ad-hero-line">
@@ -581,9 +587,18 @@ function goToDeal(e: AccountEntryView) {
   background: rgba(255, 255, 255, 0.16); color: #fff;
 }
 .ad-badge--off { background: rgba(251, 191, 36, 0.25); color: #fde68a; }
+.ad-badge--neg { background: rgba(239, 68, 68, 0.35); color: #fee2e2; }
 
 .ad-amount { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; margin-top: 16px; }
 .ad-amount-label { font-size: 12px; color: rgba(255, 255, 255, 0.55); }
+.ad-amount--neg { color: #fecaca; }
+.ad-neg-note {
+  display: flex; align-items: flex-start; gap: 6px; margin-top: 10px;
+  padding: 8px 10px; border-radius: 9px;
+  background: rgba(239, 68, 68, 0.22); color: #fee2e2;
+  font-size: 12.5px; line-height: 1.4;
+}
+.ad-neg-note .v-icon { margin-top: 1px; flex: none; }
 .ad-hero-line {
   display: flex; align-items: center; gap: 6px; margin-top: 10px;
   font-size: 12.5px; color: rgba(255, 255, 255, 0.6);

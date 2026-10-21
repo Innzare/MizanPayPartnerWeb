@@ -50,7 +50,8 @@ const NAV_PERMISSION: Record<string, string> = {
 const STAFF_ALWAYS = ['/me', '/calculator', '/messages', '/help']
 // Кабинет пункта приёма: там работает только оператор пункта, а он — только там.
 const POINT_ROOT = '/point'
-// Только владелец аккаунта.
+// Только владелец аккаунта. «Настройки» сотруднику открыты отдельно — только
+// вкладкой «Импорт из Excel» и только с правом импорта (см. canAccess).
 const OWNER_ONLY = ['/', '/settings']
 
 interface AuthResponse {
@@ -113,6 +114,9 @@ export const useAuthStore = defineStore('auth', () => {
     // человек видел бы сравнительную таблицу, но не мог открыть из неё никого:
     // сервер такой профиль отдаёт, а интерфейс был строже сервера.
     if (path.startsWith('/staff/') && can('staff.stats')) return true
+    // Импорт из Excel живёт вкладкой «Настроек»: сотрудник с правом импорта
+    // открывает «Настройки» и видит там только её (settings.vue).
+    if ((path === '/settings' || path.startsWith('/settings/')) && can('deals.import')) return true
     // Только владелец.
     if (OWNER_ONLY.some((r) => path === r || path.startsWith(r + '/'))) return false
     // Всегда доступно сотруднику.

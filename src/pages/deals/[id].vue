@@ -209,6 +209,24 @@ const {
   costFeeInvestorAmount,
 } = profit
 
+// Большой состав инвесторов в «Прибыли по сделке» — сводка по способу деления,
+// имена по кнопке (как в превью мастера сделки).
+const CI_COMPACT_FROM = 6
+const ciListOpen = ref(false)
+const ciCompact = computed(() => dealCoInvestors.value.length >= CI_COMPACT_FROM)
+const ciGroups = computed(() => {
+  const m = new Map<string, { terms: string; count: number; amount: number }>()
+  for (const ci of dealCoInvestors.value) {
+    const terms = ciModeLabel(ci)
+    const g = m.get(terms) ?? { terms, count: 0, amount: 0 }
+    g.count += 1
+    g.amount += ciDealShare(ci)
+    m.set(terms, g)
+  }
+  return [...m.values()].sort((a, b) => b.count - a.count)
+})
+const investorsWord = (n: number) => pluralizeRu(n, 'инвестор', 'инвестора', 'инвесторов')
+
 // ── Staff assignee ──
 interface StaffOption { id: string; firstName: string; lastName: string; isActive: boolean }
 const allStaff = ref<StaffOption[]>([])
@@ -1486,7 +1504,34 @@ async function confirmReopen() {
                 </span>
               </div>
 
-              <div v-for="ci in dealCoInvestors" :key="ci.id" class="pf-row">
+              <!-- Большой состав — сводка по способу деления, имена по кнопке. -->
+              <template v-if="ciCompact">
+                <div v-for="g in ciGroups" :key="g.terms" class="pf-row">
+                  <div class="pf-row-name">
+                    {{ g.count }} {{ investorsWord(g.count) }}
+                    <span class="pf-row-formula">{{ g.terms }}</span>
+                  </div>
+                  <div class="pf-row-value pf-row-value--minus">−{{ formatCurrency(g.amount) }}</div>
+                </div>
+                <button type="button" class="pf-more" @click="ciListOpen = !ciListOpen">
+                  {{ ciListOpen ? 'Скрыть' : `Показать всех (${dealCoInvestors.length})` }}
+                  <v-icon :icon="ciListOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="16" />
+                </button>
+              </template>
+
+              <div v-if="ciCompact && ciListOpen" class="pf-ci-list">
+                <div v-for="ci in dealCoInvestors" :key="ci.id" class="pf-row">
+                  <div class="pf-row-name">
+                    {{ ci.name }}
+                    <span class="pf-row-formula">
+                      {{ ciModeLabel(ci) }}<template v-if="ciFormula(ci)"> · {{ ciFormula(ci) }}</template>
+                    </span>
+                  </div>
+                  <div class="pf-row-value pf-row-value--minus">−{{ formatCurrency(ciDealShare(ci)) }}</div>
+                </div>
+              </div>
+
+              <div v-for="ci in (ciCompact ? [] : dealCoInvestors)" :key="ci.id" class="pf-row">
                 <div class="pf-row-name">
                   {{ ci.name }}
                   <span class="pf-row-formula">
@@ -2891,6 +2936,27 @@ async function confirmReopen() {
    «эти деньги не ваши», а не «плохо». */
 .pf-row-value--minus {
   color: #b45309;
+}
+.pf-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 4px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #047857;
+}
+/* Раскрытый список имён — вложенной полосой под сводкой, с прокруткой,
+   чтобы сотня инвесторов не растягивала карточку на несколько экранов. */
+.pf-ci-list {
+  max-height: 360px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  margin-bottom: 8px;
+  padding-right: 4px;
 }
 .pf-hint {
   display: flex;

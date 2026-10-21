@@ -103,6 +103,17 @@ const planBadgeLabel = computed(() => planBadgeLabels[subscription.plan.value] |
 const hasPlan = computed(() => !subscription.isFree.value);
 
 const logoutDialog = ref(false);
+// Меню профиля в шапке.
+const profileMenu = ref(false);
+/** Название компании из профиля — если партнёр его указал. */
+const companyName = computed(() => authStore.user?.companyName?.trim() || '');
+/** «12 ноября 2026» — до какого дня оплачен тариф (только владельцу и не на бесплатном). */
+const planUntil = computed(() => {
+  const d = authStore.user?.subscriptionExpiry;
+  if (authStore.isStaff || !hasPlan.value || !d) return '';
+  const date = new Date(d);
+  return isNaN(date.getTime()) ? '' : date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+});
 const DRAWER_BREAKPOINT = 1280;
 const isMobile = ref(window.innerWidth < DRAWER_BREAKPOINT);
 const drawer = ref(!isMobile.value);
@@ -199,7 +210,11 @@ const secondaryNavRoutes = computed(() =>
     if (r.path === "/help" && sections.isHidden("help")) return false;
     if ((r as any).ownerOnly && !authStore.isOwner) return false;
     return authStore.canAccess(r.path);
-  })
+  }).map((r) => ({
+    ...r,
+    // Раздел не из тарифа — пункт с короной ведёт к подписке (как в основном меню).
+    locked: r.path === "/activity" && !!r.requiredFeature && !subscription.canAccess(r.requiredFeature),
+  }))
 );
 
 // Route titles for header
@@ -454,24 +469,33 @@ const confirmLogout = async () => {
             <v-tooltip
               v-for="item in secondaryNavRoutes"
               :key="item.path"
-              :text="item.title"
+              :text="item.locked && item.requiredFeature ? `${item.title} — доступно с плана ${minPlanLabelForFeature(item.requiredFeature)}` : item.title"
               location="end"
-              :disabled="!collapsed"
+              :disabled="!collapsed && !item.locked"
             >
               <template #activator="{ props: tip }">
-                <router-link
-                  :to="item.path"
+                <component
+                  :is="item.locked ? 'button' : 'router-link'"
+                  :to="item.locked ? undefined : item.path"
                   class="lyt-nav-item"
-                  :class="{ 'lyt-nav-item--active': isActive(item.path) }"
+                  :class="{ 'lyt-nav-item--active': !item.locked && isActive(item.path), 'lyt-nav-item--locked': item.locked }"
                   v-bind="tip"
+                  @click="item.locked && $router.push({ path: '/settings', query: { tab: 'subscription' } })"
                 >
                   <div
-                    :style="{ display: 'flex', gap: collapsed ? '0' : '12px' }"
+                    :style="{ display: 'flex', gap: collapsed ? '0' : '12px', alignItems: 'center', width: collapsed ? 'auto' : '100%' }"
                   >
                     <v-icon :icon="item.icon" size="20" />
                     <span class="lyt-nav-text">{{ item.title }}</span>
+                    <v-icon
+                      v-if="item.locked"
+                      icon="mdi-crown"
+                      :size="collapsed ? 11 : 16"
+                      class="lyt-nav-crown"
+                      :class="{ 'lyt-nav-crown--corner': collapsed }"
+                    />
                   </div>
-                </router-link>
+                </component>
               </template>
             </v-tooltip>
           </nav>
@@ -513,66 +537,6 @@ const confirmLogout = async () => {
           </div>
         </v-menu>
 
-        <!-- Сотруднику вместо карточки профиля — только выход: его имя, роль и
-             показатели живут в разделе «Мой профиль», первом в меню, а внизу
-             нужна одна понятная кнопка. -->
-        <v-tooltip v-if="authStore.isStaff" text="Выйти" location="end" :disabled="!collapsed">
-          <template #activator="{ props: tip }">
-            <button class="lyt-sidebar-exit" v-bind="tip" @click="logoutDialog = true">
-              <v-icon icon="mdi-logout" size="18" />
-              <span class="lyt-nav-text">Выйти</span>
-            </button>
-          </template>
-        </v-tooltip>
-
-        <!-- Карточка профиля. В свёрнутом меню от неё остаётся только аватар:
-             рамка вокруг одного кружка выглядит лишней коробкой. -->
-        <div v-else class="lyt-sidebar-user">
-          <div :style="{ display: 'flex', gap: collapsed ? '0' : '12px' }">
-            <!-- Сотрудник открывает отсюда свою страницу с показателями:
-                 раздел «Сотрудники» ему закрыт, а собственная работа — нет. -->
-            <v-tooltip
-              :text="authStore.isStaff ? 'Мои показатели' : 'Профиль'"
-              location="end"
-              :disabled="!collapsed"
-            >
-              <template #activator="{ props: tip }">
-                <div
-                  class="lyt-sidebar-user-avatar"
-                  :class="{ 'lyt-sidebar-user-avatar--link': authStore.isStaff }"
-                  v-bind="collapsed ? tip : {}"
-                  @click="authStore.isStaff && router.push(`/staff/${authStore.user?.staffId}`)"
-                >
-                  {{ userInitials }}
-                </div>
-              </template>
-            </v-tooltip>
-            <div class="lyt-sidebar-user-info">
-              <span class="lyt-sidebar-user-name">{{
-                authStore.userName || "Администратор"
-              }}</span>
-              <span v-if="hasPlan" class="lyt-plan-badge">
-                <v-icon icon="mdi-crown" size="10" />
-                {{ planBadgeLabel }}
-              </span>
-              <span v-else class="lyt-sidebar-user-role">{{
-                authStore.isStaff ? (authStore.staffRole === 'MANAGER' ? 'Менеджер' : 'Оператор') : 'Владелец'
-              }}</span>
-            </div>
-            <v-tooltip text="Выйти" location="end" :disabled="!collapsed">
-              <template #activator="{ props: tip }">
-                <button
-                  class="lyt-sidebar-logout"
-                  @click="logoutDialog = true"
-                  title="Выйти"
-                  v-bind="tip"
-                >
-                  <v-icon icon="mdi-logout" size="18" />
-                </button>
-              </template>
-            </v-tooltip>
-          </div>
-        </div>
         </div>
       </v-navigation-drawer>
 
@@ -629,33 +593,8 @@ const confirmLogout = async () => {
                 </span>
               </button>
 
-              <!-- Calculator (hidden on mobile — available via sidebar) -->
-              <router-link v-if="!isMobile" to="/calculator" class="lyt-header-icon-btn" title="Калькулятор">
-                <v-icon icon="mdi-calculator" size="20" />
-              </router-link>
 
-              <!-- Activity history (hidden on mobile — available via sidebar.
-                   Also hidden for staff if partner disabled /activity via accessOverrides). -->
-              <v-tooltip v-if="!isMobile && authStore.canAccess('/activity')" :text="subscription.canAccess('activity') ? 'История действий' : 'Доступно с плана Стандарт'" location="bottom">
-                <template #activator="{ props: tip }">
-                  <component
-                    :is="subscription.canAccess('activity') ? 'router-link' : 'button'"
-                    :to="subscription.canAccess('activity') ? '/activity' : undefined"
-                    class="lyt-header-icon-btn"
-                    :class="{ 'lyt-header-icon-btn--locked': !subscription.canAccess('activity') }"
-                    v-bind="tip"
-                    @click="!subscription.canAccess('activity') && $router.push({ path: '/settings', query: { tab: 'subscription' } })"
-                  >
-                    <v-icon icon="mdi-history" size="20" />
-                    <v-icon v-if="!subscription.canAccess('activity')" icon="mdi-crown" size="14" class="lyt-crown-badge" />
-                  </component>
-                </template>
-              </v-tooltip>
 
-              <!-- Zakat (owner-only; hidden on mobile — available via sidebar) -->
-              <router-link v-if="!isMobile && authStore.isOwner" to="/zakat" class="lyt-header-icon-btn" title="Закят">
-                <v-icon icon="mdi-moon-waning-crescent" size="20" />
-              </router-link>
 
               <!-- Сводка «что происходило»: открыта всем, кто работает со
                    сделками. Показывает только то, что человеку и так доступно —
@@ -690,7 +629,7 @@ const confirmLogout = async () => {
                 - Staff with canCreateDeals: deal-creating items only (no quick actions)
                 - Staff without canCreateDeals: hidden entirely
               -->
-              <v-menu v-if="authStore.isOwner || (authStore.user?.canCreateDeals !== false)" v-model="quickActionsMenu" offset="8">
+              <v-menu v-if="authStore.isOwner || (authStore.user?.canCreateDeals !== false)" v-model="quickActionsMenu" location="bottom end" offset="8">
                 <template v-slot:activator="{ props }">
                   <button
                     class="lyt-header-add-btn"
@@ -725,17 +664,6 @@ const confirmLogout = async () => {
                     <v-icon icon="mdi-handshake" size="18" />
                     <span>Создать сделку</span>
                   </button>
-                  <button
-                    v-if="!sections.isHidden('import')"
-                    class="lyt-dropdown-item"
-                    :class="{ 'lyt-dropdown-item--locked': !subscription.canAccess('import') }"
-                    :disabled="!subscription.canAccess('import')"
-                    @click="quickActionsMenu = false; subscription.canAccess('import') ? router.push('/import') : router.push({ path: '/settings', query: { tab: 'subscription' } })"
-                  >
-                    <v-icon icon="mdi-file-upload-outline" size="18" />
-                    <span>Импорт из Excel</span>
-                    <v-icon v-if="!subscription.canAccess('import')" icon="mdi-crown" size="16" class="ml-auto" style="color: #e8b931;" />
-                  </button>
                 </div>
               </v-menu>
 
@@ -750,6 +678,82 @@ const confirmLogout = async () => {
               >
                 <v-icon icon="mdi-format-list-bulleted-square" size="20" />
               </button>
+
+              <!-- Профиль — круглый аватар в правом краю шапки. Раньше карточка
+                   жила внизу бокового меню и занимала место у разделов. -->
+              <v-menu v-model="profileMenu" location="bottom end" offset="8" :close-on-content-click="true">
+                <template #activator="{ props: pm }">
+                  <button
+                    class="lyt-header-avatar"
+                    v-bind="pm"
+                    :title="[authStore.userName || 'Профиль', hasPlan ? planBadgeLabel : ''].filter(Boolean).join(' · ')"
+                  >
+                    {{ userInitials }}
+                    <!-- Тариф — значком в углу, как статус на аватарке. -->
+                    <span
+                      v-if="hasPlan"
+                      class="lyt-header-avatar-plan"
+                      :class="`lyt-header-avatar-plan--${subscription.plan.value.toLowerCase()}`"
+                    >
+                      <v-icon icon="mdi-crown" size="10" />
+                    </span>
+                  </button>
+                </template>
+                <div class="lyt-dropdown lyt-profile-menu">
+                  <!-- Аватар — только рядом с именем и почтой; всё остальное идёт
+                       на всю ширину, без пустого места под кружком. -->
+                  <div class="lyt-profile-head">
+                    <div class="lyt-profile-avatar">{{ userInitials }}</div>
+                    <div class="lyt-profile-who">
+                      <div class="lyt-profile-name">{{ authStore.userName || 'Администратор' }}</div>
+                      <div v-if="companyName" class="lyt-profile-company">{{ companyName }}</div>
+                      <div v-if="authStore.user?.email" class="lyt-profile-line">{{ authStore.user.email }}</div>
+                    </div>
+                  </div>
+                  <!-- Тариф и срок — одной карточкой; по нажатию — «Тариф и оплата». -->
+                  <button
+                    v-if="hasPlan"
+                    type="button"
+                    class="lyt-profile-plan"
+                    :class="`lyt-profile-plan--${subscription.plan.value.toLowerCase()}`"
+                    @click="!authStore.isStaff && router.push({ path: '/settings', query: { tab: 'subscription' } })"
+                  >
+                    <span class="lyt-profile-plan-icon"><v-icon icon="mdi-crown" size="16" /></span>
+                    <span class="lyt-profile-plan-text">
+                      <span class="lyt-profile-plan-name">{{ planBadgeLabel }}</span>
+                      <span v-if="planUntil" class="lyt-profile-plan-until">до {{ planUntil }}</span>
+                    </span>
+                    <v-icon v-if="!authStore.isStaff" icon="mdi-chevron-right" size="18" class="lyt-profile-plan-arrow" />
+                  </button>
+                  <div class="lyt-dropdown-divider" />
+                  <template v-if="authStore.isStaff">
+                    <button
+                      v-if="authStore.user?.staffId"
+                      class="lyt-dropdown-item"
+                      @click="router.push(`/staff/${authStore.user?.staffId}`)"
+                    >
+                      <v-icon icon="mdi-chart-box-outline" size="18" />
+                      <span>Мои показатели</span>
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button class="lyt-dropdown-item" @click="router.push('/settings')">
+                      <v-icon icon="mdi-cog-outline" size="18" />
+                      <span>Настройки</span>
+                    </button>
+                    <!-- С тарифом в меню уже есть его карточка — она и ведёт в оплату. -->
+                    <button v-if="!hasPlan" class="lyt-dropdown-item" @click="router.push({ path: '/settings', query: { tab: 'subscription' } })">
+                      <v-icon icon="mdi-crown-outline" size="18" />
+                      <span>Тариф и оплата</span>
+                    </button>
+                  </template>
+                  <div class="lyt-dropdown-divider" />
+                  <button class="lyt-dropdown-item lyt-dropdown-item--danger" @click="logoutDialog = true">
+                    <v-icon icon="mdi-logout" size="18" />
+                    <span>Выйти</span>
+                  </button>
+                </div>
+              </v-menu>
 
             </div>
           </header>
@@ -863,7 +867,9 @@ const confirmLogout = async () => {
 }
 .lyt-sidebar-footer {
   flex-shrink: 0;
-  padding: 12px 16px 20px;
+  /* Поровну сверху и снизу: раньше внизу стояла карточка профиля, и нижний
+     отступ был рассчитан на неё. */
+  padding: 12px 16px;
   border-top: 1px solid #f0f0f0;
 }
 
@@ -872,7 +878,7 @@ const confirmLogout = async () => {
   justify-content: center;
 }
 .lyt-sidebar--collapsed .lyt-nav-scroll { padding: 16px 10px; }
-.lyt-sidebar--collapsed .lyt-sidebar-footer { padding: 12px 10px 20px; }
+.lyt-sidebar--collapsed .lyt-sidebar-footer { padding: 12px 10px; }
 
 
 .lyt-sidebar--collapsed .lyt-sidebar-brand {
@@ -1230,7 +1236,7 @@ const confirmLogout = async () => {
   width: 38px;
   height: 38px;
   border-radius: 11px;
-  background: linear-gradient(135deg, #047857 0%, #10b981 55%, #ff4081 130%);
+  background: linear-gradient(135deg, #047857 0%, #065f46 50%, #064e3b 100%);
   color: #fff;
   font-size: 14px;
   font-weight: 700;
@@ -1660,6 +1666,82 @@ const confirmLogout = async () => {
   margin-top: 1px;
 }
 
+.lyt-header-avatar {
+  position: relative;
+  width: 46px; height: 46px; border-radius: 50%; flex-shrink: 0;
+  border: none; cursor: pointer; padding: 0; margin-left: 4px;
+  background: linear-gradient(135deg, #047857 0%, #065f46 50%, #064e3b 100%);
+  color: #fff; font-size: 15px; font-weight: 700; letter-spacing: 0.3px;
+  display: flex; align-items: center; justify-content: center;
+  /* Кольцо, как у фото профиля: белый зазор и фирменная обводка. */
+  box-shadow: 0 0 0 2px rgb(var(--v-theme-surface)), 0 0 0 4px rgba(4, 120, 87, 0.45), 0 4px 10px rgba(4, 120, 87, 0.25);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.lyt-header-avatar:hover {
+  box-shadow: 0 0 0 2px rgb(var(--v-theme-surface)), 0 0 0 4px rgba(4, 120, 87, 0.8), 0 6px 14px rgba(4, 120, 87, 0.3);
+}
+/* Значок тарифа в правом нижнем углу аватара. */
+.lyt-header-avatar-plan {
+  position: absolute; right: -3px; bottom: -3px;
+  width: 19px; height: 19px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid rgb(var(--v-theme-surface));
+  color: #fff;
+}
+.lyt-header-avatar-plan--premium { background: linear-gradient(135deg, #f5c542, #d4a017); }
+.lyt-header-avatar-plan--business { background: linear-gradient(135deg, #8b5cf6, #6d28d9); }
+.lyt-header-avatar-plan--pro { background: linear-gradient(135deg, #3b82f6, #1d4ed8); }
+.lyt-profile-menu {
+  min-width: 280px; max-width: 320px;
+  /* Цвета из темы Vuetify: меню рисуется вне обёртки страницы, и класс .dark
+     до него не доходит — фон оставался белым при светлом тексте. */
+  background: rgb(var(--v-theme-surface));
+  border-color: rgba(var(--v-theme-on-surface), 0.08);
+}
+.lyt-profile-menu .lyt-dropdown-item:not(.lyt-dropdown-item--danger) { color: rgba(var(--v-theme-on-surface), 0.85); }
+.lyt-profile-menu .lyt-dropdown-item:not(.lyt-dropdown-item--danger):hover { background: rgba(var(--v-theme-on-surface), 0.05); }
+.lyt-profile-menu .lyt-dropdown-divider { background: rgba(var(--v-theme-on-surface), 0.08); }
+.lyt-profile-head { display: flex; align-items: center; gap: 12px; padding: 12px 12px 10px; }
+.lyt-profile-avatar {
+  width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0;
+  background: linear-gradient(135deg, #047857 0%, #065f46 50%, #064e3b 100%);
+  color: #fff; font-size: 15px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.lyt-profile-who { min-width: 0; }
+.lyt-profile-name { font-size: 14.5px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.92); }
+.lyt-profile-line {
+  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.55); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lyt-profile-company {
+  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.72); margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Карточка тарифа: цвет по тарифу (как значок на аватаре). */
+.lyt-profile-plan {
+  --plan: 212, 160, 23;
+  display: flex; align-items: center; gap: 10px;
+  width: calc(100% - 16px); margin: 0 8px 8px; padding: 10px 12px;
+  border-radius: 12px; border: 1px solid rgba(var(--plan), 0.28);
+  background: linear-gradient(135deg, rgba(var(--plan), 0.14), rgba(var(--plan), 0.04));
+  cursor: pointer; text-align: left; transition: background 0.15s ease;
+}
+.lyt-profile-plan:hover { background: linear-gradient(135deg, rgba(var(--plan), 0.2), rgba(var(--plan), 0.07)); }
+.lyt-profile-plan--business { --plan: 124, 58, 237; }
+.lyt-profile-plan--pro { --plan: 37, 99, 235; }
+.lyt-profile-plan-icon {
+  width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgb(var(--plan)); color: #fff;
+  box-shadow: 0 3px 8px rgba(var(--plan), 0.35);
+}
+.lyt-profile-plan-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lyt-profile-plan-name { font-size: 14px; font-weight: 700; color: rgb(var(--plan)); line-height: 1.2; }
+.lyt-profile-plan-until { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6); margin-top: 1px; }
+.lyt-profile-plan-arrow { color: rgba(var(--plan), 0.8); flex-shrink: 0; }
+.lyt-dropdown-item--danger { color: #dc2626 !important; }
+.lyt-dropdown-item--danger:hover { background: rgba(220, 38, 38, 0.06) !important; }
 .lyt-dropdown-divider {
   height: 1px;
   background: #f0f0f0;

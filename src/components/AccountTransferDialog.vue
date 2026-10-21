@@ -9,7 +9,7 @@
 import { computed, ref, watch } from 'vue'
 import AccountSelect from '@/components/AccountSelect.vue'
 import BankLogo from '@/components/BankLogo.vue'
-import { useAccountingStore, type AccountView } from '@/stores/accounting'
+import { isAccountNegative, useAccountingStore, type AccountView } from '@/stores/accounting'
 import { useToast } from '@/composables/useToast'
 import { CURRENCY_MASK, parseMasked, formatCurrency } from '@/utils/formatters'
 
@@ -61,12 +61,15 @@ const afterTo = computed(() =>
   to.value?.balance != null ? to.value.balance + (amount.value ?? 0) : null,
 )
 
-const notEnough = computed(
-  () => from.value?.balance != null && (amount.value ?? 0) > from.value.balance,
-)
+/**
+ * Перевод уводит счёт-источник в минус. Это разрешено, как и у кассы: деньги
+ * могли уже уйти, а приход ещё не записан. Но человек видит это до нажатия —
+ * чаще всего это опечатка в сумме или не тот счёт.
+ */
+const goesNegative = computed(() => (amount.value ?? 0) > 0 && afterFrom.value !== null && Math.round(afterFrom.value) < 0)
 
 const canSave = computed(
-  () => !!fromId.value && !!toId.value && fromId.value !== toId.value && (amount.value ?? 0) > 0 && !notEnough.value,
+  () => !!fromId.value && !!toId.value && fromId.value !== toId.value && (amount.value ?? 0) > 0,
 )
 
 watch(
@@ -174,25 +177,31 @@ function accentOf(a: AccountView): string {
               type="text"
               inputmode="numeric"
               class="tr-input"
-              :class="{ 'tr-input--bad': notEnough }"
+              :class="{ 'tr-input--bad': goesNegative }"
               @maska="(e: any) => amount = parseMasked(e)"
             />
             <span class="tr-suffix">₽</span>
           </div>
-          <button v-if="from?.balance" type="button" class="tr-all" @click="fillAll">Всё</button>
+          <button v-if="(from?.balance ?? 0) > 0" type="button" class="tr-all" @click="fillAll">Всё</button>
         </div>
-        <div v-if="notEnough" class="tr-error">
-          На счёте только {{ formatCurrency(from!.balance!) }}
+        <div v-if="goesNegative" class="tr-error">
+          <v-icon icon="mdi-alert-circle" size="14" />
+          <template v-if="isAccountNegative(from)">
+            Счёт «{{ from!.name }}» уже в минусе ({{ formatCurrency(from!.balance!) }}) — станет {{ formatCurrency(afterFrom!) }}
+          </template>
+          <template v-else>
+            На счёте {{ formatCurrency(from!.balance!) }} — счёт уйдёт в минус на {{ formatCurrency(-afterFrom!) }}
+          </template>
         </div>
       </div>
 
       <!-- Что станет с остатками -->
-      <div v-if="from && to && (amount ?? 0) > 0 && !notEnough" class="tr-preview">
+      <div v-if="from && to && (amount ?? 0) > 0" class="tr-preview">
         <!-- Перед подтверждением перевода счета показываются логотипами: так
              ошибку «не та карта» видно до нажатия, а не после. -->
         <div class="tr-preview-side">
           <BankLogo :bank-name="from.bank?.name" :color="accentOf(from)" :fallback="from.code" :size="26" />
-          <span class="tr-preview-val">{{ afterFrom !== null ? formatCurrency(afterFrom) : '—' }}</span>
+          <span class="tr-preview-val" :class="{ 'tr-preview-val--neg': goesNegative }">{{ afterFrom !== null ? formatCurrency(afterFrom) : '—' }}</span>
         </div>
         <v-icon icon="mdi-arrow-right" size="16" class="tr-preview-arrow" />
         <div class="tr-preview-side">
@@ -208,8 +217,8 @@ function accentOf(a: AccountView): string {
 
       <div class="tr-actions">
         <button class="tr-cancel" @click="open = false">Отмена</button>
-        <button class="tr-confirm" :disabled="!canSave || saving" @click="save">
-          {{ saving ? 'Перевожу…' : 'Перевести' }}
+        <button class="tr-confirm" :class="{ 'tr-confirm--warn': goesNegative }" :disabled="!canSave || saving" @click="save">
+          {{ saving ? 'Перевожу…' : goesNegative ? 'Перевести в минус' : 'Перевести' }}
         </button>
       </div>
     </v-card>
@@ -237,7 +246,11 @@ function accentOf(a: AccountView): string {
 }
 .tr-input:focus { border-color: #047857; }
 .tr-input--bad { border-color: #dc2626; }
-.tr-error { font-size: 12px; color: #dc2626; margin-top: 5px; }
+.tr-error {
+  display: flex; align-items: flex-start; gap: 5px;
+  font-size: 12px; line-height: 1.4; color: #dc2626; margin-top: 5px;
+}
+.tr-error .v-icon { margin-top: 1px; flex: none; }
 
 .tr-swap-row { display: flex; justify-content: center; margin: 8px 0 -8px; }
 .tr-swap {
@@ -276,6 +289,7 @@ function accentOf(a: AccountView): string {
   font-size: 11.5px; font-weight: 800;
 }
 .tr-preview-val { font-size: 14px; font-weight: 700; }
+.tr-preview-val--neg { color: #dc2626; }
 .tr-preview-arrow { color: rgba(var(--v-theme-on-surface), 0.3); }
 
 .tr-actions { display: flex; gap: 10px; margin-top: 20px; }
@@ -288,5 +302,6 @@ function accentOf(a: AccountView): string {
   color: rgba(var(--v-theme-on-surface), 0.7); font-weight: 500;
 }
 .tr-confirm { background: #047857; color: #fff; }
+.tr-confirm--warn { background: #d97706; }
 .tr-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

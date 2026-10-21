@@ -28,6 +28,21 @@ function ymd(d: Date): string {
 }
 
 /** Диапазон по пресету, привязанный к сегодняшней дате. */
+/**
+ * Последние N дней, включая сегодняшний: «Сегодня», «Последние 7 дней».
+ * Быстрые варианты выбора периода там, где важны дни, а не месяцы («События»).
+ */
+export function lastDaysRange(days: number, anchor = new Date()): PeriodRange {
+  const from = new Date(anchor)
+  from.setDate(from.getDate() - (days - 1))
+  return {
+    from: ymd(from),
+    to: ymd(anchor),
+    preset: 'custom',
+    label: days === 1 ? 'Сегодня' : `Последние ${days} дней`,
+  }
+}
+
 export function rangeForPreset(preset: PeriodPreset, anchor = new Date()): PeriodRange {
   const y = anchor.getFullYear()
   const m = anchor.getMonth()

@@ -16,12 +16,8 @@ export interface CashBoxSummary {
   // can still record payments / dividend payouts, but can't get new deals.
   lockedAt: string | null
   order: number
-  // Phase 4: partner's own capital joins the by-capital profit split in this
-  // cashbox (true) or partner only manages, taking a cut via each CI's
-  // commission (false).
-  partnerParticipatesByCapital: boolean
-  // Вес партнёра в делёже — фактический капитал на начало месяца, а не начальный.
-  partnerCapitalActual?: boolean
+  // Ваша прибыль прошлых месяцев работает в кассе как ваш капитал (по умолчанию выкл).
+  partnerAutoReinvest?: boolean
   balance: number
   inProgress: number
   activeDealsCount: number
@@ -46,9 +42,9 @@ export interface CreateCashBoxInput {
   name: string
   color?: string
   icon?: string
+  /** Только при создании: деньги, внесённые сейчас, — первая запись истории капитала. */
   initialCapital?: number
-  partnerParticipatesByCapital?: boolean
-  partnerCapitalActual?: boolean
+  partnerAutoReinvest?: boolean
 }
 
 export type UpdateCashBoxInput = Partial<CreateCashBoxInput>

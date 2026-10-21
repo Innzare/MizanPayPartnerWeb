@@ -309,6 +309,8 @@ export interface Deal {
   // Staff member assigned as the responsible party for this deal
   assignedStaffId?: string | null
   assignedStaff?: { id: string; firstName: string; lastName: string } | null
+  /** Информация отправлена в рабочую группу (отметка партнёра); null — ещё нет. */
+  groupSentAt?: string | null
   /** Кто оформил сделку. Пусто — сам партнёр. */
   createdByStaffId?: string | null
   /** Имя оформившего — сервер отдаёт и для удалённого из команды сотрудника. */
@@ -532,6 +534,8 @@ export interface InvestorPersonDetail {
 export interface AddStakeInput {
   cashBoxId: string
   capital: number
+  /** Схема v2: с какого дня капитал приносит прибыль (ГГГГ-ММ-ДД). */
+  profitFrom?: string
   profitPercent?: number | null
   managementFeePct?: number
   costFeeMode?: boolean
@@ -548,6 +552,8 @@ export interface CoInvestorJournalEntry {
   id: string
   type: CoInvestorEntryType
   date: string
+  /** Схема v2: с какого дня движение капитала действует в долях (null — с даты). */
+  effectiveFrom?: string | null
   amount: number
   note: string | null
   dealId: string | null
@@ -566,6 +572,8 @@ export interface CoInvestorJournal {
 }
 
 export interface CoInvestorSummary {
+  /** Вывод капитала в процессе (схема v2): заявлен, в долях не работает, ещё не выдан. */
+  capitalPayable?: number
   coInvestor: { id: string; name: string; phone: string | null; profitPercent: number | null; payoutSchedule?: PayoutSchedule; nextPayoutDate?: string | null }
   currentCapital: number
   capitalIn: number

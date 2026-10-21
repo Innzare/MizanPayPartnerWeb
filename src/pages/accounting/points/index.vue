@@ -333,7 +333,10 @@ function openPoint(p: PointRow) {
                     {{ p.payments30d }} {{ plural(p.payments30d, 'платёж', 'платежа', 'платежей') }}
                   </div>
                 </td>
-                <td class="text-end pp-balance">{{ formatCurrency(p.balance) }}</td>
+                <td class="text-end pp-balance" :class="{ 'pp-balance--neg': Math.round(p.balance) < 0 }">
+                  {{ formatCurrency(p.balance) }}
+                  <div v-if="Math.round(p.balance) < 0" class="pp-neg">в минусе</div>
+                </td>
               </tr>
             </tbody>
           </v-table>
@@ -453,6 +456,12 @@ function openPoint(p: PointRow) {
 .pp-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); }
 .pp-ops { font-size: 13px; }
 .pp-balance { font-weight: 700; font-variant-numeric: tabular-nums; }
+.pp-balance--neg { color: #dc2626; }
+.pp-neg {
+  display: inline-block; margin-top: 2px; padding: 1px 6px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 700;
+  background: rgba(239, 68, 68, 0.13); color: #dc2626;
+}
 .pp-row--off { opacity: 0.55; }
 .pp-off-badge {
   font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 6px;

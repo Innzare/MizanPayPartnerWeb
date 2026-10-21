@@ -34,6 +34,12 @@ export const DEAL_FLAG_OPTIONS = [
   { value: 'discounted', label: 'Есть скидка' },
 ] as const
 
+/** Отправлена ли информация по сделке в рабочую группу (отметка партнёра). */
+export const GROUP_SENT_OPTIONS = [
+  { value: 'yes', label: 'Отправлено в группу' },
+  { value: 'no', label: 'Не отправлено' },
+] as const
+
 export const PAY_STATE_OPTIONS = [
   { value: 'none', label: 'Оплат не было' },
   { value: 'partial', label: 'Оплачен частично' },
@@ -91,6 +97,8 @@ export interface DealsFilterState {
   cashBoxId: string
   staffId: string
   folderId: string
+  /** '' — все, 'yes' — отправлено в группу, 'no' — ещё нет. */
+  groupSent: '' | 'yes' | 'no'
 }
 
 function emptyState(): DealsFilterState {
@@ -121,6 +129,7 @@ function emptyState(): DealsFilterState {
     cashBoxId: '',
     staffId: '',
     folderId: '',
+    groupSent: '',
   }
 }
 
@@ -133,7 +142,7 @@ const NUMERIC_KEYS = [
 const ARRAY_KEYS = ['statuses', 'flags', 'payStates', 'cities'] as const
 const TEXT_KEYS = [
   'dateFrom', 'dateTo', 'supplierId', 'coInvestorId', 'product', 'clientKey',
-  'cashBoxId', 'staffId', 'folderId',
+  'cashBoxId', 'staffId', 'folderId', 'groupSent',
 ] as const
 const BOOL_KEYS = ['noSupplier', 'noCoInvestor'] as const
 
@@ -229,6 +238,13 @@ export function useDealsFilters(options?: {
       })
     }
     if (s.noSupplier) out.push({ key: 'noSupplier', label: 'Без поставщика', clear: () => { s.noSupplier = false } })
+    if (s.groupSent) {
+      out.push({
+        key: 'groupSent',
+        label: GROUP_SENT_OPTIONS.find((o) => o.value === s.groupSent)?.label ?? '',
+        clear: () => { s.groupSent = '' },
+      })
+    }
     if (s.coInvestorId) {
       out.push({
         key: 'coInvestor',
@@ -344,7 +360,9 @@ export function useDealsFilters(options?: {
       const n = Number(str(q[k]))
       if (str(q[k]) !== '' && Number.isFinite(n)) next[k] = n
     }
-    for (const k of TEXT_KEYS) next[k] = str(q[k])
+    for (const k of TEXT_KEYS) (next as any)[k] = str(q[k])
+    // Мусор в адресе не должен ронять список (сервер принимает только yes/no).
+    if (next.groupSent !== 'yes' && next.groupSent !== 'no') next.groupSent = ''
     // В адресе и в сохранённых наборах ответственный лежит под серверным
     // именем — читаем оба написания.
     if (!next.staffId) next.staffId = str(q.assignedStaffId)

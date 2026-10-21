@@ -15,7 +15,7 @@
  * которые раньше брали период из списка пресетов, меняют только разметку.
  */
 import { computed, ref, watch } from 'vue'
-import { rangeForPreset } from '@/composables/useReports'
+import { lastDaysRange, rangeForPreset } from '@/composables/useReports'
 import type { PeriodRange } from '@/types/reports'
 
 const props = defineProps<{
@@ -24,6 +24,10 @@ const props = defineProps<{
   counts?: Record<string, number>
   /** Только один месяц: без диапазона, года и «за всё время». */
   monthOnly?: boolean
+  /** Быстрые варианты «Сегодня / 7 дней / 30 дней» над месяцами — где важны дни («События»). */
+  dayPresets?: boolean
+  /** Только значок календаря: месяц и стрелки показывает сам экран (шапка «Инвесторов»). */
+  iconOnly?: boolean
 }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: PeriodRange): void }>()
 
@@ -132,6 +136,16 @@ function pickYear(y: number) {
   emit('update:modelValue', rangeForPreset('year', new Date(y, 0, 1)))
   open.value = false
 }
+/** Быстрые периоды в днях. Отмечен тот, что выбран сейчас и кончается сегодня. */
+const DAY_PRESETS = [1, 7, 30]
+function isDayPreset(days: number): boolean {
+  const r = lastDaysRange(days)
+  return props.modelValue.from === r.from && props.modelValue.to === r.to
+}
+function pickDays(days: number) {
+  emit('update:modelValue', lastDaysRange(days))
+  open.value = false
+}
 function pickAll() {
   emit('update:modelValue', rangeForPreset('all'))
   open.value = false
@@ -167,20 +181,32 @@ const isFuture = (y: number, m: number) => y > now.getFullYear() || (y === now.g
 
 <template>
   <div class="myp">
-    <button v-if="canStep" type="button" class="myp-step" title="Назад" @click="step(-1)">
+    <button v-if="canStep && !iconOnly" type="button" class="myp-step" title="Назад" @click="step(-1)">
       <v-icon icon="mdi-chevron-left" size="18" />
     </button>
 
     <v-menu v-model="open" :close-on-content-click="false" location="bottom center" offset="6">
       <template #activator="{ props: menuProps }">
-        <button v-bind="menuProps" type="button" class="myp-btn" :class="{ 'myp-btn--open': open }">
+        <button v-bind="menuProps" type="button" class="myp-btn" :class="{ 'myp-btn--open': open }" :title="iconOnly ? 'Выбрать месяц' : undefined">
           <v-icon icon="mdi-calendar-month-outline" size="16" />
-          <span class="myp-label">{{ label }}</span>
-          <v-icon icon="mdi-chevron-down" size="14" class="myp-caret" />
+          <template v-if="!iconOnly">
+            <span class="myp-label">{{ label }}</span>
+            <v-icon icon="mdi-chevron-down" size="14" class="myp-caret" />
+          </template>
         </button>
       </template>
 
       <v-card rounded="xl" elevation="4" class="myp-menu">
+        <div v-if="dayPresets" class="myp-days">
+          <button
+            v-for="d in DAY_PRESETS"
+            :key="d"
+            type="button"
+            class="myp-quick"
+            :class="{ 'myp-quick--on': isDayPreset(d) }"
+            @click="pickDays(d)"
+          >{{ d === 1 ? 'Сегодня' : `${d} дней` }}</button>
+        </div>
         <div class="myp-year">
           <button type="button" class="myp-year-btn" @click="viewYear--">
             <v-icon icon="mdi-chevron-left" size="18" />
@@ -235,7 +261,7 @@ const isFuture = (y: number, m: number) => y > now.getFullYear() || (y === now.g
       </v-card>
     </v-menu>
 
-    <button v-if="canStep" type="button" class="myp-step" title="Вперёд" @click="step(1)">
+    <button v-if="canStep && !iconOnly" type="button" class="myp-step" title="Вперёд" @click="step(1)">
       <v-icon icon="mdi-chevron-right" size="18" />
     </button>
   </div>
@@ -293,6 +319,10 @@ const isFuture = (y: number, m: number) => y > now.getFullYear() || (y === now.g
 .myp-cell-name { font-size: 13px; text-transform: capitalize; }
 .myp-cell-count { font-size: 10.5px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.45); }
 .myp-cell--on .myp-cell-count { color: rgb(var(--v-theme-primary)); }
+.myp-days {
+  display: flex; gap: 6px; padding: 12px 12px 10px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
 .myp-footer {
   display: flex; gap: 6px; padding: 10px 12px 12px;
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);

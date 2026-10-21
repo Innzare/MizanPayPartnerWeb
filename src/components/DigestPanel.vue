@@ -11,6 +11,9 @@ import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { formatCurrency } from '@/utils/formatters'
+import MonthYearPicker from '@/components/MonthYearPicker.vue'
+import { lastDaysRange } from '@/composables/useReports'
+import type { PeriodRange } from '@/types/reports'
 
 interface Value {
   count: number
@@ -54,16 +57,18 @@ const open = computed({
   set: (v: boolean) => emit('update:modelValue', v),
 })
 
-/** Периоды: за сколько партнёр обычно и спрашивает «что было». */
-const PERIODS = [
-  { key: 'day', label: 'За сегодня', days: 1 },
-  { key: 'week', label: 'За неделю', days: 7 },
-  { key: 'month', label: 'За месяц', days: 30 },
-]
-const period = ref('week')
-const periodLabel = computed(
-  () => PERIODS.find((p) => p.key === period.value)?.label ?? 'За неделю',
-)
+/**
+ * Период — тот же выбор, что в бухгалтерии (месяц, диапазон, год, всё время),
+ * плюс быстрые «Сегодня / 7 / 30 дней»: за дни партнёр чаще всего и спрашивает
+ * «что было». По умолчанию — последние 7 дней, как раньше «За неделю».
+ */
+const period = ref<PeriodRange>(lastDaysRange(7))
+const periodLabel = computed(() => period.value.label)
+/** Тот же период, что у кнопки в шапке: только тогда её бейдж обновляем отсюда. */
+const isWeekWindow = computed(() => {
+  const w = lastDaysRange(7)
+  return period.value.from === w.from && period.value.to === w.to
+})
 
 const loading = ref(false)
 const digest = ref<Digest | null>(null)
@@ -84,13 +89,13 @@ async function load() {
     // Границы периода считает сервер, целыми днями по времени партнёра: у
     // «Заработано» день оплаты календарный, и скользящее окно «минус 24 часа»
     // рассказывало бы про другой отрезок времени, чем соседние карточки.
-    const days = PERIODS.find((p) => p.key === period.value)?.days ?? 7
-    const res = await api.get<Digest>(`/digest?days=${days}`)
+    const p = period.value
+    const res = await api.get<Digest>(`/digest?from=${p.from}&to=${p.to}`)
     if (id !== requestId) return
     digest.value = res
     // Кнопка в шапке живёт недельным окном — обновляем её только тогда, когда
     // открыт тот же период, иначе бейдж прыгал бы вслед за переключателем.
-    if (period.value === 'week') emit('attention', res.attention)
+    if (isWeekWindow.value) emit('attention', res.attention)
   } catch {
     // Сводка — вспомогательный экран: не загрузилась, панель просто покажет
     // пустое состояние, а работа партнёра не остановится.
@@ -271,15 +276,7 @@ const isEmpty = computed(
       </div>
 
       <div class="dg-periods">
-        <button
-          v-for="p in PERIODS"
-          :key="p.key"
-          class="dg-period"
-          :class="{ 'dg-period--on': period === p.key }"
-          @click="period = p.key"
-        >
-          {{ p.label }}
-        </button>
+        <MonthYearPicker v-model="period" day-presets />
       </div>
     </div>
 
@@ -386,13 +383,6 @@ const isEmpty = computed(
 .dg-sub { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.5); margin-top: 1px; }
 
 .dg-periods { display: flex; gap: 4px; margin-left: auto; }
-.dg-period {
-  padding: 6px 13px; border-radius: 9px; border: none; cursor: pointer;
-  background: rgba(var(--v-theme-on-surface), 0.05);
-  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6);
-  white-space: nowrap;
-}
-.dg-period--on { background: #047857; color: #fff; font-weight: 600; }
 
 .dg-cols {
   flex: 1;

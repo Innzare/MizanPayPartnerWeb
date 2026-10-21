@@ -5,6 +5,20 @@ import type { CoInvestor, CoInvestorJournal, CoInvestorJournalEntry, CoInvestorS
 const coInvestors = ref<CoInvestor[]>([])
 const loading = ref(false)
 
+/** Раскладка выплаты инвестору (та же, что проведёт выплата). */
+export interface PayoutPreview {
+  owed: number
+  /** Месяц, долг которого реинвестирован 1-го числа следующего ('ГГГГ-ММ'). */
+  reinvestMonth: string
+  autoReinvestLeft: number
+  dividendPart: number
+  reinvestReturnPart: number
+  capitalPart: number
+  capital: number
+  capitalAfter: number
+  max: number
+}
+
 export function useCoInvestors() {
   async function fetchCoInvestors() {
     loading.value = true
@@ -128,11 +142,48 @@ export function useCoInvestors() {
   // ── Capital pop/withdraw (signed amount) + dividend reinvest ──
   // adjustCapital: amount SIGNED — positive = пополнение, negative = снятие.
   // Снятие ограничено currentCapital (иначе бэк вернёт 400). Возвращает summary.
-  async function adjustCapital(id: string, amount: number, note?: string) {
+  /**
+   * Пополнение (+) или снятие сразу (−). `profitFrom` — с какого дня
+   * пополнение приносит прибыль (ГГГГ-ММ-ДД, по умолчанию сервер ставит 1-е
+   * число следующего месяца).
+   */
+  async function adjustCapital(id: string, amount: number, note?: string, profitFrom?: string | null) {
     return api.post<CoInvestorSummary>(`/co-investors/${id}/capital`, {
       amount,
       note: note?.trim() || undefined,
+      ...(profitFrom ? { profitFrom } : {}),
     })
+  }
+
+  // ── Вывод капитала — процесс (схема v2) ──
+  // Заявка: с withdrawFrom сумма не приносит прибыль; деньги выдают позже.
+  async function startWithdrawal(id: string, body: { amount: number; withdrawFrom?: string | null; note?: string; idemKey?: string; payNow?: boolean }) {
+    return api.post<CoInvestorSummary>(`/co-investors/${id}/withdrawals`, body)
+  }
+  async function payWithdrawal(id: string, entryId: string, date?: string | null) {
+    return api.post<CoInvestorSummary>(`/co-investors/${id}/withdrawals/${entryId}/pay`, date ? { date } : {})
+  }
+  async function cancelWithdrawal(id: string, entryId: string) {
+    return api.delete<CoInvestorSummary>(`/co-investors/${id}/withdrawals/${entryId}`)
+  }
+  async function listWithdrawals(id: string) {
+    return api.get<Array<{ id: string; amount: number; requestedAt: string; withdrawFrom: string; note: string | null }>>(
+      `/co-investors/${id}/withdrawals`,
+    )
+  }
+
+  /** «Доля до → после» на день вступления — до проведения операции. */
+  async function sharePreview(id: string, q: { amount: number; kind: 'in' | 'out'; day?: string | null }) {
+    const p = new URLSearchParams({ amount: String(q.amount), kind: q.kind, ...(q.day ? { day: q.day } : {}) })
+    return api.get<{ before: number; after: number; v2: boolean; day: string }>(`/co-investors/${id}/share-preview?${p}`)
+  }
+
+  /** Что сделает выплата: дивиденды / возврат авто-реинвеста (с даты выплаты) / капитал. */
+  async function payoutPreview(id: string, amount: number, date?: string | null) {
+    const p = new URLSearchParams({ amount: String(amount), ...(date ? { date } : {}) })
+    return api.get<PayoutPreview>(
+      `/co-investors/${id}/payout-preview?${p}`,
+    )
   }
 
   // reinvest: часть «к выплате» (balanceOwed) возвращается в капитал. amount > 0
@@ -195,6 +246,12 @@ export function useCoInvestors() {
     fetchJournal,
     payDividends,
     adjustCapital,
+    startWithdrawal,
+    payWithdrawal,
+    cancelWithdrawal,
+    listWithdrawals,
+    sharePreview,
+    payoutPreview,
     reinvest,
     cancelCapital,
     cancelDividend,

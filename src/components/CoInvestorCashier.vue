@@ -1,12 +1,13 @@
 <script lang="ts" setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { todayIso } from '@/utils/dateInput'
 import { useToast } from '@/composables/useToast'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { useCoInvestors } from '@/composables/useCoInvestors'
+import { useCoInvestors, type PayoutPreview } from '@/composables/useCoInvestors'
+import { monthAccusative } from '@/utils/paymentAttribution'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import ServerPager from '@/components/ServerPager.vue'
 import DateField from '@/components/DateField.vue'
@@ -27,7 +28,10 @@ const router = useRouter()
 const toast = useToast()
 const { isDark } = useIsDark()
 const { isMobile } = useIsMobile()
-const { fetchSummary, fetchStakeDeals, fetchJournal, payDividends, adjustCapital, reinvest, cancelCapital, cancelDividend, fetchDetail, removeStake } = useCoInvestors()
+const {
+  fetchSummary, fetchStakeDeals, fetchJournal, payDividends, adjustCapital, reinvest, cancelCapital, cancelDividend, fetchDetail, removeStake,
+  startWithdrawal, payWithdrawal, cancelWithdrawal, listWithdrawals, sharePreview, payoutPreview,
+} = useCoInvestors()
 const cashboxesStore = useCashBoxesStore()
 
 const id = computed(() => props.id)
@@ -262,6 +266,29 @@ const payMax = computed(() =>
 const payFromCapital = computed(() =>
   summary.value ? Math.max(0, payForm.value.amount - summary.value.balanceOwed) : 0,
 )
+/**
+ * Что сделает выплата (схема v2): сверх долга она сначала возвращает
+ * авто-реинвест прошлого месяца — с даты выплаты (прибыль, которую он успел
+ * заработать, остаётся инвестору), — и только остаток снимается из капитала.
+ */
+const payPrev = ref<PayoutPreview | null>(null)
+/** «2026-03» → «март» (год — если не текущий). */
+function ymAccusative(ym: string) {
+  const [y, m] = ym.split('-').map(Number) as [number, number]
+  return monthAccusative(y, m - 1, new Date().getFullYear())
+}
+let payPrevTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => [payDialog.value, payForm.value.amount, payForm.value.date] as const,
+  ([open, amount, date]) => {
+    payPrev.value = null
+    if (payPrevTimer) clearTimeout(payPrevTimer)
+    if (!open || !summary.value || !(amount > summary.value.balanceOwed)) return
+    payPrevTimer = setTimeout(async () => {
+      try { payPrev.value = await payoutPreview(id.value, amount, date || null) } catch { payPrev.value = null }
+    }, 350)
+  },
+)
 // Сумма превышает потолок (дивиденды + капитал) — операцию нужно запретить.
 const payExceedsMax = computed(() =>
   summary.value ? payForm.value.amount > payMax.value : false,
@@ -292,7 +319,7 @@ async function loadAll() {
     ])
     summary.value = s
     detail.value = d
-    await loadJournal()
+    await Promise.all([loadJournal(), loadWithdrawals()])
   } catch (e: any) {
     toast.error(e.message || 'Не удалось загрузить данные')
   } finally {
@@ -406,9 +433,24 @@ async function submitDividends() {
     )
   }
   // Выплата сверх причитающихся дивидендов затрагивает капитал инвестора —
-  // подтверждаем явно, чтобы не снять капитал по ошибке.
-  if (payFromCapital.value > 0) {
-    if (!confirm(`Сумма превышает причитающиеся дивиденды. Из капитала инвестора будет снято ${formatCurrency(payFromCapital.value)}. Продолжить?`)) return
+  // подтверждаем явно, чтобы не снять капитал по ошибке. Раскладку берём с
+  // сервера: превью могло ещё не прийти (нажали сразу), а сверх долга сначала
+  // возвращается авто-реинвест — без превью текст соврал бы.
+  if (payForm.value.amount > summary.value.balanceOwed && !payPrev.value) {
+    try {
+      payPrev.value = await payoutPreview(id.value, payForm.value.amount, payForm.value.date || null)
+    } catch {
+      return toast.error('Не удалось рассчитать раскладку выплаты — попробуйте ещё раз')
+    }
+  }
+  const prev = payPrev.value
+  if (prev && (prev.reinvestReturnPart > 0 || prev.capitalPart > 0)) {
+    const parts = [
+      prev.dividendPart > 0 ? `дивиденды ${formatCurrency(prev.dividendPart)}` : '',
+      prev.reinvestReturnPart > 0 ? `возврат авто-реинвеста ${formatCurrency(prev.reinvestReturnPart)}, с даты выплаты` : '',
+      prev.capitalPart > 0 ? `из капитала ${formatCurrency(prev.capitalPart)}` : '',
+    ].filter(Boolean)
+    if (!confirm(`Сумма превышает причитающиеся дивиденды: ${parts.join(', ')}. Капитал инвестора станет ${formatCurrency(prev.capitalAfter)}. Продолжить?`)) return
   }
   paying.value = true
   try {
@@ -433,13 +475,73 @@ async function submitDividends() {
   }
 }
 
+// ── Выводы капитала в процессе (схема v2): заявлены, ещё не выданы ──
+const withdrawals = ref<Array<{ id: string; amount: number; requestedAt: string; withdrawFrom: string; note: string | null }>>([])
+const withdrawalBusy = ref<string | null>(null)
+async function loadWithdrawals() {
+  try { withdrawals.value = await listWithdrawals(id.value) } catch { withdrawals.value = [] }
+}
+async function payPending(w: { id: string; amount: number }) {
+  if (!confirm(`Выдать инвестору ${formatCurrency(w.amount)}? Деньги уйдут из кассы сегодняшним числом.`)) return
+  withdrawalBusy.value = w.id
+  try {
+    summary.value = await payWithdrawal(id.value, w.id)
+    toast.success('Вывод выдан')
+    await Promise.all([loadJournal(), loadWithdrawals()])
+    emit('changed')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось выдать')
+  } finally {
+    withdrawalBusy.value = null
+  }
+}
+async function cancelPending(w: { id: string; amount: number }) {
+  if (!confirm(`Отменить вывод ${formatCurrency(w.amount)}? Сумма снова начнёт приносить прибыль.`)) return
+  withdrawalBusy.value = w.id
+  try {
+    summary.value = await cancelWithdrawal(id.value, w.id)
+    toast.success('Вывод отменён')
+    await Promise.all([loadJournal(), loadWithdrawals()])
+    emit('changed')
+  } catch (e: any) {
+    toast.error(e.message || 'Не удалось отменить')
+  } finally {
+    withdrawalBusy.value = null
+  }
+}
+
 // ── Capital operations: пополнить / снять / реинвестировать ──
 // Одна модалка на все три режима — заголовок, поля и подсказки меняются по mode.
 type CapitalMode = 'topup' | 'withdraw' | 'reinvest'
 const capitalDialog = ref(false)
 const capitalMode = ref<CapitalMode>('topup')
 const capitalSaving = ref(false)
-const capitalForm = ref({ amount: 0, note: '' })
+// day — для пополнения «приносит прибыль с», для вывода «не приносит прибыль с».
+// payNow — выдать деньги сразу (по умолчанию, как всегда было); выключено —
+// вывод ждёт выдачи в списке «к выдаче».
+const capitalForm = ref({ amount: 0, note: '', day: '', payNow: true })
+
+/** Вывод с будущей даты — выдать деньги сейчас нельзя. */
+const withdrawInFuture = computed(() => capitalMode.value === 'withdraw' && !!capitalForm.value.day && capitalForm.value.day > todayIso())
+watch(withdrawInFuture, (v) => { if (v) capitalForm.value.payNow = false })
+
+/** «Доля в пуле до → после» — только у инвестора «по вкладу». */
+const isWeightStake = computed(() => summary.value?.shareBreakdown?.mode === 'weight')
+const sharePrev = ref<{ before: number; after: number; v2: boolean } | null>(null)
+let sharePrevTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => [capitalDialog.value, capitalMode.value, capitalForm.value.amount, capitalForm.value.day] as const,
+  ([open, mode, amount, day]) => {
+    sharePrev.value = null
+    if (sharePrevTimer) clearTimeout(sharePrevTimer)
+    if (!open || mode === 'reinvest' || !isWeightStake.value || !(amount > 0)) return
+    sharePrevTimer = setTimeout(async () => {
+      try {
+        sharePrev.value = await sharePreview(id.value, { amount, kind: mode === 'withdraw' ? 'out' : 'in', day: day || null })
+      } catch { sharePrev.value = null }
+    }, 350)
+  },
+)
 // См. payAmountKey — форсит ре-рендер инпута суммы после «Снять всё» / «Реинвест всё».
 const capitalAmountKey = ref(0)
 
@@ -468,9 +570,14 @@ const capitalProjected = computed(() => {
 
 function openCapitalDialog(mode: CapitalMode) {
   capitalMode.value = mode
-  capitalForm.value = { amount: 0, note: '' }
+  // Даты по умолчанию — сегодня: вклад работает и вывод перестаёт работать сразу.
+  capitalForm.value = { amount: 0, note: '', day: todayIso(), payNow: true }
   capitalDialog.value = true
 }
+/** Переключили «Пополнить / Снять» — дата по умолчанию снова сегодня. */
+watch(capitalMode, () => {
+  capitalForm.value.day = todayIso()
+})
 
 function closeCapitalDialog() {
   capitalDialog.value = false
@@ -490,14 +597,21 @@ async function submitCapital() {
   try {
     if (capitalMode.value === 'reinvest') {
       summary.value = await reinvest(id.value, amount)
+    } else if (capitalMode.value === 'withdraw') {
+      // Вывод — процесс: с даты не приносит прибыль, деньги выдаются позже
+      // (или сразу, если отмечено).
+      summary.value = await startWithdrawal(id.value, {
+        amount, withdrawFrom: capitalForm.value.day || null, note: capitalForm.value.note || undefined,
+        payNow: capitalForm.value.payNow,
+      })
+      await loadWithdrawals()
     } else {
-      const signed = capitalMode.value === 'withdraw' ? -amount : amount
-      summary.value = await adjustCapital(id.value, signed, capitalForm.value.note)
+      summary.value = await adjustCapital(id.value, amount, capitalForm.value.note, capitalForm.value.day || null)
     }
     closeCapitalDialog()
     toast.success({
       topup: 'Капитал пополнен',
-      withdraw: 'Капитал снят',
+      withdraw: capitalForm.value.payNow ? 'Капитал выведен и выдан' : 'Вывод заявлен — выдайте деньги, когда будете готовы',
       reinvest: 'Дивиденды реинвестированы',
     }[capitalMode.value])
     await loadJournal()
@@ -585,14 +699,31 @@ function isReinvest(e: { type: string; note?: string | null }): boolean {
 
 function entryMeta(e: { type: string; amount: number; note?: string | null; meta?: unknown }) {
   const base = TYPE_META[e.type] ?? { label: e.type, color: '#71717a', icon: 'mdi-circle', sign: 1 }
+  const m = (e.meta ?? {}) as Record<string, any>
+  // Корректировки месяца без сделки: повышение процента и расходы (схема v2).
+  if (e.type === 'PROFIT_ACCRUED' && m.kind === 'MONTH_EXPENSE') {
+    return { label: 'Расходы месяца, затрагивающие инвесторов', color: '#dc2626', icon: 'mdi-receipt-text-minus-outline', sign: base.sign }
+  }
+  if (e.type === 'PROFIT_ACCRUED' && m.kind === 'MONTH_BONUS') {
+    return { label: 'Повышение доли за месяц', color: '#047857', icon: 'mdi-arrow-up-bold-circle-outline', sign: base.sign }
+  }
   if (isReinvest(e)) {
     // CAPITAL_IN (+) — капитал вырос; DIVIDEND_PAID (−) — «к выплате» уменьшилось.
+    const auto = m.autoV2 === true || String(m.idemKey ?? '').startsWith('auto-reinvest:')
     return {
-      label: e.type === 'CAPITAL_IN' ? 'Реинвестирование (в капитал)' : 'Реинвестирование (из выплат)',
+      label: (e.type === 'CAPITAL_IN' ? 'Реинвестирование (в капитал)' : 'Реинвестирование (из выплат)') + (auto ? ' · авто' : ''),
       color: '#6366f1',
       icon: 'mdi-refresh-auto',
       sign: base.sign,
     }
+  }
+  if (e.type === 'CAPITAL_OUT' && m.withdrawal) {
+    return { label: 'Вывод капитала', color: '#ef4444', icon: 'mdi-arrow-up-circle-outline', sign: base.sign }
+  }
+  // Выплата сверх долга вернула авто-реинвест — с даты выплаты (схема v2).
+  if (e.type === 'CAPITAL_OUT' && m.reason === 'reinvestReturn') {
+    const month = typeof m.reinvestMonth === 'string' ? ` за ${ymAccusative(m.reinvestMonth)}` : ''
+    return { label: `Возврат авто-реинвеста${month}`, color: '#6366f1', icon: 'mdi-undo-variant', sign: base.sign }
   }
   if (!isReversal(e)) return base
   // Reversal: rephrase, flip colour to red, swap icon for an "undo" cue.
@@ -610,6 +741,23 @@ function entryMeta(e: { type: string; amount: number; note?: string | null; meta
   }
 }
 
+/**
+ * Пояснение к движению капитала (схема v2): с какого дня оно действует в
+ * долях, статус вывода и доля до → после.
+ */
+function entryHint(e: { type: string; date: string; effectiveFrom?: string | null; meta?: unknown }): string {
+  if (e.type !== 'CAPITAL_IN' && e.type !== 'CAPITAL_OUT') return ''
+  const m = (e.meta ?? {}) as Record<string, any>
+  const parts: string[] = []
+  const eff = e.effectiveFrom
+  if (e.type === 'CAPITAL_IN' && eff && formatDate(eff) !== formatDate(e.date)) parts.push(`приносит прибыль с ${formatDate(eff)}`)
+  if (e.type === 'CAPITAL_OUT' && eff && formatDate(eff) !== formatDate(e.date)) parts.push(`не приносит прибыль с ${formatDate(eff)}`)
+  if (m.withdrawal?.status === 'pending') parts.push('к выдаче')
+  if (m.withdrawal?.status === 'paid' && m.withdrawal.paidAt) parts.push(`выдан ${formatDate(m.withdrawal.paidAt)}`)
+  if (typeof m.shareBefore === 'number' && typeof m.shareAfter === 'number') parts.push(`доля ${m.shareBefore}% → ${m.shareAfter}%`)
+  return parts.join(' · ')
+}
+
 function formatSigned(amount: number) {
   if (amount === 0) return '0 ₽'
   return (amount > 0 ? '+' : '') + formatCurrency(amount)
@@ -617,10 +765,10 @@ function formatSigned(amount: number) {
 
 // ── Отмена операции ──
 // Отменяемы «живые» записи:
-//  • CAPITAL_IN / CAPITAL_OUT — пополнение/снятие капитала (кроме реинвест-строк
-//    и откатов; их капитал завязан на дивиденды).
+//  • CAPITAL_IN / CAPITAL_OUT — пополнение/снятие капитала и возврат
+//    авто-реинвеста (кроме реинвест-строк и сторно; их капитал завязан на дивиденды).
 //  • DIVIDEND_PAID — выплата дивидендов ИЛИ реинвест (обе отменяемы через
-//    отдельный эндпоинт; кроме откатов).
+//    отдельный эндпоинт; кроме сторно).
 // Дивидендная строка реинвеста — DIVIDEND_PAID с meta.reason==='reinvest' или
 // note «Реинвестирование дивидендов». CAPITAL_IN реинвеста кнопки НЕ получает.
 function isDividendEntry(e: { type: string }): boolean {
@@ -650,7 +798,9 @@ async function cancelEntry(e: CoInvestorJournalEntry) {
     ? (isReinvestDividend(e)
         ? `Отменить реинвестирование? Сумма (${formatCurrency(Math.abs(e.amount))}) снова станет причитающейся к выплате, а текущий капитал инвестора уменьшится на неё.`
         : 'Отменить выплату дивидендов? Сумма снова станет причитающейся к выплате.')
-    : 'Отменить операцию? Капитал вернётся к прежнему значению.'
+    : (e.type === 'CAPITAL_OUT' && (e.meta as any)?.reason === 'reinvestReturn'
+        ? `Отменить возврат авто-реинвеста? ${formatCurrency(Math.abs(e.amount))} снова будут работать в капитале инвестора, деньги вернутся в кассу.`
+        : 'Отменить операцию? Капитал вернётся к прежнему значению.')
   if (!confirm(confirmText)) return
   cancellingId.value = e.id
   try {
@@ -759,6 +909,22 @@ function pluralDeals(n: number) {
                 <slot name="menu-danger" />
               </div>
             </v-menu>
+          </div>
+        </div>
+
+        <!-- Выводы капитала в процессе: в долях уже не работают, деньги не выданы -->
+        <div v-if="withdrawals.length" class="wd-list mt-4">
+          <div class="wd-title">
+            <v-icon icon="mdi-cash-clock" size="16" />
+            К выдаче: {{ formatCurrency(withdrawals.reduce((t, w) => t + w.amount, 0)) }}
+          </div>
+          <div v-for="w in withdrawals" :key="w.id" class="wd-row">
+            <div class="wd-main">
+              <b>{{ formatCurrency(w.amount) }}</b>
+              <span class="wd-sub">заявлен {{ formatDate(w.requestedAt) }} · не приносит прибыль с {{ formatDate(w.withdrawFrom) }}</span>
+            </div>
+            <button class="chip chip--ghost" :disabled="withdrawalBusy === w.id" @click="cancelPending(w)">Отменить</button>
+            <button class="btn btn--primary btn--sm" :disabled="withdrawalBusy === w.id" @click="payPending(w)">Выдать</button>
           </div>
         </div>
 
@@ -1103,6 +1269,7 @@ function pluralDeals(n: number) {
                 <span>{{ formatDate(e.date) }}</span>
                 <span v-if="e.dealNumber"> · сделка #{{ e.dealNumber }} {{ e.dealProductName }}</span>
                 <span v-if="e.note"> · {{ e.note }}</span>
+                <span v-if="entryHint(e)" class="journal-hint"> · {{ entryHint(e) }}</span>
               </div>
             </div>
             <div class="journal-amount" :style="{ color: e.amount >= 0 ? '#047857' : '#ef4444' }">
@@ -1584,9 +1751,22 @@ function pluralDeals(n: number) {
               и весь капитал инвестора ({{ formatCurrency(summary.currentCapital) }}).
             </span>
           </div>
+          <!-- Схема v2: выплата сверх долга сначала возвращает авто-реинвест прошлого месяца -->
+          <div v-else-if="payPrev && payPrev.reinvestReturnPart > 0" class="pay-note pay-note--info mb-3">
+            <v-icon icon="mdi-undo-variant" size="16" />
+            <span>
+              <template v-if="payPrev.dividendPart > 0">Дивиденды — {{ formatCurrency(payPrev.dividendPart) }}. </template>
+              Из авто-реинвеста за {{ ymAccusative(payPrev.reinvestMonth) }} вернётся <b>{{ formatCurrency(payPrev.reinvestReturnPart) }}</b>:
+              с даты выплаты эта сумма перестаёт работать в капитале, прибыль, которую она заработала до этого дня, остаётся инвестору.
+              <template v-if="payPrev.capitalPart > 0">
+                Ещё {{ formatCurrency(payPrev.capitalPart) }} будет снято из капитала инвестора.
+              </template>
+              Капитал станет {{ formatCurrency(payPrev.capitalAfter) }}.
+            </span>
+          </div>
           <!-- Сверх дивидендов, но в пределах капитала — предупреждение -->
           <div
-            v-else-if="summary && payFromCapital > 0"
+            v-else-if="summary && (payPrev ? payPrev.capitalPart : payFromCapital) > 0"
             class="pay-note pay-note--warn mb-3"
           >
             <v-icon icon="mdi-alert-outline" size="16" />
@@ -1599,7 +1779,7 @@ function pluralDeals(n: number) {
 
           <div class="field mb-3">
             <label class="field-label">Дата</label>
-            <DateField v-model="payForm.date" plain />
+            <DateField v-model="payForm.date" :max="todayIso()" plain />
           </div>
 
           <div class="field">
@@ -1683,6 +1863,36 @@ function pluralDeals(n: number) {
             </div>
           </div>
 
+          <!-- Схема v2: у движения капитала своя дата в долях — отдельно от даты денег -->
+          <div v-if="capitalMode !== 'reinvest'" class="field mb-3">
+            <label class="field-label">{{ capitalMode === 'topup' ? 'Приносит прибыль с' : 'Не приносит прибыль с' }}</label>
+            <DateField v-model="capitalForm.day" :min="capitalMode === 'topup' ? todayIso() : null" plain />
+            <div class="cap-hint">
+              <template v-if="capitalMode === 'topup'">
+                Деньги поступают в кассу сегодня, а в долях участвуют с этой даты — по умолчанию сразу.
+              </template>
+              <template v-else>
+                С этой даты сумма не приносит прибыль. Выдать деньги можно позже — до выдачи они числятся «к выдаче».
+              </template>
+            </div>
+          </div>
+
+          <!-- Выдать сразу можно, только если сумма уже не работает: иначе деньги
+               ушли бы сегодня, а в долях работали бы до будущей даты. -->
+          <label v-if="capitalMode === 'withdraw'" class="cap-check mb-3" :class="{ 'cap-check--off': withdrawInFuture }">
+            <input v-model="capitalForm.payNow" type="checkbox" :disabled="withdrawInFuture" />
+            <span>
+              Выдать деньги сейчас
+              <template v-if="withdrawInFuture"> — недоступно: дата вывода ещё не наступила</template>
+            </span>
+          </label>
+
+          <div v-if="sharePrev && capitalMode !== 'reinvest'" class="cap-share mb-3">
+            <v-icon icon="mdi-chart-pie" size="15" />
+            Доля в пуле «по вкладу»: <b>{{ sharePrev.before }}%</b> → <b>{{ sharePrev.after }}%</b>
+            <span class="cap-share-day">с {{ formatDate(capitalForm.day) }}</span>
+          </div>
+
           <div v-if="capitalMode !== 'reinvest'" class="field mb-3">
             <label class="field-label">Комментарий</label>
             <input v-model="capitalForm.note" type="text" class="field-input" placeholder="Например: довнесение" />
@@ -1699,11 +1909,12 @@ function pluralDeals(n: number) {
                 Вложенный капитал вырастет до <strong>{{ formatCurrency(capitalProjected) }}</strong>.
               </template>
               <template v-else-if="capitalMode === 'withdraw'">
-                Капитал уменьшится до <strong>{{ formatCurrency(capitalProjected) }}</strong>.
+                Капитал в работе уменьшится до <strong>{{ formatCurrency(capitalProjected) }}</strong>.
+                <template v-if="!capitalForm.payNow"> Деньги остаются в кассе до выдачи — вывод появится в списке «к выдаче».</template>
               </template>
               <template v-else>
-                Эти деньги вернутся в ваш капитал (до <strong>{{ formatCurrency(capitalProjected) }}</strong>),
-                доля «по вкладу» вырастет. Деньги не выходят из кассы — «к выплате» уменьшается.
+                Эти деньги вернутся в капитал инвестора (до <strong>{{ formatCurrency(capitalProjected) }}</strong>)
+                и начнут приносить прибыль сразу. Деньги не выходят из кассы — «к выплате» уменьшается.
               </template>
             </div>
           </div>
@@ -2559,6 +2770,27 @@ function pluralDeals(n: number) {
 .cap-note--withdraw { background: rgba(239, 68, 68, 0.07); border: 1px solid rgba(239, 68, 68, 0.2); }
 .cap-note--withdraw .v-icon { color: #ef4444; }
 .cap-note--reinvest { background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.2); }
+.cap-hint { font-size: 12px; line-height: 1.45; margin-top: 5px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.cap-check { display: flex; align-items: center; gap: 8px; font-size: 13.5px; cursor: pointer; }
+.cap-check--off { opacity: 0.6; cursor: default; }
+.cap-share {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 9px 12px; border-radius: 10px; font-size: 13px;
+  background: rgba(79, 70, 229, 0.07); border: 1px solid rgba(79, 70, 229, 0.18);
+}
+.cap-share .v-icon { color: #4f46e5; }
+.cap-share-day { color: rgba(var(--v-theme-on-surface), 0.55); }
+.pay-note--info { background: rgba(79, 70, 229, 0.07); border: 1px solid rgba(79, 70, 229, 0.2); }
+.wd-list {
+  border-radius: 12px; padding: 10px 12px;
+  background: rgba(217, 119, 6, 0.06); border: 1px solid rgba(217, 119, 6, 0.22);
+}
+.wd-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: #b45309; }
+.wd-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.wd-main { flex: 1; min-width: 180px; display: flex; flex-direction: column; font-size: 13.5px; }
+.wd-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.journal-hint { color: #4f46e5; }
+.btn--sm { padding: 6px 12px; font-size: 13px; }
 .cap-note--reinvest .v-icon { color: #6366f1; }
 
 .field-label { display: block; font-size: 13px; font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.6); margin-bottom: 6px; }

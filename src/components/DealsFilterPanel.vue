@@ -23,6 +23,7 @@ import {
   DATE_FIELDS,
   DATE_PRESETS,
   DEAL_FLAG_OPTIONS,
+  GROUP_SENT_OPTIONS,
   DEAL_STATUS_OPTIONS,
   PAY_STATE_OPTIONS,
   type DealsFilterState,
@@ -164,6 +165,7 @@ const counts = computed(() => {
       range(s.termFrom, s.termTo) +
       range(s.overdueFrom, s.overdueTo),
     product: (s.product.trim() ? 1 : 0) + (s.cities.length ? 1 : 0),
+    groupSent: s.groupSent ? 1 : 0,
     where: (s.cashBoxId ? 1 : 0) + (s.staffId ? 1 : 0) + (s.folderId ? 1 : 0),
     parties:
       (s.supplierId ? 1 : 0) + (s.noSupplier ? 1 : 0) +
@@ -187,6 +189,7 @@ function clearSection(name: string) {
     s.overdueFrom = s.overdueTo = null
   }
   if (name === 'product') { s.product = ''; s.cities = [] }
+  if (name === 'groupSent') s.groupSent = ''
   if (name === 'where') { s.cashBoxId = ''; s.staffId = ''; s.folderId = '' }
   if (name === 'parties') {
     s.supplierId = ''
@@ -335,6 +338,28 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
             class="fp-chip"
             :class="{ 'fp-chip--on': state.flags.includes(o.value) }"
             @click="toggle(state.flags, o.value)"
+          >{{ o.label }}</button>
+        </div>
+      </section>
+
+      <!-- Рабочая группа: отмечено ли «отправлено» -->
+      <section class="fp-section" :class="{ 'fp-section--on': counts.groupSent }">
+        <div class="fp-section-head">
+          <v-icon icon="mdi-send-check-outline" size="15" class="fp-section-icon" />
+          <span class="fp-section-title">Рабочая группа</span>
+          <span v-if="counts.groupSent" class="fp-section-count">{{ counts.groupSent }}</span>
+          <button v-if="counts.groupSent" type="button" class="fp-section-clear" @click="clearSection('groupSent')">
+            Сбросить
+          </button>
+        </div>
+        <div class="fp-chips">
+          <button
+            v-for="o in GROUP_SENT_OPTIONS"
+            :key="o.value"
+            type="button"
+            class="fp-chip"
+            :class="{ 'fp-chip--on': state.groupSent === o.value }"
+            @click="state.groupSent = state.groupSent === o.value ? '' : o.value"
           >{{ o.label }}</button>
         </div>
       </section>

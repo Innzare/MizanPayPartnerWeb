@@ -20,7 +20,7 @@ import {
   type ProgramRoundingTarget,
   type ProgramRule,
 } from '@/utils/programMath'
-import { formatCurrency, CURRENCY_MASK, PERCENT_MASK, parseMasked, maskedMoney, maskedPercent } from '@/utils/formatters'
+import { formatCurrency, CURRENCY_MASK, PERCENT_MASK, parseMasked, maskedMoney, maskedPercent, pluralizeRu } from '@/utils/formatters'
 import { CATEGORIES } from '@/constants/categories'
 import { CITIES } from '@/constants/cities'
 import { useRouter, useRoute } from 'vue-router'
@@ -745,6 +745,51 @@ const participatingList = computed(() =>
         : null,
     })),
 )
+
+// ── Компактный список участников ──
+// В кассе бывает по 30–40 инвесторов: полный список растягивал шаг на
+// несколько экранов. По умолчанию — сводка «кто и на каких условиях»,
+// список — по кнопке, с поиском и «выбрать всех».
+/** Условия участника одной строкой — для сводки и превью. */
+function participantTerms(ci: (typeof participatingList.value)[number]): string {
+  if (ci.costFeeMode) return `комиссия от закупки ${ci.costFeeRate ?? 0}%`
+  if (ci.effectivePercent != null) return `фикс ${ci.effectivePercent}%`
+  return (ci.effectiveMgmtFee ?? 0) > 0 ? `по вкладу · комиссия ${ci.effectiveMgmtFee}%` : 'по вкладу'
+}
+/** Участники, сгруппированные по одинаковым условиям: «36 · по вкладу · комиссия 60%». */
+const participantGroups = computed(() => {
+  const m = new Map<string, number>()
+  for (const ci of participatingList.value) {
+    const t = participantTerms(ci)
+    m.set(t, (m.get(t) ?? 0) + 1)
+  }
+  return [...m].map(([terms, count]) => ({ terms, count })).sort((a, b) => b.count - a.count)
+})
+const investorsWord = (n: number) => pluralizeRu(n, 'инвестор', 'инвестора', 'инвесторов')
+/** С этого числа инвесторов список сворачивается в сводку. */
+const PARTICIPANTS_COMPACT_FROM = 6
+const participantsOpen = ref(false)
+// Ставку «комиссии от закупки» без списка не задать — тогда он раскрыт всегда.
+const participantsNeedInput = computed(() =>
+  dealParticipants.value.some((p) => p.participates && p.costFeeMode && (p.costFeeRate == null || costFeeCalc(p).invalid)),
+)
+const participantsExpanded = computed(() =>
+  dealParticipants.value.length < PARTICIPANTS_COMPACT_FROM || participantsOpen.value || participantsNeedInput.value,
+)
+const participantSearch = ref('')
+const visibleParticipants = computed(() => {
+  const q = participantSearch.value.trim().toLowerCase()
+  return q ? dealParticipants.value.filter((p) => p.name.toLowerCase().includes(q)) : dealParticipants.value
+})
+/** Все инвесторы «по вкладу» и с фикс-%; инвестор «комиссия от закупки» участвует только один. */
+function setAllParticipants(on: boolean) {
+  for (const p of dealParticipants.value) p.participates = on && !p.costFeeMode
+  markParticipantsDirty()
+}
+// Превью: при большом составе — сводка, имена по кнопке.
+const previewParticipantsOpen = ref(false)
+// Правка сделки с особым составом — сразу показываем список, а не сводку.
+watch(participantsCustomized, (v) => { if (v) participantsOpen.value = true }, { immediate: true })
 
 // The wire payload: participating CIs with per-deal override OR cost-fee rate.
 // Ровно одно per-deal поле по режиму инвестора (бэк валидирует взаимоисключимость):
@@ -2948,9 +2993,50 @@ async function submitDeal(acknowledgedOverdraft = false) {
               <span>Участники прибыли</span>
               <span class="text-caption text-medium-emphasis ml-1">— кто делит прибыль этой сделки</span>
             </div>
-            <div class="participants-list">
+            <!-- Сводка: при большом составе список не разворачивается сам. -->
+            <div v-if="dealParticipants.length >= PARTICIPANTS_COMPACT_FROM" class="participants-summary">
+              <div class="participants-summary-text">
+                <div class="participants-summary-count">
+                  Участвуют {{ participatingList.length }} из {{ dealParticipants.length }}
+                </div>
+                <div v-if="participantGroups.length" class="participants-summary-terms">
+                  <span v-for="g in participantGroups" :key="g.terms" class="participants-terms-chip">
+                    <template v-if="participantGroups.length > 1">{{ g.count }} · </template>{{ g.terms }}
+                  </span>
+                </div>
+                <div v-else class="participants-summary-terms participants-summary-terms--none">
+                  Прибыль этой сделки целиком ваша
+                </div>
+              </div>
+              <button
+                v-if="!participantsNeedInput"
+                type="button"
+                class="participants-toggle"
+                @click="participantsOpen = !participantsOpen"
+              >
+                {{ participantsExpanded ? 'Свернуть' : 'Изменить состав' }}
+                <v-icon :icon="participantsExpanded ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="16" />
+              </button>
+            </div>
+            <div
+              v-if="participantsExpanded && dealParticipants.length >= PARTICIPANTS_COMPACT_FROM"
+              class="participants-tools"
+            >
+              <div class="participants-search">
+                <v-icon icon="mdi-magnify" size="16" />
+                <input v-model="participantSearch" type="text" placeholder="Найти инвестора" />
+              </div>
+              <button type="button" class="participants-tool-link" @click="setAllParticipants(true)">Выбрать всех</button>
+              <button type="button" class="participants-tool-link" @click="setAllParticipants(false)">Снять всех</button>
+            </div>
+            <div
+              v-if="participantsExpanded"
+              class="participants-list"
+              :class="{ 'participants-list--compact': dealParticipants.length >= PARTICIPANTS_COMPACT_FROM }"
+            >
+              <div v-if="!visibleParticipants.length" class="participants-empty">Никого не нашли</div>
               <div
-                v-for="p in dealParticipants"
+                v-for="p in visibleParticipants"
                 :key="p.id"
                 class="participant-row"
                 :class="{ 'participant-row--off': !p.participates }"
@@ -2965,7 +3051,11 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 </button>
                 <div class="participant-info">
                   <div class="participant-name">{{ p.name }}</div>
-                  <div class="participant-sub">
+                  <!-- В компактном списке условия «по вкладу» уже видны в сводке и в поле справа. -->
+                  <div
+                    v-if="!(dealParticipants.length >= PARTICIPANTS_COMPACT_FROM && !p.costFeeMode && !(p.profitPercent != null && p.profitPercent > 0))"
+                    class="participant-sub"
+                  >
                     <template v-if="p.costFeeMode">Комиссия от закупки</template>
                     <template v-else-if="p.profitPercent != null && p.profitPercent > 0">По умолчанию фикс {{ p.profitPercent }}%</template>
                     <template v-else>По умолчанию по вкладу<template v-if="(p.managementFeePct ?? 0) > 0"> · комиссия {{ p.managementFeePct }}%</template></template>
@@ -3033,7 +3123,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 </div>
               </div>
             </div>
-            <div class="participants-hint">
+            <div v-if="participantsExpanded" class="participants-hint">
               По умолчанию прибыль делят все инвесторы кассы. Уберите лишних или задайте отдельный процент для этой сделки.
               Инвестор в режиме «комиссия от закупки» задаёт ставку % от закупки и должен быть единственным участником.
             </div>
@@ -3346,7 +3436,21 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   <v-icon icon="mdi-account-group-outline" size="14" />
                   Участники прибыли ({{ participatingList.length }})
                 </div>
-                <div class="preview-coinvestor-list">
+                <!-- Большой состав — сводка по условиям, имена по кнопке. -->
+                <div v-if="participatingList.length >= PARTICIPANTS_COMPACT_FROM" class="preview-coinvestor-groups">
+                  <div v-for="g in participantGroups" :key="g.terms" class="preview-coinvestor">
+                    <span class="preview-coinvestor-name">{{ g.count }} {{ investorsWord(g.count) }}</span>
+                    <span class="preview-coinvestor-share">{{ g.terms }}</span>
+                  </div>
+                  <button type="button" class="preview-coinvestor-more" @click="previewParticipantsOpen = !previewParticipantsOpen">
+                    {{ previewParticipantsOpen ? 'Скрыть имена' : 'Показать всех' }}
+                    <v-icon :icon="previewParticipantsOpen ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="14" />
+                  </button>
+                </div>
+                <div
+                  v-if="participatingList.length < PARTICIPANTS_COMPACT_FROM || previewParticipantsOpen"
+                  class="preview-coinvestor-list"
+                >
                   <div v-for="ci in participatingList" :key="ci.id" class="preview-coinvestor">
                     <span class="preview-coinvestor-name">{{ ci.name }}</span>
                     <span class="preview-coinvestor-share">
@@ -3742,10 +3846,20 @@ async function submitDeal(acknowledgedOverdraft = false) {
    увидеть. Что не влезло — прокручивается внутри колонки. */
 .wizard-preview {
   position: sticky;
-  top: 16px;
+  /* Ниже шапки приложения (она тоже липкая), а не под ней: раньше блок
+     уезжал под шапку и только там останавливался. */
+  top: calc(var(--lyt-header-h, 72px) + 16px);
   align-self: start;
-  max-height: calc(100vh - 108px);
+  max-height: calc(100vh - var(--lyt-header-h, 72px) - 16px - 92px);
   overflow-y: auto;
+}
+/* На staging над шапкой полоса окружения 26px (layouts/default.vue). Только
+   там, где превью липкое: на узких экранах оно идёт обычным блоком. */
+@media (min-width: 1280px) {
+  :global(.lyt-content--staging) .wizard-layout:not(.wizard-layout--review) .wizard-preview {
+    top: calc(var(--lyt-header-h, 72px) + 42px);
+    max-height: calc(100vh - var(--lyt-header-h, 72px) - 42px - 92px);
+  }
 }
 .wizard-preview .preview-card { position: static; }
 
@@ -4292,6 +4406,13 @@ async function submitDeal(acknowledgedOverdraft = false) {
   padding: 8px 0;
 }
 
+.preview-coinvestor-groups { display: flex; flex-direction: column; gap: 6px; }
+.preview-coinvestor-more {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 2px;
+  border: none; background: none; cursor: pointer; padding: 2px 0;
+  font-size: 12px; font-weight: 600; color: #047857;
+}
+.preview-coinvestor-groups + .preview-coinvestor-list { margin-top: 6px; }
 .preview-coinvestor-list {
   display: flex;
   flex-direction: column;
@@ -5433,6 +5554,56 @@ async function submitDeal(acknowledgedOverdraft = false) {
 
 /* Phase 4: per-deal participants */
 .participants-list { display: flex; flex-direction: column; gap: 8px; }
+/* Большой состав: строки плотнее, чтобы 30+ инвесторов не растягивали шаг. */
+.participants-list--compact { gap: 4px; margin-top: 10px; }
+/* На широком экране — две колонки: 36 инвесторов занимают 18 строк. */
+@media (min-width: 1500px) {
+  .participants-list--compact { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+  .participants-list--compact .participants-empty { grid-column: 1 / -1; }
+}
+.participants-list--compact .participant-row { padding: 5px 10px; }
+.participants-list--compact .participant-check { width: 26px; height: 26px; }
+.participants-list--compact .participant-name { font-size: 13.5px; }
+.participants-list--compact .participant-override { width: auto; }
+.participants-list--compact .participant-override--fee { flex-direction: row; align-items: center; gap: 8px; }
+.participants-list--compact .participant-override-field { width: 64px; }
+.participants-list--compact .participant-override-input { padding-top: 4px; padding-bottom: 4px; }
+.participants-summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border-radius: 12px;
+  background: rgba(4, 120, 87, 0.05); border: 1px solid rgba(4, 120, 87, 0.14);
+}
+.participants-summary-text { min-width: 0; }
+.participants-summary-count { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.9); }
+.participants-summary-terms { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.participants-summary-terms--none { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6); }
+.participants-terms-chip {
+  font-size: 12px; font-weight: 600; color: #047857;
+  padding: 3px 9px; border-radius: 999px; background: rgba(4, 120, 87, 0.1);
+}
+.participants-toggle {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;
+  height: 34px; padding: 0 12px; border-radius: 9px; cursor: pointer;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14); background: rgb(var(--v-theme-surface));
+  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.8);
+}
+.participants-toggle:hover { border-color: rgba(var(--v-theme-on-surface), 0.28); }
+.participants-tools { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.participants-search {
+  flex: 1; display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 10px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12); border-radius: 9px;
+  color: rgba(var(--v-theme-on-surface), 0.5);
+}
+.participants-search input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font: inherit; font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.participants-tool-link {
+  border: none; background: none; cursor: pointer; padding: 0; white-space: nowrap;
+  font-size: 13px; font-weight: 600; color: #047857;
+}
+.participants-tool-link:hover { text-decoration: underline; }
+.participants-empty { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5); padding: 8px 2px; }
 .participant-row {
   display: flex; align-items: center; gap: 12px;
   padding: 8px 10px; border-radius: 10px;

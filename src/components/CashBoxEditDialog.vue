@@ -99,12 +99,9 @@ function removeRow(i: number) {
 const layoutReady = computed(() =>
   layout.value.filter((r) => r.name.trim() && Math.round(r.amount ?? 0) > 0),
 )
-// Phase 4: does the partner's own capital join the by-capital profit split in
-// this cashbox? true = partner invests alongside co-investors; false = partner
-// only manages (their cut comes from each CI's commission).
-const partnerParticipates = ref(true)
-// Вес партнёра в делёже: начальный капитал кассы или фактический на начало месяца.
-const partnerCapitalActual = ref(false)
+// Ваша прибыль прошлых месяцев, оставшаяся в кассе, работает
+// как ваш капитал (авто-реинвест). Выключено — в доле только внесённое вами.
+const partnerAutoReinvest = ref(false)
 const submitting = ref(false)
 
 // Palette of preset colors + icons — consistent with deal folders
@@ -143,9 +140,8 @@ watch(
       name.value = props.cashbox.name
       color.value = props.cashbox.color
       icon.value = props.cashbox.icon
-      initialCapital.value = props.cashbox.initialCapital
-      partnerParticipates.value = props.cashbox.partnerParticipatesByCapital ?? true
-      partnerCapitalActual.value = props.cashbox.partnerCapitalActual ?? false
+      initialCapital.value = null
+      partnerAutoReinvest.value = props.cashbox.partnerAutoReinvest ?? false
       loadContent()
     } else {
       hasContent.value = false
@@ -153,8 +149,7 @@ watch(
       color.value = '#3b82f6'
       icon.value = 'mdi-wallet-outline'
       initialCapital.value = null
-      partnerParticipates.value = true
-      partnerCapitalActual.value = false
+      partnerAutoReinvest.value = false
     }
   },
 )
@@ -174,13 +169,14 @@ async function handleSave() {
 
   submitting.value = true
   try {
+    // Деньги при создании — первая запись истории вашего капитала; у
+    // существующей кассы капитал меняется операциями, а не этим окном.
     const payload = {
       name: trimmed,
       color: color.value,
       icon: icon.value,
-      initialCapital: initialCapital.value ?? 0,
-      partnerParticipatesByCapital: partnerParticipates.value,
-      partnerCapitalActual: partnerParticipates.value && partnerCapitalActual.value,
+      ...(isEdit.value ? {} : { initialCapital: initialCapital.value ?? 0 }),
+      partnerAutoReinvest: partnerAutoReinvest.value,
     }
     const box = props.cashbox
       ? await store.update(props.cashbox.id, payload)
@@ -231,7 +227,7 @@ async function handleSave() {
         <div class="cb-header-text">
           <div class="cb-title">{{ isEdit ? 'Изменить кассу' : 'Новая касса' }}</div>
           <div class="cb-subtitle">
-            {{ isEdit ? 'Поменяйте название, цвет, иконку или капитал' : 'Создайте отдельный кошелёк' }}
+            {{ isEdit ? 'Поменяйте название, цвет и иконку' : 'Создайте отдельный кошелёк' }}
           </div>
         </div>
         <button class="cb-close" @click="emit('update:modelValue', false)">
@@ -267,8 +263,8 @@ async function handleSave() {
           />
         </div>
 
-        <div class="cb-field">
-          <label class="cb-label">Начальный капитал</label>
+        <div v-if="!isEdit" class="cb-field">
+          <label class="cb-label">Сколько денег вносите сейчас</label>
           <v-text-field
             :model-value="initialCapital === null ? '' : initialCapital.toLocaleString('ru-RU')"
             @update:model-value="(v: string) => initialCapital = parseInt(String(v).replace(/\D/g, ''), 10) || null"
@@ -280,7 +276,8 @@ async function handleSave() {
             :class="{ 'cb-input': true, dark: isDark }"
           />
           <div class="cb-hint">
-            Сумма с которой начинает работать касса. Если касса для конкретного партнёра — введите ту сумму, что он внёс.
+            Станет первой записью вашего капитала в кассе. Дальше вносите и снимайте деньги операциями
+            «Внести деньги» и «Снять» — у каждой видно, с какого числа она меняет вашу долю.
           </div>
         </div>
 
@@ -338,77 +335,20 @@ async function handleSave() {
           </div>
         </div>
 
-        <!-- Участие капитала в делёже прибыли. Без со-инвесторов делить не с
-             кем: переключатель занимал половину диалога и пугал предупреждением
-             про инвесторов, которых у партнёра нет. Поле продолжает уходить на
-             сервер со значением по умолчанию — данные не меняются. -->
+        <!-- Ваша прибыль как капитал — по желанию, по умолчанию выключено. Без
+             раздела инвесторов делить не с кем — переключатель не показываем. -->
         <div v-if="sections.visible('coInvestors')" class="cb-field">
-          <label class="cb-label">Ваше участие капиталом</label>
-          <div class="cb-part-toggle">
-            <button
-              type="button"
-              class="cb-part-opt"
-              :class="{ active: partnerParticipates }"
-              @click="partnerParticipates = true"
-            >
-              <v-icon icon="mdi-handshake" size="18" />
-              <span class="cb-part-name">Вкладываю капитал</span>
-              <span class="cb-part-sub">Мой капитал участвует в делёже по вкладу</span>
-            </button>
-            <button
-              type="button"
-              class="cb-part-opt"
-              :class="{ active: !partnerParticipates }"
-              @click="partnerParticipates = false"
-            >
-              <v-icon icon="mdi-briefcase-outline" size="18" />
-              <span class="cb-part-name">Только управляю</span>
-              <span class="cb-part-sub">Мой капитал не входит в делёж по вкладу</span>
-            </button>
-          </div>
-          <div class="cb-hint">
-            Переключатель влияет только на то, участвует ли <b>ваш</b> капитал в делёже «по вкладу».
-            «Вкладываю капитал» — ваш начальный капитал считается ещё одним вкладом в пуле, и вы получаете
-            по нему свою долю. «Только управляю» — ваш капитал в пул не входит, вся доля «по вкладу» у инвесторов.
-            <br />
-            Комиссия задаётся отдельно у каждого инвестора «по вкладу» и работает в <b>обоих</b> режимах —
-            вы забираете её с доли инвестора независимо от этого переключателя.
-          </div>
-          <template v-if="partnerParticipates">
-            <label class="cb-label cb-label--sub">Ваш капитал в делёже</label>
-            <div class="cb-part-toggle">
-              <button
-                type="button"
-                class="cb-part-opt"
-                :class="{ active: !partnerCapitalActual }"
-                @click="partnerCapitalActual = false"
-              >
-                <v-icon icon="mdi-lock-outline" size="18" />
-                <span class="cb-part-name">Начальный капитал</span>
-                <span class="cb-part-sub">Всегда сумма начального капитала кассы</span>
-              </button>
-              <button
-                type="button"
-                class="cb-part-opt"
-                :class="{ active: partnerCapitalActual }"
-                @click="partnerCapitalActual = true"
-              >
-                <v-icon icon="mdi-chart-timeline-variant" size="18" />
-                <span class="cb-part-name">Фактический</span>
-                <span class="cb-part-sub">На начало месяца: вложено + прибыль − снято − расходы</span>
-              </button>
-            </div>
-            <div class="cb-hint">
-              «Фактический» — как в Excel: ваша прибыль, которую вы не сняли, работает в кассе и увеличивает
-              ваш вес в делёже, а снятия и расходы бизнеса — уменьшают. Действует с 1-го числа следующего
-              месяца, прошлые начисления не пересчитываются.
-            </div>
-          </template>
-          <div v-if="partnerParticipates && !partnerCapitalActual && !(initialCapital && initialCapital > 0)" class="cb-warn">
-            <v-icon icon="mdi-alert-outline" size="14" />
-            Начальный капитал кассы — 0. При «Вкладываю капитал» ваш вклад в делёж по вкладу тоже 0,
-            поэтому вся прибыль «по вкладу» уйдёт инвесторам. Укажите ваш капитал выше или переключитесь на «Только управляю».
-          </div>
+          <label class="cb-label">Ваша прибыль в кассе</label>
+          <label class="cb-switch">
+            <v-switch v-model="partnerAutoReinvest" color="primary" density="compact" hide-details inset />
+            <span>
+              <b>Работает как ваш капитал</b>
+              <span class="cb-hint cb-hint--inline">
+                Невыплаченная вами прибыль прошлых месяцев увеличивает вашу долю при делении с инвесторами
+                «по вкладу». Выключено — доля считается только от ваших денег в кассе.
+              </span>
+            </span>
+          </label>
         </div>
 
         <div class="cb-field">
@@ -588,6 +528,13 @@ async function handleSave() {
 .cb-lay-rest--over { color: #b45309; font-weight: 600; }
 
 .cb-hint { font-size: 11px; color: #737373; line-height: 1.4; }
+.cb-switch {
+  display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
+  padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  font-size: 13px;
+}
+.cb-switch :deep(.v-switch) { flex: none; margin-top: -4px; }
+.cb-hint--inline { display: block; margin-top: 3px; }
 .cb-dialog.dark .cb-hint { color: rgba(var(--v-theme-on-surface), 0.5); }
 
 /* Partner participation toggle */

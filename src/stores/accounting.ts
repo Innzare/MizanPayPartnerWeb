@@ -63,6 +63,17 @@ export interface AccountView {
   cashBoxId: string
 }
 
+/**
+ * Счёт в минусе — расходов по нему записано больше, чем пришло.
+ *
+ * Операции в минус разрешены, как и у кассы: запрет мешал записать то, что
+ * уже случилось. Но такой счёт подсвечиваем везде, где он виден, чтобы минус
+ * не прятался до сверки. Остаток скрыт правами — признака нет.
+ */
+export function isAccountNegative(a: Pick<AccountView, 'balance'> | null | undefined): boolean {
+  return a?.balance != null && Math.round(a.balance) < 0
+}
+
 /** Насколько выбран один лимит счёта. */
 export interface LimitGauge {
   window: 1 | 2
@@ -156,7 +167,11 @@ export type FlowGroup = 'capital' | 'regular' | 'temporary' | 'pending' | 'trans
 
 /** Что можно сделать с операцией из ленты раздела. */
 export type FlowRef =
-  | { type: 'transaction'; id: string; categoryId: string | null; cashBoxId: string | null }
+  | {
+      type: 'transaction'; id: string; categoryId: string | null; cashBoxId: string | null
+      /** Флаги операции (окно правки сохраняет их как есть). Нет — старый сервер. */
+      affectsInvestors?: boolean; fromCapital?: boolean
+    }
   | { type: 'capital'; id: string; cashBoxId: string }
   | { type: 'pending'; id: string }
   | { type: 'liability'; id: string }
@@ -814,6 +829,12 @@ export const useAccountingStore = defineStore('accounting', () => {
     date?: string
     note?: string
     idemKey?: string
+    /** Капитал партнёра: с какого дня действует в долях, ГГГГ-ММ-ДД (пусто — сразу). */
+    effectiveFrom?: string | null
+    /** Расход уменьшает прибыль месяца, которую делят с инвесторами. */
+    affectsInvestors?: boolean
+    /** Расход «из капитала» / доход «в капитал» — меняет капитал партнёра в делении. */
+    fromCapital?: boolean
   }) {
     const res = await api.post('/accounting/operations', payload)
     await fetchAccounts()

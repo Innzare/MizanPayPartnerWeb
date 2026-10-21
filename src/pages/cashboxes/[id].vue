@@ -8,7 +8,7 @@ import ServerPager from '@/components/ServerPager.vue'
 import DateField from '@/components/DateField.vue'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
-import { useAccountingStore } from '@/stores/accounting'
+import { isAccountNegative, useAccountingStore } from '@/stores/accounting'
 import BankLogo from '@/components/BankLogo.vue'
 import type { AnalyticsSummary, AnalyticsMonthlyRow } from '@/types/analytics'
 import { useToast } from '@/composables/useToast'
@@ -105,6 +105,10 @@ interface CapitalDetails {
   // dividends). Reported but NOT subtracted from availableCapital — the
   // money is still in the cashbox until DIVIDEND_OUT moves it out.
   pendingCIPayout: number
+  /** Выводы капитала инвесторов в процессе (схема v2) — обещаны к выдаче. */
+  pendingCapitalReturns?: number
+  /** Вес партнёра в пуле «по вкладу» сейчас — по правилу кассы. */
+  partnerPoolCapital?: number
   // Legacy alias for clients still reading the old field name.
   coInvestorPayout: number
   manualBalance: number
@@ -904,7 +908,9 @@ const ciShareLabels = computed(() => {
   const weightSum = cis
     .filter((ci) => ci.profitPercent == null && !ci.costFeeMode)
     .reduce((s, ci) => s + (ci.currentCapital || 0), 0)
-  const partnerCap = box.value?.partnerParticipatesByCapital ? box.value?.initialCapital ?? 0 : 0
+  // Вес партнёра — как считает сервер: его деньги в кассе (и прибыль прошлых
+  // месяцев, если она работает как капитал); нет капитала — только управляет.
+  const partnerCap = capitalDetails.value?.partnerPoolCapital ?? 0
   const pool = weightSum + partnerCap
 
   const labels: Record<string, { label: string; kind: 'fixed' | 'weight' | 'costfee'; icon: string }> = {}
@@ -1243,7 +1249,8 @@ const showDelete = ref(false)
                   </div>
                 </div>
                 <div class="cb-where-num">
-                  <div class="cb-where-sum">{{ a.balance !== null ? formatCurrency(a.balance) : '—' }}</div>
+                  <div class="cb-where-sum" :class="{ 'cb-where-sum--neg': isAccountNegative(a) }">{{ a.balance !== null ? formatCurrency(a.balance) : '—' }}</div>
+                  <div v-if="isAccountNegative(a)" class="cb-where-neg">в минусе</div>
                   <div v-if="shareOfBox(a.balance)" class="cb-where-share">
                     <span class="cb-where-share-bar">
                       <span class="cb-where-share-fill" :style="{ width: shareOfBox(a.balance) + '%' }" />
@@ -3490,4 +3497,11 @@ const showDelete = ref(false)
 }
 .cb-where-meta { font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.45); margin-top: 1px; }
 .cb-where-sum { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* Счёт кассы в минусе — тем же красным, что на «Балансе». */
+.cb-where-sum--neg { color: #dc2626; }
+.cb-where-neg {
+  display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 700;
+  background: rgba(239, 68, 68, 0.13); color: #dc2626;
+}
 </style>

@@ -16,8 +16,10 @@ import SelectField from '@/components/SelectField.vue'
 import DateField from '@/components/DateField.vue'
 import { api } from '@/api/client'
 import { useOperationDate } from '@/composables/useOperationDate'
-import { useAccountingStore, type AccountView } from '@/stores/accounting'
+import { isAccountNegative, useAccountingStore, type AccountView } from '@/stores/accounting'
 import { useCashBoxesStore } from '@/stores/cashboxes'
+import { useSections } from '@/composables/useSections'
+import { todayIso } from '@/utils/dateInput'
 import { useToast } from '@/composables/useToast'
 import { CURRENCY_MASK, parseMasked, formatCurrency } from '@/utils/formatters'
 import { OPERATION_KINDS, type OperationKind } from '@/constants/operationKinds'
@@ -42,6 +44,7 @@ const emit = defineEmits<{
 
 const store = useAccountingStore()
 const cashboxes = useCashBoxesStore()
+const sections = useSections()
 const toast = useToast()
 
 const open = computed({
@@ -187,6 +190,40 @@ const belowReserve = computed(
 /** Дата — там, где сервер её принимает: доход, расход и перевод. */
 const needsDate = computed(() => kind.value === 'EXPENSE' || kind.value === 'INCOME' || kind.value === 'TRANSFER')
 
+// ── Деление с инвесторами ──
+// Расход может уменьшать прибыль месяца, которую делят с инвесторам.
+const affectsInvestors = ref(false)
+const showAffects = computed(() => kind.value === 'EXPENSE' && sections.visible('coInvestors'))
+// Расход «из прибыли» (по умолчанию, как всегда было) или «из капитала» —
+// тогда он уменьшает ваш капитал в делении; доход — «в прибыль» / «в капитал».
+const fromCapital = ref(false)
+const showFromCapital = computed(() => (kind.value === 'EXPENSE' || kind.value === 'INCOME') && sections.visible('coInvestors'))
+// Пополнение — «приносит прибыль с», снятие капитала — «не приносит прибыль
+// с». По умолчанию — сегодня: деньги работают сразу.
+const effectiveDay = ref('')
+const showEffective = computed(() => (kind.value === 'DEPOSIT' || kind.value === 'WITHDRAW_OWNER') && sections.visible('coInvestors'))
+/** Доля партнёра в пуле «по вкладу» до → после на день вступления. */
+const sharePrev = ref<{ before: number; after: number } | null>(null)
+let shareTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => [showEffective.value, amount.value, effectiveDay.value, cashBoxId.value] as const,
+  ([show, a, day, box]) => {
+    sharePrev.value = null
+    if (shareTimer) clearTimeout(shareTimer)
+    if (!show || !box || !(Number(a) > 0)) return
+    shareTimer = setTimeout(async () => {
+      try {
+        // Снятие «на себя» проводится из капитала — превью с тем же источником.
+        const q = new URLSearchParams({
+          amount: String(a), kind: kind.value === 'DEPOSIT' ? 'in' : 'out',
+          ...(kind.value === 'WITHDRAW_OWNER' ? { source: 'capital' } : {}), ...(day ? { day } : {}),
+        })
+        sharePrev.value = await api.get(`/cashboxes/${box}/capital/share-preview?${q}`)
+      } catch { sharePrev.value = null }
+    }, 350)
+  },
+)
+
 const current = computed(() => OPERATION_KINDS.find((k) => k.kind === kind.value) ?? null)
 /** Перевод — единственный вид с двумя счетами. */
 const needsTarget = computed(() => kind.value === 'TRANSFER')
@@ -213,20 +250,24 @@ const forCashBox = computed(() =>
 )
 const from = computed<AccountView | null>(() => usable.value.find((a) => a.id === accountId.value) ?? null)
 
-/** Уводить счёт в минус нельзя: на практике это опечатка в сумме. */
-const notEnough = computed(
-  () =>
-    current.value?.direction !== 'in' &&
-    from.value?.balance != null &&
-    (amount.value ?? 0) > from.value.balance,
+/**
+ * Остаток счёта после списания. Уйти в минус можно — как и кассе: расход мог
+ * уже случиться, а приход ещё не записан. Но это видно до нажатия, потому что
+ * чаще всего это опечатка в сумме или не тот счёт.
+ */
+const afterFrom = computed(() =>
+  current.value?.direction !== 'in' && from.value?.balance != null && (amount.value ?? 0) > 0
+    ? from.value.balance - (amount.value ?? 0)
+    : null,
 )
+const goesNegative = computed(() => afterFrom.value !== null && Math.round(afterFrom.value) < 0)
 
 const needsCategory = computed(() => kind.value === 'EXPENSE' || kind.value === 'INCOME')
 const isPending = computed(() => kind.value === 'PENDING_IN' || kind.value === 'PENDING_OUT')
 const isLoan = computed(() => kind.value === 'BORROW' || kind.value === 'LEND')
 
 const canSave = computed(() => {
-  if (!kind.value || (amount.value ?? 0) <= 0 || notEnough.value || overAvailable.value || overProfit.value) return false
+  if (!kind.value || (amount.value ?? 0) <= 0 || overAvailable.value || overProfit.value) return false
   // Без имени второй стороны долг через месяц не восстановить по памяти.
   if (isLoan.value && !personName.value.trim()) return false
   if (needsTarget.value) return !!accountId.value && !!toAccountId.value && accountId.value !== toAccountId.value
@@ -245,6 +286,9 @@ watch(
     note.value = ''
     personName.value = ''
     date.value = ''
+    affectsInvestors.value = false
+    fromCapital.value = false
+    effectiveDay.value = kind.value === 'DEPOSIT' || kind.value === 'WITHDRAW_OWNER' ? todayIso() : ''
     idemKey.value = typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -311,6 +355,9 @@ async function save() {
       date: needsDate.value && date.value ? date.value : undefined,
       note: note.value.trim() || undefined,
       ...(isCapital.value ? { idemKey: idemKey.value } : {}),
+      ...(showEffective.value && effectiveDay.value ? { effectiveFrom: effectiveDay.value } : {}),
+      ...(showAffects.value ? { affectsInvestors: affectsInvestors.value } : {}),
+      ...(showFromCapital.value ? { fromCapital: fromCapital.value } : {}),
     })
     toast.success(isProfit.value ? 'Прибыль снята' : 'Операция проведена')
     open.value = false
@@ -342,19 +389,26 @@ async function save() {
                 type="text"
                 inputmode="numeric"
                 class="op-input"
-                :class="{ 'op-input--bad': notEnough }"
+                :class="{ 'op-input--bad': goesNegative || overProfit || overAvailable }"
                 @maska="(e: any) => amount = parseMasked(e)"
               />
               <span class="op-suffix">₽</span>
             </div>
-            <div v-if="notEnough" class="op-error">
-              На счёте только {{ formatCurrency(from!.balance!) }}
-            </div>
-            <div v-else-if="overProfit" class="op-error">
+            <div v-if="overProfit" class="op-error">
               Заработано и не снято только {{ formatCurrency(capital!.withdrawableProfit) }}
             </div>
             <div v-else-if="overAvailable" class="op-error">
               {{ overText }}
+            </div>
+            <!-- Не запрет, а предупреждение: показываем и вместе с ошибками кассы. -->
+            <div v-if="goesNegative" class="op-error">
+              <v-icon icon="mdi-alert-circle" size="14" />
+              <template v-if="isAccountNegative(from)">
+                Счёт «{{ from!.name }}» уже в минусе ({{ formatCurrency(from!.balance!) }}) — станет {{ formatCurrency(afterFrom!) }}
+              </template>
+              <template v-else>
+                На счёте «{{ from!.name }}» {{ formatCurrency(from!.balance!) }} — счёт уйдёт в минус на {{ formatCurrency(-afterFrom!) }}
+              </template>
             </div>
             <button
               v-if="isProfit && capital && profitNow > 0"
@@ -444,6 +498,49 @@ async function save() {
             </div>
           </div>
 
+          <!-- Капитал партнёра действует в долях со своей даты (по умолчанию — сразу) -->
+          <div v-if="showEffective" class="op-field">
+            <label class="op-label">{{ kind === 'DEPOSIT' ? 'Приносит прибыль с' : 'Не приносит прибыль с' }}</label>
+            <!-- Вклад не работает раньше, чем пришли деньги (сервер отвечает 400) -->
+            <DateField v-model="effectiveDay" :min="kind === 'DEPOSIT' ? todayIso() : null" plain />
+            <div class="op-hint">
+              {{ kind === 'DEPOSIT'
+                ? 'С этой даты деньги участвуют в делении прибыли с инвесторами. По умолчанию — сразу.'
+                : 'С этой даты снятый капитал не участвует в делении с инвесторами.' }}
+            </div>
+            <div v-if="sharePrev" class="op-share">
+              Ваша доля в пуле «по вкладу»: <b>{{ sharePrev.before }}%</b> → <b>{{ sharePrev.after }}%</b>
+            </div>
+          </div>
+
+          <!-- Откуда расход / куда доход: из прибыли (как всегда) или из капитала -->
+          <div v-if="showFromCapital" class="op-field">
+            <label class="op-label">{{ kind === 'INCOME' ? 'Куда идёт доход' : 'Откуда расход' }}</label>
+            <div class="op-seg">
+              <button type="button" class="op-seg-btn" :class="{ 'op-seg-btn--on': !fromCapital }" @click="fromCapital = false">
+                {{ kind === 'INCOME' ? 'В прибыль' : 'Из прибыли' }}
+              </button>
+              <button type="button" class="op-seg-btn" :class="{ 'op-seg-btn--on': fromCapital }" @click="fromCapital = true">
+                {{ kind === 'INCOME' ? 'В капитал' : 'Из капитала' }}
+              </button>
+            </div>
+            <div class="op-hint">
+              {{ fromCapital
+                ? (kind === 'INCOME'
+                  ? 'Увеличит ваш капитал в кассе — ваша доля в делении прибыли с инвесторами вырастет с даты операции.'
+                  : 'Уменьшит ваш капитал в кассе — ваша доля в делении прибыли с инвесторами уменьшится с даты операции.')
+                : 'Ваш капитал в делении с инвесторами не меняется.' }}
+            </div>
+          </div>
+
+          <label v-if="showAffects" class="op-check">
+            <input v-model="affectsInvestors" type="checkbox" />
+            <span>
+              <b>Затрагивает инвесторов</b>
+              <span class="op-hint">Расход уменьшит прибыль месяца до деления с инвесторами (кроме «комиссии от закупки»). Месяц пересчитается.</span>
+            </span>
+          </label>
+
           <div v-if="needsDate" class="op-field">
             <label class="op-label">Дата</label>
             <!-- Пусто — сегодня. Границы — те же, что у оплаты: сотрудник не
@@ -503,8 +600,8 @@ async function save() {
 
       <div class="op-actions">
         <button class="op-cancel" @click="open = false">Отмена</button>
-        <button class="op-confirm" :disabled="!canSave || saving" @click="save">
-          {{ saving ? 'Провожу…' : 'Провести' }}
+        <button class="op-confirm" :class="{ 'op-confirm--warn': goesNegative }" :disabled="!canSave || saving" @click="save">
+          {{ saving ? 'Провожу…' : goesNegative ? 'Провести в минус' : 'Провести' }}
         </button>
       </div>
     </v-card>
@@ -538,7 +635,29 @@ async function save() {
 }
 .op-input:focus { border-color: #047857; }
 .op-input--bad { border-color: #dc2626; }
-.op-error { font-size: 12px; color: #dc2626; margin-top: 5px; }
+.op-hint { display: block; font-size: 12px; line-height: 1.4; margin-top: 4px; color: rgba(var(--v-theme-on-surface), 0.55); }
+.op-check {
+  display: flex; align-items: flex-start; gap: 9px; margin-top: 14px; cursor: pointer;
+  padding: 10px 12px; border-radius: 10px; font-size: 13.5px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+}
+.op-check input { margin-top: 3px; }
+.op-seg { display: flex; gap: 4px; padding: 3px; border-radius: 10px; background: rgba(var(--v-theme-on-surface), 0.05); }
+.op-seg-btn {
+  flex: 1; padding: 8px 10px; border-radius: 8px; border: none; cursor: pointer;
+  font-size: 13.5px; font-weight: 500; background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.6); transition: background 0.15s, color 0.15s;
+}
+.op-seg-btn--on { background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.92); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.op-share {
+  margin-top: 8px; padding: 8px 10px; border-radius: 9px; font-size: 13px;
+  background: rgba(79, 70, 229, 0.07); border: 1px solid rgba(79, 70, 229, 0.18);
+}
+.op-error {
+  display: flex; align-items: flex-start; gap: 5px;
+  font-size: 12px; line-height: 1.4; color: #dc2626; margin-top: 5px;
+}
+.op-error .v-icon { margin-top: 1px; flex: none; }
 .op-hint {
   font-size: 11.5px; line-height: 1.4; margin-top: 5px;
   color: rgba(var(--v-theme-on-surface), 0.45);
@@ -592,5 +711,6 @@ async function save() {
   color: rgba(var(--v-theme-on-surface), 0.7); font-weight: 500;
 }
 .op-confirm { background: #047857; color: #fff; }
+.op-confirm--warn { background: #d97706; }
 .op-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
