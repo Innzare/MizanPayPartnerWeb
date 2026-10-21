@@ -272,7 +272,20 @@ const termMonths = ref(6)
 const paymentType = ref<PaymentType>('EQUAL')
 const paymentInterval = ref('MONTHLY')
 const dealDate = ref(todayIso())
+// Год в разумных границах: сделка с 05.05.0026 (опечатка в годе) выпадала из
+// итогов главной. Те же границы проверяет сервер (common/sane-date.ts), а
+// здесь — и для уже сохранённой даты, открытой на правку.
+const DATE_MIN = '2000-01-01'
+const DATE_MAX = '2100-12-31'
+function yearError(value: string | null | undefined, what: string): string {
+  if (!value) return ''
+  const y = Number(String(value).slice(0, String(value).indexOf('-')))
+  if (!Number.isFinite(y) || (y >= 2000 && y <= 2100)) return ''
+  return `${what}: год ${y} — похоже на опечатку. Укажите год полностью, например ${new Date().getFullYear()}`
+}
+const dealDateYearError = computed(() => yearError(dealDate.value, 'Дата заключения сделки'))
 const customFirstPayment = ref('')
+const firstPaymentYearError = computed(() => yearError(customFirstPayment.value, 'Дата первого платежа'))
 
 // Wholesale price (what partner actually paid the supplier) and
 // profit-split mode. Both optional — when wholesalePrice is null the
@@ -1810,6 +1823,12 @@ function confirmOverdraftAndSubmit() {
 }
 
 async function submitDeal(acknowledgedOverdraft = false) {
+  // Опечатка в годе даты (0026 вместо 2026).
+  const dateYearError = dealDateYearError.value || firstPaymentYearError.value
+  if (dateYearError) {
+    toast.error(dateYearError)
+    return
+  }
   // Цену закупа вводят после поставщика — сверяем «частично» с ней здесь.
   if (!isEditMode.value && supplierPrepaidError.value) {
     toast.error(supplierPrepaidError.value)
@@ -2807,7 +2826,8 @@ async function submitDeal(acknowledgedOverdraft = false) {
             <div class="form-grid">
               <div class="form-field full-width">
                 <label class="field-label">Дата заключения сделки</label>
-                <DateField v-model="dealDate" plain />
+                <DateField v-model="dealDate" :min="DATE_MIN" :max="DATE_MAX" plain />
+                <div v-if="dealDateYearError" class="field-error-text">{{ dealDateYearError }}</div>
                 <div v-if="dealDateLockMsg" class="deal-month-locked">
                   <v-icon icon="mdi-lock-outline" size="14" />
                   {{ dealDateLockMsg }}
@@ -2819,9 +2839,11 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <DateField
                   v-model="customFirstPayment"
                   :placeholder="firstPaymentDate"
-                  :max="firstPaymentMax"
+                  :min="DATE_MIN"
+                  :max="firstPaymentMax || DATE_MAX"
                   plain
                 />
+                <div v-if="firstPaymentYearError" class="field-error-text">{{ firstPaymentYearError }}</div>
                 <div class="first-payment-hint">
                   <div class="first-payment-hint__icon">
                     <v-icon icon="mdi-calendar-clock" size="14" />
