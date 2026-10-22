@@ -1,4 +1,6 @@
 <script lang="ts" setup>
+import { toUserMessage } from '@/api/errors'
+import { inlineOrToast } from '@/api/showError'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
@@ -98,7 +100,7 @@ async function insertReminder() {
     if (r.message) { replyText.value = r.message; reminderDealId.value = dealId }
     else toast.error(r.error || 'Не удалось сформировать напоминание')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка')
+    toast.error(e, 'Ошибка')
   }
 }
 
@@ -109,7 +111,7 @@ async function loadChatList() {
     chatList.value = res.chats
     inboxEnabling.value = !!res.inboxEnabling
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить чаты')
+    toast.error(e, 'Не удалось загрузить чаты')
   } finally {
     chatListLoading.value = false
   }
@@ -157,7 +159,7 @@ async function openChat(c: ChatListItem) {
     await nextTick()
     scrollChatToBottom()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить переписку')
+    toast.error(e, 'Не удалось загрузить переписку')
   } finally {
     chatMessagesLoading.value = false
   }
@@ -188,7 +190,7 @@ async function sendReply() {
       toast.error('Не удалось отправить сообщение')
     }
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка отправки')
+    toast.error(e, 'Ошибка отправки')
   } finally {
     replySending.value = false
   }
@@ -382,7 +384,7 @@ async function connect() {
     }, 3000)
     void refreshQr()
   } catch (e: any) {
-    giveUp('Не удалось подключить WhatsApp', e?.message || 'Сервис WhatsApp не ответил. Попробуйте ещё раз через минуту.')
+    giveUp('Не удалось подключить WhatsApp', toUserMessage(e, 'Сервис WhatsApp не ответил. Попробуйте ещё раз через минуту.'))
   }
 }
 
@@ -470,7 +472,7 @@ async function disconnect() {
     showDisconnect.value = false
     toast.success('WhatsApp отключён')
   } catch (e: any) {
-    disconnectError.value = e?.message || 'Не удалось отключить WhatsApp. Попробуйте ещё раз.'
+    disconnectError.value = inlineOrToast(e, 'Не удалось отключить WhatsApp. Попробуйте ещё раз.')
   } finally {
     disconnecting.value = false
   }
@@ -522,7 +524,7 @@ async function loadPreview() {
     const res = await api.post<PreviewResponse>('/whatsapp/remind-preview', { daysBeforeDue: daysBeforeDue.value })
     groups.value = res.groups
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить список')
+    toast.error(e, 'Не удалось загрузить список')
     groups.value = []
   } finally {
     loading.value = false
@@ -683,7 +685,7 @@ async function send() {
     await loadCampaign(res.campaignId)
     startCampaignPoll(res.campaignId)
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка отправки')
+    toast.error(e, 'Ошибка отправки')
   } finally {
     sending.value = false
   }
@@ -695,7 +697,7 @@ async function retryCampaign() {
     campaign.value = await api.post<Campaign>(`/whatsapp/campaigns/${campaign.value.id}/retry`)
     startCampaignPoll(campaign.value.id)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось перезапустить')
+    toast.error(e, 'Не удалось перезапустить')
   }
 }
 async function pauseCampaign() {
@@ -704,7 +706,7 @@ async function pauseCampaign() {
     campaign.value = await api.post<Campaign>(`/whatsapp/campaigns/${campaign.value.id}/pause`)
     stopCampaignPoll()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось приостановить')
+    toast.error(e, 'Не удалось приостановить')
   }
 }
 async function resumeCampaign() {
@@ -713,7 +715,7 @@ async function resumeCampaign() {
     campaign.value = await api.post<Campaign>(`/whatsapp/campaigns/${campaign.value.id}/resume`)
     startCampaignPoll(campaign.value.id)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось продолжить')
+    toast.error(e, 'Не удалось продолжить')
   }
 }
 async function cancelCampaign() {
@@ -722,7 +724,7 @@ async function cancelCampaign() {
     await api.post(`/whatsapp/campaigns/${campaign.value.id}/cancel`)
     await loadCampaign(campaign.value.id)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось отменить')
+    toast.error(e, 'Не удалось отменить')
   }
 }
 // Close the progress view and return to the builder (refreshed to reflect sends).
@@ -827,7 +829,7 @@ async function saveWaSettings() {
     await api.patch('/whatsapp/settings', waSettings.value)
     toast.success('Настройки сохранены')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка сохранения')
+    toast.error(e, 'Ошибка сохранения')
   } finally {
     savingSettings.value = false
   }

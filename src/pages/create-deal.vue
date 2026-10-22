@@ -543,7 +543,7 @@ onMounted(async () => {
       await nextTick()
       manualTotalPrice.value = deal.totalPrice
     } catch (e: any) {
-      toast.error(e.message || 'Не удалось загрузить сделку')
+      toast.error(e, 'Не удалось загрузить сделку')
       router.push('/deals')
     }
     prefillLoading.value = false
@@ -1984,7 +1984,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
           await dealsStore.updateClient(editId.value, selectedClientProfileId.value)
           initialClientProfileId.value = selectedClientProfileId.value
         } catch (e: any) {
-          toast.error(e.message || 'Не удалось сменить клиента')
+          toast.error(e, 'Не удалось сменить клиента')
         }
       }
       // Поручители (до 5) заменяются целиком через отдельный эндпоинт.
@@ -1992,7 +1992,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
       try {
         await dealsStore.updateGuarantors(editId.value, selectedGuarantorIds.value)
       } catch (e: any) {
-        toast.error(e.message || 'Не удалось сохранить поручителей')
+        toast.error(e, 'Не удалось сохранить поручителей')
       }
       // Cashbox change goes through the dedicated move endpoint so it also
       // rewrites the journal scope, not just the deal row.
@@ -2009,7 +2009,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
         try {
           await syncDealParticipants(editId.value)
         } catch (e: any) {
-          toast.error(e.message || 'Не удалось сохранить участников сделки')
+          toast.error(e, 'Не удалось сохранить участников сделки')
         }
       }
       toast.success('Сделка обновлена')
@@ -2107,7 +2107,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
     toast.success('Сделка создана')
     router.push('/deals')
   } catch (e: any) {
-    toast.error(e.message || (isEditMode.value ? 'Ошибка обновления сделки' : 'Ошибка создания сделки'))
+    toast.error(e, isEditMode.value ? 'Ошибка обновления сделки' : 'Ошибка создания сделки')
   } finally {
     submitting.value = false
   }

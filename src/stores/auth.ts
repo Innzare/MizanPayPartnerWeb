@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { User, StaffRole } from '@/types'
 import { api } from '@/api/client'
+import { toUserMessage } from '@/api/errors'
 
 // Раздел → требуемое право сотрудника. Навигация и роут-гвард гейтятся по
 // ПРАВАМ (из назначенной роли или legacy-шима), а не по устаревшему
@@ -182,7 +183,7 @@ export const useAuthStore = defineStore('auth', () => {
         localStorage.setItem('user', JSON.stringify(data.user))
       }
     } catch (e: any) {
-      error.value = e.message || 'Ошибка входа'
+      error.value = toUserMessage(e, 'Ошибка входа')
       throw e
     } finally {
       isLoading.value = false

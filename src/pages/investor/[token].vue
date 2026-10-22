@@ -7,6 +7,7 @@
 </route>
 
 <script lang="ts" setup>
+import { toUserMessage } from '@/api/errors'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -407,7 +408,7 @@ async function load() {
     selectedStakeId.value = s.stakes[0]?.id ?? null
     await loadJournal()
   } catch (e: any) {
-    error.value = e.message || 'Ссылка недействительна'
+    error.value = toUserMessage(e, 'Ссылка недействительна')
   } finally {
     loading.value = false
   }

@@ -13,6 +13,7 @@ import App from './App.vue'
 // Composables
 import { createApp } from 'vue'
 import { vMaska } from 'maska/vue'
+import { installErrorHandling } from '@/plugins/errorHandling'
 
 // Styles
 import 'unfonts.css'
@@ -35,5 +36,8 @@ const app = createApp(App)
 registerPlugins(app)
 
 app.directive('maska', vMaska)
+
+// Непойманные ошибки — понятным тостом, а не тишиной.
+installErrorHandling(app)
 
 app.mount('#app')

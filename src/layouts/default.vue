@@ -11,7 +11,6 @@ import { useSections } from '@/composables/useSections';
 import { useThemeMode } from '@/composables/useThemeMode';
 import { MAIN_NAV, SECONDARY_NAV } from '@/utils/navSections';
 import { useChats } from "@/composables/useChats";
-import GlobalToast from "@/components/GlobalToast.vue";
 import CreateClientDialog from "@/components/CreateClientDialog.vue";
 import QuickActionsDialog from "@/components/QuickActionsDialog.vue";
 import GlobalSearchDialog from "@/components/GlobalSearchDialog.vue";
@@ -801,7 +800,6 @@ const confirmLogout = async () => {
         </div>
       </v-dialog>
     </v-app>
-    <GlobalToast />
     <CreateClientDialog v-model="showCreateClientDialog" @created="router.push(`/clients/${$event.id}`)" />
     <QuickActionsDialog v-model="showQuickActions" :initial-mode="quickActionsMode" />
     <GlobalSearchDialog v-model="showGlobalSearch" />

@@ -125,7 +125,7 @@ async function fetchData() {
     ])
     persons.value = people
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки данных')
+    toast.error(e, 'Ошибка загрузки данных')
   } finally {
     pageLoading.value = false
   }
@@ -273,7 +273,7 @@ async function saveCoInvestor() {
       monthTable.value?.reload()
     }
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка сохранения')
+    toast.error(e, 'Ошибка сохранения')
   } finally {
     dialogLoading.value = false
   }
@@ -315,7 +315,7 @@ async function setAutoReinvestDefault(v: boolean | null) {
     autoReinvestDefault.value = !!r.autoReinvestDefault
     toast.success(next ? 'Новым инвесторам авто-реинвест будет включён' : 'Новым инвесторам авто-реинвест будет выключен')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить настройку')
+    toast.error(e, 'Не удалось сохранить настройку')
   } finally {
     savingAutoDefault.value = false
   }
@@ -376,7 +376,7 @@ async function confirmRowDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?:
     await refreshList()
     monthTable.value?.reload()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить инвестора')
+    toast.error(e, 'Не удалось удалить инвестора')
   } finally {
     rowDeleting.value = false
   }

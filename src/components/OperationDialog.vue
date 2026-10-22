@@ -97,7 +97,7 @@ async function addCategory() {
     categoryId.value = created.id
     newCategory.value = null
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось добавить статью')
+    toast.error(e, 'Не удалось добавить статью')
   } finally {
     creatingCategory.value = false
   }
@@ -363,7 +363,7 @@ async function save() {
     open.value = false
     emit('done')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось провести операцию')
+    toast.error(e, 'Не удалось провести операцию')
   } finally {
     saving.value = false
   }

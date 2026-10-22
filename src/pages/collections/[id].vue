@@ -57,7 +57,7 @@ async function load() {
       `${run.value.collector.name} · ${new Date(run.value.date).toLocaleDateString('ru-RU')}`,
     )
   } catch (e: any) {
-    toast.error(e?.message || 'Рейс не найден')
+    toast.error(e, 'Рейс не найден')
     router.push('/accounting/points')
   } finally {
     loading.value = false
@@ -95,7 +95,7 @@ async function confirmReceive() {
     toast.success('Деньги приняты')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось принять')
+    toast.error(e, 'Не удалось принять')
   } finally {
     receiving.value = false
   }
@@ -106,7 +106,7 @@ async function skip(s: CollectionStopView) {
     await store.skipStop(runId.value, s.id, 'Пропущен инкассатором')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось пропустить')
+    toast.error(e, 'Не удалось пропустить')
   }
 }
 
@@ -127,7 +127,7 @@ async function confirmDeclare() {
     toast.success('Отмечено. Ждём приёма в офисе')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отметить')
+    toast.error(e, 'Не удалось отметить')
   } finally {
     declaring.value = false
   }
@@ -167,7 +167,7 @@ async function confirmDeliver() {
     toast.success('Выручка принята в кассу')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось принять')
+    toast.error(e, 'Не удалось принять')
   } finally {
     delivering.value = false
   }
@@ -179,7 +179,7 @@ async function cancelRun() {
     toast.success('Рейс отменён')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отменить')
+    toast.error(e, 'Не удалось отменить')
   }
 }
 </script>

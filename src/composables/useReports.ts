@@ -1,5 +1,6 @@
 import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
+import { loadFailed } from '@/api/showError'
 import type {
   ReportsSummary,
   ReportsMonthlyRow,
@@ -151,7 +152,7 @@ export function useReports(
         ? d
         : { ...d, totals: dealsTable.value?.totals ?? d.totals }
     } catch (e: any) {
-      if (req === tableReq) error.value = e?.message || 'Не удалось загрузить таблицу'
+      if (req === tableReq) error.value = loadFailed(e, 'Не удалось загрузить таблицу')
     } finally {
       if (req === tableReq) tableLoading.value = false
     }
@@ -195,7 +196,7 @@ export function useReports(
       summary.value = s
       dealsTable.value = d
     } catch (e: any) {
-      error.value = e?.message || 'Не удалось загрузить отчёты'
+      error.value = loadFailed(e, 'Не удалось загрузить отчёты')
     } finally {
       if (qs === params.value) loading.value = false
     }

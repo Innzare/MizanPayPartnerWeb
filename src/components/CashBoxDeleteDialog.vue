@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast } from '@/api/showError'
 /**
  * Подтверждение удаления кассы.
  *
@@ -49,7 +50,7 @@ async function run() {
     emit('deleted')
   } catch (e: any) {
     // Остаток или инвесторы в кассе — ответ сервера показываем в самом окне.
-    error.value = e?.message || 'Не удалось удалить кассу'
+    error.value = inlineOrToast(e, 'Не удалось удалить кассу')
   } finally {
     running.value = false
   }

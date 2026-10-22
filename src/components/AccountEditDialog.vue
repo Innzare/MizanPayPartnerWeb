@@ -353,7 +353,7 @@ async function save() {
     open.value = false
     emit('saved')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить счёт')
+    toast.error(e, 'Не удалось сохранить счёт')
   } finally {
     saving.value = false
   }

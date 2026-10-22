@@ -616,7 +616,7 @@ async function loadAll() {
     ])
     box.value = b
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить кассу')
+    toast.error(e, 'Не удалось загрузить кассу')
     router.push('/cashboxes')
   } finally {
     loading.value = false
@@ -630,7 +630,7 @@ async function loadDetails() {
     // приложению, пока оно не переведено на новые эндпоинты).
     capitalDetails.value = await api.get<CapitalDetails>(`/cashboxes/${id.value}/capital/details?slim=1`)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить детали кассы')
+    toast.error(e, 'Не удалось загрузить детали кассы')
   }
 }
 
@@ -838,7 +838,7 @@ async function loadDealsSection(kind: 'profit' | 'active') {
     if (req === dealsReq[kind]) {
       section.value.items = []
       section.value.total = 0
-      toast.error(e?.message || 'Не удалось загрузить сделки')
+      toast.error(e, 'Не удалось загрузить сделки')
     }
   } finally {
     if (req === dealsReq[kind]) section.value.loading = false

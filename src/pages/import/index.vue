@@ -263,6 +263,8 @@
 </template>
 
 <script lang="ts" setup>
+import { toUserMessage } from '@/api/errors'
+import { inlineOrToast } from '@/api/showError'
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
@@ -300,7 +302,7 @@ async function downloadTemplate() {
     a.click()
     URL.revokeObjectURL(url)
   } catch (e: any) {
-    showToast(e?.message || 'Не удалось скачать шаблон', 'error')
+    showToast(toUserMessage(e, 'Не удалось скачать шаблон'), 'error')
   } finally {
     templateLoading.value = false
   }
@@ -435,7 +437,7 @@ async function onRollback(batch: ImportBatchItem) {
     showToast(`Откачено: ${res.removed} ${pluralize(res.removed, 'сделка', 'сделки', 'сделок')} — в корзине`, 'success')
     await loadBatches()
   } catch (e: any) {
-    showToast(e?.message || 'Не удалось откатить загрузку', 'error')
+    showToast(toUserMessage(e, 'Не удалось откатить загрузку'), 'error')
   } finally {
     rollingBack.value = null
   }
@@ -463,7 +465,7 @@ async function onRollbackBook(batch: ImportBatchItem) {
     showToast('Перенос откачен', 'success')
     await loadBatches()
   } catch (e: any) {
-    showToast(e?.message || 'Не удалось откатить перенос', 'error')
+    showToast(toUserMessage(e, 'Не удалось откатить перенос'), 'error')
   } finally {
     rollingBack.value = null
   }
@@ -503,7 +505,7 @@ async function handleFile(file: File) {
     showToast('Файл проанализирован. Проверьте данные в редакторе', 'success')
     router.push(`/import/drafts/${res.id}`)
   } catch (e: any) {
-    uploadError.value = e.message || 'Не удалось обработать файл'
+    uploadError.value = inlineOrToast(e, 'Не удалось обработать файл')
     showToast(uploadError.value, 'error')
   } finally {
     analyzing.value = false

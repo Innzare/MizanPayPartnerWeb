@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { errorFromResponse } from '@/api/errors'
 /**
  * Резервные копии данных.
  *
@@ -176,7 +177,7 @@ async function save() {
     })
     toast.success('Расписание сохранено')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить расписание')
+    toast.error(e, 'Не удалось сохранить расписание')
   } finally {
     saving.value = false
   }
@@ -194,7 +195,7 @@ async function runNow() {
     await load()
     pollWhilePending()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось запустить копию')
+    toast.error(e, 'Не удалось запустить копию')
     progress.stop()
   } finally {
     // Кнопку отпускаем сразу — сборка идёт в фоне, и ход её видно по полосе.
@@ -219,7 +220,7 @@ async function cancelRun() {
     toast.success('Сборка копии отменена')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отменить сборку')
+    toast.error(e, 'Не удалось отменить сборку')
   } finally {
     cancelling.value = false
   }
@@ -249,10 +250,7 @@ async function download(f: BackupFile) {
     const res = await fetch(`${import.meta.env.VITE_API_URL}/backups/download/${f.token}`, {
       headers: { Authorization: `Bearer ${auth.accessToken}` },
     })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.message || 'Не удалось скачать файл')
-    }
+    if (!res.ok) throw await errorFromResponse(res)
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -262,7 +260,7 @@ async function download(f: BackupFile) {
     URL.revokeObjectURL(url)
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось скачать файл')
+    toast.error(e, 'Не удалось скачать файл')
   }
 }
 
@@ -276,10 +274,7 @@ async function fetchFile(path: string, name: string) {
     const res = await fetch(`${import.meta.env.VITE_API_URL}${path}`, {
       headers: { Authorization: `Bearer ${auth.accessToken}` },
     })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.message || 'Не удалось скачать файл')
-    }
+    if (!res.ok) throw await errorFromResponse(res)
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -289,7 +284,7 @@ async function fetchFile(path: string, name: string) {
     URL.revokeObjectURL(url)
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось скачать файл')
+    toast.error(e, 'Не удалось скачать файл')
   }
 }
 
@@ -336,7 +331,7 @@ async function pickRestoreFile(e: Event) {
     if (!res.ok) throw new Error(data?.message || 'Не удалось прочитать файл')
     restorePreview.value = data
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось прочитать файл')
+    toast.error(e, 'Не удалось прочитать файл')
     restoreFile.value = null
   }
 }
@@ -365,7 +360,7 @@ async function runRestore() {
     restoreFile.value = null
     restorePreview.value = null
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось восстановить')
+    toast.error(e, 'Не удалось восстановить')
   } finally {
     restoring.value = false
     progress.stop()
@@ -390,7 +385,7 @@ async function restoreFromCopy(f: BackupFile) {
     restoreCopyPreview.value = await api.post<RestorePreview>(`/backups/${f.id}/restore/preview`, {})
     restoreCopy.value = f
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось прочитать копию')
+    toast.error(e, 'Не удалось прочитать копию')
   } finally {
     restoringFromId.value = null
   }
@@ -413,7 +408,7 @@ async function confirmRestoreFromCopy() {
     restoreCopyPreview.value = null
     restoreDone.value = true
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось восстановить')
+    toast.error(e, 'Не удалось восстановить')
   } finally {
     restoring.value = false
     progress.stop()
@@ -475,7 +470,7 @@ async function emailBackup(f: BackupFile) {
     const res = await api.post<{ email: string }>(`/backups/${f.id}/email`, {})
     toast.success(`Письмо со ссылкой на копию отправлено на ${res.email}`)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отправить письмо')
+    toast.error(e, 'Не удалось отправить письмо')
   } finally {
     emailingId.value = null
   }
@@ -489,7 +484,7 @@ async function removeBackup(f: BackupFile) {
     await api.delete(`/backups/${f.id}`)
     files.value = files.value.filter((x) => x.id !== f.id)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить копию')
+    toast.error(e, 'Не удалось удалить копию')
   }
 }
 

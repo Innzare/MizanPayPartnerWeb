@@ -151,7 +151,7 @@ async function save() {
     open.value = false
     emit('done')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось разнести деньги')
+    toast.error(e, 'Не удалось разнести деньги')
     // Часть уже записана — обновляем список, чтобы суммы на экране были живые.
     await store.fetchAccounts().catch(() => {})
     await store.fetchUnallocated().catch(() => {})

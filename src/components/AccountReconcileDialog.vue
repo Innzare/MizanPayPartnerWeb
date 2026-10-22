@@ -62,7 +62,7 @@ async function save() {
     open.value = false
     emit('done')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось записать пересчёт')
+    toast.error(e, 'Не удалось записать пересчёт')
   } finally {
     saving.value = false
   }

@@ -18,7 +18,7 @@ onMounted(async () => {
   try {
     await productsStore.fetchProducts()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки товаров')
+    toast.error(e, 'Ошибка загрузки товаров')
   } finally {
     pageLoading.value = false
   }
@@ -76,7 +76,7 @@ async function toggleAvailability(e: Event, productId: string) {
   try {
     await productsStore.toggleAvailability(productId)
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка изменения видимости')
+    toast.error(e, 'Ошибка изменения видимости')
   }
 }
 

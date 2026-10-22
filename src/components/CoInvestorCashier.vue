@@ -156,7 +156,7 @@ async function loadDeals(withTotals = true) {
     if (req === dealsReq) {
       deals.value = []
       dealsTotalRows.value = 0
-      toast.error(e?.message || 'Не удалось загрузить сделки')
+      toast.error(e, 'Не удалось загрузить сделки')
     }
   } finally {
     if (req === dealsReq) dealsLoading.value = false
@@ -238,7 +238,7 @@ async function regenerateToken() {
     detail.value.shareToken = res.shareToken
     copied.value = false
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось обновить ссылку')
+    toast.error(e, 'Не удалось обновить ссылку')
   } finally {
     regenerating.value = false
   }
@@ -321,7 +321,7 @@ async function loadAll() {
     detail.value = d
     await Promise.all([loadJournal(), loadWithdrawals()])
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить данные')
+    toast.error(e, 'Не удалось загрузить данные')
   } finally {
     loading.value = false
   }
@@ -344,7 +344,7 @@ async function loadJournal() {
     })
     journal.value = res.entries
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки журнала')
+    toast.error(e, 'Ошибка загрузки журнала')
   } finally {
     journalLoading.value = false
   }
@@ -469,7 +469,7 @@ async function submitDividends() {
     // Let the parent (desktop list / summary cards) refresh its balances.
     emit('changed')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка выплаты')
+    toast.error(e, 'Ошибка выплаты')
   } finally {
     paying.value = false
   }
@@ -490,7 +490,7 @@ async function payPending(w: { id: string; amount: number }) {
     await Promise.all([loadJournal(), loadWithdrawals()])
     emit('changed')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось выдать')
+    toast.error(e, 'Не удалось выдать')
   } finally {
     withdrawalBusy.value = null
   }
@@ -504,7 +504,7 @@ async function cancelPending(w: { id: string; amount: number }) {
     await Promise.all([loadJournal(), loadWithdrawals()])
     emit('changed')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось отменить')
+    toast.error(e, 'Не удалось отменить')
   } finally {
     withdrawalBusy.value = null
   }
@@ -617,7 +617,7 @@ async function submitCapital() {
     await loadJournal()
     emit('changed')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось выполнить операцию')
+    toast.error(e, 'Не удалось выполнить операцию')
   } finally {
     capitalSaving.value = false
   }
@@ -638,7 +638,7 @@ async function confirmRemoveStake(opts: { mode: 'full' | 'exclude'; unpaid?: 'ke
     toast.success(opts.mode === 'full' ? 'Инвестор удалён из кассы' : 'Инвестор исключён из кассы')
     emit('changed')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить из кассы')
+    toast.error(e, 'Не удалось удалить из кассы')
   } finally {
     removing.value = false
   }
@@ -664,7 +664,7 @@ async function downloadStatement() {
     a.remove()
     URL.revokeObjectURL(url)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось скачать выписку')
+    toast.error(e, 'Не удалось скачать выписку')
   }
 }
 
@@ -811,7 +811,7 @@ async function cancelEntry(e: CoInvestorJournalEntry) {
     await loadJournal()
     emit('changed')
   } catch (err: any) {
-    toast.error(err.message || 'Не удалось отменить операцию')
+    toast.error(err, 'Не удалось отменить операцию')
   } finally {
     cancellingId.value = null
   }

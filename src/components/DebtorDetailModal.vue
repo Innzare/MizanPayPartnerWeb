@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast, loadFailed } from '@/api/showError'
 import { ref, computed, watch, nextTick } from 'vue'
 import ClientPhones from '@/components/ClientPhones.vue'
 import { useRouter } from 'vue-router'
@@ -60,7 +61,7 @@ async function deletePromiseEntry(a: CollectionActivity) {
     activities.value = activities.value.filter((x) => x.id !== a.id)
     await store.refreshCurrent()
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось удалить обещание'
+    error.value = inlineOrToast(e, 'Не удалось удалить обещание')
   }
 }
 
@@ -93,7 +94,7 @@ async function loadPayments() {
   try {
     payments.value = await store.fetchDealPayments(props.row.dealId)
   } catch (e: any) {
-    paymentsError.value = e?.message || 'Не удалось загрузить платежи'
+    paymentsError.value = loadFailed(e, 'Не удалось загрузить платежи')
   } finally {
     paymentsLoading.value = false
   }
@@ -107,7 +108,7 @@ async function loadActivities() {
     activities.value = await store.fetchActivities(props.row.dealId)
     if (modalTab.value === 'history') { await nextTick(); scrollToBottom() }
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось загрузить историю'
+    error.value = loadFailed(e, 'Не удалось загрузить историю')
   } finally {
     loading.value = false
   }
@@ -127,7 +128,7 @@ async function submitNote() {
     await nextTick()
     scrollToBottom()
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось сохранить'
+    error.value = inlineOrToast(e, 'Не удалось сохранить')
   } finally {
     sending.value = false
   }
@@ -146,7 +147,7 @@ async function removeActivity(id: string) {
     activities.value = activities.value.filter((a) => a.id !== id)
     if (props.row) await store.refreshCurrent()
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось удалить'
+    error.value = inlineOrToast(e, 'Не удалось удалить')
   }
 }
 

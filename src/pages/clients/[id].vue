@@ -61,10 +61,10 @@ onMounted(async () => {
       loadGuarantorInfo(),
     ])
   } catch (e: any) {
-    if (e.message?.includes('404') || e.message?.includes('не найден')) {
+    if (e?.status === 404 || e.message?.includes('404') || e.message?.includes('не найден')) {
       notFound.value = true
     } else {
-      toast.error(e.message || 'Ошибка загрузки профиля')
+      toast.error(e, 'Ошибка загрузки профиля')
     }
   } finally {
     pageLoading.value = false
@@ -191,7 +191,7 @@ async function doDelete() {
     showDeleteDialog.value = false
     router.push('/registry')
   } catch (e: any) {
-    toast.error(e.response?.data?.message || e.message || 'Не удалось удалить клиента')
+    toast.error(e, 'Не удалось удалить клиента')
   } finally {
     deleting.value = false
   }
@@ -207,7 +207,7 @@ async function togglePublish() {
       : await clientsStore.publish(resolvedProfileId.value)
     toast.success(profile.value.isPublic ? 'Профиль опубликован в реестре' : 'Профиль убран из реестра')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось изменить публикацию')
+    toast.error(e, 'Не удалось изменить публикацию')
   } finally {
     publishing.value = false
   }

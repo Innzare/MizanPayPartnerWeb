@@ -13,6 +13,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { toUserMessage } from '@/api/errors'
 import { useAuthStore } from '@/stores/auth'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useToast } from '@/composables/useToast'
@@ -185,7 +186,7 @@ async function load(quiet = false, opts: { nav?: boolean } = {}) {
     const res = await api.get<MonthData>(`/co-investors/month?${q}`)
     if (my === seq) data.value = res
   } catch (e: any) {
-    if (my === seq && !quiet) toast.error(e.message || 'Не удалось загрузить таблицу')
+    if (my === seq && !quiet) toast.error(e, 'Не удалось загрузить таблицу')
   } finally {
     if (my === seq) loading.value = false
   }
@@ -272,7 +273,7 @@ async function requestRecalc() {
     toast.success('Доли пересчитываются — таблица обновится сама')
     await load(true)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось запустить пересчёт')
+    toast.error(e, 'Не удалось запустить пересчёт')
   } finally {
     recalcRequesting.value = false
   }
@@ -450,7 +451,7 @@ async function confirmCloseAction() {
     toast.success(action === 'close' ? `${monthLabel.value} закрыт` : `${monthLabel.value} открыт`)
     emit('changed')
   } catch (e: any) {
-    toast.error(e?.message || 'Не получилось')
+    toast.error(e, 'Не получилось')
   } finally {
     closingBusy.value = false
   }
@@ -503,7 +504,7 @@ async function setPayoutDay(day: number | null) {
     toast.success(day ? `День расчёта — ${day} число` : 'День расчёта снят')
     await load()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить')
+    toast.error(e, 'Не удалось сохранить')
   } finally {
     savingDay.value = false
   }
@@ -688,10 +689,10 @@ async function submitSettle() {
     if (settled) {
       // Расчёт прошёл, не закрылся только месяц — окно больше не нужно.
       settleOpen.value = false
-      toast.error(`Расчёт проведён, но месяц не закрыт: ${e.message || 'ошибка'}`)
+      toast.error(`Расчёт проведён, но месяц не закрыт: ${toUserMessage(e, 'ошибка').replace(/\.$/, '')}`)
       emit('changed')
     } else {
-      toast.error(e.message || 'Не удалось провести расчёт')
+      toast.error(e, 'Не удалось провести расчёт')
     }
     // Часть могла пройти (или прошла в прошлый раз) — показываем то, что в базе.
     load()

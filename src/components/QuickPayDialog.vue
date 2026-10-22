@@ -749,7 +749,7 @@ async function confirm_() {
           note: 'Остаток после недоплат',
         })
       } catch (e: any) {
-        toast.error(e.message || 'Платёж отмечен, но не удалось добавить остаток')
+        toast.error(e, 'Платёж отмечен, но не удалось добавить остаток')
       }
     }
 
@@ -767,7 +767,7 @@ async function confirm_() {
             toast.success('Отметка снята')
             emit('paid', dealId)
           } catch (e: any) {
-            toast.error(e?.message || 'Не удалось снять отметку')
+            toast.error(e, 'Не удалось снять отметку')
           }
         },
       })
@@ -777,7 +777,7 @@ async function confirm_() {
     open.value = false
     emit('paid', dealId)
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка при отметке оплаты')
+    toast.error(e, 'Ошибка при отметке оплаты')
   } finally {
     submitting.value = false
   }

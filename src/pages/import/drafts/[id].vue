@@ -575,6 +575,7 @@
 </template>
 
 <script setup lang="ts">
+import { toUserMessage } from '@/api/errors'
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AgGridVue } from 'ag-grid-vue3'
@@ -761,7 +762,7 @@ async function onConfirmUnits() {
   try {
     await confirmUnits(draftId.value, true)
   } catch (e: any) {
-    showToast(e.message || 'Не удалось сохранить решение', 'error')
+    showToast(toUserMessage(e, 'Не удалось сохранить решение'), 'error')
   }
 }
 
@@ -770,7 +771,7 @@ async function toggleUnderpaymentAsDebt(on: boolean) {
   try {
     await setOptions(draftId.value, { underpaymentAsDebt: on })
   } catch (e: any) {
-    showToast(e.message || 'Не удалось сохранить настройку', 'error')
+    showToast(toUserMessage(e, 'Не удалось сохранить настройку'), 'error')
   }
 }
 
@@ -779,7 +780,7 @@ async function onUndoConfirmUnits() {
   try {
     await confirmUnits(draftId.value, false)
   } catch (e: any) {
-    showToast(e.message || 'Не удалось вернуть выбор', 'error')
+    showToast(toUserMessage(e, 'Не удалось вернуть выбор'), 'error')
   }
 }
 
@@ -830,7 +831,7 @@ async function flushPatches() {
   try {
     await savePatches(draftId.value, patches)
   } catch (e: any) {
-    showToast(e.message || 'Не удалось сохранить правки', 'error')
+    showToast(toUserMessage(e, 'Не удалось сохранить правки'), 'error')
     pendingPatches.value.unshift(...patches)
   }
 }
@@ -844,7 +845,7 @@ async function skipAllErrors() {
     await savePatches(draftId.value, patches)
     showToast(`Пропущено ${patches.length} ${pluralize(patches.length, 'строка', 'строки', 'строк')} с ошибками`, 'success')
   } catch (e: any) {
-    showToast(e.message || 'Не удалось применить', 'error')
+    showToast(toUserMessage(e, 'Не удалось применить'), 'error')
   }
 }
 
@@ -856,7 +857,7 @@ async function onAddRow() {
     await addRow(draftId.value)
     showToast('Добавлена пустая строка — заполните её', 'success')
   } catch (e: any) {
-    showToast(e.message || 'Не удалось добавить строку', 'error')
+    showToast(toUserMessage(e, 'Не удалось добавить строку'), 'error')
   }
 }
 
@@ -869,7 +870,7 @@ async function onDeleteRow(rowIdx: number) {
     await deleteRow(draftId.value, rowIdx)
     showToast('Строка удалена', 'success')
   } catch (e: any) {
-    showToast(e.message || 'Не удалось удалить строку', 'error')
+    showToast(toUserMessage(e, 'Не удалось удалить строку'), 'error')
   }
 }
 
@@ -889,7 +890,7 @@ async function applyBulk(field: 'folderId' | 'cashBoxId', value: string | null) 
     await savePatches(draftId.value, patches)
     // No toast — current state is visible in the bulk-row chips
   } catch (e: any) {
-    showToast(e.message || 'Не удалось применить', 'error')
+    showToast(toUserMessage(e, 'Не удалось применить'), 'error')
   }
 }
 
@@ -1406,7 +1407,7 @@ async function onCommit() {
     }
   } catch (e: any) {
     importRunning.value = false
-    showToast(e.message || 'Не удалось импортировать', 'error')
+    showToast(toUserMessage(e, 'Не удалось импортировать'), 'error')
   }
 }
 
@@ -1420,7 +1421,7 @@ async function onCancel() {
     }
     router.push('/import')
   } catch (e: any) {
-    showToast(e.message || 'Не удалось отменить', 'error')
+    showToast(toUserMessage(e, 'Не удалось отменить'), 'error')
   }
 }
 
@@ -1444,7 +1445,7 @@ async function onCancelImport() {
     }
     startCancelWatch()
   } catch (e: any) {
-    showToast(e.message || 'Не удалось отменить импорт', 'error')
+    showToast(toUserMessage(e, 'Не удалось отменить импорт'), 'error')
   } finally {
     cancelRequesting.value = false
   }
@@ -1486,7 +1487,7 @@ onMounted(() => {
       }
     })
     .catch((e: any) => {
-      showToast(e.message || 'Не удалось загрузить черновик', 'error')
+      showToast(toUserMessage(e, 'Не удалось загрузить черновик'), 'error')
       router.push('/import')
     })
   fetchFolders()

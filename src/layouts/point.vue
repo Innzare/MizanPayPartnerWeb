@@ -2,7 +2,6 @@
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { usePointStore } from '@/stores/point'
-import GlobalToast from '@/components/GlobalToast.vue'
 import { formatCurrency } from '@/utils/formatters'
 
 /**
@@ -91,7 +90,6 @@ async function logout() {
       </v-btn>
     </v-bottom-navigation>
 
-    <GlobalToast />
   </v-app>
 </template>
 

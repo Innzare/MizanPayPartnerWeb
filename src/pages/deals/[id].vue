@@ -91,7 +91,7 @@ onMounted(async () => {
     if (e?.code === 'DEAL_LOCKED') {
       lockedError.value = true
     } else {
-      toast.error(e.message || 'Ошибка загрузки сделки')
+      toast.error(e, 'Ошибка загрузки сделки')
     }
   } finally {
     pageLoading.value = false
@@ -152,7 +152,7 @@ async function handleMoveCashbox() {
     showMoveCashbox.value = false
     await dealsStore.fetchDeal(deal.value.id)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось перенести')
+    toast.error(e, 'Не удалось перенести')
   } finally {
     movingCashbox.value = false
   }
@@ -182,7 +182,7 @@ async function deleteDeal() {
     toast.success('Сделка перемещена в корзину')
     router.push('/deals')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить сделку')
+    toast.error(e, 'Не удалось удалить сделку')
   } finally {
     deleting.value = false
   }
@@ -252,7 +252,7 @@ async function setAssignee(staffId: string | null) {
     showAssigneeMenu.value = false
     toast.success(staffId ? 'Сотрудник назначен' : 'Назначение снято')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось назначить')
+    toast.error(e, 'Не удалось назначить')
   } finally {
     assignLoading.value = false
   }
@@ -300,7 +300,7 @@ async function restoreDeal() {
     await dealsStore.fetchDeal(dealId.value)
     toast.success('Сделка восстановлена')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось восстановить сделку')
+    toast.error(e, 'Не удалось восстановить сделку')
   } finally {
     deleting.value = false
   }
@@ -314,7 +314,7 @@ async function permanentDeleteDeal() {
     toast.success('Сделка удалена навсегда')
     router.push('/deals')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить сделку')
+    toast.error(e, 'Не удалось удалить сделку')
   } finally {
     deleting.value = false
   }
@@ -686,7 +686,7 @@ async function confirmUndoReschedule(p: typeof payments.value[0]) {
     await paymentsStore.undoReschedulePayment(p.id, p.dealId)
     toast.success('Дата платежа восстановлена')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка при возврате даты')
+    toast.error(e, 'Ошибка при возврате даты')
   } finally {
     undoingReschedule.value = null
   }
@@ -796,7 +796,7 @@ async function confirmAddPayment() {
     toast.success('Платёж добавлен')
     addPaymentDialog.value = false
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось добавить платёж')
+    toast.error(e, 'Не удалось добавить платёж')
   } finally {
     addPaymentSubmitting.value = false
   }
@@ -887,7 +887,7 @@ async function doUndo() {
     historyRef.value?.reload()
     toast.success('Последнее действие отменено')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось отменить действие')
+    toast.error(e, 'Не удалось отменить действие')
   } finally {
     undoing.value = false
     await refreshUndo()
@@ -1007,7 +1007,7 @@ async function saveComment() {
     commentEditing.value = false
     toast.success(commentDraft.value.trim() ? 'Комментарий сохранён' : 'Комментарий удалён')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить комментарий')
+    toast.error(e, 'Не удалось сохранить комментарий')
   } finally {
     commentSaving.value = false
   }
@@ -1090,7 +1090,7 @@ async function confirmStatusChange() {
     statusDialog.value = false
     await refreshDealAndSchedule()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка обновления статуса')
+    toast.error(e, 'Ошибка обновления статуса')
   } finally {
     statusUpdating.value = false
   }
@@ -1124,7 +1124,7 @@ async function confirmReopen() {
         : 'Сделка возобновлена — график и деньги вернулись к состоянию до закрытия',
     )
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось возобновить сделку')
+    toast.error(e, 'Не удалось возобновить сделку')
   } finally {
     reopening.value = false
   }

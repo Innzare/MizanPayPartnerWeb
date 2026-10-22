@@ -226,7 +226,7 @@ async function loadPeriod() {
   try {
     data.value = await store.fetchTemporary(period.value.from, period.value.to, cashBoxId.value)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить пополнения и расходы')
+    toast.error(e, 'Не удалось загрузить пополнения и расходы')
   } finally {
     loading.value = false
   }
@@ -452,7 +452,7 @@ async function confirmCancelCapital() {
     cancelCapitalRow.value = null
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отменить')
+    toast.error(e, 'Не удалось отменить')
   } finally {
     cancelling.value = false
   }
@@ -484,7 +484,7 @@ async function confirmRepay() {
     repayTarget.value = null
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось записать возврат')
+    toast.error(e, 'Не удалось записать возврат')
   } finally {
     repaying.value = false
   }

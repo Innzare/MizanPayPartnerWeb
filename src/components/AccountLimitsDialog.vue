@@ -141,7 +141,7 @@ async function save() {
     open.value = false
     emit('saved')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить лимиты')
+    toast.error(e, 'Не удалось сохранить лимиты')
   } finally {
     saving.value = false
   }

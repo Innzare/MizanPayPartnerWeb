@@ -109,7 +109,7 @@ async function load() {
     data.value = summary
     deals.value = dealRows
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить профиль')
+    toast.error(e, 'Не удалось загрузить профиль')
   } finally {
     loading.value = false
   }

@@ -82,7 +82,7 @@ async function load() {
     entries.value = res.items
     cursor.value = res.nextCursor
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить операции')
+    toast.error(e, 'Не удалось загрузить операции')
   } finally {
     loading.value = false
   }
@@ -96,7 +96,7 @@ async function loadMore() {
     entries.value.push(...res.items)
     cursor.value = res.nextCursor
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить ещё')
+    toast.error(e, 'Не удалось загрузить ещё')
   } finally {
     loadingMore.value = false
   }
@@ -184,7 +184,7 @@ async function loadPoint() {
     const from = new Date(Date.now() - days * 86400000).toISOString()
     point.value = await store.fetchPointDetail(id.value, from)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить историю пункта')
+    toast.error(e, 'Не удалось загрузить историю пункта')
   } finally {
     pointLoading.value = false
   }

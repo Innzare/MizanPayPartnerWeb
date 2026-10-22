@@ -394,6 +394,7 @@
 </template>
 
 <script setup lang="ts">
+import { toUserMessage } from '@/api/errors'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { todayIso } from '@/utils/dateInput'
@@ -442,7 +443,7 @@ async function updateSettings(patch: any) {
     await doUpdateSettings(patch)
     recalculate()
   } catch (e: any) {
-    showToast(e.message || 'Не удалось сохранить', 'error')
+    showToast(toUserMessage(e, 'Не удалось сохранить'), 'error')
   }
 }
 
@@ -483,7 +484,7 @@ async function onConfirmSave() {
     showToast('Выплата зафиксирована', 'success')
     tab.value = 'history'
   } catch (e: any) {
-    showToast(e.message || 'Не удалось сохранить', 'error')
+    showToast(toUserMessage(e, 'Не удалось сохранить'), 'error')
   }
 }
 
@@ -493,7 +494,7 @@ async function onDeletePayment(id: string) {
     await deletePayment(id)
     showToast('Запись удалена', 'success')
   } catch (e: any) {
-    showToast(e.message || 'Не удалось удалить', 'error')
+    showToast(toUserMessage(e, 'Не удалось удалить'), 'error')
   }
 }
 

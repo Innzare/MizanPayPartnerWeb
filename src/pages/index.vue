@@ -181,7 +181,7 @@ onMounted(async () => {
         : Promise.resolve(),
     ])
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки данных')
+    toast.error(e, 'Ошибка загрузки данных')
   } finally {
     pageLoading.value = false
   }
@@ -341,7 +341,7 @@ async function openBreakdown(metric: MetricKey) {
     // Для доходности сумма бессмысленна.
     metricTotal.value = metric === 'roi' ? 0 : res.total
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить расшифровку')
+    toast.error(e, 'Не удалось загрузить расшифровку')
   } finally {
     metricLoading.value = false
   }
@@ -361,7 +361,7 @@ async function loadMoreBreakdown() {
       ...res.items.map((d) => breakdownRow(metricMetric.value, d)),
     ]
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить ещё')
+    toast.error(e, 'Не удалось загрузить ещё')
   } finally {
     metricLoading.value = false
   }

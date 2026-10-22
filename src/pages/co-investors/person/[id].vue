@@ -49,7 +49,7 @@ async function load() {
       activeStakeId.value = ids[0] ?? null
     }
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить инвестора')
+    toast.error(e, 'Не удалось загрузить инвестора')
   } finally {
     loading.value = false
   }
@@ -82,7 +82,7 @@ async function confirmDeletePerson(opts: { mode: 'full' | 'exclude'; unpaid?: 'k
     // Person is gone (or fully excluded) — back to the list.
     router.push('/co-investors')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить инвестора')
+    toast.error(e, 'Не удалось удалить инвестора')
   } finally {
     deleting.value = false
   }
@@ -178,7 +178,7 @@ async function saveStake() {
     showAddDialog.value = false
     await load()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось добавить в кассу')
+    toast.error(e, 'Не удалось добавить в кассу')
   } finally {
     addLoading.value = false
   }

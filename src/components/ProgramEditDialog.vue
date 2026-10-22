@@ -732,7 +732,7 @@ async function save() {
     toast.success(props.program ? 'Тариф сохранён' : 'Тариф создан')
     emit('saved')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить тариф')
+    toast.error(e, 'Не удалось сохранить тариф')
   } finally {
     saving.value = false
   }

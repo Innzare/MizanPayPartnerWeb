@@ -419,6 +419,7 @@
 </template>
 
 <script setup lang="ts">
+import { toUserMessage } from '@/api/errors'
 import { computed, reactive, ref, watch, nextTick, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
@@ -649,7 +650,7 @@ async function onCreateSale(keepOpen: boolean, acknowledgedOverdraft = false) {
       emit('update:modelValue', false)
     }
   } catch (e: any) {
-    showToast(e.message || 'Не удалось создать продажу', 'error')
+    showToast(toUserMessage(e, 'Не удалось создать продажу'), 'error')
   } finally {
     creating.value = false
   }
@@ -729,7 +730,7 @@ async function onMarkPaid(r: QuickSearchResult) {
     expandedId.value = null
     if (search.value.trim()) await doSearch(search.value.trim())
   } catch (e: any) {
-    showToast(e.message || 'Не удалось отметить платёж', 'error')
+    showToast(toUserMessage(e, 'Не удалось отметить платёж'), 'error')
   } finally {
     markingPaid.value = false
   }

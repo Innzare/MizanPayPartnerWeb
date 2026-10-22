@@ -53,7 +53,7 @@ async function load() {
     const list = await store.fetchPoints()
     points.value = list.points
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить пункты')
+    toast.error(e, 'Не удалось загрузить пункты')
   } finally {
     loading.value = false
   }

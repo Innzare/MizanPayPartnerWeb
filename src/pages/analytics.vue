@@ -119,7 +119,7 @@ onMounted(async () => {
       dealsStore.fetchDealCounts({ cashBoxId: selectedCashBoxId.value }),
     ])
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки данных')
+    toast.error(e, 'Ошибка загрузки данных')
   } finally {
     pageLoading.value = false
   }
@@ -1031,7 +1031,7 @@ async function openBreakdown(metric: string) {
     // Итог считает сервер по ВСЕЙ выборке — в списке может быть лишь часть.
     metricTotal.value = res.total
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить расшифровку')
+    toast.error(e, 'Не удалось загрузить расшифровку')
   } finally {
     metricLoading.value = false
   }
@@ -1068,7 +1068,7 @@ async function loadMoreBreakdown() {
       ...res.items.map((d) => breakdownRow(metricMetric.value, d)),
     ]
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить ещё')
+    toast.error(e, 'Не удалось загрузить ещё')
   } finally {
     metricLoading.value = false
   }
@@ -1150,7 +1150,7 @@ async function openTimeliness(side: string, bucket: string | null) {
     // Итог считает сервер по всей выборке — в списке может быть лишь часть.
     metricTotal.value = res.total
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить расшифровку')
+    toast.error(e, 'Не удалось загрузить расшифровку')
   } finally {
     metricLoading.value = false
   }

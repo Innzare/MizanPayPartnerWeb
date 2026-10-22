@@ -28,7 +28,7 @@ onMounted(async () => {
     chatId.value = thread.id
     partnerName.value = `${thread.counterpart.firstName} ${thread.counterpart.lastName}`.trim()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось открыть чат')
+    toast.error(e, 'Не удалось открыть чат')
   } finally {
     pageLoading.value = false
   }

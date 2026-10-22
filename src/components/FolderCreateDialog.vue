@@ -69,6 +69,7 @@
 </template>
 
 <script setup lang="ts">
+import { toUserMessage } from '@/api/errors'
 import { reactive, ref, watch, nextTick } from 'vue'
 import { useFolders } from '@/composables/useFolders'
 import { useToast } from '@/composables/useToast'
@@ -113,7 +114,7 @@ async function onSave() {
     emit('created', folder)
     close()
   } catch (e: any) {
-    showToast(e.message || 'Не удалось создать папку', 'error')
+    showToast(toUserMessage(e, 'Не удалось создать папку'), 'error')
   } finally {
     saving.value = false
   }

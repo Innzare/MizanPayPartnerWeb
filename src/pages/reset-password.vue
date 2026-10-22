@@ -8,6 +8,10 @@
 
 <script lang="ts" setup>
 import { api } from '@/api/client'
+import { isAuthFormError, toUserMessage } from '@/api/errors'
+import { useToast } from '@/composables/useToast'
+
+const toast = useToast()
 import logo from '@/assets/images/logo.svg'
 import logoText from '@/assets/images/logo-text.svg'
 import logoTextDark from '@/assets/images/logo-text-dark.svg'
@@ -52,8 +56,9 @@ const handleSubmit = async () => {
       newPassword: newPassword.value,
     })
     success.value = true
-  } catch (e: any) {
-    error.value = e?.message || 'Ошибка сброса пароля'
+  } catch (e) {
+    if (isAuthFormError(e)) error.value = toUserMessage(e, 'Не удалось сменить пароль')
+    else toast.error(e, 'Не удалось сменить пароль — попробуйте ещё раз')
   } finally {
     isLoading.value = false
   }

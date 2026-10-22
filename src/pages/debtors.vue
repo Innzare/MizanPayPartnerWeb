@@ -870,7 +870,7 @@ async function openAging(row: { key: string; label: string; count: number; color
     agingCount.value = res.count
     agingTotal.value = res.total
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить сделки')
+    toast.error(e, 'Не удалось загрузить сделки')
   } finally {
     agingLoading.value = false
   }
@@ -883,7 +883,7 @@ async function loadMoreAging() {
     const res = await fetchAgingPage(agingItems.value.length)
     agingItems.value = [...agingItems.value, ...res.items.map(agingItem)]
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить ещё')
+    toast.error(e, 'Не удалось загрузить ещё')
   } finally {
     agingLoading.value = false
   }

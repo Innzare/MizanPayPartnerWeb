@@ -59,7 +59,7 @@ async function confirm() {
     target.value = null
     emit('changed')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось разобрать операцию')
+    toast.error(e, 'Не удалось разобрать операцию')
   } finally {
     busy.value = false
   }

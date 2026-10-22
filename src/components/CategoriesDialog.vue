@@ -49,7 +49,7 @@ async function load() {
   try {
     categories.value = await api.get<Category[]>('/finance/categories')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить статьи')
+    toast.error(e, 'Не удалось загрузить статьи')
   } finally {
     loading.value = false
   }
@@ -72,7 +72,7 @@ async function add() {
     await load()
     emit('changed')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось добавить статью')
+    toast.error(e, 'Не удалось добавить статью')
   }
 }
 
@@ -89,7 +89,7 @@ async function saveEdit() {
     await load()
     emit('changed')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось переименовать')
+    toast.error(e, 'Не удалось переименовать')
   }
 }
 
@@ -100,7 +100,7 @@ async function remove(id: string) {
     await load()
     emit('changed')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить статью')
+    toast.error(e, 'Не удалось удалить статью')
   }
 }
 </script>

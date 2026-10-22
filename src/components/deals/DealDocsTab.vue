@@ -53,7 +53,7 @@ async function onContractFilesSelected(event: Event) {
     await dealsStore.fetchDeal(dealId.value)
     toast.success('Фото договора загружены')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки')
+    toast.error(e, 'Ошибка загрузки')
   } finally {
     contractUploading.value = false
     if (contractInputRef.value) contractInputRef.value.value = ''
@@ -67,7 +67,7 @@ async function removeContractPhoto(index: number) {
     await api.patch(`/deals/${deal.value.id}/contract`, { contractPhotos: updated })
     await dealsStore.fetchDeal(dealId.value)
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления')
+    toast.error(e, 'Ошибка удаления')
   }
 }
 

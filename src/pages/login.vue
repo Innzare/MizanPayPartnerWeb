@@ -13,6 +13,10 @@ import logo from "@/assets/images/logo.svg";
 import logoText from "@/assets/images/logo-text.svg";
 import logoTextDark from "@/assets/images/logo-text-dark.svg";
 import { useIsDark } from "@/composables/useIsDark";
+import { isAuthFormError, toUserMessage } from "@/api/errors";
+import { useToast } from "@/composables/useToast";
+
+const toast = useToast();
 
 const { isDark } = useIsDark()
 
@@ -53,8 +57,10 @@ const handleLogin = async () => {
     await authStore.login(email.value, password.value);
     const redirect = (router.currentRoute.value.query.redirect as string) || authStore.defaultRoute;
     router.push(redirect);
-  } catch (e: any) {
-    error.value = e?.message || "Ошибка авторизации";
+  } catch (e) {
+    // Неверный пароль — в форме; сеть и сервер — тостом.
+    if (isAuthFormError(e)) error.value = toUserMessage(e, "Не удалось войти");
+    else toast.error(e, "Не удалось войти — попробуйте ещё раз");
   } finally {
     isLoading.value = false;
   }

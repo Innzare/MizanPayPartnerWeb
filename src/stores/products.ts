@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Product } from '@/types'
 import { api } from '@/api/client'
+import { toUserMessage } from '@/api/errors'
 
 export const useProductsStore = defineStore('products', () => {
   const products = ref<Product[]>([])
@@ -28,7 +29,7 @@ export const useProductsStore = defineStore('products', () => {
     try {
       products.value = await api.get<Product[]>('/products/my')
     } catch (e: any) {
-      error.value = e.message || 'Не удалось загрузить товары'
+      error.value = toUserMessage(e, 'Не удалось загрузить товары')
       throw e
     } finally {
       isLoading.value = false
@@ -48,7 +49,7 @@ export const useProductsStore = defineStore('products', () => {
       }
       return product
     } catch (e: any) {
-      error.value = e.message || 'Не удалось загрузить товар'
+      error.value = toUserMessage(e, 'Не удалось загрузить товар')
       throw e
     } finally {
       isLoading.value = false
@@ -66,7 +67,7 @@ export const useProductsStore = defineStore('products', () => {
       await api.patch<Product>(`/products/${id}/toggle`)
     } catch (e: any) {
       product.isAvailable = previousState
-      error.value = e.message || 'Не удалось изменить видимость'
+      error.value = toUserMessage(e, 'Не удалось изменить видимость')
       throw e
     }
   }
@@ -84,7 +85,7 @@ export const useProductsStore = defineStore('products', () => {
       Object.assign(product, updated)
     } catch (e: any) {
       Object.assign(product, previousState)
-      error.value = e.message || 'Не удалось обновить товар'
+      error.value = toUserMessage(e, 'Не удалось обновить товар')
       throw e
     }
   }
@@ -107,7 +108,7 @@ export const useProductsStore = defineStore('products', () => {
       products.value.unshift(newProduct)
       return newProduct
     } catch (e: any) {
-      error.value = e.message || 'Не удалось создать товар'
+      error.value = toUserMessage(e, 'Не удалось создать товар')
       throw e
     } finally {
       isLoading.value = false
@@ -124,7 +125,7 @@ export const useProductsStore = defineStore('products', () => {
       await api.delete(`/products/${id}`)
     } catch (e: any) {
       if (removed) products.value.splice(idx, 0, removed)
-      error.value = e.message || 'Не удалось удалить товар'
+      error.value = toUserMessage(e, 'Не удалось удалить товар')
       throw e
     }
   }

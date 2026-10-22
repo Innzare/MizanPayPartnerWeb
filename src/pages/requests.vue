@@ -20,7 +20,7 @@ onMounted(async () => {
   try {
     await requestsStore.fetchRequests()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки заявок')
+    toast.error(e, 'Ошибка загрузки заявок')
   } finally {
     pageLoading.value = false
   }
@@ -217,7 +217,7 @@ async function confirmSendOffer() {
     selectedRequest.value = null
     requestsStore.fetchRequests()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка отправки предложения')
+    toast.error(e, 'Ошибка отправки предложения')
   } finally {
     isSendingOffer.value = false
   }

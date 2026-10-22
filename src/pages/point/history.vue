@@ -68,7 +68,7 @@ async function undo(e: PointEntry) {
     toast.success('Оплата отменена')
     await load()
   } catch (err: any) {
-    toast.error(err?.message || 'Не удалось отменить')
+    toast.error(err, 'Не удалось отменить')
   } finally {
     undoing.value = null
   }

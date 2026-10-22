@@ -123,7 +123,7 @@ async function load() {
     void loadProfit()
     if (!cashboxes.items.length) await cashboxes.fetchAll().catch(() => {})
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить счета')
+    toast.error(e, 'Не удалось загрузить счета')
   }
 }
 
@@ -567,7 +567,7 @@ async function toggle(a: AccountView) {
       await store.toggleAccount(a.id, true)
       toast.success('Счёт включён')
     } catch (e: any) {
-      toast.error(e?.message || 'Не удалось включить счёт')
+      toast.error(e, 'Не удалось включить счёт')
     }
     return
   }
@@ -583,7 +583,7 @@ async function confirmDisable() {
     toast.success('Счёт отключён')
     offTarget.value = null
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отключить счёт')
+    toast.error(e, 'Не удалось отключить счёт')
   } finally {
     offBusy.value = false
   }
@@ -597,7 +597,7 @@ async function recompute() {
     const fixed = await store.recomputeBalances()
     toast.success(fixed.length ? `Остатки пересобраны: ${fixed.length}` : 'Расхождений не осталось')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось пересобрать остатки')
+    toast.error(e, 'Не удалось пересобрать остатки')
   } finally {
     fixing.value = false
   }
@@ -609,7 +609,7 @@ async function remove(a: AccountView) {
     await store.removeAccount(a.id)
     toast.success('Счёт удалён')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить счёт')
+    toast.error(e, 'Не удалось удалить счёт')
   }
 }
 

@@ -128,7 +128,7 @@ async function onSelect(profile: (ClientProfile & { _source?: string }) | null) 
       toast.success('Клиент скопирован из реестра в вашу базу')
       return
     } catch (e: any) {
-      toast.error(e.message || 'Не удалось скопировать клиента из реестра')
+      toast.error(e, 'Не удалось скопировать клиента из реестра')
       selected.value = null
       emit('update:modelValue', null)
       emit('selected', null)

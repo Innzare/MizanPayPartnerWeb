@@ -133,7 +133,7 @@ async function save() {
     await load()
     emit('changed')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить номер')
+    toast.error(e, 'Не удалось сохранить номер')
   } finally {
     saving.value = false
   }
@@ -146,7 +146,7 @@ async function remove(p: ExtraPhone) {
     await load()
     emit('changed')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить номер')
+    toast.error(e, 'Не удалось удалить номер')
   }
 }
 
@@ -165,7 +165,7 @@ async function makePrimary(p: ExtraPhone) {
     emit('primary-changed', res.phone)
     emit('changed')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось изменить основной номер')
+    toast.error(e, 'Не удалось изменить основной номер')
   } finally {
     switching.value = null
   }

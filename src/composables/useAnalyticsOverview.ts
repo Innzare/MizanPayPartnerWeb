@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
+import { loadFailed } from '@/api/showError'
 import type {
   AnalyticsBreakdown,
   MonthDealsResponse,
@@ -55,7 +56,7 @@ export function useAnalyticsSummary(cashBoxId: () => string | null) {
       if (qs !== params.value) return
       // Тариф без аналитики отвечает 403 — это не ошибка, а закрытый раздел:
       // страница показывает заглушку, тревожить партнёра нечем.
-      if (e?.status !== 403) error.value = e?.message || 'Не удалось загрузить сводку'
+      if (e?.status !== 403) error.value = loadFailed(e, 'Не удалось загрузить сводку')
       console.error('Failed to load analytics summary:', e)
     } finally {
       if (qs === params.value) loading.value = false

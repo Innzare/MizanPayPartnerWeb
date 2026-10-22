@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
 import type { ActivityLog, ActivityType } from '@/types'
+import { toUserMessage } from '@/api/errors'
 
 interface ActivityResponse {
   items: ActivityLog[]
@@ -54,7 +55,7 @@ export const useActivityStore = defineStore('activity', () => {
       total.value = data.total
       hasMore.value = items.value.length < data.total
     } catch (e: any) {
-      error.value = e.message || 'Ошибка загрузки истории'
+      error.value = toUserMessage(e, 'Ошибка загрузки истории')
     } finally {
       isLoading.value = false
       inFlight = false

@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import type { Page, Payment, PaymentCalendarDay, PaymentFacets } from '@/types'
 import { api } from '@/api/client'
 import type { ShortfallAction } from '@/utils/paymentMath'
+import { toUserMessage } from '@/api/errors'
 
 /** Параметры страницы платежей — ровно то, что понимает сервер. */
 export interface PaymentsPageParams {
@@ -100,7 +101,7 @@ export const usePaymentsStore = defineStore('payments', () => {
       listSum.value = res.sums?.amount ?? 0
     } catch (e: any) {
       if (req !== pageReq) return
-      error.value = e.message || 'Ошибка загрузки платежей'
+      error.value = toUserMessage(e, 'Ошибка загрузки платежей')
       console.error('Failed to fetch payments page:', e)
     } finally {
       if (req === pageReq) listLoading.value = false
@@ -148,7 +149,7 @@ export const usePaymentsStore = defineStore('payments', () => {
       const data = await api.get<Payment[]>(`/payments/deal/${dealId}`)
       payments.value = { ...payments.value, [dealId]: data }
     } catch (e: any) {
-      error.value = e.message || 'Ошибка загрузки платежей сделки'
+      error.value = toUserMessage(e, 'Ошибка загрузки платежей сделки')
       throw e
     }
   }
@@ -197,7 +198,7 @@ export const usePaymentsStore = defineStore('payments', () => {
       // would leave the rest stale — refetch the deal's full payments list.
       await fetchPaymentsForDeal(dealId)
     } catch (e: any) {
-      error.value = e.message || 'Ошибка при отметке оплаты'
+      error.value = toUserMessage(e, 'Ошибка при отметке оплаты')
       throw e
     }
   }
@@ -212,7 +213,7 @@ export const usePaymentsStore = defineStore('payments', () => {
       await fetchPaymentsForDeal(dealId)
       return updated
     } catch (e: any) {
-      error.value = e.message || 'Не удалось сохранить комментарий'
+      error.value = toUserMessage(e, 'Не удалось сохранить комментарий')
       throw e
     }
   }
@@ -237,7 +238,7 @@ export const usePaymentsStore = defineStore('payments', () => {
         }
       }
     } catch (e: any) {
-      error.value = e.message || 'Ошибка при переносе платежа'
+      error.value = toUserMessage(e, 'Ошибка при переносе платежа')
       throw e
     }
   }
@@ -254,7 +255,7 @@ export const usePaymentsStore = defineStore('payments', () => {
         }
       }
     } catch (e: any) {
-      error.value = e.message || 'Ошибка при возврате даты'
+      error.value = toUserMessage(e, 'Ошибка при возврате даты')
       throw e
     }
   }
@@ -268,7 +269,7 @@ export const usePaymentsStore = defineStore('payments', () => {
       // cache update would leave sister payments stale.
       await fetchPaymentsForDeal(dealId)
     } catch (e: any) {
-      error.value = e.message || 'Ошибка при отмене оплаты'
+      error.value = toUserMessage(e, 'Ошибка при отмене оплаты')
       throw e
     }
   }
@@ -287,7 +288,7 @@ export const usePaymentsStore = defineStore('payments', () => {
       await api.delete(`/payments/${paymentId}`)
       await fetchPaymentsForDeal(dealId)
     } catch (e: any) {
-      error.value = e.message || 'Не удалось удалить платёж'
+      error.value = toUserMessage(e, 'Не удалось удалить платёж')
       throw e
     }
   }
@@ -308,7 +309,7 @@ export const usePaymentsStore = defineStore('payments', () => {
       await fetchPaymentsForDeal(dealId)
       return created
     } catch (e: any) {
-      error.value = e.message || 'Не удалось добавить платёж'
+      error.value = toUserMessage(e, 'Не удалось добавить платёж')
       throw e
     }
   }

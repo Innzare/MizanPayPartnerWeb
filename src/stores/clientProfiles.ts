@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
 import type { ClientProfile, ClientProfileStats } from '@/types'
+import { toUserMessage } from '@/api/errors'
 
 export interface CreateClientProfileInput {
   phone: string
@@ -33,7 +34,7 @@ export const useClientProfilesStore = defineStore('clientProfiles', () => {
     try {
       myClients.value = await api.get<ClientProfile[]>('/client-profiles')
     } catch (e: any) {
-      error.value = e.message || 'Ошибка загрузки клиентов'
+      error.value = toUserMessage(e, 'Ошибка загрузки клиентов')
     } finally {
       isLoading.value = false
     }

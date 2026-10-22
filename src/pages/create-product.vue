@@ -120,7 +120,7 @@ async function submitProduct() {
     toast.success('Товар создан')
     router.push('/products')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка создания товара')
+    toast.error(e, 'Ошибка создания товара')
   } finally {
     submitting.value = false
   }

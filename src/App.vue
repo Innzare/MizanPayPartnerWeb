@@ -1,9 +1,12 @@
 <template>
   <router-view />
+  <!-- Уведомления — на всех страницах, включая вход и сброс пароля. -->
+  <GlobalToast />
 </template>
 
 <script lang="ts" setup>
   import { useThemeMode } from '@/composables/useThemeMode'
+  import GlobalToast from '@/components/GlobalToast.vue'
 
   /**
    * Тему применяем в корне, а не в лэйауте кабинета: раньше сохранённый выбор

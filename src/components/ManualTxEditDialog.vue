@@ -105,7 +105,7 @@ async function save() {
     open.value = false
     emit('done')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить')
+    toast.error(e, 'Не удалось сохранить')
   } finally {
     saving.value = false
   }
@@ -120,7 +120,7 @@ async function remove() {
     open.value = false
     emit('done')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить')
+    toast.error(e, 'Не удалось удалить')
   } finally {
     saving.value = false
   }

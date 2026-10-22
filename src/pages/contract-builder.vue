@@ -86,7 +86,7 @@ async function insertImageFile(file: File) {
     const width = Math.max(48, Math.min(prepared.width, Math.round(editorContentWidth() * 0.5)))
     editor.value?.chain().focus().setImage({ src: prepared.src, width: `${width}px` }).run()
   } catch (error: any) {
-    toast.error(error?.message || 'Не удалось вставить изображение')
+    toast.error(error, 'Не удалось вставить изображение')
   }
 }
 
@@ -199,7 +199,7 @@ async function saveTemplate() {
     if (e?.status === 413) {
       toast.error('Шаблон слишком тяжёлый — уменьшите количество или размер картинок')
     } else {
-      toast.error(e.message || 'Ошибка сохранения')
+      toast.error(e, 'Ошибка сохранения')
     }
   } finally { saving.value = false }
 }

@@ -134,7 +134,7 @@ async function saveFolder() {
     }
     showFolderDialog.value = false
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка')
+    toast.error(e, 'Ошибка')
   } finally { folderSaving.value = false }
 }
 
@@ -144,7 +144,7 @@ async function handleDeleteFolder(folder: DealFolder) {
     await deleteFolder(folder.id)
     if (activeFolder.value === folder.id) activeFolder.value = null
     toast.success('Папка удалена')
-  } catch (e: any) { toast.error(e.message || 'Ошибка') }
+  } catch (e: any) { toast.error(e, 'Ошибка') }
 }
 
 async function moveSelectedToFolder(folderId: string | null) {
@@ -156,7 +156,7 @@ async function moveSelectedToFolder(folderId: string | null) {
     selectedIds.value = new Set()
     showMoveMenu.value = false
     toast.success(`${ids.length} сделок перемещено`)
-  } catch (e: any) { toast.error(e.message || 'Ошибка') }
+  } catch (e: any) { toast.error(e, 'Ошибка') }
 }
 
 async function handleMoveSingle(dealId: string, folderId: string | null) {
@@ -164,7 +164,7 @@ async function handleMoveSingle(dealId: string, folderId: string | null) {
     await moveDeal(dealId, folderId)
     await Promise.all([refreshList(), fetchFolders()])
     toast.success(folderId ? 'Сделка перемещена' : 'Сделка убрана из папки')
-  } catch (e: any) { toast.error(e.message || 'Ошибка') }
+  } catch (e: any) { toast.error(e, 'Ошибка') }
 }
 
 const pageLoading = ref(true)
@@ -196,7 +196,7 @@ onMounted(async () => {
       fetchFolders(),
     ])
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки сделок')
+    toast.error(e, 'Ошибка загрузки сделок')
   } finally {
     pageLoading.value = false
   }
@@ -309,7 +309,7 @@ async function deleteSelected() {
     try {
       count = await countWholeSelection()
     } catch (e: any) {
-      toast.error(e.message || 'Не удалось посчитать выборку')
+      toast.error(e, 'Не удалось посчитать выборку')
       return
     }
   }
@@ -335,7 +335,7 @@ async function deleteSelected() {
     }
     await Promise.all([refreshList(), dealsStore.fetchTrashCount(), isTrashTab.value ? dealsStore.refreshTrash() : Promise.resolve()])
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления')
+    toast.error(e, 'Ошибка удаления')
   }
 
   cancelSelect()
@@ -431,7 +431,7 @@ async function restoreSelected() {
     // месте восстановленных строк останется дырка, а страницы съедут.
     await Promise.all([refreshList(), dealsStore.refreshTrash()])
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка восстановления')
+    toast.error(e, 'Ошибка восстановления')
   }
   cancelSelect()
   deleting.value = false
@@ -445,7 +445,7 @@ async function emptyTrash() {
     toast.success('Корзина очищена')
     page.value = 1
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка очистки')
+    toast.error(e, 'Ошибка очистки')
   }
   deleting.value = false
 }
@@ -456,7 +456,7 @@ async function restoreOne(id: string) {
     toast.success('Сделка восстановлена')
     await Promise.all([refreshList(), dealsStore.refreshTrash()])
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка восстановления')
+    toast.error(e, 'Ошибка восстановления')
   }
 }
 
@@ -467,7 +467,7 @@ async function permanentDeleteOne(id: string) {
     toast.success('Сделка удалена навсегда')
     await dealsStore.refreshTrash()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления')
+    toast.error(e, 'Ошибка удаления')
   }
 }
 
@@ -482,7 +482,7 @@ async function permanentDeleteSelected() {
     toast.success(`Удалено навсегда`)
     await dealsStore.refreshTrash()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления')
+    toast.error(e, 'Ошибка удаления')
   }
   cancelSelect()
   deleting.value = false

@@ -86,7 +86,7 @@ async function saveGuarantors(ids: string[], successMsg: string) {
     // странице здесь стояло присваивание в computed, то есть ничего не делало.
     toast.success(successMsg)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить поручителей')
+    toast.error(e, 'Не удалось сохранить поручителей')
   } finally {
     guarantorSaving.value = false
   }
@@ -171,7 +171,7 @@ async function sendApiReminder() {
       toast.error(result.error || 'Не удалось отправить')
     }
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка отправки')
+    toast.error(e, 'Ошибка отправки')
   } finally {
     sendingReminder.value = false
   }
@@ -191,7 +191,7 @@ async function onChangeClient(profile: import('@/types').ClientProfile | null) {
     showChangeClient.value = false
     toast.success('Клиент изменён')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка смены клиента')
+    toast.error(e, 'Ошибка смены клиента')
   } finally {
     changingClient.value = false
   }

@@ -145,6 +145,7 @@
 </template>
 
 <script setup lang="ts">
+import { toUserMessage } from '@/api/errors'
 import { reactive, ref, computed, watch, nextTick } from 'vue'
 import { vMaska } from 'maska/vue'
 import { useCoInvestors } from '@/composables/useCoInvestors'
@@ -216,7 +217,7 @@ async function onSave() {
     emit('created', created)
     close()
   } catch (e: any) {
-    showToast(e.message || 'Не удалось создать инвестора', 'error')
+    showToast(toUserMessage(e, 'Не удалось создать инвестора'), 'error')
   } finally {
     saving.value = false
   }

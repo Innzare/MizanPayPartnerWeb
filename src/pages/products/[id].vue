@@ -29,7 +29,7 @@ onMounted(async () => {
     // Название известно только после загрузки товара.
     await loadRelatedDeals()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки товара')
+    toast.error(e, 'Ошибка загрузки товара')
   } finally {
     pageLoading.value = false
   }
@@ -154,7 +154,7 @@ async function saveEdit() {
     toast.success('Товар обновлён')
     editDialog.value = false
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка обновления товара')
+    toast.error(e, 'Ошибка обновления товара')
   } finally {
     photoUploading.value = false
   }
@@ -167,7 +167,7 @@ async function deleteProduct() {
     toast.success('Товар удалён')
     router.push('/products')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления товара')
+    toast.error(e, 'Ошибка удаления товара')
   }
 }
 </script>

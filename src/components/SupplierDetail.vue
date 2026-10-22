@@ -102,7 +102,7 @@ async function cancelPayout(p: SupplierPayout) {
     toast.success('Выплата отменена')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отменить')
+    toast.error(e, 'Не удалось отменить')
   }
 }
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast } from '@/api/showError'
 /**
  * Подтверждение отмены оплаты.
  *
@@ -71,7 +72,7 @@ async function run() {
     open.value = false
     emit('done', p)
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось отменить оплату. Попробуйте ещё раз.'
+    error.value = inlineOrToast(e, 'Не удалось отменить оплату. Попробуйте ещё раз.')
   } finally {
     running.value = false
   }

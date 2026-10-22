@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast } from '@/api/showError'
 import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
 import { useSuppliersStore, type SupplierRow, type SupplierDebt } from '@/stores/suppliers'
@@ -180,7 +181,7 @@ async function save() {
     }
     emit('update:modelValue', false)
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось сохранить путевой лист'
+    error.value = inlineOrToast(e, 'Не удалось сохранить путевой лист')
   } finally {
     saving.value = false
   }

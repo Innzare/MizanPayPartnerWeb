@@ -230,7 +230,7 @@ async function cancelEntry(e: CashFlowEntry) {
     await reload()
     emit('changed')
   } catch (err: any) {
-    toast.error(err.message || 'Не удалось отменить операцию')
+    toast.error(err, 'Не удалось отменить операцию')
   } finally {
     cancellingId.value = null
   }

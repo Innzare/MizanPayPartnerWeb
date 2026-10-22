@@ -65,7 +65,7 @@ async function load(reset = true) {
     items.value = reset ? res.items : [...items.value, ...res.items]
     total.value = res.total
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить клиентов')
+    toast.error(e, 'Не удалось загрузить клиентов')
   } finally {
     loading.value = false
     loadingMore.value = false

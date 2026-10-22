@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast } from '@/api/showError'
 /**
  * Подтверждение необратимого действия: очистка кабинета и удаление аккаунта.
  *
@@ -124,7 +125,7 @@ function finishDone() {
   doneOpen.value = false
   emit('done', doneResult.value)
 }
-/** Ошибка сервера показывается в самом окне: тост за модалкой не виден. */
+/** Ошибка данных (нельзя удалить, конфликт) — в самом окне; сеть и сервер — тостом поверх окна. */
 const error = ref('')
 
 const lines = computed(() =>
@@ -184,7 +185,7 @@ async function run() {
   } catch (e: any) {
     // Неверный пароль и «есть действующие сделки» — это ответ на действие, и
     // читать его нужно здесь же, не закрывая окно.
-    error.value = e?.message || 'Не удалось выполнить действие'
+    error.value = inlineOrToast(e, 'Не удалось выполнить действие')
     toast.error(error.value)
   } finally {
     running.value = false

@@ -202,7 +202,7 @@ async function loadClients(append = false) {
     totalsAgg.value = res.totals
   } catch (e: any) {
     if (cur !== listReq) return
-    toast.error(e?.message || 'Не удалось загрузить клиентов')
+    toast.error(e, 'Не удалось загрузить клиентов')
   } finally {
     if (cur === listReq) listLoading.value = false
   }

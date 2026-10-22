@@ -196,7 +196,7 @@ async function handleSave() {
           })
         }
       } catch (e: any) {
-        toast.error(e?.message || 'Касса создана, но счета завести не удалось')
+        toast.error(e, 'Касса создана, но счета завести не удалось')
       }
     }
 
@@ -204,7 +204,7 @@ async function handleSave() {
     emit('saved', box)
     emit('update:modelValue', false)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить')
+    toast.error(e, 'Не удалось сохранить')
   } finally {
     submitting.value = false
   }

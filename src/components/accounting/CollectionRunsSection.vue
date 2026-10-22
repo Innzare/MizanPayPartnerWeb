@@ -53,7 +53,7 @@ async function load() {
   try {
     await store.fetchRuns()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить рейсы')
+    toast.error(e, 'Не удалось загрузить рейсы')
   } finally {
     loading.value = false
   }
@@ -100,7 +100,7 @@ async function savePlan() {
     toast.success(`Рейс №${run.number} создан`)
     router.push(`/collections/${run.id}`)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось создать рейс')
+    toast.error(e, 'Не удалось создать рейс')
   } finally {
     planSaving.value = false
   }

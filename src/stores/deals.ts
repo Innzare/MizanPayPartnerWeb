@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
 import type { Deal, DealCounts, MarkupFrom, Page } from '@/types'
+import { toUserMessage } from '@/api/errors'
 
 interface DealAnalytics {
   totalDeals: number
@@ -132,7 +133,7 @@ export const useDealsStore = defineStore('deals', () => {
       listTotal.value = res.total
     } catch (e: any) {
       if (req !== pageReq) return
-      error.value = e.message || 'Ошибка загрузки сделок'
+      error.value = toUserMessage(e, 'Ошибка загрузки сделок')
       console.error('Failed to fetch deals page:', e)
     } finally {
       if (req === pageReq) listLoading.value = false
@@ -297,7 +298,7 @@ export const useDealsStore = defineStore('deals', () => {
       deals.value.unshift(deal)
       return deal
     } catch (e: any) {
-      error.value = e.message || 'Не удалось создать сделку'
+      error.value = toUserMessage(e, 'Не удалось создать сделку')
       throw e
     } finally {
       isLoading.value = false

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
 import type { CapitalSummary } from '@/types'
+import { toUserMessage } from '@/api/errors'
 
 export interface CashBoxSummary {
   id: string
@@ -67,7 +68,7 @@ export const useCashBoxesStore = defineStore('cashboxes', () => {
         items.value = []
         return
       }
-      error.value = e.message || 'Ошибка загрузки касс'
+      error.value = toUserMessage(e, 'Ошибка загрузки касс')
       throw e
     } finally {
       isLoading.value = false

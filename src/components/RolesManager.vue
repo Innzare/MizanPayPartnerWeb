@@ -49,7 +49,7 @@ onMounted(async () => {
     registry.value = reg
     roles.value = list
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить роли')
+    toast.error(e, 'Не удалось загрузить роли')
   } finally {
     loading.value = false
   }
@@ -244,7 +244,7 @@ async function save() {
     }
     dirty.value = false
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить роль')
+    toast.error(e, 'Не удалось сохранить роль')
   } finally {
     saving.value = false
   }
@@ -272,7 +272,7 @@ async function removeRole() {
     draft.value = null
     toast.success('Роль удалена')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось удалить роль')
+    toast.error(e, 'Не удалось удалить роль')
   } finally {
     saving.value = false
   }

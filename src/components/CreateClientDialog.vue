@@ -212,7 +212,7 @@ async function save() {
     show.value = false
     toast.success('Клиент создан')
   } catch (e: any) {
-    toast.error(e.message || (isEdit.value ? 'Ошибка сохранения' : 'Ошибка создания клиента'))
+    toast.error(e, isEdit.value ? 'Ошибка сохранения' : 'Ошибка создания клиента')
   } finally {
     saving.value = false
   }

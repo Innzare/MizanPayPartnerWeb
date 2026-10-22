@@ -108,7 +108,7 @@ async function removeSupplier(s: SupplierRow) {
     toast.success(res.archived ? 'Партнёр архивирован (есть история)' : 'Партнёр удалён')
     await reload()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить')
+    toast.error(e, 'Не удалось удалить')
   }
 }
 

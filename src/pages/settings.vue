@@ -85,7 +85,7 @@ async function connectWhatsApp() {
       }
     }, 120000)
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка подключения')
+    toast.error(e, 'Ошибка подключения')
     waStatus.value = 'disconnected'
   }
 }
@@ -97,7 +97,7 @@ async function disconnectWhatsApp() {
     waStatus.value = 'disconnected'
     toast.success('WhatsApp отключён')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка отключения')
+    toast.error(e, 'Ошибка отключения')
   }
 }
 
@@ -138,7 +138,7 @@ async function saveWaSettings() {
     await api.patch('/whatsapp/settings', waSettings.value)
     toast.success('Настройки сохранены')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка сохранения')
+    toast.error(e, 'Ошибка сохранения')
   } finally {
     savingSettings.value = false
   }
@@ -353,7 +353,7 @@ async function saveBackdateWindow() {
         : `Сотрудники смогут датировать операции до ${days} дн. назад`,
     )
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить настройку')
+    toast.error(e, 'Не удалось сохранить настройку')
   } finally {
     backdateSaving.value = false
   }
@@ -433,7 +433,7 @@ async function showAllSections() {
     await loadSectionBlockers()
   } catch (e: any) {
     localHidden.value = before
-    toast.error(e.message || 'Не удалось сохранить')
+    toast.error(e, 'Не удалось сохранить')
   } finally {
     sectionsSaving.value = false
   }
@@ -463,7 +463,7 @@ async function toggleSection(key: string, hide: boolean) {
     await loadSectionBlockers()
   } catch (e: any) {
     localHidden.value = before
-    toast.error(e.message || 'Не удалось сохранить')
+    toast.error(e, 'Не удалось сохранить')
   } finally {
     sectionsSaving.value = false
   }
@@ -524,7 +524,7 @@ async function saveProfile() {
     isEditing.value = false
     toast.success('Профиль сохранён')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка сохранения профиля')
+    toast.error(e, 'Ошибка сохранения профиля')
   } finally {
     profileSaving.value = false
   }
@@ -590,7 +590,7 @@ async function changePassword() {
     passwordForm.value = { current: '', new: '', confirm: '' }
     toast.success('Пароль изменён')
   } catch (e: any) {
-    toast.error(e.message || 'Неверный текущий пароль')
+    toast.error(e, 'Неверный текущий пароль')
   } finally {
     passwordSaving.value = false
   }
@@ -649,7 +649,7 @@ async function sendSubscriptionRequest() {
     requestSent.value = true
     toast.success('Заявка отправлена!')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка отправки')
+    toast.error(e, 'Ошибка отправки')
   } finally {
     requestSending.value = false
   }

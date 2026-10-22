@@ -73,7 +73,7 @@ async function load() {
     const res = await api.get<TemplateForm>('/receipt-template')
     form.value = { ...form.value, ...res }
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить бланк')
+    toast.error(e, 'Не удалось загрузить бланк')
   } finally {
     loading.value = false
   }
@@ -105,7 +105,7 @@ async function save() {
     receiptTemplate.invalidate()
     toast.success('Бланк сохранён')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить бланк')
+    toast.error(e, 'Не удалось сохранить бланк')
   } finally {
     saving.value = false
   }
@@ -118,7 +118,7 @@ async function reset() {
     receiptTemplate.invalidate()
     toast.success('Вернули стандартный бланк')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сбросить бланк')
+    toast.error(e, 'Не удалось сбросить бланк')
   }
 }
 

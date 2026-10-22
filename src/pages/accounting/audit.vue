@@ -38,7 +38,7 @@ async function load() {
     problems.value = res.problems
     critical.value = acts
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось выполнить проверки')
+    toast.error(e, 'Не удалось выполнить проверки')
   } finally {
     loading.value = false
   }

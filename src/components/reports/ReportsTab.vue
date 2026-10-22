@@ -111,7 +111,7 @@ async function exportExcel() {
     a.remove()
     URL.revokeObjectURL(url)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось выгрузить Excel')
+    toast.error(e, 'Не удалось выгрузить Excel')
   } finally {
     exporting.value = false
   }
@@ -177,7 +177,7 @@ async function exportPdf() {
       statusLabel: dealStatus.value ? STATUS_LABELS[dealStatus.value] ?? null : null,
     })
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сформировать PDF')
+    toast.error(e, 'Не удалось сформировать PDF')
   } finally {
     exporting.value = false
   }

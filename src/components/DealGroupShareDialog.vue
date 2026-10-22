@@ -119,7 +119,7 @@ async function saveFormat(next: string | null) {
     template.value = effectiveSaved.value
     toast.success(res.template ? 'Формат сохранён — для всех сделок' : 'Вернули стандартный формат')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить формат')
+    toast.error(e, 'Не удалось сохранить формат')
   } finally {
     savingFormat.value = false
   }
@@ -145,7 +145,7 @@ async function setSent(sent: boolean) {
     sentAt.value = res.groupSentAt
     emit('changed', { id: d.id, groupSentAt: res.groupSentAt })
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить отметку')
+    toast.error(e, 'Не удалось сохранить отметку')
   } finally {
     saving.value = false
   }

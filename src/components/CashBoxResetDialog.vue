@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast } from '@/api/showError'
 /**
  * Подтверждение очистки одной кассы.
  *
@@ -119,7 +120,7 @@ async function run() {
     doneResult.value = res
     doneOpen.value = true
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось очистить кассу'
+    error.value = inlineOrToast(e, 'Не удалось очистить кассу')
     toast.error(error.value)
   } finally {
     running.value = false

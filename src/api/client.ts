@@ -1,3 +1,5 @@
+import { ApiError, errorFromResponse, networkError } from './errors';
+
 const API_URL = import.meta.env.VITE_API_URL as string;
 
 function getToken(): string | null {
@@ -57,7 +59,18 @@ function clearSessionAndRedirect(): never {
   localStorage.removeItem('refresh_token');
   localStorage.removeItem('user');
   window.location.href = '/login';
-  throw new Error('Сессия истекла');
+  // kind 'session' — глобальный обработчик такую ошибку не показывает: человека
+  // и так уводят на вход.
+  throw new ApiError('Сессия истекла — войдите снова', { status: 401, kind: 'session' });
+}
+
+/** fetch без «Failed to fetch»: сетевой сбой → понятная ApiError. */
+async function send(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    throw networkError(e);
+  }
 }
 
 /**
@@ -94,7 +107,7 @@ async function request<T>(
 ): Promise<T> {
   const token = getToken();
 
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await send(`${API_URL}${path}`, {
     method,
     headers: {
       'Content-Type': 'application/json',
@@ -158,29 +171,31 @@ async function request<T>(
     return request<T>(method, path, body, skipAuthRedirect, _retried, _throttleRetries + 1);
   }
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: 'Ошибка сервера' }));
-    const message = Array.isArray(error.message) ? error.message[0] : error.message;
-    // Технический текст защиты от частых запросов партнёру ничего не говорит.
-    const err = new Error(
-      response.status === 429
-        ? 'Слишком много запросов подряд — подождите несколько секунд'
-        : message || `HTTP ${response.status}`,
-    );
-    // Пробрасываем структурированные поля (code/status) — фронт распознаёт
-    // тарифные блокировки (DEAL_LOCKED, CASHBOX_LIMIT и т.п.).
-    (err as any).code = error.code;
-    (err as any).status = response.status;
-    throw err;
-  }
+  // Понятный текст, code/status (DEAL_LOCKED, CASHBOX_LIMIT…), код запроса.
+  if (!response.ok) throw await errorFromResponse(response);
 
-  return response.json();
+  return parseBody<T>(response);
+}
+
+/** Успешный ответ, но не JSON (или пустой) — не «Unexpected token». */
+async function parseBody<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError('Сервер вернул неожиданный ответ — обновите страницу', {
+      status: response.status,
+      requestId: response.headers.get('X-Request-Id') ?? undefined,
+      kind: 'parse',
+    });
+  }
 }
 
 async function uploadRequest<T>(path: string, formData: FormData, _retried = false): Promise<T> {
   const token = getToken();
 
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await send(`${API_URL}${path}`, {
     method: 'POST',
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -195,18 +210,9 @@ async function uploadRequest<T>(path: string, formData: FormData, _retried = fal
     clearSessionAndRedirect();
   }
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: 'Ошибка сервера' }));
-    const message = Array.isArray(error.message) ? error.message[0] : error.message;
-    const err = new Error(message || `HTTP ${response.status}`);
-    // Пробрасываем структурированные поля (code/status) — фронт распознаёт
-    // тарифные блокировки (DEAL_LOCKED, CASHBOX_LIMIT и т.п.).
-    (err as any).code = error.code;
-    (err as any).status = response.status;
-    throw err;
-  }
+  if (!response.ok) throw await errorFromResponse(response);
 
-  return response.json();
+  return parseBody<T>(response);
 }
 
 export const api = {

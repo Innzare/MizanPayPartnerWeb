@@ -98,7 +98,7 @@ async function load() {
   try {
     items.value = await api.get<Program[]>('/installment-programs')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить тарифы')
+    toast.error(e, 'Не удалось загрузить тарифы')
   } finally {
     loading.value = false
   }
@@ -139,7 +139,7 @@ async function remove(p: Program) {
     toast.success('Тариф удалён')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить тариф')
+    toast.error(e, 'Не удалось удалить тариф')
   }
 }
 

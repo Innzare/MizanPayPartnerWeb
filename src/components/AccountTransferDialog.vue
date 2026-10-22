@@ -128,7 +128,7 @@ async function save() {
     open.value = false
     emit('done')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось перевести')
+    toast.error(e, 'Не удалось перевести')
   } finally {
     saving.value = false
   }

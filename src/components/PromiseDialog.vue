@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast } from '@/api/showError'
 import { ref, computed, watch } from 'vue'
 import { useDebtorsStore, type DebtorRow, type CollectionActivity, type DealPayment } from '@/stores/debtors'
 import { dateToIso, todayIso } from '@/utils/dateInput'
@@ -80,7 +81,7 @@ async function save() {
     emit('saved', act)
     emit('update:modelValue', false)
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось сохранить обещание'
+    error.value = inlineOrToast(e, 'Не удалось сохранить обещание')
   } finally {
     saving.value = false
   }

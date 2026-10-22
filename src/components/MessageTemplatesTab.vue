@@ -94,7 +94,7 @@ async function load() {
     placeholders.value = ph.items
     if (engineEnabled.value) await loadDispatches()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить шаблоны')
+    toast.error(e, 'Не удалось загрузить шаблоны')
   } finally {
     loading.value = false
   }
@@ -127,7 +127,7 @@ async function toggleEngine() {
     )
     if (engineEnabled.value) await loadDispatches()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось изменить настройку')
+    toast.error(e, 'Не удалось изменить настройку')
   } finally {
     saving.value = false
   }
@@ -140,7 +140,7 @@ async function toggleTemplate(row: TemplateRow) {
     await api.patch(`/message-templates/${row.id}`, { enabled: next })
     row.enabled = next
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить')
+    toast.error(e, 'Не удалось сохранить')
   }
 }
 
@@ -150,7 +150,7 @@ async function saveTimezone(v: string) {
     timezone.value = v
     toast.success('Часовой пояс сохранён')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить часовой пояс')
+    toast.error(e, 'Не удалось сохранить часовой пояс')
   }
 }
 
@@ -197,7 +197,7 @@ async function showPreview(real: boolean) {
     )
     preview.value = res
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось показать предпросмотр')
+    toast.error(e, 'Не удалось показать предпросмотр')
   } finally {
     previewLoading.value = false
   }
@@ -217,7 +217,7 @@ async function saveTemplate() {
     editing.value = null
     toast.success('Текст сохранён')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить текст')
+    toast.error(e, 'Не удалось сохранить текст')
   } finally {
     saving.value = false
   }
@@ -232,7 +232,7 @@ async function resetTemplate() {
     preview.value = null
     toast.success('Вернули стандартный текст')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось вернуть текст')
+    toast.error(e, 'Не удалось вернуть текст')
   }
 }
 
@@ -242,7 +242,7 @@ async function cancelDispatch(row: DispatchRow) {
     row.status = 'CANCELLED'
     toast.success('Сообщение отменено')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отменить')
+    toast.error(e, 'Не удалось отменить')
   }
 }
 

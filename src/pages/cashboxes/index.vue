@@ -49,7 +49,7 @@ function afterReset() {
 const hasLockedBoxes = computed(() => store.items.some((b) => !b.archivedAt && b.lockedAt))
 
 onMounted(() => {
-  store.fetchAll().catch((e: any) => toast.error(e.message || 'Ошибка загрузки касс'))
+  store.fetchAll().catch((e: any) => toast.error(e, 'Ошибка загрузки касс'))
   fetchCapital()
 })
 
@@ -158,7 +158,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
     infoDeals.value = res.items
     infoTotal.value = res.total
   } catch (err: any) {
-    toast.error(err.message || 'Не удалось загрузить сделки')
+    toast.error(err, 'Не удалось загрузить сделки')
   } finally {
     infoLoading.value = false
   }

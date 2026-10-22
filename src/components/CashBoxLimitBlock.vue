@@ -76,7 +76,7 @@ async function save() {
     toast.success('Выбор активных касс сохранён')
     emit('saved')
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить выбор')
+    toast.error(e, 'Не удалось сохранить выбор')
   } finally {
     saving.value = false
   }

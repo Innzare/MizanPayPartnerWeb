@@ -109,7 +109,7 @@ onMounted(async () => {
       fetchFolders(),
     ])
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки платежей')
+    toast.error(e, 'Ошибка загрузки платежей')
   } finally {
     pageLoading.value = false
   }

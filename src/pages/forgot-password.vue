@@ -8,6 +8,10 @@
 
 <script lang="ts" setup>
 import { api } from '@/api/client'
+import { isAuthFormError, toUserMessage } from '@/api/errors'
+import { useToast } from '@/composables/useToast'
+
+const toast = useToast()
 import logo from '@/assets/images/logo.svg'
 import logoText from '@/assets/images/logo-text.svg'
 
@@ -28,8 +32,9 @@ const handleSubmit = async () => {
   try {
     await api.post('/auth/investor/forgot-password', { email: email.value })
     sent.value = true
-  } catch (e: any) {
-    error.value = e?.message || 'Ошибка отправки'
+  } catch (e) {
+    if (isAuthFormError(e)) error.value = toUserMessage(e, 'Не удалось отправить письмо')
+    else toast.error(e, 'Не удалось отправить письмо — попробуйте ещё раз')
   } finally {
     isLoading.value = false
   }

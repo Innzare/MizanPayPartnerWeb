@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { toUserMessage } from '@/api/errors'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRouteSheetsStore, type RouteSheetDetail, type RouteSheetLine, type RouteSheetLineStatus } from '@/stores/routeSheets'
@@ -66,7 +67,7 @@ async function load() {
   try {
     sheet.value = await store.getOne(id.value)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить')
+    toast.error(e, 'Не удалось загрузить')
   } finally {
     loading.value = false
   }
@@ -78,7 +79,7 @@ async function payLine(l: RouteSheetLine, allowPartial = false) {
     sheet.value = await store.payLine(id.value, l.id, { allowPartial })
     toast.success('Оплата отмечена')
   } catch (e: any) {
-    const msg = e?.message || 'Не удалось отметить'
+    const msg = toUserMessage(e, 'Не удалось отметить')
     // Часть/всё уже погашено вне листа — просим подтвердить (частичная оплата или закрытие строки).
     if (!allowPartial && /подтвердите/i.test(msg)) {
       busyLine.value = null
@@ -95,7 +96,7 @@ async function skipLine(l: RouteSheetLine) {
   try {
     sheet.value = await store.skipLine(id.value, l.id)
   } catch (e: any) {
-    toast.error(e?.message || 'Ошибка')
+    toast.error(e, 'Ошибка')
   } finally {
     busyLine.value = null
   }
@@ -105,7 +106,7 @@ async function revertLine(l: RouteSheetLine) {
   try {
     sheet.value = await store.revertLine(id.value, l.id)
   } catch (e: any) {
-    toast.error(e?.message || 'Ошибка')
+    toast.error(e, 'Ошибка')
   } finally {
     busyLine.value = null
   }
@@ -117,7 +118,7 @@ async function cancelSheet() {
     sheet.value = await store.cancel(id.value)
     toast.success('Путевой лист отменён')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отменить')
+    toast.error(e, 'Не удалось отменить')
   }
 }
 async function removeSheet() {
@@ -127,7 +128,7 @@ async function removeSheet() {
     toast.success('Удалён')
     router.push('/suppliers?tab=routesheets')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить')
+    toast.error(e, 'Не удалось удалить')
   }
 }
 

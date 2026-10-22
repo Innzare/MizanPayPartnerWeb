@@ -27,7 +27,7 @@ onMounted(async () => {
     // все платежи партнёра ради подписей.
     await store.fetch(true)
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки истории')
+    toast.error(e, 'Ошибка загрузки истории')
   } finally {
     pageLoading.value = false
   }

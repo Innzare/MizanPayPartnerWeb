@@ -137,7 +137,7 @@ async function saveNote() {
     toast.success('Комментарий сохранён')
     emit('updated', p.dealId)
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить комментарий')
+    toast.error(e, 'Не удалось сохранить комментарий')
   } finally {
     savingNote.value = false
   }

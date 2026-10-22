@@ -112,7 +112,7 @@ async function doDelete() {
     // осталась бы дырка, а следующая страница поехала бы на строку вверх.
     await Promise.all([fetchClients(), fetchCounts()])
   } catch (e: any) {
-    toast.error(e.response?.data?.message || e.message || 'Ошибка удаления')
+    toast.error(e, 'Ошибка удаления')
   } finally {
     deleteLoading.value = null
   }
@@ -131,7 +131,7 @@ async function togglePublish(client: ClientProfile) {
     client.isPublic = !client.isPublic
     toast.success(client.isPublic ? 'Клиент добавлен в глобальный реестр' : 'Клиент убран из глобального реестра')
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка')
+    toast.error(e, 'Ошибка')
   } finally {
     publishLoading.value = null
   }
@@ -219,7 +219,7 @@ async function fetchClients() {
       total.value = res.length
     }
   } catch (e: any) {
-    if (req === listReq) toast.error(e.message || 'Ошибка загрузки реестра')
+    if (req === listReq) toast.error(e, 'Ошибка загрузки реестра')
   } finally {
     if (req === listReq) {
       pageLoading.value = false
@@ -405,7 +405,7 @@ async function doBulkDelete() {
     page.value = 1
     await Promise.all([fetchClients(), fetchCounts()])
   } catch (e: any) {
-    toast.error(e.response?.data?.message || e.message || 'Не удалось удалить клиентов')
+    toast.error(e, 'Не удалось удалить клиентов')
   } finally {
     bulkDeleting.value = false
     bulkProgress.value = 0
@@ -520,7 +520,7 @@ async function submitBlacklist() {
     showBlacklistDialog.value = false
     await fetchClients()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка добавления в чёрный список')
+    toast.error(e, 'Ошибка добавления в чёрный список')
   } finally {
     blacklistLoading.value = false
   }
@@ -532,7 +532,7 @@ async function removeFromBlacklist(phone: string) {
     toast.success('Клиент убран из чёрного списка')
     await fetchClients()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка удаления из чёрного списка')
+    toast.error(e, 'Ошибка удаления из чёрного списка')
   }
 }
 
@@ -564,7 +564,7 @@ async function submitReview() {
     showReviewDialog.value = false
     await fetchClients()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка отправки отзыва')
+    toast.error(e, 'Ошибка отправки отзыва')
   } finally {
     reviewLoading.value = false
   }

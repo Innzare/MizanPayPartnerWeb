@@ -97,7 +97,7 @@ async function setStatus(r: SupplierRequest, status: 'NEW' | 'REJECTED' | 'CANCE
     await store.setRequestStatus(r.id, status)
     await reload()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось изменить статус')
+    toast.error(e, 'Не удалось изменить статус')
   }
 }
 
@@ -108,7 +108,7 @@ async function removeRequest(r: SupplierRequest) {
     toast.success('Заявка удалена')
     await reload()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить')
+    toast.error(e, 'Не удалось удалить')
   }
 }
 

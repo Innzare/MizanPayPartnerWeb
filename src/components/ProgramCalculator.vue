@@ -249,7 +249,7 @@ async function saveImage() {
     )
     downloadBlob(blob, name)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить картинку')
+    toast.error(e, 'Не удалось сохранить картинку')
   } finally {
     savingImage.value = false
   }

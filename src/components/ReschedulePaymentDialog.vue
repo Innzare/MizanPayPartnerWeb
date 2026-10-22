@@ -92,7 +92,7 @@ async function confirm() {
     open.value = false
     emit('rescheduled', target.dealId)
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка при переносе платежа')
+    toast.error(e, 'Ошибка при переносе платежа')
   } finally {
     submitting.value = false
   }

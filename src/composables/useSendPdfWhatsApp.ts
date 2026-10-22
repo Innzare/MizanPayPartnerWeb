@@ -51,7 +51,7 @@ export function useSendPdfWhatsApp() {
       }
       return res
     } catch (e: any) {
-      toast.error(e.message || 'Не удалось отправить документ')
+      toast.error(e, 'Не удалось отправить документ')
       return null
     } finally {
       sending.value = false

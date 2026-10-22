@@ -213,7 +213,7 @@ async function submit() {
     open.value = false
     emit('applied')
   } catch (e: any) {
-    toast.error(e?.message || (isRemove.value ? 'Не удалось убрать скидку' : 'Не удалось применить скидку'))
+    toast.error(e, isRemove.value ? 'Не удалось убрать скидку' : 'Не удалось применить скидку')
   } finally {
     saving.value = false
   }

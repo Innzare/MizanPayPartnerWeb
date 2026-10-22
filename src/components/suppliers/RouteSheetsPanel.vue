@@ -31,7 +31,7 @@ async function removeSheet(s: RouteSheetRow) {
     toast.success('Путевой лист удалён')
     reload()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось удалить')
+    toast.error(e, 'Не удалось удалить')
   }
 }
 

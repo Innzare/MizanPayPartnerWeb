@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast } from '@/api/showError'
 import { ref, computed, watch } from 'vue'
 import { useSuppliersStore, type SupplierRow, type SupplierInput } from '@/stores/suppliers'
 import FormModal from '@/components/FormModal.vue'
@@ -67,7 +68,7 @@ async function save() {
     emit('saved')
     emit('update:modelValue', false)
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось сохранить'
+    error.value = inlineOrToast(e, 'Не удалось сохранить')
   } finally {
     saving.value = false
   }

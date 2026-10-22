@@ -48,7 +48,7 @@ async function loadMessages() {
     await nextTick()
     scrollToBottom()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить переписку')
+    toast.error(e, 'Не удалось загрузить переписку')
   } finally {
     messagesLoading.value = false
   }
@@ -82,7 +82,7 @@ async function send() {
     await nextTick()
     scrollToBottom()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось отправить')
+    toast.error(e, 'Не удалось отправить')
     draft.value = text0
   } finally {
     sending.value = false

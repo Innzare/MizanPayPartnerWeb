@@ -7,6 +7,7 @@
 </route>
 
 <script lang="ts" setup>
+import { inlineOrToast } from '@/api/showError'
 import { usePointStore } from '@/stores/point'
 import { useToast } from '@/composables/useToast'
 import { formatCurrency } from '@/utils/formatters'
@@ -103,7 +104,7 @@ async function runSearch() {
     results.value = await point.search(q)
     searched.value = true
   } catch (e: any) {
-    searchError.value = e?.message || 'Не удалось найти'
+    searchError.value = inlineOrToast(e, 'Не удалось найти')
     results.value = []
   } finally {
     searching.value = false
@@ -138,7 +139,7 @@ async function confirmPay() {
     results.value = []
     searched.value = false
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось принять платёж')
+    toast.error(e, 'Не удалось принять платёж')
   } finally {
     paying.value = false
   }
@@ -151,7 +152,7 @@ async function undoLast() {
     toast.success('Оплата отменена')
     done.value = null
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отменить')
+    toast.error(e, 'Не удалось отменить')
   }
 }
 </script>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { toUserMessage } from '@/api/errors'
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 
 // Yandex Maps JS API грузится глобально из index.html — используется ТОЛЬКО для
@@ -189,7 +190,7 @@ function onSearchInput() {
       suggestions.value = []
       // Ошибку показываем: молчаливый catch — причина, по которой поломку
       // подсказок не замечали.
-      searchError.value = e?.message || 'Не удалось загрузить подсказки'
+      searchError.value = toUserMessage(e, 'Не удалось загрузить подсказки')
     } finally {
       if (searchAbort === ctl) { searchLoading.value = false; searchAbort = null }
     }
@@ -210,7 +211,7 @@ async function selectSuggestion(item: Suggestion) {
     const found = await geocode(item.formatted)
     if (found) commit(found, found.coords, true) // из поиска — центрируем
   } catch (e: any) {
-    searchError.value = e?.message || 'Не удалось определить координаты адреса'
+    searchError.value = toUserMessage(e, 'Не удалось определить координаты адреса')
   }
 }
 

@@ -174,7 +174,7 @@ async function load() {
     totals.value = res.totals
     cursor.value = res.nextCursor
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить историю')
+    toast.error(e, 'Не удалось загрузить историю')
   } finally {
     loading.value = false
   }
@@ -188,7 +188,7 @@ async function loadMore() {
     items.value.push(...res.items)
     cursor.value = res.nextCursor
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить ещё')
+    toast.error(e, 'Не удалось загрузить ещё')
   } finally {
     loadingMore.value = false
   }

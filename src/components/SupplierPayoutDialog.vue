@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inlineOrToast } from '@/api/showError'
 import { ref, computed, watch } from 'vue'
 import { useSuppliersStore, type SupplierDebt } from '@/stores/suppliers'
 import { formatCurrency, formatDateShort } from '@/utils/formatters'
@@ -64,7 +65,7 @@ async function save() {
     emit('saved')
     emit('update:modelValue', false)
   } catch (e: any) {
-    error.value = e?.message || 'Не удалось провести выплату'
+    error.value = inlineOrToast(e, 'Не удалось провести выплату')
   } finally {
     saving.value = false
   }

@@ -145,7 +145,7 @@ watch(
       }))
       usedCashBoxIds.value = new Set(detail.stakes.map((s) => s.cashBox.id))
     } catch (e: any) {
-      toast.error(e.message || 'Не удалось загрузить инвестора')
+      toast.error(e, 'Не удалось загрузить инвестора')
       close()
     } finally {
       loading.value = false
@@ -303,7 +303,7 @@ async function save() {
     emit('saved')
     close()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось сохранить')
+    toast.error(e, 'Не удалось сохранить')
   } finally {
     saving.value = false
   }

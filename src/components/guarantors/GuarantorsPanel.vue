@@ -114,7 +114,7 @@ async function load(append = false) {
     // «только с просрочкой» итог показывает найденных, а не всех.
     if (!q.value.trim() && !onlyOverdue.value) emit('count', res.totals.total)
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить поручителей')
+    toast.error(e, 'Не удалось загрузить поручителей')
   } finally {
     loading.value = false
   }
@@ -203,7 +203,7 @@ async function openSettings() {
     settings.value = await api.get('/guarantors/settings')
     settingsDialog.value = true
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось открыть настройки')
+    toast.error(e, 'Не удалось открыть настройки')
   }
 }
 async function saveSettings() {
@@ -213,7 +213,7 @@ async function saveSettings() {
     settingsDialog.value = false
     toast.success('Пороги сохранены')
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось сохранить')
+    toast.error(e, 'Не удалось сохранить')
   } finally {
     savingSettings.value = false
   }

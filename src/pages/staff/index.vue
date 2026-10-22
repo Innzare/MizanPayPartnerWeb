@@ -166,7 +166,7 @@ async function selectStaff(member: StaffMember) {
     const t = chats.threads.value.find((x) => x.id === thread.id)
     if (t) t.unreadCount = 0
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось открыть чат')
+    toast.error(e, 'Не удалось открыть чат')
     selectedStaff.value = null
   } finally {
     chatOpening.value = false
@@ -200,7 +200,7 @@ async function loadStaffActivity() {
     )
     staffActivity.value = res.items
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить историю операций')
+    toast.error(e, 'Не удалось загрузить историю операций')
   } finally {
     staffActivityLoading.value = false
   }
@@ -217,7 +217,7 @@ async function loadAssignedDeals() {
       `/deals?role=investor&assignedStaffId=${selectedStaff.value.id}`,
     )
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось загрузить сделки')
+    toast.error(e, 'Не удалось загрузить сделки')
   } finally {
     assignedDealsLoading.value = false
   }
@@ -237,7 +237,7 @@ async function detachDeal(deal: Deal) {
     toast.success('Сделка откреплена')
     await loadAssignedDeals()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось открепить')
+    toast.error(e, 'Не удалось открепить')
   }
 }
 
@@ -287,7 +287,7 @@ async function loadAttachCandidates() {
     }
     allInvestorDeals.value = rows
   } catch (e: any) {
-    if (req === attachReq) toast.error(e.message || 'Не удалось загрузить сделки')
+    if (req === attachReq) toast.error(e, 'Не удалось загрузить сделки')
   } finally {
     if (req === attachReq) attachLoading.value = false
   }
@@ -317,7 +317,7 @@ async function attachDeal(deal: Deal) {
     attachDialog.value = false
     await loadAssignedDeals()
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось прикрепить')
+    toast.error(e, 'Не удалось прикрепить')
   }
 }
 
@@ -380,7 +380,7 @@ async function loadStaff() {
     ])
     staff.value = list
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка загрузки')
+    toast.error(e, 'Ошибка загрузки')
   } finally {
     pageLoading.value = false
   }
@@ -425,7 +425,7 @@ async function addStaffMember() {
       if (fresh) openEdit(fresh)
     }
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка при добавлении')
+    toast.error(e, 'Ошибка при добавлении')
   } finally {
     addLoading.value = false
   }
@@ -474,7 +474,7 @@ async function saveEdit() {
     editDialog.value = false
     await loadStaff()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка')
+    toast.error(e, 'Ошибка')
   } finally {
     editLoading.value = false
   }
@@ -509,7 +509,7 @@ async function confirmInvite() {
     )
     invitePassword.value = res.tempPassword
   } catch (e: any) {
-    toast.error(e.message || 'Не удалось отправить приглашение')
+    toast.error(e, 'Не удалось отправить приглашение')
   } finally {
     inviteLoading.value = false
   }
@@ -533,7 +533,7 @@ async function confirmDelete() {
     deleteDialog.value = false
     await loadStaff()
   } catch (e: any) {
-    toast.error(e.message || 'Ошибка')
+    toast.error(e, 'Ошибка')
   } finally {
     deleteLoading.value = false
   }

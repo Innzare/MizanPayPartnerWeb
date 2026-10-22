@@ -88,7 +88,7 @@ async function load() {
     flow.value = f
     aging.value = a
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось загрузить отчёты')
+    toast.error(e, 'Не удалось загрузить отчёты')
   } finally {
     loading.value = false
   }

@@ -58,7 +58,7 @@ async function submit() {
     toast.success('Передача отмечена — ждём подтверждения инкассатора')
     await load()
   } catch (e: any) {
-    toast.error(e?.message || 'Не удалось отметить передачу')
+    toast.error(e, 'Не удалось отметить передачу')
   } finally {
     saving.value = false
   }
