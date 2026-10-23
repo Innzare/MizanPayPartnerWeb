@@ -72,8 +72,19 @@ export interface CancelReport {
   kept: string[]
 }
 
+/**
+ * Стадия фиксации. У книги переноса после сделок идут журналы кассы, доли
+ * инвесторов по месяцам, остатки и сверка — минуты, в которые счётчик сделок
+ * уже полон.
+ */
+export type CommitStage = 'deals' | 'journals' | 'accruals' | 'balances' | 'reconcile' | 'finishing'
+
 export interface CommitProgress {
   state: 'queued' | 'running' | 'done' | 'failed' | 'cancelling' | 'cancelled'
+  /** Текущая стадия и её ход (у долей инвесторов — месяц N из M). */
+  stage?: CommitStage
+  stageDone?: number
+  stageTotal?: number
   /** Строк обработано / всего к импорту (без «пропустить»). */
   processed: number
   total: number
@@ -155,6 +166,15 @@ export interface DraftStats {
     conflicts: number
     /** Номер не число («А-1047») — как номер сделки не подходит. */
     nonNumeric: number
+  }
+  /**
+   * Номера, за которыми в файле разные люди (семейный телефон): каждому
+   * будет своя карточка. Нет — таких номеров нет.
+   */
+  sharedPhones?: {
+    phones: number
+    people: number
+    examples: Array<{ phone: string; names: string[] }>
   }
   /**
    * Настройка загрузки: месяц, оплаченный меньше плана, остаётся долгом, а не

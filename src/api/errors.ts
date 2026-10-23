@@ -20,13 +20,15 @@ export class ApiError extends Error {
   requestId?: string
   /** Ошибки по полям формы (валидация). */
   fields?: Record<string, string[]>
+  /** Тело ответа целиком — для ошибок с подробностями (existingProfileId и т.п.). */
+  data?: Record<string, any>
   kind: ApiErrorKind
   /** Уже показана пользователю — глобальный обработчик второй раз не покажет. */
   handled = false
 
   constructor(
     message: string,
-    opts: { status?: number, code?: string, requestId?: string, fields?: Record<string, string[]>, kind?: ApiErrorKind } = {},
+    opts: { status?: number, code?: string, requestId?: string, fields?: Record<string, string[]>, data?: Record<string, any>, kind?: ApiErrorKind } = {},
   ) {
     super(message)
     this.name = 'ApiError'
@@ -34,6 +36,7 @@ export class ApiError extends Error {
     this.code = opts.code
     this.requestId = opts.requestId
     this.fields = opts.fields
+    this.data = opts.data
     this.kind = opts.kind ?? 'http'
   }
 }
@@ -99,7 +102,10 @@ export async function errorFromResponse(response: Response): Promise<ApiError> {
     // Свой русский текст сервера; английский 4xx (старый сервер) — по статусу.
     message = CYRILLIC.test(raw) ? raw : byStatus(status, requestId)
   } else message = byStatus(status, requestId)
-  return new ApiError(message, { status, code: data?.code, requestId, fields: data?.fields, kind: 'http' })
+  return new ApiError(message, {
+    status, code: data?.code, requestId, fields: data?.fields, kind: 'http',
+    data: data && typeof data === 'object' ? data : undefined,
+  })
 }
 
 /**

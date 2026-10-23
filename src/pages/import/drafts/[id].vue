@@ -131,6 +131,31 @@
         </div>
       </div>
 
+      <!-- Семейные номера: за одним телефоном в файле разные люди. Раньше
+           импорт сводил их в одну карточку — теперь у каждого своя, и
+           партнёр видит это до загрузки. -->
+      <div v-if="sharedPhones" class="contract-banner mb-4">
+        <div class="contract-banner-icon">
+          <v-icon icon="mdi-account-multiple-outline" size="20" />
+        </div>
+        <div class="contract-banner-body">
+          <div class="contract-banner-title">
+            {{ sharedPhones.phones }}
+            {{ pluralize(sharedPhones.phones, 'номер', 'номера', 'номеров') }}
+            у нескольких людей
+          </div>
+          <div class="contract-banner-sub">
+            За {{ pluralize(sharedPhones.phones, 'этим номером', 'этими номерами', 'этими номерами') }} в файле
+            {{ sharedPhones.people }} {{ pluralize(sharedPhones.people, 'человек', 'человека', 'человек') }} —
+            номер общий в семье. Каждому будет своя карточка, люди не перепутаются.
+          </div>
+          <div v-for="ex in sharedPhones.examples" :key="ex.phone" class="shared-example">
+            <span class="shared-phone">{{ ex.phone }}</span>
+            <span>{{ ex.names.join(' · ') }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Недоплаты в файле: месяцы, оплаченные меньше плана. Партнёр решает,
            что с ними делать, до импорта — потом график придётся править
            руками по каждой сделке. -->
@@ -513,26 +538,47 @@
           <div class="commit-progress-top">
             <v-progress-circular indeterminate size="14" width="2" :color="cancelling ? 'error' : 'primary'" />
             <span class="commit-progress-label">
-              {{ cancelling ? 'Отменяем импорт…' : isQueued ? 'Ожидает очереди…' : 'Импортируем сделки…' }}
+              {{ cancelling ? 'Отменяем импорт…' : isQueued ? 'Ожидает очереди…' : runningLabel }}
             </span>
             <span v-if="cancelling" class="commit-progress-count commit-progress-count--cancel">
               удалено {{ commitProgress?.cancel?.deals ?? 0 }}<template v-if="cancelTotal"> из {{ cancelTotal }}</template>
             </span>
-            <span v-else-if="commitProgress && !isQueued" class="commit-progress-count">
+            <span v-else-if="commitProgress && !isQueued && afterDeals && commitProgress.stageTotal" class="commit-progress-count">
+              {{ stageUnit }} {{ Math.min((commitProgress.stageDone ?? 0) + (stageCountsCurrent ? 1 : 0), commitProgress.stageTotal) }} из {{ commitProgress.stageTotal }}
+            </span>
+            <span v-else-if="commitProgress && !isQueued && !afterDeals" class="commit-progress-count">
               {{ commitProgress.processed }} из {{ commitProgress.total }}
             </span>
           </div>
           <v-progress-linear
             :model-value="cancelling ? cancelPct : commitProgressPct"
-            :indeterminate="cancelling ? !cancelTotal : (!commitProgress || isQueued)"
+            :indeterminate="cancelling ? !cancelTotal : (!commitProgress || isQueued || (afterDeals && !commitProgress.stageTotal))"
             :color="cancelling ? 'error' : 'primary'"
             height="6"
             rounded
           />
+          <!-- Шаги после сделок: что уже готово и что идёт сейчас. -->
+          <div v-if="afterDeals && !cancelling && !isQueued" class="commit-steps">
+            <span
+              v-for="(s, i) in COMMIT_STAGES.slice(0, -1)"
+              :key="s.key"
+              class="commit-step"
+              :class="{ 'commit-step--done': i < stageIndex, 'commit-step--now': i === stageIndex }"
+            >
+              <v-icon :icon="i < stageIndex ? 'mdi-check-circle' : i === stageIndex ? 'mdi-progress-clock' : 'mdi-circle-outline'" size="14" />
+              {{ s.label }}<template v-if="s.key === 'deals'"> · {{ commitProgress?.total }}</template>
+            </span>
+          </div>
           <div class="commit-progress-hint">
             <template v-if="cancelling">Удаляем всё, что импорт успел записать, — страницу можно закрыть</template>
             <template v-else-if="isQueued">{{ queueHint }}</template>
-            <template v-else>Импорт идёт на сервере — страницу можно закрыть</template>
+            <template v-else-if="afterDeals">
+              {{ COMMIT_STAGES[stageIndex]?.hint }}<template v-if="elapsed"> · идёт {{ elapsed }}</template>
+              — страницу можно закрыть
+            </template>
+            <template v-else>
+              Импорт идёт на сервере<template v-if="elapsed"> · {{ elapsed }}</template> — страницу можно закрыть
+            </template>
           </div>
           <!-- Остановить импорт и стереть записанное им: в системе не
                останется ничего из этого файла. -->
@@ -582,7 +628,7 @@ import { AgGridVue } from 'ag-grid-vue3'
 import type {
   ColDef, ColGroupDef, CellClassParams, CellValueChangedEvent, RowClassParams,
 } from 'ag-grid-community'
-import { useImportDraft, type CommitProgress, type DraftRow, type RowAction } from '@/composables/useImportDraft'
+import { useImportDraft, type CommitProgress, type CommitStage, type DraftRow, type RowAction } from '@/composables/useImportDraft'
 import { useToast } from '@/composables/useToast'
 import { formatCurrency } from '@/utils/formatters'
 import { useIsDark } from '@/composables/useIsDark'
@@ -697,6 +743,8 @@ const discounts = computed(() => draft.value?.stats?.discounts)
 
 /** Номера договоров из файла — сколько сделок получат номер из таблицы партнёра. */
 const contractNumbers = computed(() => draft.value?.stats?.contractNumbers)
+/** Номера, за которыми в файле разные люди. */
+const sharedPhones = computed(() => draft.value?.stats?.sharedPhones)
 /** Недоплаты в файле — что даст настройка «недоплату считать долгом». */
 const underpayments = computed(() => draft.value?.stats?.underpayments)
 
@@ -1303,8 +1351,67 @@ const queueHint = computed(() => {
 
 const commitProgressPct = computed(() => {
   const p = commitProgress.value
-  if (!p || p.total === 0) return 0
+  if (!p) return 0
+  // После сделок полоса показывает ход текущей стадии (месяцы долей).
+  if (afterDeals.value) return p.stageTotal ? Math.round(((p.stageDone ?? 0) / p.stageTotal) * 100) : 0
+  if (p.total === 0) return 0
   return Math.round((p.processed / p.total) * 100)
+})
+
+/**
+ * Стадии после сделок (книга переноса). Счётчик сделок к этому моменту полон,
+ * и без названия шага импорт выглядел зависшим ещё несколько минут.
+ */
+const COMMIT_STAGES: Array<{ key: CommitStage; label: string; running: string; hint: string; unit?: string }> = [
+  { key: 'deals', label: 'Сделки', running: 'Импортируем сделки…', hint: '' },
+  {
+    key: 'journals', label: 'Движения кассы', running: 'Записываем движения кассы…',
+    hint: 'Сделки записаны. Теперь пополнения, снятия, выплаты поставщикам и займы',
+  },
+  {
+    key: 'accruals', label: 'Доли инвесторов', running: 'Считаем доли инвесторов по месяцам…', unit: 'месяц',
+    hint: 'Каждая оплата делится между партнёром и инвесторами — месяц за месяцем, по порядку. Самый долгий шаг',
+  },
+  {
+    key: 'balances', label: 'Остатки счетов', running: 'Выставляем остатки счетов и касс…', unit: 'шаг',
+    hint: 'Начальные остатки счетов, долги инвесторам и выравнивание касс по цифрам из файла',
+  },
+  {
+    key: 'reconcile', label: 'Сверка', running: 'Сверяем инвесторов с файлом…', unit: 'инвестор',
+    hint: 'Сравниваем капитал и долг каждого инвестора с вашим файлом — расхождения покажем в отчёте',
+  },
+  { key: 'finishing', label: 'Завершение', running: 'Завершаем…', hint: 'Почти готово' },
+]
+const afterDeals = computed(() => !!commitProgress.value?.stage && commitProgress.value.stage !== 'deals')
+const stageIndex = computed(() => COMMIT_STAGES.findIndex((s) => s.key === commitProgress.value?.stage))
+const runningLabel = computed(() => COMMIT_STAGES[stageIndex.value]?.running ?? 'Импортируем сделки…')
+/** «месяц / шаг / инвестор» — чем меряется ход текущей стадии. */
+const stageUnit = computed(() => COMMIT_STAGES[stageIndex.value]?.unit ?? '')
+/**
+ * Сервер шлёт «сколько готово»; человек читает «какой сейчас идёт». Для
+ * месяцев и инвесторов показываем текущий (готово + 1), для шагов остатков —
+ * тоже, но не больше общего числа.
+ */
+const stageCountsCurrent = computed(() => {
+  const p = commitProgress.value
+  return !!p && (p.stageDone ?? 0) < (p.stageTotal ?? 0)
+})
+
+/** Сколько идёт импорт — тикает раз в секунду, пока он идёт. */
+const now = ref(Date.now())
+let clockTimer: ReturnType<typeof setInterval> | null = null
+watch(() => !!commitProgress.value && !isQueued.value && !cancelling.value && commitProgress.value?.state !== 'done', (on) => {
+  if (on && !clockTimer) clockTimer = setInterval(() => { now.value = Date.now() }, 1000)
+  if (!on && clockTimer) { clearInterval(clockTimer); clockTimer = null }
+}, { immediate: true })
+onBeforeUnmount(() => { if (clockTimer) clearInterval(clockTimer) })
+const elapsed = computed(() => {
+  const started = commitProgress.value?.startedAt
+  if (!started) return ''
+  const sec = Math.max(0, Math.round((now.value - new Date(started).getTime()) / 1000))
+  if (sec < 60) return `${sec} с`
+  const min = Math.floor(sec / 60)
+  return `${min} мин ${String(sec % 60).padStart(2, '0')} с`
 })
 
 function stopProgressPolling() {
@@ -1525,6 +1632,11 @@ watch(() => route.params.id, (id) => {
   font-size: 13px; line-height: 1.5;
   color: rgba(var(--v-theme-on-surface), 0.7);
 }
+.shared-example {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px;
+  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.shared-phone { font-variant-numeric: tabular-nums; color: rgba(var(--v-theme-on-surface), 0.5); }
 .contract-warn {
   display: flex; align-items: flex-start; gap: 7px;
   margin-top: 12px; padding: 9px 11px; border-radius: 9px;
@@ -2143,6 +2255,11 @@ watch(() => route.params.id, (id) => {
   display: flex; flex-direction: column; gap: 6px;
   min-width: 300px;
 }
+/* Телефон: сводка и прогресс — друг под другом, прогресс во всю ширину. */
+@media (max-width: 767px) {
+  .action-bar { flex-direction: column; align-items: stretch; gap: 12px; padding: 14px 16px; }
+  .commit-progress { min-width: 0; width: 100%; }
+}
 .commit-progress-top {
   display: flex; align-items: center; gap: 8px;
 }
@@ -2162,6 +2279,13 @@ watch(() => route.params.id, (id) => {
   color: rgba(var(--v-theme-on-surface), 0.45);
 }
 .commit-progress-count--cancel { color: #dc2626; }
+.commit-steps { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
+.commit-step {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.4);
+}
+.commit-step--done { color: #047857; }
+.commit-step--now { color: rgba(var(--v-theme-on-surface), 0.85); font-weight: 600; }
 .dark .commit-progress-count--cancel { color: #f87171; }
 .commit-cancel-btn {
   align-self: flex-start;

@@ -15,6 +15,7 @@ import { useClientCities } from '@/composables/useClientCities'
 import type { ClientProfile } from '@/types'
 import { useToast } from '@/composables/useToast'
 import { useIsMobile } from '@/composables/useIsMobile'
+import { ApiError } from '@/api/errors'
 
 const props = defineProps<{
   modelValue: boolean
@@ -31,6 +32,7 @@ const emit = defineEmits<{
 
 const store = useClientProfilesStore()
 const toast = useToast()
+const router = useRouter()
 const { refresh: refreshCities } = useClientCities()
 const { isMobile } = useIsMobile()
 
@@ -171,13 +173,37 @@ async function saveExtraPhones(profileId: string) {
   if (failed.length) toast.warning(`Не удалось сохранить номера: ${failed.join(', ')}`)
 }
 
+/**
+ * Номер уже записан у клиента. Номер бывает семейным, поэтому не отказ, а
+ * вопрос: это тот же человек (открыть его карточку) или другой (создать
+ * отдельную). Если сервер узнал в нём того же человека — только «открыть».
+ */
+const phoneOwner = ref<{ id: string, name: string, same: boolean } | null>(null)
+const confirmShared = ref(false)
+
+function openOwner() {
+  const owner = phoneOwner.value
+  phoneOwner.value = null
+  if (!owner) return
+  show.value = false
+  void router.push(`/clients/${owner.id}`)
+}
+
+function createSeparate() {
+  phoneOwner.value = null
+  confirmShared.value = true
+  void save()
+}
+
+watch(() => form.value.phone, () => { confirmShared.value = false })
+
 async function save() {
   if (!canSave.value) return
   saving.value = true
   try {
     if (isEdit.value) {
       const id = props.profile!.id
-      const updated = await store.update(id, payload())
+      const updated = await store.update(id, { ...payload(), confirmSharedPhone: confirmShared.value || undefined })
       // Номера сохраняем ПОСЛЕ профиля: если основной номер поменялся местами
       // с дополнительным, сервер справедливо не даст записать прежний
       // основной, пока он ещё числится основным в профиле.
@@ -189,7 +215,7 @@ async function save() {
       return
     }
 
-    const profile = await store.create(payload())
+    const profile = await store.create({ ...payload(), confirmSharedPhone: confirmShared.value || undefined })
     // Номера заводим после клиента: до создания профиля их не к чему привязать.
     const failed: string[] = []
     for (const extra of extraPhones.value) {
@@ -212,6 +238,14 @@ async function save() {
     show.value = false
     toast.success('Клиент создан')
   } catch (e: any) {
+    if (e instanceof ApiError && (e.code === 'PHONE_SHARED' || e.code === 'CLIENT_EXISTS') && e.data?.existingProfileId) {
+      phoneOwner.value = {
+        id: e.data.existingProfileId,
+        name: e.data.existingProfileName ?? '',
+        same: e.code === 'CLIENT_EXISTS',
+      }
+      return
+    }
     toast.error(e, isEdit.value ? 'Ошибка сохранения' : 'Ошибка создания клиента')
   } finally {
     saving.value = false
@@ -303,6 +337,29 @@ async function save() {
       </div>
     </v-card>
   </v-dialog>
+
+  <v-dialog :model-value="!!phoneOwner" max-width="420" @update:model-value="(v) => { if (!v) phoneOwner = null }">
+    <v-card v-if="phoneOwner" rounded="lg" class="pa-5">
+      <div class="owner-title">{{ phoneOwner.same ? 'Этот клиент уже есть' : 'Номер уже записан' }}</div>
+      <div class="owner-text">
+        <template v-if="phoneOwner.same">
+          У вас уже есть карточка <b>{{ phoneOwner.name }}</b> с этим номером. Откройте её, чтобы не заводить дубль.
+        </template>
+        <template v-else>
+          Этот номер уже у клиента <b>{{ phoneOwner.name }}</b>. Номер бывает общим в семье — если это другой
+          человек, у него будет своя карточка.
+        </template>
+      </div>
+      <div class="owner-actions">
+        <v-btn variant="tonal" @click="openOwner">
+          {{ isEdit ? 'Открыть карточку без сохранения' : 'Открыть карточку' }}
+        </v-btn>
+        <v-btn v-if="!phoneOwner.same" color="primary" variant="flat" @click="createSeparate">
+          {{ isEdit ? 'Другой человек, сохранить' : 'Другой человек, создать' }}
+        </v-btn>
+      </div>
+    </v-card>
+  </v-dialog>
 </template>
 
 <style scoped>
@@ -328,4 +385,12 @@ async function save() {
   font-size: 14px; outline: none; transition: border-color 0.15s;
 }
 .field-input:focus { border-color: rgba(var(--v-theme-primary), 0.5); }
+
+.owner-title { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+.owner-text { font-size: 14px; line-height: 1.5; color: rgba(var(--v-theme-on-surface), 0.75); }
+.owner-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+@media (max-width: 767px) {
+  .owner-actions { flex-direction: column-reverse; }
+  .owner-actions .v-btn { width: 100%; height: 44px; }
+}
 </style>

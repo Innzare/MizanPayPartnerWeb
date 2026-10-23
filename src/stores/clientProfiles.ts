@@ -18,9 +18,11 @@ export interface CreateClientProfileInput {
   registrationAddress?: string
   residentialAddress?: string
   inn?: string
+  /** Номер уже у другого человека, и партнёр подтвердил: это другой (семейный номер). */
+  confirmSharedPhone?: boolean
 }
 
-// Phone is now editable (per-partner uniqueness only)
+// Phone is editable; один номер может быть у нескольких людей (семейный)
 export type UpdateClientProfileInput = Partial<CreateClientProfileInput>
 
 export const useClientProfilesStore = defineStore('clientProfiles', () => {

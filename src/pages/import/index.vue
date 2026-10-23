@@ -239,7 +239,7 @@
               их можно вернуть из корзины
             </div>
             <!-- Сверка переноса книги: что история не объяснила и что не провелось. -->
-            <div v-if="b.book && !b.rolledBackAt && reportLines(b).length" class="batch-report">
+            <div v-if="!b.rolledBackAt && reportLines(b).length" class="batch-report">
               <div v-for="(line, i) in reportLines(b)" :key="i" class="batch-report-line" :class="line.tone">
                 <v-icon :icon="line.tone === 'warn' ? 'mdi-alert-outline' : 'mdi-information-outline'" size="14" />
                 <span>{{ line.text }}</span>
@@ -342,6 +342,14 @@ interface ImportBatchItem {
     report: BookReport | null
     invitesFailed: string[]
   } | null
+  /** Люди, чей номер в файле оказался у другого человека (семейный номер). */
+  clientIssues?: Array<{
+    row: number
+    role: 'client' | 'guarantor'
+    outcome: 'linked' | 'unlinked' | 'removed'
+    name: string
+    otherName: string
+  }>
 }
 
 /** Сверка после переноса книги — считает сервер в последнем шаге импорта. */
@@ -358,6 +366,28 @@ interface BookReport {
 function reportLines(b: ImportBatchItem): Array<{ text: string; tone: 'info' | 'warn' }> {
   const r = b.book?.report
   const out: Array<{ text: string; tone: 'info' | 'warn' }> = []
+  for (const i of b.clientIssues ?? []) {
+    const who = i.role === 'client' ? 'клиент' : 'поручитель'
+    if (i.outcome === 'removed') {
+      out.push({
+        tone: 'info',
+        text: i.role === 'client'
+          ? `Строка ${i.row}: клиентом в сделке стоял ${i.name} (общий номер) — снят, по файлу клиент ${i.otherName}`
+          : `Строка ${i.row}: ${i.name} снят с поручителей (общий номер) — по файлу поручитель ${i.otherName || 'другой'}`,
+      })
+      continue
+    }
+    out.push(i.outcome === 'linked'
+      ? {
+          tone: 'info',
+          text: `Строка ${i.row}: ${who} ${i.name} — номер общий с ${i.otherName}, заведена отдельная карточка`,
+        }
+      : {
+          tone: 'warn',
+          text: `Строка ${i.row}: ${who} ${i.name} — номер уже у ${i.otherName}, карточку завести не удалось. ` +
+            (i.role === 'client' ? 'Сделка сохранена с именем из файла.' : 'Добавьте поручителя в сделке вручную.'),
+        })
+  }
   if (!r) return out
   for (const c of r.cashBoxes) {
     if (!c.gap) continue
