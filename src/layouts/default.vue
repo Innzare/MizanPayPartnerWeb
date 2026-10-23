@@ -56,7 +56,8 @@ const digestActivity = ref(false);
 const canSeeDigest = computed(() => authStore.isOwner && authStore.can('deals.view'));
 
 async function loadDigestBadge() {
-  if (!canSeeDigest.value) return;
+  // На телефоне сводки «События» нет — и счётчик для неё не нужен.
+  if (!canSeeDigest.value || window.innerWidth < 768) return;
   try {
     // Только цифра для бейджа: считать всю сводку ради неё — шестнадцать
     // запросов при каждом входе на любую страницу.
@@ -114,11 +115,34 @@ const planUntil = computed(() => {
   return isNaN(date.getTime()) ? '' : date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
 });
 const DRAWER_BREAKPOINT = 1280;
+/**
+ * Телефон — своя раскладка, а не ужатая компьютерная: бургер слева в шапке
+ * открывает меню с профилем и разделами, «Создать» — панелью снизу, сводки
+ * «События» на телефоне нет (решение владельца 22.10: нижние вкладки убраны).
+ * Планшет (768–1280) — бургер и боковое меню, как раньше.
+ */
+const PHONE_BREAKPOINT = 768;
+const viewportWidth = ref(window.innerWidth);
 const isMobile = ref(window.innerWidth < DRAWER_BREAKPOINT);
+const isPhone = computed(() => viewportWidth.value < PHONE_BREAKPOINT);
 const drawer = ref(!isMobile.value);
 const collapsed = ref(false);
 
-const sidebarWidth = computed(() => (collapsed.value ? 72 : 260));
+const sidebarWidth = computed(() => {
+  // На телефоне меню шире: пункты крупнее, справа остаётся полоска
+  // страницы — видно, что это панель поверх, и по ней закрывается.
+  if (isPhone.value) return Math.min(340, Math.round(viewportWidth.value * 0.88));
+  return collapsed.value ? 72 : 260;
+});
+
+const canCreate = computed(() => authStore.isOwner || authStore.user?.canCreateDeals !== false);
+const createSheet = ref(false);
+function createAction(action: () => void) {
+  createSheet.value = false;
+  // Окно открываем после того, как панель уехала: иначе её закрывающийся слой
+  // перекрывает новое окно (та же история, что с меню в openQuickActions).
+  setTimeout(action, 250);
+}
 
 onMounted(() => {
   // Skip partner-side fetches when this layout was applied by mistake to a
@@ -132,6 +156,7 @@ onMounted(() => {
 
   const onResize = () => {
     const wasDesktop = !isMobile.value;
+    viewportWidth.value = window.innerWidth;
     isMobile.value = window.innerWidth < DRAWER_BREAKPOINT;
     if (wasDesktop === false && !isMobile.value) {
       drawer.value = true;
@@ -377,8 +402,41 @@ const confirmLogout = async () => {
         :mobile-breakpoint="0"
         :temporary="isMobile"
       >
+        <!-- Телефон: вместо логотипа — профиль. Аватара в шапке там нет,
+             карточка человека и тарифа живёт в меню «Ещё». -->
+        <div v-if="isPhone" class="lyt-m-profile">
+          <div class="lyt-m-profile-row">
+            <!-- Знак MizanPay вместо кружка с инициалами: и бренд на виду, и
+                 лишней строки с логотипом над профилем нет. Ведёт на главную. -->
+            <router-link to="/" class="lyt-m-brand" aria-label="На главную">
+              <img :src="isDark ? logoDark : logo" alt="MizanPay" />
+            </router-link>
+            <div class="lyt-profile-who">
+              <div class="lyt-profile-name">{{ authStore.userName || 'Администратор' }}</div>
+              <div v-if="companyName" class="lyt-profile-company">{{ companyName }}</div>
+              <div v-if="authStore.user?.email" class="lyt-profile-line">{{ authStore.user.email }}</div>
+            </div>
+            <button class="lyt-m-close" aria-label="Закрыть меню" @click="drawer = false">
+              <v-icon icon="mdi-close" size="22" />
+            </button>
+          </div>
+          <button
+            v-if="hasPlan"
+            type="button"
+            class="lyt-profile-plan lyt-m-plan"
+            :class="`lyt-profile-plan--${subscription.plan.value.toLowerCase()}`"
+            @click="!authStore.isStaff && router.push({ path: '/settings', query: { tab: 'subscription' } })"
+          >
+            <span class="lyt-profile-plan-icon"><v-icon icon="mdi-crown" size="16" /></span>
+            <span class="lyt-profile-plan-text">
+              <span class="lyt-profile-plan-name">{{ planBadgeLabel }}</span>
+              <span v-if="planUntil" class="lyt-profile-plan-until">до {{ planUntil }}</span>
+            </span>
+            <v-icon v-if="!authStore.isStaff" icon="mdi-chevron-right" size="18" class="lyt-profile-plan-arrow" />
+          </button>
+        </div>
         <!-- Логотип ведёт на главную: привычный жест, которого здесь не хватало. -->
-        <router-link to="/" class="lyt-sidebar-logo" title="На главную">
+        <router-link v-else to="/" class="lyt-sidebar-logo" title="На главную">
           <div
             :style="{
               display: 'flex',
@@ -461,6 +519,22 @@ const confirmLogout = async () => {
           </nav>
         </div>
 
+        <!-- Телефон: «Мои показатели» сотрудника жили в меню аватара. -->
+        <div v-if="isPhone && authStore.isStaff && authStore.user?.staffId" class="lyt-nav-section">
+          <nav class="lyt-nav">
+            <router-link
+              :to="`/staff/${authStore.user?.staffId}`"
+              class="lyt-nav-item"
+              :class="{ 'lyt-nav-item--active': isActive(`/staff/${authStore.user?.staffId}`) }"
+            >
+              <div style="display: flex; gap: 12px; align-items: center; width: 100%">
+                <v-icon icon="mdi-chart-box-outline" size="20" />
+                <span class="lyt-nav-text">Мои показатели</span>
+              </div>
+            </router-link>
+          </nav>
+        </div>
+
         <!-- Secondary nav (hidden when nothing accessible — e.g. staff has no /settings) -->
         <div v-if="secondaryNavRoutes.length" class="lyt-nav-section">
           <p class="lyt-nav-label">Прочее</p>
@@ -536,6 +610,10 @@ const confirmLogout = async () => {
           </div>
         </v-menu>
 
+        <button v-if="isPhone" class="lyt-m-logout" @click="logoutDialog = true">
+          <v-icon icon="mdi-logout" size="20" />
+          <span>Выйти</span>
+        </button>
         </div>
       </v-navigation-drawer>
 
@@ -575,6 +653,16 @@ const confirmLogout = async () => {
             </div>
 
             <div class="lyt-header-right">
+              <!-- Без клавиатуры поле с подсказкой ⌘K ни к чему — значок. -->
+              <button
+                v-if="isMobile && authStore.isOwner"
+                class="lyt-header-icon-btn"
+                title="Поиск"
+                aria-label="Поиск"
+                @click="showGlobalSearch = true"
+              >
+                <v-icon icon="mdi-magnify" size="22" />
+              </button>
               <button
                 v-if="!isMobile && authStore.isOwner"
                 class="lyt-header-search-btn"
@@ -598,8 +686,19 @@ const confirmLogout = async () => {
               <!-- Сводка «что происходило»: открыта всем, кто работает со
                    сделками. Показывает только то, что человеку и так доступно —
                    ограничения применяются на сервере. -->
+              <!-- Телефон: «Создать» на месте «Событий» (сводки на телефоне нет) —
+                   открывает панель снизу. -->
+              <button
+                v-if="canCreate && isPhone"
+                class="lyt-header-icon-btn lyt-m-create"
+                title="Создать"
+                aria-label="Создать"
+                @click="createSheet = true"
+              >
+                <v-icon icon="mdi-plus" size="22" />
+              </button>
               <v-menu
-                v-if="canSeeDigest"
+                v-if="canSeeDigest && !isPhone"
                 v-model="showDigest"
                 :close-on-content-click="false"
                 location="bottom end"
@@ -628,7 +727,7 @@ const confirmLogout = async () => {
                 - Staff with canCreateDeals: deal-creating items only (no quick actions)
                 - Staff without canCreateDeals: hidden entirely
               -->
-              <v-menu v-if="authStore.isOwner || (authStore.user?.canCreateDeals !== false)" v-model="quickActionsMenu" location="bottom end" offset="8">
+              <v-menu v-if="canCreate && !isPhone" v-model="quickActionsMenu" location="bottom end" offset="8">
                 <template v-slot:activator="{ props }">
                   <button
                     class="lyt-header-add-btn"
@@ -673,14 +772,15 @@ const confirmLogout = async () => {
               <button
                 class="lyt-header-icon-btn"
                 title="Быстрый доступ к сделкам"
+                aria-label="Быстрый доступ к сделкам"
                 @click="dealsSidebarOpen = true"
               >
-                <v-icon icon="mdi-format-list-bulleted-square" size="20" />
+                <v-icon icon="mdi-format-list-bulleted-square" :size="isPhone ? 22 : 20" />
               </button>
 
               <!-- Профиль — круглый аватар в правом краю шапки. Раньше карточка
                    жила внизу бокового меню и занимала место у разделов. -->
-              <v-menu v-model="profileMenu" location="bottom end" offset="8" :close-on-content-click="true">
+              <v-menu v-if="!isPhone" v-model="profileMenu" location="bottom end" offset="8" :close-on-content-click="true">
                 <template #activator="{ props: pm }">
                   <button
                     class="lyt-header-avatar"
@@ -775,6 +875,47 @@ const confirmLogout = async () => {
            the trigger in the header header flips the `open` ref. -->
       <DealsSidebar v-if="authStore.user" v-model:open="dealsSidebarOpen" />
 
+
+      <!-- Телефон: «Создать» — панелью снизу, крупными строками. -->
+      <v-bottom-sheet v-if="isPhone" v-model="createSheet">
+        <div class="lyt-sheet">
+          <div class="lyt-sheet-grip" />
+          <div class="lyt-sheet-title">Создать</div>
+          <!-- Быстрые действия владельца — сразу двумя пунктами: на телефоне
+               нет сочетания клавиш, а лишний шаг выбора режима ни к чему. -->
+          <template v-if="authStore.isOwner">
+            <button class="lyt-sheet-item lyt-sheet-item--accent" @click="createSheet = false; openQuickActions('payment')">
+              <span class="lyt-sheet-item-icon"><v-icon icon="mdi-cash-check" size="22" /></span>
+              <span class="lyt-sheet-item-text">
+                <span class="lyt-sheet-item-title">Принять платёж</span>
+                <span class="lyt-sheet-item-hint">Найти сделку и отметить оплату</span>
+              </span>
+            </button>
+            <button class="lyt-sheet-item lyt-sheet-item--accent" @click="createSheet = false; openQuickActions('sale')">
+              <span class="lyt-sheet-item-icon"><v-icon icon="mdi-cart-plus" size="22" /></span>
+              <span class="lyt-sheet-item-text">
+                <span class="lyt-sheet-item-title">Новая продажа</span>
+                <span class="lyt-sheet-item-hint">Быстрое оформление в одном окне</span>
+              </span>
+            </button>
+            <div class="lyt-sheet-divider" />
+          </template>
+          <button class="lyt-sheet-item" @click="createAction(() => (showCreateClientDialog = true))">
+            <span class="lyt-sheet-item-icon"><v-icon icon="mdi-account-plus-outline" size="22" /></span>
+            <span class="lyt-sheet-item-text">
+              <span class="lyt-sheet-item-title">Создать клиента</span>
+            </span>
+          </button>
+          <button class="lyt-sheet-item" @click="createAction(() => router.push('/create-deal'))">
+            <span class="lyt-sheet-item-icon"><v-icon icon="mdi-handshake" size="22" /></span>
+            <span class="lyt-sheet-item-text">
+              <span class="lyt-sheet-item-title">Создать сделку</span>
+            </span>
+          </button>
+        </div>
+      </v-bottom-sheet>
+
+
       <!-- Logout confirm -->
       <v-dialog v-model="logoutDialog" max-width="400">
         <div class="lyt-logout-dialog">
@@ -819,6 +960,13 @@ const confirmLogout = async () => {
   }
 }
 .lyt-theme-option:last-child { margin-bottom: 0; }
+/* --bottom-nav-offset: высота нижней панели телефона, на которую поднимаются
+   фиксированные снизу элементы страниц. Нижних вкладок сейчас нет (22.10),
+   поэтому переменная не задана и везде берётся 0 — оставлен только отступ
+   под полоску «домой» на iPhone. */
+@media (max-width: 767.98px) {
+  :root { --bottom-nav-offset: env(safe-area-inset-bottom); }
+}
 </style>
 
 <style scoped lang="scss">
@@ -830,7 +978,11 @@ const confirmLogout = async () => {
   border-right: 1px solid #f0f0f0 !important;
   display: flex;
   flex-direction: column;
-  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  /* transform — выезд панели (Vuetify анимирует именно его): раньше здесь
+     был только width, и меню на телефоне появлялось рывком. */
+  transition:
+    transform 0.32s cubic-bezier(0.32, 0.72, 0, 1),
+    width 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
   overflow: hidden;
 }
 /* Логотип стоит над прокруткой и делит с пунктами меню одни поля (16px),
@@ -2232,5 +2384,144 @@ const confirmLogout = async () => {
   .lyt-logout-dialog-actions {
     flex-direction: column;
   }
+}
+
+/* ============================================= */
+/* ===== ТЕЛЕФОН (< 768): вкладки, панели ===== */
+/* ============================================= */
+
+/* Панели снизу («Создать»). */
+.lyt-sheet {
+  background: rgb(var(--v-theme-surface));
+  border-radius: 20px 20px 0 0;
+  padding: 0 8px calc(12px + env(safe-area-inset-bottom));
+}
+.lyt-sheet-grip {
+  width: 36px; height: 4px; border-radius: 2px;
+  margin: 8px auto 0;
+  background: rgba(var(--v-theme-on-surface), 0.18);
+}
+.lyt-sheet-title {
+  padding: 12px 12px 8px;
+  font-size: 18px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+}
+.lyt-sheet-item {
+  display: flex; align-items: center; gap: 14px;
+  width: 100%; min-height: 60px;
+  padding: 10px 12px;
+  border: none; border-radius: 14px; background: none;
+  text-align: left; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), 0.9);
+}
+.lyt-sheet-item:active { background: rgba(var(--v-theme-on-surface), 0.05); }
+.lyt-sheet-item-icon {
+  width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.lyt-sheet-item--accent .lyt-sheet-item-icon {
+  background: rgba(var(--v-theme-accent), 0.14);
+  color: rgb(var(--v-theme-accent));
+}
+.lyt-sheet-item-text { display: flex; flex-direction: column; min-width: 0; }
+.lyt-sheet-item-title { font-size: 16px; font-weight: 600; line-height: 1.25; }
+.lyt-sheet-item-hint { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.55); margin-top: 2px; }
+.lyt-sheet-divider { height: 1px; margin: 6px 12px; background: rgba(var(--v-theme-on-surface), 0.08); }
+
+.lyt-m-brand {
+  width: 38px; height: 38px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.lyt-m-brand img { width: 34px; height: 34px; display: block; }
+/* «Создать» — единственная залитая кнопка шапки: главное действие. */
+.lyt-header .lyt-m-create {
+  background: linear-gradient(135deg, #047857 0%, #065f46 100%) !important;
+  color: #fff !important;
+  width: 40px !important; height: 40px !important; min-width: 40px !important; min-height: 40px !important;
+  margin: 0 4px;
+}
+
+/* Меню «Ещё»: профиль сверху, крупные пункты, «Выйти» внизу. */
+.lyt-m-profile {
+  flex-shrink: 0;
+  position: relative; z-index: 2;
+  padding: calc(10px + env(safe-area-inset-top)) 6px 10px 14px;
+  /* Тень вниз: под закреплённым профилем прокручиваются разделы. */
+  box-shadow: 0 1px 0 rgba(var(--v-theme-on-surface), 0.06), 0 4px 12px rgba(0, 0, 0, 0.07);
+}
+.lyt-m-profile-row { display: flex; align-items: center; gap: 12px; }
+.lyt-m-profile-row .lyt-profile-who { flex: 1; }
+.lyt-m-close {
+  width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
+  align-self: flex-start;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: none; cursor: pointer;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+.lyt-profile-plan.lyt-m-plan { width: calc(100% - 8px); margin: 10px 0 0; padding: 7px 10px; gap: 8px; }
+.lyt-m-plan .lyt-profile-plan-icon { width: 26px; height: 26px; }
+.lyt-m-plan .lyt-profile-plan-name { font-size: 13px; }
+.lyt-m-plan .lyt-profile-plan-until { font-size: 11.5px; }
+.lyt-m-profile .lyt-profile-avatar { width: 38px; height: 38px; font-size: 14px; }
+.lyt-m-profile .lyt-profile-name { font-size: 14px; }
+.lyt-m-profile .lyt-profile-line { font-size: 12px; margin-top: 0; }
+.lyt-m-profile .lyt-profile-company { font-size: 12.5px; }
+.lyt-m-logout {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; height: 42px; padding: 0 12px;
+  border: none; border-radius: 10px; background: none; cursor: pointer;
+  font-size: 14.5px; font-weight: 600; color: #dc2626;
+}
+.lyt-m-logout:active { background: rgba(220, 38, 38, 0.06); }
+
+@media (max-width: 767px) {
+  /* Шапка: название и три значка. Без рамок и плашек у кнопок — на узкой
+     полосе они превращали шапку в ряд коробочек. */
+  .lyt-header {
+    height: calc(56px + env(safe-area-inset-top));
+    min-height: 0;
+    padding: env(safe-area-inset-top) 6px 0 16px;
+    gap: 4px;
+    background: rgb(var(--v-theme-surface));
+    /* Тень вниз: шапка — отдельный слой над прокручиваемой страницей. */
+    border-bottom: none;
+    box-shadow: 0 1px 0 rgba(var(--v-theme-on-surface), 0.05), 0 4px 16px rgba(0, 0, 0, 0.07);
+  }
+  .dark .lyt-header { box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06), 0 6px 18px rgba(0, 0, 0, 0.45); }
+  .lyt-header-title { font-size: 18px; color: rgba(var(--v-theme-on-surface), 0.92); }
+  .lyt-header-right { gap: 0; }
+  .lyt-header .lyt-header-icon-btn {
+    width: 44px; height: 44px; min-width: 44px; min-height: 44px;
+    border: none; border-radius: 12px; background: none;
+    color: rgba(var(--v-theme-on-surface), 0.7);
+  }
+  .lyt-header .lyt-header-icon-btn:active { background: rgba(var(--v-theme-on-surface), 0.06); }
+  /* Бейдж — с правого верхнего угла иконки, не поверх неё. */
+  .lyt-header .lyt-header-badge {
+    top: 4px; left: 23px; right: auto;
+    height: 18px; min-width: 18px; padding: 0 4px; border-radius: 9px;
+    font-size: 10.5px; font-weight: 700;
+    border: 2px solid rgb(var(--v-theme-surface)); box-sizing: content-box;
+  }
+  .lyt-header .lyt-header-dot { top: 9px; right: 9px; }
+
+  /* Низ страницы — над полоской «домой» на iPhone. */
+  .lyt-content { padding-bottom: env(safe-area-inset-bottom); }
+
+  /* Меню «Ещё»: профиль сверху и тема с «Выйти» снизу закреплены,
+     прокручиваются только разделы. Всё компактно — разделов много. */
+  .lyt-nav-scroll { padding: 6px 8px; }
+  .lyt-nav-section + .lyt-nav-section { margin-top: 6px; }
+  .lyt-nav-item { padding: 9px 12px; min-height: 42px; font-size: 14.5px; }
+  .lyt-sidebar-footer {
+    position: relative; z-index: 2;
+    padding: 4px 8px calc(6px + env(safe-area-inset-bottom));
+    border-top: none !important;
+    background: rgb(var(--v-theme-surface));
+    box-shadow: 0 -1px 0 rgba(var(--v-theme-on-surface), 0.06), 0 -4px 12px rgba(0, 0, 0, 0.07);
+  }
+  .lyt-theme-btn { min-height: 42px; font-size: 14.5px; }
 }
 </style>

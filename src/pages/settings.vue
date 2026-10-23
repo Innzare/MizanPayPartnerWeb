@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { useAuthStore } from '@/stores/auth'
 import SelectField from '@/components/SelectField.vue'
+import GroupShareFormatCard from '@/components/GroupShareFormatCard.vue'
 import DangerConfirmDialog from '@/components/DangerConfirmDialog.vue'
 import DateField from '@/components/DateField.vue'
 import PhoneField from '@/components/PhoneField.vue'
@@ -1655,6 +1656,10 @@ const plans = [
           </button>
         </div>
       </v-card>
+
+      <!-- Формат текста для рабочей группы: раньше правился в окне у каждой
+           сделки, теперь — здесь; в списке сделок только «Скопировать». -->
+      <GroupShareFormatCard />
     </div>
 
     <!-- Программы рассрочки: справочник условий для новых договоров — прямо

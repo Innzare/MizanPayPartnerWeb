@@ -523,7 +523,7 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 
 .help-top {
   position: fixed;
-  right: 24px; bottom: 24px;
+  right: 24px; bottom: calc(24px + var(--bottom-nav-offset, 0px));
   z-index: 7;
   width: 42px; height: 42px;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.1);

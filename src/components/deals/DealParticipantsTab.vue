@@ -764,4 +764,26 @@ async function onChangeClient(profile: import('@/types').ClientProfile | null) {
   color: rgb(var(--v-theme-primary));
 }
 .btn-sm--outline:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ══ Телефон ══ плотнее: аватар меньше, строки данных ниже, кнопки под палец. */
+@media (max-width: 767px) {
+  .pt-cols { gap: 8px; grid-template-columns: 1fr; }
+  .profile-avatar { width: 40px; height: 40px; min-width: 40px; font-size: 14px; }
+  .profile-card-link { margin: -6px -8px; padding: 6px 8px; }
+  .profile-card-link .mb-4 { margin-bottom: 10px !important; }
+  .profile-details-list { gap: 0; }
+  .profile-detail-row { padding: 8px 0; gap: 12px; }
+  .profile-detail-row:last-child { padding-bottom: 0; }
+  .profile-detail-label { font-size: 12.5px; }
+  .profile-detail-value { font-size: 13.5px; }
+  .reminder-btn { height: 40px; padding: 0 12px; font-size: 14px; }
+  /* Подпись переключателя у Vuetify крупнее остального текста блока. */
+  .deal-reminder-settings :deep(.v-label) { font-size: 13px; opacity: 0.75; }
+  .ci-add-btn { height: 32px; padding: 0 12px; }
+  .guarantor-item--divided { padding-top: 12px; margin-top: 12px; }
+  .create-client-btn { padding: 8px 10px; gap: 10px; border-radius: 10px; }
+  .create-client-btn__icon { width: 32px; height: 32px; min-width: 32px; }
+  .create-client-btn__title { font-size: 13.5px; }
+  .create-client-btn__sub { font-size: 11.5px; }
+}
 </style>

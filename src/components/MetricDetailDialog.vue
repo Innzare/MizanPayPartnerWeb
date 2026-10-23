@@ -288,13 +288,22 @@ function openDeal(id: string) {
 }
 .md-foot b { color: rgba(var(--v-theme-on-surface), 0.85); }
 
-@media (max-width: 600px) {
-  .md-card { max-height: 100%; border-radius: 0; }
-  .md-head { padding: 16px 16px 10px; }
+/* Телефон: окно на весь экран — без скруглений; поиск во всю ширину и 16px
+   (iOS не увеличивает страницу при фокусе); крестик под палец. */
+@media (max-width: 767px) {
+  .md-card { max-height: 100%; border-radius: 0 !important; }
+  .md-head { padding: calc(12px + env(safe-area-inset-top)) 8px 10px 16px; }
+  .md-close { width: 40px; height: 40px; border-radius: 12px; background: none; }
   .md-total { margin: 0 16px; padding: 12px 14px; }
+  .md-total > div:first-child { width: 100%; }
   .md-total-value { font-size: 22px; }
-  .md-list { padding: 8px; }
-  .md-search { min-width: 100%; }
+  .md-search-wrap { display: flex; width: 100%; }
+  .md-search { flex: 1; min-width: 0; height: 44px; font-size: 16px; border-radius: 10px; }
+  .md-search-wrap-clear { width: 36px; height: 36px; right: 4px; }
+  .md-search-wrap .md-search { padding-right: 42px; }
+  .md-list { padding: 4px 4px calc(8px + env(safe-area-inset-bottom)); }
+  .md-row-body { padding: 12px; }
+  .md-more { min-height: 44px; }
 }
 .md-more {
   width: 100%;

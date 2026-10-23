@@ -9,7 +9,7 @@ import DealHistoryTab from '@/components/deals/DealHistoryTab.vue'
 import DealDocsTab from '@/components/deals/DealDocsTab.vue'
 import DealParticipantsTab from '@/components/deals/DealParticipantsTab.vue'
 import DealInvestorsTab from '@/components/deals/DealInvestorsTab.vue'
-import { formatCurrency, formatCurrencyShort, formatDate, formatDateShort, formatMonths, formatPercent, formatPhone, pluralizeRu, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { formatCurrency, formatCurrencyShort, formatDate, formatDateShort, formatDateShortYear, formatMonths, formatPercent, formatPhone, pluralizeRu, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { userName, clientProfileName, type Deal, type ClientProfile, type Payment } from '@/types'
 import { dealGuarantors } from '@/utils/dealGuarantors'
@@ -1134,8 +1134,8 @@ async function confirmReopen() {
 
 <template>
   <div class="at-page" :class="{ dark: isDark }">
-    <!-- Back button -->
-    <button class="back-btn" @click="router.back()">
+    <!-- Back button (телефон: стрелка встроена в шапку сделки) -->
+    <button v-if="!isMobile" class="back-btn" @click="router.back()">
       <v-icon icon="mdi-arrow-left" size="18" />
       Назад
     </button>
@@ -1178,8 +1178,59 @@ async function confirmReopen() {
         </button>
       </div>
 
+      <!-- ТЕЛЕФОН: шапка сделки прижата к верху экрана. Слева «назад», справа
+           «редактировать»; касса и прочие действия — в меню «⋯» блока
+           прогресса. Пустой заглушки фото нет. -->
+      <div v-if="isMobile" class="dhm">
+        <div class="dhm-top">
+          <button class="dhm-icon" aria-label="Назад" @click="router.back()">
+            <v-icon icon="mdi-arrow-left" size="22" />
+          </button>
+          <button class="dhm-icon" aria-label="Редактировать сделку" @click="$router.push(`/create-deal?edit=${dealId}`)">
+            <v-icon icon="mdi-pencil-outline" size="20" />
+          </button>
+        </div>
+        <!-- Номер договора — под «назад», статус — под «редактировать». -->
+        <div class="dhm-row">
+          <span class="dhm-num">Договор №{{ deal.dealNumber }}</span>
+          <span class="dhm-status" :style="{ color: DEAL_STATUS_CONFIG[deal.status]?.color }">
+            <span class="dhm-status-dot" :style="{ background: DEAL_STATUS_CONFIG[deal.status]?.color }" />
+            {{ DEAL_STATUS_CONFIG[deal.status]?.label }}
+          </span>
+        </div>
+        <img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" alt="" class="dhm-photo" />
+        <h1 class="dhm-title">{{ deal.productName }}</h1>
+        <div class="dhm-client">
+          <v-icon icon="mdi-account" size="16" />
+          <ClientLink
+            :profile-id="deal.clientProfileId"
+            :name="deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—'"
+          />
+        </div>
+        <!-- Даты и касса — ячейками по 50%: подпись над значением, а не одной
+             сплошной строкой через точки. -->
+        <div class="dhm-facts">
+          <div class="dhm-fact">
+            <span class="dhm-fact-label">Заключена</span>
+            <span class="dhm-fact-value">{{ formatDateShortYear(deal.dealDate) }}</span>
+          </div>
+          <div class="dhm-fact">
+            <span class="dhm-fact-label">Первый платёж</span>
+            <span class="dhm-fact-value">{{ deal.firstPaymentDate ? formatDateShortYear(deal.firstPaymentDate) : '—' }}</span>
+          </div>
+          <div class="dhm-fact">
+            <span class="dhm-fact-label">Создана</span>
+            <span class="dhm-fact-value">{{ formatDateShortYear(deal.createdAt) }}</span>
+          </div>
+          <div class="dhm-fact">
+            <span class="dhm-fact-label">Касса</span>
+            <span class="dhm-fact-value">{{ dealCashBox?.name || '—' }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Hero -->
-      <div class="detail-hero mb-6">
+      <div v-else class="detail-hero mb-6">
         <div class="detail-hero-actions">
           <button
             v-if="dealCashBox"
@@ -1188,7 +1239,8 @@ async function confirmReopen() {
             :title="`В кассе «${dealCashBox.name}». Нажмите чтобы перенести`"
             @click="openMoveCashbox"
           >
-            <v-icon :icon="dealCashBox.icon" size="14" :style="{ color: dealCashBox.color }" />
+            <!-- Белая: значок цвета кассы сливался с зелёной шапкой. -->
+            <v-icon :icon="dealCashBox.icon" size="14" />
             <span>{{ dealCashBox.name }}</span>
             <v-icon icon="mdi-swap-horizontal" size="14" />
           </button>
@@ -1201,7 +1253,10 @@ async function confirmReopen() {
             <span>Редактировать</span>
           </button>
         </div>
-        <div class="detail-hero-photo" :class="{ 'detail-hero-photo--empty': !deal.productPhotos?.length }">
+        <div
+          class="detail-hero-photo"
+          :class="{ 'detail-hero-photo--empty': !deal.productPhotos?.length }"
+        >
           <img v-if="deal.productPhotos?.length" :src="deal.productPhotos[0]" alt="" />
           <div v-else class="detail-hero-photo-placeholder">
             <v-icon icon="mdi-image-off-outline" size="40" />
@@ -1241,7 +1296,73 @@ async function confirmReopen() {
       <!-- Шапка: главные цифры договора, прогресс и действия. Раньше это были
            две карточки подряд — «следующий шаг» с одной кнопкой и отдельный
            прогресс; вместе они занимали пол-экрана и повторяли друг друга. -->
-      <v-card rounded="lg" elevation="0" border class="pa-5 mb-6">
+      <!-- ТЕЛЕФОН: прогресс и одно главное действие. Остальное — в «⋯»:
+           на узком экране четыре кнопки подряд читались как каша. -->
+      <v-card v-if="isMobile" rounded="0" elevation="0" class="dpm">
+        <div class="dpm-head">
+          <div class="dpm-head-text">
+            <div class="section-title">Прогресс по договору</div>
+            <div class="section-subtitle">
+              {{ deal.paidPayments }} из {{ deal.numberOfPayments }}
+              {{ pluralizeRu(deal.numberOfPayments, 'платежа', 'платежей', 'платежей') }} внесено
+            </div>
+          </div>
+          <v-menu location="bottom end">
+            <template #activator="{ props: mp }">
+              <button class="dpm-more" aria-label="Действия по сделке" v-bind="mp">
+                <v-icon icon="mdi-dots-vertical" size="22" />
+              </button>
+            </template>
+            <v-card rounded="lg" elevation="8" class="dpm-menu">
+              <button v-if="canDiscount && deal.status === 'ACTIVE'" class="dpm-menu-item" @click="openDiscount('apply')">
+                <v-icon icon="mdi-sale-outline" size="18" />Дать скидку
+              </button>
+              <button v-if="canDiscount && deal.status === 'ACTIVE' && dealDiscount > 0" class="dpm-menu-item" @click="openDiscount('remove')">
+                <v-icon icon="mdi-tag-off-outline" size="18" />Убрать скидку
+              </button>
+              <button v-if="statusAction" class="dpm-menu-item" :style="{ color: statusAction.color }" @click="openStatusDialog()">
+                <v-icon icon="mdi-flag-checkered" size="18" />{{ statusAction.label }}
+              </button>
+              <button v-if="canReopen" class="dpm-menu-item" @click="reopenDialog = true">
+                <v-icon icon="mdi-restore" size="18" />Возобновить сделку
+              </button>
+              <button v-if="dealCashBox" class="dpm-menu-item" @click="openMoveCashbox">
+                <v-icon icon="mdi-swap-horizontal" size="18" />
+                <span class="dpm-menu-text">
+                  Перенести в другую кассу
+                  <span class="dpm-menu-hint">сейчас: {{ dealCashBox.name }}</span>
+                </span>
+              </button>
+              <template v-if="canUndo || canSeeHistory">
+                <div class="dpm-menu-divider" />
+                <button v-if="canUndo" class="dpm-menu-item" :disabled="!undoInfo?.ok || undoing" @click="doUndo">
+                  <v-icon icon="mdi-undo-variant" size="18" />
+                  <span class="dpm-menu-text">
+                    Отменить последнее действие
+                    <span class="dpm-menu-hint">{{ undoInfo?.ok ? undoInfo.label : undoTitle }}</span>
+                  </span>
+                </button>
+                <button v-if="canSeeHistory" class="dpm-menu-item" @click="tab = 'history'">
+                  <v-icon icon="mdi-history" size="18" />История сделки
+                </button>
+              </template>
+            </v-card>
+          </v-menu>
+        </div>
+
+        <div class="dpm-track"><div class="dpm-fill" :style="{ width: progress + '%' }" /></div>
+        <div class="pg-ends">
+          <span class="pg-end">Оплачено {{ formatCurrency(totalPaid) }}</span>
+          <span class="pg-end">Осталось {{ formatCurrency(deal.remainingAmount) }}</span>
+        </div>
+
+        <button v-if="nextPayment && !paymentsHidden" class="dpm-pay" @click="openQuickPay()">
+          <v-icon icon="mdi-cash-check" size="18" />
+          Принять оплату
+        </button>
+      </v-card>
+
+      <v-card v-else rounded="lg" elevation="0" border class="pa-5 mb-6 dg-progress">
         <div class="d-flex justify-space-between align-center ga-4 flex-wrap">
           <div>
             <div class="section-title">Прогресс по договору</div>
@@ -1255,7 +1376,7 @@ async function confirmReopen() {
             <!-- Приём оплаты — самое частое действие по сделке -->
             <button
               v-if="nextPayment && !paymentsHidden"
-              class="status-action-btn status-action-btn--ghost"
+              class="status-action-btn status-action-btn--ghost status-action-btn--pay"
               @click="openQuickPay()"
             >
               <v-icon icon="mdi-cash-check" size="16" />
@@ -1358,7 +1479,7 @@ async function confirmReopen() {
               <span class="dm-head-title">Деньги по сделке</span>
               <!-- Вид запоминается: одни читают показатели подряд списком,
                    другим нужен беглый взгляд по карточкам. -->
-              <div class="dm-switch">
+              <div v-if="!isMobile" class="dm-switch">
                 <button
                   class="dm-switch-btn"
                   :class="{ 'dm-switch-btn--on': moneyView === 'list' }"
@@ -1378,7 +1499,8 @@ async function confirmReopen() {
               </div>
             </div>
 
-            <template v-if="moneyView === 'list'">
+            <!-- Телефон: только список — переключателя вида там нет. -->
+            <template v-if="moneyView === 'list' || isMobile">
               <div v-for="(group, gi) in moneyGroups" :key="gi" class="dm-group">
                 <div
                   v-for="row in group"
@@ -1678,7 +1800,7 @@ async function confirmReopen() {
                   </div>
                 </div>
               </div>
-              <div class="d-flex align-center ga-2">
+              <div class="d-flex align-center ga-2 sup-debt-row">
                 <span
                   v-if="supplierDebtRemaining > 0"
                   class="sup-debt-badge sup-debt-badge--open"
@@ -1784,7 +1906,7 @@ async function confirmReopen() {
         </v-card>
         <!-- Payment schedule -->
         <v-card v-if="payments.length" rounded="lg" elevation="0" border class="mb-6">
-          <div class="pa-5 pb-0 d-flex align-start justify-space-between ga-3 flex-wrap">
+          <div class="pa-5 pb-0 d-flex align-start justify-space-between ga-3 flex-wrap sched-head">
             <div>
               <div class="section-title">График платежей</div>
               <div class="section-subtitle mb-4">Полный список по сделке</div>
@@ -1911,6 +2033,52 @@ async function confirmReopen() {
                   <span class="sched-action-label">Отменить оплату</span>
                 </button>
               </div>
+            </template>
+            <!-- Телефон: те же действия, но меню «⋮» прямо в строке — кнопки
+                 отдельной полосой под каждым платежом растягивали график. -->
+            <template #mobile-actions="{ p }">
+              <v-menu
+                v-if="((p.status === 'PENDING' || p.status === 'OVERDUE') && (!p.shortfallOfPaymentId || p.rescheduledFrom)) || p.status === 'PAID'"
+                location="bottom end"
+              >
+                <template #activator="{ props: am }">
+                  <button class="sched-more" aria-label="Действия с платежом" v-bind="am">
+                    <v-icon icon="mdi-dots-vertical" size="20" />
+                  </button>
+                </template>
+                <v-card rounded="lg" elevation="8" class="dpm-menu">
+                  <template v-if="p.status === 'PENDING' || p.status === 'OVERDUE'">
+                    <button v-if="!p.shortfallOfPaymentId" class="dpm-menu-item" @click="openReschedule(p)">
+                      <v-icon icon="mdi-calendar-clock" size="18" />Перенести дату
+                    </button>
+                    <button
+                      v-if="p.rescheduledFrom"
+                      class="dpm-menu-item"
+                      :disabled="undoingReschedule === p.id"
+                      @click="confirmUndoReschedule(p)"
+                    >
+                      <v-icon icon="mdi-calendar-refresh" size="18" />
+                      <span class="dpm-menu-text">
+                        Вернуть исходную дату
+                        <span class="dpm-menu-hint">{{ formatDate(p.rescheduledFrom) }}</span>
+                      </span>
+                    </button>
+                  </template>
+                  <button
+                    v-else-if="p.status === 'PAID'"
+                    class="dpm-menu-item"
+                    style="color: #dc2626;"
+                    :disabled="unpaidLoading === p.id || monthLocks.isLocked(deal?.cashBoxId, p.paidAt)"
+                    @click="confirmUnmarkPaid(p)"
+                  >
+                    <v-icon :icon="monthLocks.isLocked(deal?.cashBoxId, p.paidAt) ? 'mdi-lock-outline' : 'mdi-undo'" size="18" />
+                    <span class="dpm-menu-text">
+                      Отменить оплату
+                      <span v-if="monthLocks.isLocked(deal?.cashBoxId, p.paidAt)" class="dpm-menu-hint">{{ monthLocks.lockReason(p.paidAt!) }}</span>
+                    </span>
+                  </button>
+                </v-card>
+              </v-menu>
             </template>
           </DealScheduleTable>
 
@@ -3978,4 +4146,178 @@ async function confirmReopen() {
   }
 }
 
+
+/* ══ Телефон ══
+   Своя раскладка: шапка прижата к верху, прогресс с одной главной кнопкой и
+   меню «⋯», вкладки — лентой с подчёркиванием, прилипают под шапкой. Крупные
+   блоки — во всю ширину, без скруглений и боковых рамок; между ними полоска
+   фона. Всё компактнее, чем на компьютере. */
+@media (max-width: 767px) {
+  .at-page { padding: 0 0 16px; }
+
+  /* Шапка сделки — фирменный градиент, как у сводки на главной. */
+  .dhm {
+    background: linear-gradient(135deg, #047857 0%, #065f46 50%, #064e3b 100%);
+    --client-link-color: #fff;
+    --client-link-underline: rgba(255, 255, 255, 0.55);
+    color: #fff;
+    padding: 6px 8px 18px;
+  }
+  .dhm-top { display: flex; align-items: center; justify-content: space-between; }
+  .dhm-icon {
+    width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+  }
+  .dhm-icon:active { background: rgba(255, 255, 255, 0.14); }
+  .dhm-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin: 6px 8px 0;
+  }
+  .dhm-num {
+    font-size: 14px; font-weight: 600; color: rgba(255, 255, 255, 0.8);
+    font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .dhm-status {
+    display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+    font-size: 12px; font-weight: 700;
+    padding: 4px 10px; border-radius: 999px; background: #fff;
+  }
+  .dhm-status-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .dhm-photo {
+    display: block; width: calc(100% - 16px); height: 150px; object-fit: cover;
+    margin: 14px 8px 0; border-radius: 12px;
+  }
+  .dhm-title {
+    margin: 12px 8px 0;
+    font-size: 24px; font-weight: 700; line-height: 1.2; word-break: break-word;
+  }
+  .dhm-client {
+    display: flex; align-items: center; gap: 6px;
+    margin: 8px 8px 0; font-size: 15px; font-weight: 500;
+  }
+  .dhm-facts {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    margin: 16px 8px 0;
+  }
+  .dhm-fact {
+    display: flex; flex-direction: column; gap: 2px; min-width: 0;
+    padding: 9px 12px; border-radius: 12px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .dhm-fact-label { font-size: 11.5px; color: rgba(255, 255, 255, 0.65); }
+  .dhm-fact-value {
+    font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Прогресс */
+  /* Без зазора до вкладок: прогресс и вкладки — один блок. */
+  .dpm { padding: 14px 16px 16px; margin-bottom: 0; }
+  .dpm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .dpm-head-text { min-width: 0; }
+  .dpm-more {
+    width: 40px; height: 40px; margin: -6px -10px 0 0; border-radius: 12px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(var(--v-theme-on-surface), 0.6);
+  }
+  .dpm-more:active { background: rgba(var(--v-theme-on-surface), 0.06); }
+  .dpm-track { height: 8px; border-radius: 4px; margin-top: 12px; overflow: hidden; background: rgba(var(--v-theme-on-surface), 0.08); }
+  .dpm-fill { height: 100%; border-radius: 4px; background: rgb(var(--v-theme-primary)); }
+  .dpm-pay {
+    width: 100%; height: 44px; margin-top: 14px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: rgb(var(--v-theme-primary)); color: #fff;
+    font-size: 15px; font-weight: 600;
+  }
+  .dpm-pay:active { filter: brightness(0.94); }
+
+  /* Вкладки: лента с подчёркиванием, прилипает под шапкой кабинета. */
+  .deal-tabs {
+    position: sticky; top: calc(56px + env(safe-area-inset-top)); z-index: 5;
+    margin: 0 0 8px; padding: 0 6px; gap: 4px;
+    border-radius: 0; border: none;
+    border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+    border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+    box-shadow: none;
+    background: rgb(var(--v-theme-surface));
+  }
+  .deal-tabs .page-tab {
+    padding: 14px 14px; border-radius: 0; gap: 7px;
+    font-size: 14.5px; font-weight: 600;
+    color: rgba(var(--v-theme-on-surface), 0.55);
+    background: none !important; box-shadow: none !important;
+  }
+  .deal-tabs .page-tab--active {
+    color: #047857 !important;
+    box-shadow: inset 0 -2px 0 #047857 !important;
+  }
+  .deal-tabs .page-tab .v-icon { font-size: 18px !important; }
+  .deal-tabs .page-tab--active .page-tab-count {
+    background: rgba(4, 120, 87, 0.12); color: #047857;
+  }
+
+  /* Блоки-карточки страницы и вложенных разделов (у Vuetify рамка —
+     класс v-card--border). */
+  .at-page :deep(.v-card--border) {
+    border-radius: 0 !important;
+    border-left-width: 0 !important; border-right-width: 0 !important;
+  }
+  .at-page :deep(.v-card.mb-6), .at-page :deep(.v-card.mb-4) { margin-bottom: 8px !important; }
+  .at-page :deep(.v-card.pa-5) { padding: 14px 16px !important; }
+  /* Колонки Vuetify называются v-col-12 / v-col-lg-8 — ловим по началу имени. */
+  .v-row { margin: 0; }
+  .v-row > [class*="v-col"] { padding: 0; }
+
+  .sup-debt-row { flex-wrap: wrap; }
+
+  /* График: шапка одной строкой; показатели — одна полоса из четырёх
+     ячеек вместо четырёх карточек. */
+  .sched-head { padding: 14px 16px 0 !important; flex-wrap: nowrap !important; }
+  .sched-head .section-subtitle { margin-bottom: 10px !important; }
+  .add-payment-btn { height: 34px; padding: 0 10px; font-size: 12.5px; white-space: nowrap; }
+  .sched-kpi {
+    grid-template-columns: repeat(4, 1fr) !important; gap: 0; padding: 0;
+    border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  }
+  .sched-kpi-card {
+    min-width: 0; padding: 8px 6px 9px 12px;
+    border: none !important; border-radius: 0 !important; background: none;
+    box-shadow: inset -1px 0 0 rgba(var(--v-theme-on-surface), 0.07);
+  }
+  .sched-kpi-card:last-child { box-shadow: none; }
+  .sched-kpi-card--overdue { background: rgba(239, 68, 68, 0.05) !important; }
+  .sched-kpi-label { font-size: 11px; }
+  .sched-kpi-value { font-size: 15px; margin-top: 1px; gap: 3px; }
+  .sched-kpi-of { font-size: 10.5px; }
+  .sched-kpi-sum { font-size: 11px; white-space: nowrap; }
+  .sched-more {
+    width: 36px; height: 36px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(var(--v-theme-on-surface), 0.5);
+  }
+  .sched-more:active { background: rgba(var(--v-theme-on-surface), 0.06); }
+
+  /* Удаление */
+  .delete-deal-bar {
+    margin-top: 8px; padding: 12px 16px; gap: 12px;
+    border-radius: 0; border-left: none; border-right: none;
+  }
+  .delete-deal-btn { white-space: nowrap; flex-shrink: 0; height: 36px; }
+}
+
+/* Меню «⋯» блока прогресса (телефон) */
+.dpm-menu { padding: 4px; min-width: 250px; }
+.dpm-menu-item {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; min-height: 44px; padding: 8px 12px;
+  border-radius: 8px; text-align: left;
+  font-size: 14.5px; font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.88);
+}
+.dpm-menu-item:active { background: rgba(var(--v-theme-on-surface), 0.05); }
+.dpm-menu-item:disabled { opacity: 0.45; }
+.dpm-menu-item .v-icon { color: rgba(var(--v-theme-on-surface), 0.55); flex-shrink: 0; }
+.dpm-menu-text { display: flex; flex-direction: column; min-width: 0; }
+.dpm-menu-hint { font-size: 12px; font-weight: 400; color: rgba(var(--v-theme-on-surface), 0.5); white-space: normal; }
+.dpm-menu-divider { height: 1px; margin: 4px 8px; background: rgba(var(--v-theme-on-surface), 0.08); }
 </style>

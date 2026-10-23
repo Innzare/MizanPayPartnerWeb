@@ -1891,4 +1891,42 @@ async function confirm_() {
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
 }
+
+/* ══ Телефон (окно на весь экран) ══
+   Шапка с вкладками и кнопки внизу закреплены — тень показывает, что под
+   ними прокручивается содержимое. Рамки вокруг каждого поля убраны: на
+   узком экране рамка в рамке съедала ширину и читалась как лишний шум. */
+.qp-card--full .qp-head { padding: calc(10px + env(safe-area-inset-top)) 56px 12px 16px; }
+.qp-card--full .qp-title { font-size: 16px; }
+.qp-card--full .qp-sub { font-size: 12.5px; margin-top: 3px; gap: 2px 12px; }
+.qp-card--full .dialog-close-sm {
+  top: calc(8px + env(safe-area-inset-top)); right: 8px;
+  width: 40px; height: 40px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.14); color: #fff;
+}
+.qp-card--full .qp-tabs {
+  position: relative; z-index: 2;
+  padding: 0 16px; gap: 0;
+  border-bottom: none;
+  background: rgb(var(--v-theme-surface));
+  box-shadow: 0 1px 0 rgba(var(--v-theme-on-surface), 0.06), 0 4px 12px rgba(0, 0, 0, 0.07);
+}
+.qp-card--full .qp-tab { padding: 10px 2px; margin-right: 18px; font-size: 13.5px; }
+.qp-card--full .qp-sect { padding: 12px 16px; }
+.qp-card--full .qp-sect-label { font-size: 11px; margin-bottom: 8px; }
+.qp-card--full .qp-field { border: none; background: none; padding: 0; border-radius: 0; }
+.qp-card--full .qp-field + .qp-field { margin-top: 14px; }
+.qp-card--full .qp-mode { padding: 0 12px; font-size: 13px; }
+.qp-card--full .qp-schedule { padding: 8px 10px; }
+.qp-card--full .qp-block-note { margin: 0 16px 6px; }
+.qp-card--full .qp-actions {
+  position: relative; z-index: 2;
+  gap: 8px;
+  padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
+  border-top: none;
+  background: rgb(var(--v-theme-surface));
+  box-shadow: 0 -1px 0 rgba(var(--v-theme-on-surface), 0.06), 0 -4px 12px rgba(0, 0, 0, 0.07);
+}
+.qp-card--full .qp-actions > button { height: 44px; font-size: 14px; }
+.qp-card--full .qp-actions .btn-secondary { flex: 0 0 auto !important; padding: 0 18px; }
 </style>

@@ -26,6 +26,10 @@ const emit = defineEmits<{ (e: 'update:open', v: boolean): void }>()
 const router = useRouter()
 const authStore = useAuthStore()
 const { isMobile } = useIsMobile()
+// Телефон: панель на всю ширину — в 290px список сделок не читался.
+// Ширину берём при открытии (поворот экрана между открытиями учитывается).
+const phoneWidth = ref(window.innerWidth)
+watch(() => props.open, (v) => { if (v) phoneWidth.value = window.innerWidth })
 const { isDealLocked } = useDealLock()
 const recentDeals = useRecentDeals(authStore.user?.id ?? null)
 
@@ -170,7 +174,7 @@ function statusChipLabel(status: string): string {
     :model-value="open"
     location="right"
     temporary
-    :width="isMobile ? 290 : 520"
+    :width="isMobile ? phoneWidth : 520"
     @update:model-value="(v) => emit('update:open', v)"
   >
     <div class="ds-shell">
@@ -571,4 +575,46 @@ function statusChipLabel(status: string): string {
 }
 .ds-more:hover:not(:disabled) { background: rgba(var(--v-theme-primary), 0.06); }
 .ds-more:disabled { opacity: 0.6; }
+
+/* ══ Телефон: панель на весь экран ══
+   Шапка закреплена и отбрасывает тень на список. Вкладки и фильтр статуса —
+   переключателями во всю ширину; поиск — 16px, чтобы iOS не увеличивал
+   страницу. */
+@media (max-width: 767px) {
+  .ds-toolbar {
+    position: relative; z-index: 2;
+    background: rgb(var(--v-theme-surface));
+    border-bottom: none;
+    box-shadow: 0 1px 0 rgba(var(--v-theme-on-surface), 0.06), 0 4px 12px rgba(0, 0, 0, 0.07);
+    padding: env(safe-area-inset-top) 0 10px;
+  }
+  .ds-header { padding: 6px 4px 2px 16px; }
+  .ds-title { font-size: 17px; }
+  .ds-close { width: 44px; height: 44px; border-radius: 12px; }
+
+  .ds-tabs, .ds-status-chips {
+    margin: 8px 16px 0; padding: 3px; gap: 2px;
+    border-radius: 10px; flex-wrap: nowrap;
+    background: rgba(var(--v-theme-on-surface), 0.06);
+  }
+  .ds-tab, .ds-status-chip {
+    flex: 1; height: 32px; padding: 0 6px;
+    border: none; border-radius: 8px;
+    font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .ds-tab--active, .ds-status-chip--active {
+    background: rgb(var(--v-theme-surface));
+    color: rgba(var(--v-theme-on-surface), 0.92);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  }
+  .ds-tab--active .ds-tab-count { background: rgba(4, 120, 87, 0.12); }
+  .ds-status-chips { margin-top: 8px; }
+
+  .ds-search-wrap { margin: 8px 16px 0; }
+  .ds-search-input { height: 40px; font-size: 16px; border-radius: 10px; padding: 0 36px 0 34px; }
+  .ds-search-clear { width: 32px; height: 32px; right: 4px; }
+
+  .ds-list { padding-bottom: env(safe-area-inset-bottom); }
+}
 </style>

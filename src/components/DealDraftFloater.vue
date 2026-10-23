@@ -102,7 +102,8 @@ function discard() {
 .draft-floater {
   position: fixed;
   right: 20px;
-  bottom: 20px;
+  /* На телефоне — над нижними вкладками. */
+  bottom: calc(20px + var(--bottom-nav-offset, 0px));
   z-index: 1000;
   width: 320px;
   max-width: calc(100vw - 40px);
@@ -212,7 +213,7 @@ function discard() {
   .draft-floater {
     left: 12px;
     right: 12px;
-    bottom: 12px;
+    bottom: calc(12px + var(--bottom-nav-offset, 0px));
     width: auto;
   }
 }

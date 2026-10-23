@@ -67,9 +67,7 @@
   width: 100%;
   background: rgb(var(--v-theme-surface));
 }
-@media (max-width: 480px) {
-  .fp-drawer { width: 100vw; }
-}
+
 .fp-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 18px;
@@ -268,3 +266,60 @@
   font-size: 13px; font-weight: 600; cursor: pointer;
 }
 .fp-apply:hover { background: #065f46; }
+
+/* ══ Телефон ══
+   Панель на весь экран. Шапка и кнопки внизу закреплены и отбрасывают тень —
+   видно, что под ними прокручивается содержимое. Секции — во всю ширину,
+   без скруглений; всё нажимаемое — под палец, поля — 16px (без зума iOS). */
+@media (max-width: 767px) {
+  /* !important обязателен: ширину (width="380") Vuetify пишет прямо в style
+     содержимого диалога, и обычное правило её не перебивало — на 390–430 px
+     панель оставалась 380 px со щелью сбоку, а содержимое уезжало за край. */
+  .v-overlay.fp-dialog > .v-overlay__content {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+  .fp-drawer { width: 100%; }
+
+  .fp-head {
+    position: relative; z-index: 2;
+    padding: calc(8px + env(safe-area-inset-top)) 6px 8px 16px;
+    border-bottom: none;
+    box-shadow: 0 1px 0 rgba(var(--v-theme-on-surface), 0.06), 0 4px 14px rgba(0, 0, 0, 0.08);
+  }
+  .fp-title { font-size: 18px; }
+  .fp-close { width: 44px; height: 44px; border-radius: 12px; background: none; }
+
+  .fp-body { padding: 8px 0; gap: 8px; }
+  .fp-section {
+    padding: 14px 16px 16px;
+    border-radius: 0; border-left: none; border-right: none;
+  }
+  .fp-section--on { box-shadow: inset 3px 0 0 rgb(var(--v-theme-primary)); }
+  .fp-section-head { margin-bottom: 12px; }
+  .fp-section-title { font-size: 15px; }
+  .fp-section-icon { font-size: 18px !important; }
+  .fp-section-clear { font-size: 13px; padding: 6px 10px; margin-right: -8px; }
+  .fp-hint { font-size: 12.5px; margin-top: -6px; }
+
+  .fp-presets { gap: 6px; }
+  .fp-preset { padding: 8px 11px; font-size: 13px; border-radius: 9px; }
+  .fp-chips { gap: 8px; }
+  .fp-chip { min-height: 36px; padding: 7px 12px; font-size: 14px; border-radius: 10px; }
+  .fp-saved-apply { padding: 8px 10px 8px 12px; font-size: 13.5px; }
+  .fp-saved-del { padding: 8px 10px; }
+
+  .fp-range-label { font-size: 13.5px; }
+  .fp-input { height: 44px; padding: 0 12px; font-size: 16px; border-radius: 10px; }
+  .fp-select { height: 44px; font-size: 16px; }
+  .fp-check { font-size: 14px; gap: 10px; min-height: 36px; }
+  .fp-check input { width: 20px; height: 20px; }
+
+  .fp-actions {
+    position: relative; z-index: 2;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    border-top: none;
+    box-shadow: 0 -1px 0 rgba(var(--v-theme-on-surface), 0.06), 0 -4px 14px rgba(0, 0, 0, 0.08);
+  }
+  .fp-reset, .fp-apply { height: 48px; font-size: 15px; border-radius: 12px; }
+}

@@ -21,7 +21,11 @@ export function useAutoLoad(options: {
   /** Загрузить следующую порцию. */
   loadMore: () => void | Promise<void>
 }) {
-  const enabled = ref(loadEnabled(options.storageKey))
+  // Телефон: лента подгружается всегда — страницы с номерами и переключатель
+  // режима там неудобны (переключателя на телефоне и нет). Сохранённый
+  // выбор для компьютера при этом не трогаем.
+  const isPhone = typeof window !== 'undefined' && window.innerWidth < 768
+  const enabled = ref(isPhone ? true : loadEnabled(options.storageKey))
   /** Сколько порций подряд подгрузилось само — на случай, если строк не знаем. */
   const autoBatches = ref(0)
   watch(enabled, (v) => {

@@ -1,9 +1,20 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="UTF-8">
     <link rel="icon" href="/favicon.ico">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- viewport-fit=cover: отступы под вырез и полоску «домой» на iPhone задаются
+         через env(safe-area-inset-*) — без этого там всегда 0. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <!-- iPhone увеличивает страницу при фокусе в поле со шрифтом меньше 16px,
+         и её потом приходится уменьшать руками. maximum-scale=1 это выключает;
+         увеличить двумя пальцами iOS всё равно даёт. Только для iOS: на Android
+         maximum-scale запрещает и ручное увеличение, а автозума там нет. -->
+    <script>
+      if (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) {
+        document.querySelector('meta[name=viewport]').setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover');
+      }
+    </script>
     <title>MizanPay Partner</title>
     <!-- Yandex Maps JS API 2.1 — адресный автокомплит + карта в форме партнёра.
          Ключ временно переиспользован из Matsal; для прода получить собственный. -->

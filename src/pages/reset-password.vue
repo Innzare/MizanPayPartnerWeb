@@ -26,28 +26,38 @@ const newPassword = ref('')
 const confirmPassword = ref('')
 const showPassword = ref(false)
 const isLoading = ref(false)
-const error = ref('')
 const success = ref(false)
+const newField = ref<{ focus: () => void } | null>(null)
+const confirmField = ref<{ focus: () => void } | null>(null)
+/** Какое поле обвести красным; текст ошибки — уведомлением (блок над формой сдвигал её). */
+const invalid = ref<'new' | 'confirm' | null>(null)
+watch([newPassword, confirmPassword], () => { invalid.value = null })
+
+function fail(field: 'new' | 'confirm', message: string) {
+  invalid.value = field
+  toast.error(message)
+  ;(field === 'new' ? newField : confirmField).value?.focus()
+}
+
+/** Enter в первом поле — ко второму (на телефоне кнопка «Далее»). */
+const toConfirm = () => {
+  if (confirmPassword.value) handleSubmit()
+  else confirmField.value?.focus()
+}
 
 const token = computed(() => (route.query.token as string) || '')
 
 const handleSubmit = async () => {
   if (!token.value) {
-    error.value = 'Недействительная ссылка для сброса пароля'
+    toast.error('Недействительная ссылка для сброса пароля')
     return
   }
 
-  if (!newPassword.value || newPassword.value.length < 6) {
-    error.value = 'Пароль должен быть не менее 6 символов'
-    return
-  }
+  if (!newPassword.value) return fail('new', 'Введите новый пароль')
+  if (newPassword.value.length < 6) return fail('new', 'Пароль должен быть не менее 6 символов')
+  if (!confirmPassword.value) return fail('confirm', 'Повторите пароль')
+  if (newPassword.value !== confirmPassword.value) return fail('confirm', 'Пароли не совпадают')
 
-  if (newPassword.value !== confirmPassword.value) {
-    error.value = 'Пароли не совпадают'
-    return
-  }
-
-  error.value = ''
   isLoading.value = true
 
   try {
@@ -57,7 +67,7 @@ const handleSubmit = async () => {
     })
     success.value = true
   } catch (e) {
-    if (isAuthFormError(e)) error.value = toUserMessage(e, 'Не удалось сменить пароль')
+    if (isAuthFormError(e)) toast.error(toUserMessage(e, 'Не удалось сменить пароль'))
     else toast.error(e, 'Не удалось сменить пароль — попробуйте ещё раз')
   } finally {
     isLoading.value = false
@@ -66,94 +76,109 @@ const handleSubmit = async () => {
 </script>
 
 <template>
-  <v-main class="reset-page">
-    <div class="reset-panel">
-      <div class="reset-wrapper">
-        <div class="d-flex align-center justify-center ga-2 mb-8">
-          <v-img :src="logo" width="36" height="36" />
-          <img :src="isDark ? logoTextDark : logoText" alt="MizanPay" style="height: 22px; width: auto;" />
+  <v-main class="auth-page">
+    <div class="auth-panel">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <img :src="logo" alt="" class="auth-brand-logo" />
+          <img :src="isDark ? logoTextDark : logoText" alt="MizanPay" class="auth-brand-text" />
         </div>
 
         <!-- Success state -->
         <template v-if="success">
-          <div class="text-center">
-            <v-icon icon="mdi-check-circle-outline" size="64" color="success" class="mb-4" />
-            <h2 class="reset-title mb-3">Пароль изменён</h2>
-            <p class="reset-subtitle mb-6">
-              Ваш пароль успешно обновлён. Теперь вы можете войти с новым паролем.
-            </p>
-            <v-btn
-              color="primary"
-              size="large"
-              rounded="lg"
-              block
-              class="submit-btn"
-              @click="router.push('/login')"
-            >
-              Войти
-            </v-btn>
+          <div class="rp-state-icon rp-state-icon--ok">
+            <v-icon icon="mdi-check-circle-outline" size="36" />
           </div>
+          <h1 class="auth-title">Пароль изменён</h1>
+          <p class="auth-subtitle">
+            Ваш пароль успешно обновлён. Теперь вы можете войти с новым паролем.
+          </p>
+          <v-btn
+            color="primary"
+            size="x-large"
+            rounded="lg"
+            block
+            class="auth-btn"
+            @click="router.push('/login')"
+          >
+            Войти
+          </v-btn>
         </template>
 
         <!-- No token -->
         <template v-else-if="!token">
-          <div class="text-center">
-            <v-icon icon="mdi-link-off" size="64" color="error" class="mb-4" />
-            <h2 class="reset-title mb-3">Недействительная ссылка</h2>
-            <p class="reset-subtitle mb-6">
-              Ссылка для сброса пароля недействительна или повреждена. Запросите новую.
-            </p>
-            <v-btn
-              variant="text"
-              color="primary"
-              to="/forgot-password"
-              class="text-none"
-            >
-              Запросить новую ссылку
-            </v-btn>
+          <div class="rp-state-icon rp-state-icon--bad">
+            <v-icon icon="mdi-link-off" size="36" />
+          </div>
+          <h1 class="auth-title">Недействительная ссылка</h1>
+          <p class="auth-subtitle">
+            Ссылка для сброса пароля недействительна или повреждена. Запросите новую.
+          </p>
+          <v-btn
+            to="/forgot-password"
+            color="primary"
+            size="x-large"
+            rounded="lg"
+            block
+            class="auth-btn"
+          >
+            Запросить новую ссылку
+          </v-btn>
+          <div class="text-center mt-4">
+            <router-link to="/login" class="auth-link auth-link--muted">
+              <v-icon icon="mdi-arrow-left" size="16" />
+              Вернуться к входу
+            </router-link>
           </div>
         </template>
 
         <!-- Form state -->
         <template v-else>
-          <div class="mb-6">
-            <h2 class="reset-title mb-2">Новый пароль</h2>
-            <p class="reset-subtitle">Придумайте новый пароль для вашего аккаунта</p>
-          </div>
+          <h1 class="auth-title">Новый пароль</h1>
+          <p class="auth-subtitle">Придумайте новый пароль для вашего аккаунта</p>
 
-          <v-alert
-            v-if="error"
-            type="error"
-            variant="tonal"
-            density="compact"
-            class="mb-5"
-            closable
-            @click:close="error = ''"
-          >
-            {{ error }}
-          </v-alert>
 
           <form @submit.prevent="handleSubmit">
-            <div class="mb-5">
-              <label class="field-label">Новый пароль</label>
+            <div class="auth-field">
+              <label class="auth-label" for="rp-new">Новый пароль</label>
               <v-text-field
+                id="rp-new"
+                ref="newField"
                 v-model="newPassword"
+                :error="invalid === 'new'"
                 :type="showPassword ? 'text' : 'password'"
                 variant="outlined"
                 density="comfortable"
                 placeholder="Минимум 6 символов"
                 prepend-inner-icon="mdi-lock-outline"
-                :append-inner-icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'"
                 hide-details="auto"
                 rounded="lg"
-                @click:append-inner="showPassword = !showPassword"
-              />
+                autocomplete="new-password"
+                autocapitalize="none"
+                :spellcheck="false"
+                enterkeyhint="next"
+                @keydown.enter.prevent="toConfirm"
+              >
+                <template #append-inner>
+                  <button
+                    type="button"
+                    class="auth-eye"
+                    :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'"
+                    @click="showPassword = !showPassword"
+                  >
+                    <v-icon :icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'" size="22" />
+                  </button>
+                </template>
+              </v-text-field>
             </div>
 
-            <div class="mb-6">
-              <label class="field-label">Подтвердите пароль</label>
+            <div class="auth-field mb-6">
+              <label class="auth-label" for="rp-confirm">Подтвердите пароль</label>
               <v-text-field
+                id="rp-confirm"
+                ref="confirmField"
                 v-model="confirmPassword"
+                :error="invalid === 'confirm'"
                 :type="showPassword ? 'text' : 'password'"
                 variant="outlined"
                 density="comfortable"
@@ -161,6 +186,10 @@ const handleSubmit = async () => {
                 prepend-inner-icon="mdi-lock-check-outline"
                 hide-details="auto"
                 rounded="lg"
+                autocomplete="new-password"
+                autocapitalize="none"
+                :spellcheck="false"
+                enterkeyhint="done"
               />
             </div>
 
@@ -171,15 +200,15 @@ const handleSubmit = async () => {
               block
               rounded="lg"
               :loading="isLoading"
-              class="submit-btn mb-4"
+              class="auth-btn"
             >
               Сохранить пароль
             </v-btn>
           </form>
 
-          <div class="text-center">
-            <router-link to="/login" class="back-link">
-              <v-icon icon="mdi-arrow-left" size="16" class="mr-1" />
+          <div class="text-center mt-4">
+            <router-link to="/login" class="auth-link auth-link--muted">
+              <v-icon icon="mdi-arrow-left" size="16" />
               Вернуться к входу
             </router-link>
           </div>
@@ -190,65 +219,10 @@ const handleSubmit = async () => {
 </template>
 
 <style scoped>
-.reset-page {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgb(var(--v-theme-surface));
+.rp-state-icon {
+  width: 64px; height: 64px; border-radius: 50%; margin-bottom: 20px;
+  display: flex; align-items: center; justify-content: center;
 }
-
-.reset-panel {
-  width: 100%;
-  max-width: 440px;
-  padding: 32px;
-}
-
-.reset-wrapper {
-  width: 100%;
-}
-
-.reset-title {
-  font-size: 1.5rem;
-  font-weight: 800;
-  color: rgba(var(--v-theme-on-surface), 0.95);
-  letter-spacing: -0.02em;
-}
-
-.reset-subtitle {
-  font-size: 0.9rem;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  line-height: 1.5;
-}
-
-.field-label {
-  display: block;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.8);
-  margin-bottom: 6px;
-}
-
-.submit-btn {
-  font-weight: 600;
-  letter-spacing: 0;
-  text-transform: none;
-  font-size: 0.95rem;
-}
-
-.back-link {
-  font-size: 0.8rem;
-  color: rgb(var(--v-theme-accent));
-  text-decoration: none;
-  font-weight: 500;
-  display: inline-flex;
-  align-items: center;
-}
-
-.back-link:hover {
-  text-decoration: underline;
-}
-
-/* Всё выше — на переменных темы; `.dark`-правил намеренно нет (класс ставится
-   скриптом, и полагаться на его наличие для читаемости текста нельзя). */
+.rp-state-icon--ok { background: rgba(var(--v-theme-success), 0.12); color: rgb(var(--v-theme-success)); }
+.rp-state-icon--bad { background: rgba(var(--v-theme-error), 0.12); color: rgb(var(--v-theme-error)); }
 </style>

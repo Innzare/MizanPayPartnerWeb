@@ -12,7 +12,7 @@
 import { computed } from 'vue'
 import { PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { useIsDark } from '@/composables/useIsDark'
-import { formatCurrency, formatDate } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShortYear } from '@/utils/formatters'
 import { offMonthKind, dueYearMonth, monthPrepositional, overdueDays, pluralDays } from '@/utils/paymentAttribution'
 import type { Payment } from '@/types'
 
@@ -241,64 +241,77 @@ function paymentOffMonthLabel(p: { paidAt?: string | null; dueDate: string }): s
       </v-table>
     </div>
 
-    <!-- Узкий экран: то же содержимое карточками. -->
-    <div class="schedule-cards">
+    <!-- Узкий экран: лента. Слева значок статуса, в середине номер, срок и
+         что случилось с платежом, справа деньги. Строки во всю ширину, без
+         карточек — в графике десятки платежей, и карточки растягивали его на
+         десятки экранов. Недоплата — ветка со сдвигом под своим платежом. -->
+    <div class="sm-list">
       <div
-        v-for="{ p, isDebt } in scheduleRows"
+        v-for="{ p, isDebt, afterDebt } in scheduleRows"
         :key="p.id"
-        class="sched-card"
-        @click="emit('select', p)"
+        class="sm-row"
         :class="{
-          'sched-card--paid': p.status === 'PAID',
-          'sched-card--overdue': p.status === 'OVERDUE' && !isDebt,
-          'sched-card--closed': p.status === 'CLOSED_EARLY',
-          'sched-card--debt': isDebt,
+          'sm-row--debt': isDebt,
+          'sm-row--after-debt': afterDebt,
+          'sm-row--overdue': p.status === 'OVERDUE' && !isDebt,
+          'sm-row--closed': p.status === 'CLOSED_EARLY',
         }"
+        @click="emit('select', p)"
       >
-        <div class="sched-card-head">
-          <div class="sched-card-num">
-            <template v-if="isDebt">недоплата за №{{ p.number }}</template>
-            <template v-else>#{{ p.number }}</template>
-          </div>
-          <div class="pay-status" :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])">
-            <v-icon v-if="statusIcon(p.status)" :icon="statusIcon(p.status)" size="14" />
-            {{ PAYMENT_STATUS_CONFIG[p.status]?.label }}
-          </div>
-        </div>
+        <div class="sm-main">
+          <span class="sm-ico" :style="statusStyle(PAYMENT_STATUS_CONFIG[p.status])">
+            <v-icon :icon="statusIcon(p.status) || 'mdi-circle-small'" size="16" />
+          </span>
 
-        <div class="sched-card-date">
-          <!-- У долга срок тот же, что у платежа в карточке выше. -->
-          <div v-if="!isDebt" class="sched-card-date-value">{{ formatDate(p.dueDate) }}</div>
-          <div v-if="p.rescheduledFrom" class="rescheduled-hint">
-            <v-icon icon="mdi-calendar-arrow-right" size="12" />
-            было {{ formatDate(p.rescheduledFrom) }}
-          </div>
-          <div
-            v-if="daysOverdue(p) > 0"
-            class="overdue-chip"
-            :class="{ 'overdue-chip--late': p.status === 'PAID' }"
-          >
-            <v-icon icon="mdi-clock-alert-outline" size="11" />
-            {{ p.status === 'PAID' ? (isDebt ? 'доплачен с задержкой' : 'оплачен с задержкой') : 'просрочен' }}
-            на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
-          </div>
-          <template v-if="isDebt">
-            <div
-              v-if="shortfallPromiseLabel(p)"
-              class="shortfall-promise"
-              :class="{ 'shortfall-promise--nodate': !p.shortfallPromisedDate }"
-            >
-              <v-icon icon="mdi-handshake-outline" size="12" />
-              {{ shortfallPromiseLabel(p) }}
+          <div class="sm-mid">
+            <div class="sm-title">
+              <template v-if="isDebt">Недоплата за №{{ p.number }}</template>
+              <template v-else>№{{ p.number }} · {{ formatDate(p.dueDate) }}</template>
             </div>
-            <div v-if="p.shortfallNote" class="shortfall-note">{{ p.shortfallNote }}</div>
-          </template>
-        </div>
+            <div class="sm-state" :style="{ color: statusStyle(PAYMENT_STATUS_CONFIG[p.status]).color }">
+              <template v-if="p.status === 'PAID' && p.paidAt">
+                {{ isDebt ? 'Доплачено' : 'Оплачен' }} {{ formatDateShortYear(p.paidAt) }}
+              </template>
+              <template v-else>{{ PAYMENT_STATUS_CONFIG[p.status]?.label }}</template>
+              <span
+                v-if="daysOverdue(p) > 0"
+                class="sm-late"
+                :class="{ 'sm-late--overdue': p.status === 'OVERDUE' }"
+              >
+                · {{ p.status === 'PAID' ? 'с задержкой' : '' }} на {{ daysOverdue(p) }} {{ pluralDays(daysOverdue(p)) }}
+              </span>
+            </div>
+            <div v-if="p.rescheduledFrom" class="rescheduled-hint">
+              <v-icon icon="mdi-calendar-arrow-right" size="12" />
+              было {{ formatDate(p.rescheduledFrom) }}
+            </div>
+            <template v-if="isDebt">
+              <div
+                v-if="shortfallPromiseLabel(p)"
+                class="shortfall-promise"
+                :class="{ 'shortfall-promise--nodate': !p.shortfallPromisedDate }"
+              >
+                <v-icon icon="mdi-handshake-outline" size="12" />
+                {{ shortfallPromiseLabel(p) }}
+              </div>
+              <div v-if="p.shortfallNote" class="shortfall-note">{{ p.shortfallNote }}</div>
+            </template>
+            <div
+              v-if="paymentOffMonth(p)"
+              class="offmonth-chip"
+              :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
+              :title="paymentOffMonthLabel(p)"
+            >
+              <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
+              {{ paymentOffMonth(p) === 'early' ? 'доход учтён по факту (досрочно)' : 'доход учтён по факту (позже срока)' }}
+            </div>
+          </div>
 
-        <div class="sched-card-amounts">
-          <div class="sched-card-amount">
-            <div class="sched-card-amount-label">Сумма</div>
-            <div class="sched-card-amount-value">{{ formatCurrency(p.amount) }}</div>
+          <div class="sm-money">
+            <div
+              class="sm-amount"
+              :class="{ 'debt-amount': isDebt && (p.status === 'PENDING' || p.status === 'OVERDUE') }"
+            >{{ formatCurrency(p.amount) }}</div>
             <div
               v-if="shortfallByPayment.get(p.id) && p.scheduledAmount != null"
               class="plan-vs-fact shortfall-paid"
@@ -312,39 +325,24 @@ function paymentOffMonthLabel(p: { paidAt?: string | null; dueDate: string }): s
             >
               план: {{ formatCurrency(p.scheduledAmount) }}
             </div>
+            <div v-if="!isDebt" class="sm-rest">ост. {{ formatCurrency(p.remainingAfter) }}</div>
+            <img
+              v-if="p.proofScreenshot"
+              :src="p.proofScreenshot"
+              class="proof-thumbnail sm-proof"
+              title="Скриншот оплаты"
+              @click.stop="emit('proof', p.proofScreenshot!)"
+            />
           </div>
-          <div class="sched-card-amount">
-            <div class="sched-card-amount-label">Остаток после</div>
-            <div class="sched-card-amount-value sched-card-amount-value--muted">
-              {{ formatCurrency(p.remainingAfter) }}
-            </div>
+
+          <!-- Действия строки на телефоне — компактно справа (обычно меню «⋮»),
+               если владелец дал слот mobile-actions; иначе — кнопками ниже. -->
+          <div v-if="actions && $slots['mobile-actions']" class="sm-act" @click.stop>
+            <slot name="mobile-actions" :p="p" :is-debt="isDebt" />
           </div>
         </div>
 
-        <div v-if="p.paidAt || p.proofScreenshot" class="sched-card-paid">
-          <div v-if="p.paidAt" class="sched-card-paid-date">
-            <v-icon icon="mdi-check-circle-outline" size="14" />
-            Оплачено {{ formatDate(p.paidAt) }}
-          </div>
-          <div
-            v-if="paymentOffMonth(p)"
-            class="offmonth-chip"
-            :class="paymentOffMonth(p) === 'early' ? 'offmonth-chip--early' : 'offmonth-chip--late'"
-            :title="paymentOffMonthLabel(p)"
-          >
-            <v-icon :icon="paymentOffMonth(p) === 'early' ? 'mdi-calendar-arrow-left' : 'mdi-calendar-arrow-right'" size="11" />
-            {{ paymentOffMonth(p) === 'early' ? 'доход учтён по факту (досрочно)' : 'доход учтён по факту (позже срока)' }}
-          </div>
-          <img
-            v-if="p.proofScreenshot"
-            :src="p.proofScreenshot"
-            class="proof-thumbnail sched-card-proof"
-            title="Скриншот оплаты"
-            @click="emit('proof', p.proofScreenshot!)"
-          />
-        </div>
-
-        <div v-if="actions" class="sched-card-actions">
+        <div v-if="actions && !$slots['mobile-actions']" class="sm-actions" @click.stop>
           <slot name="actions" :p="p" :is-debt="isDebt" />
         </div>
       </div>
@@ -504,94 +502,75 @@ function paymentOffMonthLabel(p: { paidAt?: string | null; dueDate: string }): s
 }
 .proof-thumbnail:hover { transform: scale(1.08); }
 
-/* ───── Узкий экран: карточки вместо широкой таблицы ───── */
-.schedule-cards {
-  display: none;
-  padding: 12px 14px 14px;
-}
+/* ───── Узкий экран: лента вместо широкой таблицы ───── */
+.sm-list { display: none; }
 
 @media (max-width: 767px) {
   .schedule-table--desktop { display: none !important; }
-  .schedule-cards { display: flex; flex-direction: column; gap: 10px; }
+  .sm-list { display: block; border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07); }
 }
 
-.sched-card {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 14px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  border-radius: 12px;
-  background: rgb(var(--v-theme-surface));
+.sm-row {
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
-.sched-card--overdue {
-  border-color: rgba(239, 68, 68, 0.25);
-  background: rgba(239, 68, 68, 0.02);
+.sm-row:active { background: rgba(var(--v-theme-on-surface), 0.03); }
+.sm-row--overdue { background: rgba(239, 68, 68, 0.04); }
+.sm-row--closed { opacity: 0.6; }
+/* Недоплата — ветка своего платежа: сдвиг и линия слева, без черты сверху. */
+.sm-row--debt {
+  position: relative;
+  padding-left: 46px;
+  margin-top: -1px;
+  background: rgba(var(--v-theme-on-surface), 0.022);
 }
-.sched-card--paid {
-  background: rgba(16, 185, 129, 0.03);
+.sm-row--debt::before {
+  content: ''; position: absolute; left: 26px; top: 0; height: 50%; width: 12px;
+  border-left: 2px solid rgba(var(--v-theme-on-surface), 0.2);
+  border-bottom: 2px solid rgba(var(--v-theme-on-surface), 0.2);
+  border-bottom-left-radius: 8px;
 }
-.sched-card--closed {
-  opacity: 0.6;
+.sm-row--debt .sm-ico { display: none; }
+.sm-row--after-debt { border-top: 2px solid rgba(var(--v-theme-on-surface), 0.12); }
+
+.sm-main { display: flex; align-items: center; gap: 10px; }
+.sm-ico {
+  flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
 }
-.sched-card--debt {
-  margin-left: 16px;
-  border-left: 3px solid rgba(var(--v-theme-on-surface), 0.22) !important;
-  background: rgba(var(--v-theme-on-surface), 0.022) !important;
+.sm-ico .v-icon { font-size: 14px !important; }
+.sm-mid { flex: 1; min-width: 0; }
+.sm-title {
+  font-size: 13.5px; font-weight: 600; line-height: 1.3;
+  color: rgba(var(--v-theme-on-surface), 0.9);
 }
-.sched-card-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+.sm-state { font-size: 12px; font-weight: 500; margin-top: 1px; line-height: 1.3; }
+.sm-late { color: #d97706; font-weight: 600; }
+.sm-late--overdue { color: #dc2626; }
+.sm-money { flex-shrink: 0; text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
+.sm-amount {
+  font-size: 14px; font-weight: 700; line-height: 1.3;
+  color: rgba(var(--v-theme-on-surface), 0.92); font-variant-numeric: tabular-nums;
 }
-.sched-card-num {
-  font-size: 13px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.45);
+.sm-rest {
+  font-size: 11.5px; margin-top: 1px;
+  color: rgba(var(--v-theme-on-surface), 0.45); font-variant-numeric: tabular-nums;
 }
-.sched-card-date-value {
-  font-size: 15px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.92);
-}
-.sched-card-amounts {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-  padding: 10px 12px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  border-radius: 10px;
-}
-.sched-card-amount-label {
-  font-size: 11px; font-weight: 500;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-  margin-bottom: 2px;
-}
-.sched-card-amount-value {
-  font-size: 15px; font-weight: 700;
-  color: rgba(var(--v-theme-on-surface), 0.95);
-}
-.sched-card-amount-value--muted {
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.65);
-}
-.sched-card-paid {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
-.sched-card-paid-date {
-  display: inline-flex; align-items: center; gap: 4px;
-}
-.sched-card-paid-date .v-icon { color: #10b981; }
-.sched-card-proof {
-  width: 40px; height: 40px;
-}
+.sm-proof { width: 28px; height: 28px; margin-top: 4px; }
+.sm-mid .rescheduled-hint, .sm-mid .shortfall-promise, .sm-mid .offmonth-chip { margin-top: 3px; }
 /* Кнопки приходят слотом из родителя — до них достаёт только :deep. */
-.sched-card-actions {
+.sm-actions {
   display: flex; gap: 6px; flex-wrap: wrap;
-  margin-top: 4px;
+  margin: 6px 0 2px 32px;
 }
-.sched-card-actions:empty { display: none; }
-.sched-card-actions :deep(.action-btn) {
-  flex: 1 1 auto;
-  width: auto;
-  height: 38px;
-  padding: 0 12px;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 500;
+.sm-actions:empty { display: none; }
+.sm-act { flex-shrink: 0; margin-right: -10px; }
+.sm-act:empty { display: none; }
+.sm-actions :deep(.action-btn) {
+  flex: 1 1 auto; width: auto; height: 32px;
+  padding: 0 12px; gap: 6px;
+  font-size: 13px; font-weight: 500;
 }
 </style>

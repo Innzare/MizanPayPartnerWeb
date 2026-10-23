@@ -2,7 +2,7 @@
 import SearchInput from '@/components/SearchInput.vue'
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
-import { formatCurrency, formatDate, formatDateShortYear, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDate, formatDateShort, formatDateShortYear, formatPercent, formatPhone, timeAgo } from '@/utils/formatters'
 import { todayIso } from '@/utils/dateInput'
 import { DEAL_STATUS_CONFIG } from '@/constants/statuses'
 import { type Deal, type DealFolder, type Payment, userName, clientProfileName } from '@/types'
@@ -29,7 +29,7 @@ import { useCoInvestors } from '@/composables/useCoInvestors'
 import { useSuppliersStore } from '@/stores/suppliers'
 import DealsFilterPanel from '@/components/DealsFilterPanel.vue'
 import ReschedulePaymentDialog from '@/components/ReschedulePaymentDialog.vue'
-import DealGroupShareDialog from '@/components/DealGroupShareDialog.vue'
+import { copyDealGroupText, setDealGroupSent } from '@/composables/useGroupShare'
 
 const router = useRouter()
 const route = useRoute()
@@ -40,17 +40,34 @@ const toast = useToast()
  * Текст сделки для рабочей группы — одно окно: готовый текст (можно поправить),
  * копирование и отметка «отправлено в группу».
  */
-const groupShareDeal = ref<Deal | null>(null)
-const groupShareOpen = ref(false)
-function openGroupShare(deal: Deal) {
-  groupShareDeal.value = deal
-  groupShareOpen.value = true
+/** Сделка, по которой сейчас идёт копирование или смена отметки. */
+const groupBusyId = ref<string | null>(null)
+async function copyForGroup(deal: Deal) {
+  if (groupBusyId.value) return
+  groupBusyId.value = deal.id
+  try {
+    await copyDealGroupText(deal.id)
+    toast.success('Текст для группы скопирован')
+  } catch (e: any) {
+    toast.error(e, 'Не удалось скопировать текст')
+  } finally {
+    groupBusyId.value = null
+  }
 }
-async function onGroupSentChanged(v: { id: string; groupSentAt: string | null }) {
-  const row = displayedDeals.value.find((d) => d.id === v.id)
-  if (row) row.groupSentAt = v.groupSentAt
-  // Список отфильтрован по этой отметке — строка должна уйти из выборки.
-  if (filters.state.value.groupSent) await refreshList()
+async function toggleGroupSent(deal: Deal) {
+  if (groupBusyId.value) return
+  groupBusyId.value = deal.id
+  try {
+    const res = await setDealGroupSent(deal.id, !deal.groupSentAt)
+    const row = displayedDeals.value.find((d) => d.id === res.id)
+    if (row) row.groupSentAt = res.groupSentAt
+    // Список отфильтрован по этой отметке — строка должна уйти из выборки.
+    if (filters.state.value.groupSent) await refreshList()
+  } catch (e: any) {
+    toast.error(e, 'Не удалось сохранить отметку')
+  } finally {
+    groupBusyId.value = null
+  }
 }
 const dealsStore = useDealsStore()
 const authStore = useAuthStore()
@@ -203,18 +220,13 @@ onMounted(async () => {
 })
 
 const tab = ref(0)
-// Reactive mobile detection — used to (a) force grid view on phones where
-// the 9-column table can't fit, and (b) make dialogs fullscreen.
+// Телефон: свой вид списка — компактные карточки (таблица с прокруткой вбок
+// на телефоне не читается — решение владельца 22.10); окна на весь экран.
+// Переключатель «таблица/карточки» и колонки — только на компьютере.
 const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
-const viewMode = ref<'grid' | 'table'>(isMobile.value ? 'grid' : 'table')
+const viewMode = ref<'grid' | 'table'>('table')
 function updateMobile() {
-  const m = window.innerWidth < 768
-  if (m !== isMobile.value) {
-    isMobile.value = m
-    // Going to mobile — force grid (table is unreadable). Going to desktop
-    // — leave whatever the user had (don't override their preference).
-    if (m && viewMode.value === 'table') viewMode.value = 'grid'
-  }
+  isMobile.value = window.innerWidth < 768
 }
 onMounted(() => window.addEventListener('resize', updateMobile))
 onUnmounted(() => window.removeEventListener('resize', updateMobile))
@@ -532,6 +544,8 @@ const sortOptions = [
   { title: 'Сумма ↑', value: 'amount_asc' },
   { title: 'По прогрессу', value: 'progress' },
 ]
+/** Подпись текущей сортировки для кнопки на телефоне. */
+const sortLabel = computed(() => sortOptions.find((o) => o.value === sortBy.value)?.title ?? 'Своя')
 
 // ── Управляемые колонки таблицы ──
 /**
@@ -1629,7 +1643,7 @@ async function refreshSelectedDeal(dealId: string) {
     </div>
 
     <!-- Top toolbar row: trash on the left, filter chips on the right. -->
-    <div class="d-flex justify-space-between align-center ga-2 mb-3 flex-wrap">
+    <div v-if="!isMobile" class="d-flex justify-space-between align-center ga-2 mb-3 flex-wrap dl-toolbar">
       <div class="d-flex align-center ga-2">
       <!-- Управление колонками таблицы — слева от «Корзины» -->
       <v-menu v-if="!isMobile && viewMode === 'table'" :close-on-content-click="false" location="bottom start">
@@ -1762,9 +1776,97 @@ async function refreshSelectedDeal(dealId: string) {
 
     <!-- Main card -->
     <v-card rounded="lg" elevation="0" border class="deals-card">
-      <div class="pa-4">
+      <div class="pa-4 dl-inner">
+        <!-- ТЕЛЕФОН: панель управления списком. Две строки вместо четырёх:
+             поиск и фильтры; статус списка, сортировка и «⋯» (выбор, корзина). -->
+        <div v-if="isMobile" class="mt-bar">
+          <div class="mt-row">
+            <SearchInput v-model="search" placeholder="Товар, клиент, номер…" class="mt-search" />
+            <button
+              v-if="!isTrashTab"
+              class="mt-icon-btn"
+              :class="{ 'mt-icon-btn--active': filters.hasAny.value }"
+              aria-label="Фильтры"
+              @click="filtersOpen = true"
+            >
+              <v-icon icon="mdi-tune-variant" size="22" />
+              <span v-if="filters.activeCount.value" class="mt-badge">{{ filters.activeCount.value }}</span>
+            </button>
+          </div>
+          <div class="mt-row">
+            <button v-if="isTrashTab" class="mt-chip" @click="toggleTrash">
+              <v-icon icon="mdi-arrow-left" size="18" />
+              Корзина
+              <span class="mt-chip-count">{{ dealsStore.trashCount }}</span>
+            </button>
+            <v-menu v-else location="bottom start">
+              <template #activator="{ props: sm }">
+                <button class="mt-chip" v-bind="sm" :disabled="listBusy">
+                  {{ tabFilters[tab]?.label }}
+                  <span class="mt-chip-count">{{ tabCount(tab) }}</span>
+                  <v-icon icon="mdi-chevron-down" size="18" />
+                </button>
+              </template>
+              <v-card rounded="lg" elevation="8" class="row-more-menu">
+                <button
+                  v-for="(f, i) in tabFilters"
+                  :key="f.key"
+                  class="row-more-item"
+                  :class="{ 'mt-menu-active': tab === i }"
+                  @click="tab = i"
+                >
+                  {{ f.label }}
+                  <span class="mt-menu-count">{{ tabCount(i) }}</span>
+                </button>
+              </v-card>
+            </v-menu>
+
+            <v-spacer />
+
+            <v-menu location="bottom end">
+              <template #activator="{ props: so }">
+                <button class="mt-chip mt-chip--ghost" v-bind="so">
+                  <v-icon icon="mdi-sort" size="18" />
+                  {{ sortLabel }}
+                </button>
+              </template>
+              <v-card rounded="lg" elevation="8" class="row-more-menu">
+                <button
+                  v-for="o in sortOptions"
+                  :key="o.value"
+                  class="row-more-item"
+                  :class="{ 'mt-menu-active': sortBy === o.value }"
+                  @click="sortBy = o.value"
+                >
+                  {{ o.title }}
+                  <v-icon v-if="sortBy === o.value" icon="mdi-check" size="16" class="mt-menu-check" />
+                </button>
+              </v-card>
+            </v-menu>
+
+            <v-menu location="bottom end">
+              <template #activator="{ props: mo }">
+                <button class="mt-icon-btn mt-icon-btn--sm" aria-label="Ещё" v-bind="mo">
+                  <v-icon icon="mdi-dots-vertical" size="20" />
+                </button>
+              </template>
+              <v-card rounded="lg" elevation="8" class="row-more-menu">
+                <button v-if="!selectMode" class="row-more-item" @click="selectMode = true">
+                  <v-icon icon="mdi-checkbox-multiple-outline" size="17" />
+                  Выбрать несколько
+                </button>
+                <button class="row-more-item" @click="toggleTrash">
+                  <v-icon :icon="isTrashTab ? 'mdi-arrow-left' : 'mdi-trash-can-outline'" size="17" />
+                  {{ isTrashTab ? 'Выйти из корзины' : 'Корзина' }}
+                  <span v-if="!isTrashTab && dealsStore.trashCount" class="mt-menu-count">{{ dealsStore.trashCount }}</span>
+                </button>
+              </v-card>
+            </v-menu>
+          </div>
+        </div>
+
         <!-- Tabs + toolbar -->
-        <div class="d-flex flex-wrap ga-2 align-center mb-4">
+        <div v-if="!isMobile" class="d-flex flex-wrap ga-2 align-center mb-4">
           <div v-if="!isTrashTab" class="d-flex ga-2">
             <button
               v-for="(f, i) in tabFilters"
@@ -1809,11 +1911,15 @@ async function refreshSelectedDeal(dealId: string) {
           </v-menu>
 
           <div class="d-flex flex-wrap ga-2 align-center">
-            <SearchInput v-model="search" :placeholder="`Поиск по товару, клиенту, ${canSearchAddress ? 'адресу, ' : ''}номеру...`" style="max-width: 620px; min-width: 380px; flex: 1 1 380px;" />
+            <SearchInput
+              v-model="search"
+              :placeholder="isMobile ? 'Товар, клиент, номер…' : `Поиск по товару, клиенту, ${canSearchAddress ? 'адресу, ' : ''}номеру...`"
+              :style="isMobile ? 'flex: 1 1 100%; min-width: 0;' : 'max-width: 620px; min-width: 380px; flex: 1 1 380px;'"
+            />
 
             <!-- В табличном виде сортируют заголовки колонок; select — для сетки -->
             <v-select
-              v-if="viewMode === 'grid'"
+              v-if="viewMode === 'grid' || isMobile"
               v-model="sortBy"
               :items="sortOptions"
               item-title="title"
@@ -1972,7 +2078,139 @@ async function refreshSelectedDeal(dealId: string) {
           </div>
 
         <!-- GRID VIEW -->
-        <v-row v-if="viewMode === 'grid' && displayedDeals.length">
+        <!-- ТЕЛЕФОН: строка сделки. Слева — что и кто, справа — деньги; внизу
+             следующий платёж с прогрессом и действия. Без фото (их почти не
+             загружают) и без лишних плашек; статус — только если сделка не
+             активна. Действия — те же, что в строке таблицы. -->
+        <div v-if="isMobile && displayedDeals.length" class="mc-list">
+          <div
+            v-for="deal in displayedDeals"
+            :key="deal.id"
+            class="mc"
+            :class="{
+              'mc--locked': deal.locked,
+              'mc--selected': selectMode && selectedIds.has(deal.id),
+              'deal-row--returned': deal.id === highlightedDealId,
+            }"
+            @click="selectMode ? toggleSelect(deal.id) : openDeal(deal)"
+          >
+            <div v-if="selectMode" class="mc-check" @click.stop>
+              <v-checkbox-btn
+                :model-value="selectedIds.has(deal.id)"
+                density="compact"
+                hide-details
+                @update:model-value="toggleSelect(deal.id)"
+              />
+            </div>
+
+            <div class="mc-body">
+              <div class="mc-r">
+                <span class="mc-title">{{ deal.productName }}</span>
+                <span class="mc-total">{{ formatCurrency(deal.totalPrice) }}</span>
+              </div>
+              <div class="mc-r">
+                <span class="mc-client">
+                  <ClientLink :profile-id="deal.clientProfileId" :name="dealClientName(deal)" :disabled="selectMode" />
+                </span>
+                <span class="mc-markup">+{{ formatCurrency(deal.markup) }} · {{ formatPercent(deal.markupPercent) }}</span>
+              </div>
+              <div class="mc-meta">
+                <span class="mc-num">№ {{ deal.dealNumber }}</span>
+                <template v-if="dealClientPhone(deal)"><span class="mc-dot">·</span>{{ dealClientPhone(deal) }}</template>
+                <span
+                  v-if="deal.status !== 'ACTIVE'"
+                  class="mc-status"
+                  :style="statusStyle(DEAL_STATUS_CONFIG[deal.status])"
+                >{{ DEAL_STATUS_CONFIG[deal.status]?.label }}</span>
+                <span v-if="deal.folder" class="mc-folder" :style="{ color: deal.folder.color }">
+                  <span class="folder-chip-dot" :style="{ background: deal.folder.color }" />{{ deal.folder.name }}
+                </span>
+                <span v-if="deal.locked" class="mc-lock"><v-icon icon="mdi-lock-outline" size="13" />Недоступно на тарифе</span>
+              </div>
+
+              <div class="mc-foot">
+                <div class="mc-pay">
+                  <div
+                    v-if="deal.nextPayment && deal.status === 'ACTIVE'"
+                    class="mc-next"
+                    :class="{ 'mc-next--overdue': isNextOverdue(deal) }"
+                  >
+                    {{ formatCurrency(deal.nextPayment.amount) }}
+                    <template v-if="isNextOverdue(deal)">· просрочен {{ overdueDays(deal) }} дн.</template>
+                    <template v-else>до {{ formatDateShort(deal.nextPayment.dueDate) }}</template>
+                  </div>
+                  <div v-else-if="deal.status === 'ACTIVE' && deal.remainingAmount > 0" class="mc-next">
+                    Остаток {{ formatCurrency(deal.remainingAmount) }}
+                  </div>
+                  <div v-else class="mc-next mc-next--muted">Все платежи закрыты</div>
+                  <div class="mc-prog">
+                    <div class="mc-track"><div class="mc-fill" :style="{ width: getDealProgress(deal) + '%' }" /></div>
+                    <span>{{ deal.paidPayments }} из {{ deal.numberOfPayments }}</span>
+                  </div>
+                </div>
+
+                <div v-if="isTrashTab" class="mc-actions" @click.stop>
+                  <button class="row-action-btn row-action-btn--restore" title="Восстановить" @click="restoreOne(deal.id)">
+                    <v-icon icon="mdi-restore" size="20" />
+                  </button>
+                  <button class="row-action-btn row-action-btn--delete" title="Удалить навсегда" @click="permanentDeleteOne(deal.id)">
+                    <v-icon icon="mdi-delete-forever-outline" size="20" />
+                  </button>
+                </div>
+                <div v-else-if="!selectMode" class="mc-actions" @click.stop>
+                  <button
+                    v-if="canMarkPaid && !deal.locked && deal.nextPayment && deal.status === 'ACTIVE'"
+                    class="mc-pay-btn"
+                    :class="{ 'mc-pay-btn--overdue': isNextOverdue(deal) }"
+                    @click="payFromRow($event, deal)"
+                  >
+                    Оплатить
+                  </button>
+                  <v-menu location="bottom end">
+                    <template #activator="{ props: more }">
+                      <button class="row-action-btn" aria-label="Ещё" v-bind="more">
+                        <v-icon icon="mdi-dots-vertical" size="20" />
+                      </button>
+                    </template>
+                    <v-card rounded="lg" elevation="8" class="row-more-menu">
+                      <button class="row-more-item" @click="goToDeal(deal)">
+                        <v-icon icon="mdi-open-in-new" size="17" />
+                        Открыть сделку
+                      </button>
+                      <button v-if="dealClientPhone(deal)" class="row-more-item" @click="openWhatsApp($event, deal)">
+                        <v-icon icon="mdi-whatsapp" size="17" />
+                        Написать в WhatsApp
+                      </button>
+                      <button
+                        v-if="deal.nextPayment && !deal.locked && authStore.can('payments.reschedule')"
+                        class="row-more-item"
+                        @click="rescheduleFromRow($event, deal)"
+                      >
+                        <v-icon icon="mdi-calendar-arrow-right" size="17" />
+                        Перенести срок платежа
+                      </button>
+                      <button class="row-more-item" @click="goToDeal(deal)">
+                        <v-icon icon="mdi-file-document-outline" size="17" />
+                        Договор и документы
+                      </button>
+                      <!-- Колонки «В группе» на телефоне нет — те же два действия здесь. -->
+                      <button class="row-more-item" @click="copyForGroup(deal)">
+                        <v-icon icon="mdi-content-copy" size="17" />
+                        Скопировать текст для группы
+                      </button>
+                      <button class="row-more-item" @click="toggleGroupSent(deal)">
+                        <v-icon :icon="deal.groupSentAt ? 'mdi-send-check' : 'mdi-send-outline'" size="17" />
+                        {{ deal.groupSentAt ? 'Снять «отправлено в группу»' : 'Отметить: отправлено в группу' }}
+                      </button>
+                    </v-card>
+                  </v-menu>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <v-row v-else-if="viewMode === 'grid' && displayedDeals.length" class="dl-grid">
           <v-col v-for="deal in displayedDeals" :key="deal.id" cols="12" sm="6" lg="4" xl="3">
             <div class="deal-card" :class="{ 'deal-card--locked': deal.locked }" @click="openDeal(deal)">
               <div class="deal-card-photo">
@@ -2030,7 +2268,7 @@ async function refreshSelectedDeal(dealId: string) {
         <!-- TABLE VIEW -->
         <!-- Обёртка нужна виртуализации: по её положению на экране считается,
              какие строки сейчас видны. -->
-        <div v-if="viewMode === 'table' && displayedDeals.length" ref="tableViewport">
+        <div v-if="!isMobile && viewMode === 'table' && displayedDeals.length" ref="tableViewport">
         <v-table
           density="default"
           hover
@@ -2191,19 +2429,33 @@ async function refreshSelectedDeal(dealId: string) {
 
                 <template v-else-if="c.key === 'createdAt'">{{ createdLabel(deal.createdAt) }}</template>
                 <template v-else-if="c.key === 'groupSent'">
-                  <button
-                    type="button"
-                    class="group-sent-cell"
-                    :class="{ 'group-sent-cell--on': deal.groupSentAt }"
-                    :title="deal.groupSentAt ? 'Отправлено в группу — открыть текст' : 'Открыть текст для рабочей группы'"
-                    @click.stop="openGroupShare(deal)"
-                  >
-                    <template v-if="deal.groupSentAt">
-                      <v-icon icon="mdi-check-circle" size="15" />
-                      {{ formatDateShortYear(deal.groupSentAt) }}
-                    </template>
-                    <template v-else>не отправлено</template>
-                  </button>
+                  <!-- Две кнопки: скопировать текст по формату из настроек и
+                       отметить/снять «отправлено в группу». -->
+                  <div class="group-cell" @click.stop>
+                    <button
+                      type="button"
+                      class="group-copy-btn"
+                      title="Скопировать текст для группы"
+                      :disabled="groupBusyId === deal.id"
+                      @click="copyForGroup(deal)"
+                    >
+                      <v-icon icon="mdi-content-copy" size="15" />
+                    </button>
+                    <button
+                      type="button"
+                      class="group-sent-cell"
+                      :class="{ 'group-sent-cell--on': deal.groupSentAt }"
+                      :title="deal.groupSentAt ? 'Отправлено в группу — нажмите, чтобы снять отметку' : 'Отметить: отправлено в группу'"
+                      :disabled="groupBusyId === deal.id"
+                      @click="toggleGroupSent(deal)"
+                    >
+                      <template v-if="deal.groupSentAt">
+                        <v-icon icon="mdi-check-circle" size="15" />
+                        {{ formatDateShortYear(deal.groupSentAt) }}
+                      </template>
+                      <template v-else>не отправлено</template>
+                    </button>
+                  </div>
                 </template>
                 <template v-else-if="c.key === 'dealDate'">{{ deal.dealDate ? formatDateShortYear(deal.dealDate) : '—' }}</template>
                 <template v-else-if="c.key === 'lastPayment'">{{ dealLastPaymentLabel(deal) }}</template>
@@ -2337,7 +2589,8 @@ async function refreshSelectedDeal(dealId: string) {
                     :title="deal.remainingAmount > 0 ? 'Строк графика не осталось, но долг не закрыт' : 'Все платежи закрыты'"
                   >{{ deal.remainingAmount > 0 ? `Остаток ${formatCurrency(deal.remainingAmount)}` : 'Оплачено' }}</span>
 
-                  <button class="row-action-btn" title="Открыть сделку" @click="goToDeal(deal)">
+                  <!-- Телефон: «Открыть сделку» — в меню «⋯», колонка у края экрана уже. -->
+                  <button v-if="!isMobile" class="row-action-btn" title="Открыть сделку" @click="goToDeal(deal)">
                     <v-icon icon="mdi-open-in-new" size="16" />
                   </button>
 
@@ -2348,6 +2601,10 @@ async function refreshSelectedDeal(dealId: string) {
                       </button>
                     </template>
                     <v-card rounded="lg" elevation="8" class="row-more-menu">
+                      <button v-if="isMobile" class="row-more-item" @click="goToDeal(deal)">
+                        <v-icon icon="mdi-open-in-new" size="17" />
+                        Открыть сделку
+                      </button>
                       <button
                         v-if="dealClientPhone(deal)"
                         class="row-more-item"
@@ -2367,11 +2624,6 @@ async function refreshSelectedDeal(dealId: string) {
                       <button class="row-more-item" @click="goToDeal(deal)">
                         <v-icon icon="mdi-file-document-outline" size="17" />
                         Договор и документы
-                      </button>
-                      <button class="row-more-item" @click="openGroupShare(deal)">
-                        <v-icon :icon="deal.groupSentAt ? 'mdi-send-check-outline' : 'mdi-send-outline'" size="17" />
-                        Текст для рабочей группы
-                        <v-icon v-if="deal.groupSentAt" icon="mdi-check" size="15" class="row-more-done" title="Уже отправлено в группу" />
                       </button>
                     </v-card>
                   </v-menu>
@@ -2557,12 +2809,6 @@ async function refreshSelectedDeal(dealId: string) {
 
     <!-- Перенос даты — общий компонент. Сделку не передаём: в превью и так
          видно, о каком договоре речь. -->
-    <DealGroupShareDialog
-      v-model="groupShareOpen"
-      :deal="groupShareDeal"
-      :fullscreen="isMobile"
-      @changed="onGroupSentChanged"
-    />
     <ReschedulePaymentDialog
       v-model="rescheduleDialog"
       :payment="rescheduleTarget"
@@ -3787,9 +4033,158 @@ async function refreshSelectedDeal(dealId: string) {
     flex: 1 1 auto;
     max-width: none !important;
   }
+
+  /* ── Телефон: блок списка — от края до края, карточки цифр — с полями ── */
+  .at-page { padding: 12px 0 16px; }
+  .stats-row { padding: 0 16px; }
+  .stats-row.mb-6 { margin-bottom: 12px !important; }
+  .stat-card { gap: 10px; min-width: 0; }
+  .stat-card > div:last-child { min-width: 0; }
+  .stat-value { font-size: 15px; white-space: nowrap; }
+  .dl-toolbar { padding: 0 16px; }
+  .dl-toolbar.mb-3 { margin-bottom: 10px !important; }
+  .active-filters { padding: 0 16px; }
+  .deals-card.v-card {
+    border-radius: 0 !important;
+    border-left: none !important; border-right: none !important;
+  }
+  .dl-inner.pa-4 { padding: 12px 0 0 !important; }
+  .dl-inner > .d-flex.flex-wrap.ga-2.align-center.mb-4 { padding: 0 16px; margin-bottom: 12px !important; }
+  .select-bar, .trash-bar, .deal-lock-banner { margin-left: 16px; margin-right: 16px; }
+  .stat-card { padding: 10px 12px; border-radius: 12px; }
+  .active-filters { margin-bottom: 10px; }
+
+  /* Режим выбора: счётчик и «Отмена» сверху, действие — во всю ширину снизу.
+     В одну строку кнопка «В корзину (N)» не помещалась и ломалась. */
+  .select-bar {
+    flex-wrap: wrap; gap: 8px;
+    padding: 8px 10px 10px; margin-bottom: 10px;
+  }
+  .select-bar-left { flex: 1 1 0; min-width: 0; flex-wrap: wrap; row-gap: 4px; }
+  .select-bar-left :deep(.v-selection-control) { flex: none; }
+  .select-bar-right { display: contents; }
+  .select-bar-cancel { order: 1; height: 36px; padding: 0 10px; }
+  .select-bar-delete, .select-bar-restore {
+    order: 2; flex: 1 1 100%; justify-content: center; height: 42px;
+  }
+}
+
+/* ── Телефон: панель управления списком ── */
+.mt-bar { padding: 0 16px 10px; display: flex; flex-direction: column; gap: 8px; }
+.mt-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mt-search { flex: 1 1 0; min-width: 0; }
+.mt-icon-btn {
+  position: relative; flex-shrink: 0;
+  /* Ровно по высоте поля поиска (40px) и с тем же скруглением. */
+  width: 40px; height: 40px; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  background: rgb(var(--v-theme-surface));
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.mt-icon-btn--active { border-color: rgba(var(--v-theme-primary), 0.5); color: rgb(var(--v-theme-primary)); }
+.mt-icon-btn--sm { width: 36px; height: 36px; border: none; background: none; }
+.mt-badge {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: rgb(var(--v-theme-primary)); color: #fff;
+  font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.mt-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 10px 0 12px; border-radius: 10px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.88);
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+}
+.mt-chip:disabled { opacity: 0.6; }
+.mt-chip-count { font-size: 12.5px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.5); font-variant-numeric: tabular-nums; }
+.mt-chip--ghost { background: none; padding: 0 6px; color: rgba(var(--v-theme-on-surface), 0.7); font-weight: 500; }
+.mt-menu-active { color: rgb(var(--v-theme-primary)) !important; font-weight: 600; }
+.mt-menu-count { margin-left: auto; padding-left: 16px; font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.45); }
+.mt-menu-check { margin-left: auto; padding-left: 12px; }
+
+/* ── Телефон: строка сделки ── */
+.mc-list { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07); }
+.mc {
+  display: flex; gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.mc:active { background: rgba(var(--v-theme-on-surface), 0.03); }
+.mc--locked { opacity: 0.6; }
+.mc--selected { background: rgba(var(--v-theme-primary), 0.06); }
+.mc-check { flex-shrink: 0; display: flex; align-items: center; margin-left: -6px; }
+.mc-body { flex: 1; min-width: 0; }
+.mc-r { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.mc-r + .mc-r { margin-top: 2px; }
+.mc-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 15px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.92);
+}
+.mc-total {
+  flex-shrink: 0; font-size: 15px; font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.92); font-variant-numeric: tabular-nums;
+}
+.mc-client {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.7);
+}
+/* Имя клиента — ссылка на его карточку, как в таблице на компьютере. */
+.mc-client :deep(.client-link) { font-weight: 500; }
+.mc-markup { flex-shrink: 0; font-size: 12.5px; font-weight: 600; color: #10b981; font-variant-numeric: tabular-nums; }
+.mc-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-top: 3px;
+  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.45); font-variant-numeric: tabular-nums;
+}
+.mc-dot { margin-right: 2px; }
+.mc-status { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; }
+.mc-folder { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+.mc-lock { display: inline-flex; align-items: center; gap: 3px; color: #d97706; font-weight: 600; }
+.mc-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 10px;
+}
+.mc-pay { min-width: 0; }
+.mc-next {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.8);
+  font-variant-numeric: tabular-nums;
+}
+.mc-next--overdue { color: #dc2626; }
+.mc-next--muted { color: rgba(var(--v-theme-on-surface), 0.45); font-weight: 500; }
+.mc-prog {
+  display: flex; align-items: center; gap: 8px; margin-top: 4px;
+  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); font-variant-numeric: tabular-nums;
+}
+.mc-track { width: 84px; height: 6px; border-radius: 3px; overflow: hidden; background: rgba(var(--v-theme-on-surface), 0.1); }
+.mc-fill { height: 100%; border-radius: 3px; background: rgb(var(--v-theme-primary)); }
+.mc-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; margin-right: -8px; }
+.mc-actions .row-action-btn { width: 36px; height: 36px; }
+.mc-pay-btn {
+  height: 34px; padding: 0 14px; border-radius: 10px;
+  background: rgba(var(--v-theme-primary), 0.1); color: rgb(var(--v-theme-primary));
+  font-size: 13.5px; font-weight: 700; white-space: nowrap;
+}
+.mc-pay-btn--overdue { background: rgba(220, 38, 38, 0.1); color: #dc2626; }
+.mc-pay-btn:active { transform: scale(0.97); }
+/* Узкие телефоны: значки у цифр сверху уступают место суммам. */
+@media (max-width: 380px) {
+  .stat-icon { display: none; }
 }
 
 /* Колонка «В группе»: отметка «информация отправлена в рабочую группу» — нажатием открывает окно текста. */
+.group-cell { display: inline-flex; align-items: center; gap: 4px; }
+.group-copy-btn {
+  width: 28px; height: 28px; border-radius: 8px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.14); background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.6); cursor: pointer; transition: all 0.15s;
+}
+.group-copy-btn:hover { border-color: rgba(4, 120, 87, 0.45); color: #047857; background: rgba(4, 120, 87, 0.06); }
+.group-copy-btn:disabled, .group-sent-cell:disabled { opacity: 0.5; cursor: default; }
 .group-sent-cell {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 500;

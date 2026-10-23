@@ -12,6 +12,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSections } from '@/composables/useSections'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { formatCurrency, formatCurrencyShort, formatDateShortYear, formatPercent } from '@/utils/formatters'
 import type { Deal } from '@/types'
 import type { useDealProfit } from '@/composables/useDealProfit'
@@ -19,6 +20,8 @@ import type { useDealProfit } from '@/composables/useDealProfit'
 const props = defineProps<{ deal: Deal; profit: ReturnType<typeof useDealProfit> }>()
 
 const router = useRouter()
+// Телефон: подпись способа деления короче — иначе процент обрезался.
+const { isMobile } = useIsMobile()
 const sections = useSections()
 
 const deal = computed(() => props.deal)
@@ -108,7 +111,7 @@ const {
               v-if="(ci.managementFeePctOverride ?? ci.managementFeePct ?? 0) > 0"
               class="iv-mode-hint"
             >
-              комиссия партнёра {{ ci.managementFeePctOverride ?? ci.managementFeePct }}%<template
+              {{ isMobile ? 'комиссия' : 'комиссия партнёра' }} {{ ci.managementFeePctOverride ?? ci.managementFeePct }}%<template
                 v-if="ci.managementFeePctOverride != null"
               > (для этой сделки)</template>
             </span>
@@ -306,5 +309,51 @@ const {
   font-size: 13.5px;
   color: rgba(var(--v-theme-on-surface), 0.45);
   margin-top: 4px;
+}
+
+/* ══ Телефон ══
+   Инвестор — одна плотная строка: значок, имя и под ним способ деления,
+   справа сумма. Раньше способ и сумма падали на отдельные строки, и каждый
+   инвестор занимал полэкрана. */
+@media (max-width: 767px) {
+  .v-card.pa-6 { padding: 14px 0 12px !important; }
+  .iv-head { flex-wrap: nowrap; gap: 12px; margin-bottom: 8px; padding: 0 16px; }
+  .iv-title { font-size: 17px; }
+  .iv-sub { font-size: 12.5px; line-height: 1.35; }
+  .iv-total-label { font-size: 11.5px; white-space: nowrap; }
+  .iv-total-value { font-size: 17px; white-space: nowrap; }
+
+  .iv-rows { border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07); }
+  .iv-row {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto 16px;
+    grid-template-areas:
+      "av name amt go"
+      "av mode amt go";
+    column-gap: 10px; row-gap: 1px;
+    align-items: center;
+    margin: 0; padding: 9px 16px;
+  }
+  .iv-row:active { background: rgba(var(--v-theme-on-surface), 0.04); }
+  .iv-person { display: contents; }
+  .iv-avatar { grid-area: av; width: 32px; height: 32px; min-width: 32px; border-radius: 10px; font-size: 12px; }
+  .iv-person-text { grid-area: name; min-width: 0; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .iv-name { font-size: 14.5px; font-weight: 600; }
+  .iv-phone { font-size: 11.5px; }
+  .iv-mode {
+    grid-area: mode; min-width: 0; flex: none;
+    font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .iv-mode-hint { display: inline; font-size: 12px; margin: 0; }
+  .iv-mode-hint::before { content: ' · '; }
+  .iv-amount { grid-area: amt; min-width: 0; margin-left: 0; }
+  .iv-amount-value { font-size: 14.5px; font-weight: 700; }
+  .iv-payout { font-size: 11px; max-width: 120px; line-height: 1.25; }
+  .iv-go { grid-area: go; }
+  .iv-partner { margin-top: 0; padding: 12px 16px 0; border-top-width: 1px; }
+  .iv-partner-label { font-size: 14px; }
+  .iv-partner-value { font-size: 18px; }
+  .iv-empty { padding: 20px 16px 8px; }
 }
 </style>

@@ -456,4 +456,34 @@ onMounted(() => {
 .dark .pdf-doc-item:hover { background: rgba(255,255,255,0.02); }
 
 .section-title { font-size: 15px; font-weight: 600; }
+
+/* ══ Телефон ══
+   Документы — плотный список во всю ширину. Скачать и отправить в WhatsApp —
+   явными кнопками справа, без черты-разделителя и бледных значков. */
+@media (max-width: 767px) {
+  .dc-cols { gap: 8px; grid-template-columns: 1fr; }
+  .pdf-docs-header { padding: 12px 8px 12px 16px; }
+  .contract-icon { width: 36px; height: 36px; }
+  .pdf-docs-builder-link { height: 34px; padding: 0 10px; color: rgba(var(--v-theme-on-surface), 0.6); }
+  .pdf-doc-row { align-items: center; padding-right: 8px; }
+  .pdf-doc-item { padding: 10px 8px 10px 16px; gap: 10px; }
+  .pdf-doc-item-name { font-size: 14px; }
+  .pdf-doc-item-desc { font-size: 12px; }
+  /* !important: размер значка Vuetify пишет прямо в style. */
+  .pdf-doc-item-action {
+    width: 36px !important; height: 36px !important; border-radius: 10px;
+    display: flex !important; align-items: center; justify-content: center;
+    background: rgba(var(--v-theme-on-surface), 0.05);
+    color: rgba(var(--v-theme-on-surface), 0.6) !important;
+  }
+  .pdf-wa-btn {
+    width: 36px; height: 36px; border-radius: 10px; border-left: none;
+    background: rgba(37, 211, 102, 0.1);
+  }
+  .contract-photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .contract-photo-item { width: auto; height: auto; aspect-ratio: 1; }
+  /* Касанием наведения нет — крестик удаления виден всегда. */
+  .contract-photo-remove { opacity: 1; width: 26px; height: 26px; }
+  .btn-sm--outline { height: 34px; padding: 0 12px; font-size: 13px; }
+}
 </style>

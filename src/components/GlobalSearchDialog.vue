@@ -8,19 +8,41 @@
   >
     <!-- Скругление то же, что у окна быстрых действий: два окна открываются
          из одной шапки и не должны отличаться формой. -->
-    <v-card rounded="lg" class="gs-card">
+    <v-card :rounded="isMobile ? 0 : 'lg'" class="gs-card" :class="{ 'gs-card--m': isMobile }">
       <!-- Search input -->
       <div class="gs-search">
-        <v-icon icon="mdi-magnify" size="20" class="gs-search-icon" />
+        <!-- Телефон: закрыть — стрелкой «назад» слева, как в поиске приложений;
+             Esc на телефоне нет. -->
+        <button
+          v-if="isMobile"
+          type="button"
+          class="gs-back"
+          aria-label="Закрыть поиск"
+          @click="emit('update:modelValue', false)"
+        >
+          <v-icon icon="mdi-arrow-left" size="22" />
+        </button>
+        <v-icon v-else icon="mdi-magnify" size="20" class="gs-search-icon" />
         <input
           ref="inputRef"
           v-model="query"
-          type="text"
-          placeholder="Найти сделку или клиента — имя, телефон, товар или #номер…"
+          type="search"
+          enterkeyhint="search"
+          autocomplete="off"
+          :placeholder="isMobile ? 'Имя, телефон, товар или #номер' : 'Найти сделку или клиента — имя, телефон, товар или #номер…'"
           class="gs-search-input"
           @keydown="onKey"
         />
-        <span class="gs-search-shortcut">esc</span>
+        <button
+          v-if="isMobile && query"
+          type="button"
+          class="gs-clear"
+          aria-label="Очистить"
+          @click="query = ''; inputRef?.focus()"
+        >
+          <v-icon icon="mdi-close-circle" size="18" />
+        </button>
+        <span v-if="!isMobile" class="gs-search-shortcut">esc</span>
       </div>
 
       <!-- Body -->
@@ -122,8 +144,8 @@
         </template>
       </div>
 
-      <!-- Footer hints -->
-      <div class="gs-footer">
+      <!-- Footer hints (клавиатура — только на компьютере) -->
+      <div v-if="!isMobile" class="gs-footer">
         <span class="gs-footer-hint">
           <span class="gs-kbd">↑</span><span class="gs-kbd">↓</span> навигация
         </span>
@@ -487,4 +509,37 @@ function scrollActive() {
   font-family: ui-monospace, SF Mono, monospace;
   font-size: 10px; font-weight: 600;
 }
+
+/* ══ Телефон: поиск на весь экран ══
+   Строка поиска закреплена сверху и отбрасывает тень на результаты, они
+   занимают всю оставшуюся высоту. */
+.gs-card--m { display: flex; flex-direction: column; height: 100%; }
+.gs-card--m .gs-search {
+  position: relative; z-index: 2;
+  padding: calc(6px + env(safe-area-inset-top)) 8px 6px 4px;
+  border-bottom: none;
+  box-shadow: 0 1px 0 rgba(var(--v-theme-on-surface), 0.06), 0 4px 12px rgba(0, 0, 0, 0.07);
+}
+.gs-back, .gs-clear {
+  flex-shrink: 0; width: 44px; height: 44px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.gs-clear { width: 36px; color: rgba(var(--v-theme-on-surface), 0.35); }
+.gs-card--m .gs-search-input { font-size: 16px; height: 44px; padding: 0 4px; }
+.gs-card--m .gs-search-input::-webkit-search-cancel-button { display: none; }
+.gs-card--m .gs-body {
+  flex: 1; max-height: none;
+  padding: 4px 0 calc(8px + env(safe-area-inset-bottom));
+}
+.gs-card--m .gs-state--hint, .gs-card--m .gs-state--empty { padding: 40px 24px; }
+.gs-card--m .gs-group-head { padding: 10px 16px 4px; }
+.gs-card--m .gs-item { padding: 8px 16px; gap: 10px; border-radius: 0; }
+.gs-card--m .gs-item--active { background: transparent; }
+.gs-card--m .gs-item:active { background: rgba(var(--v-theme-on-surface), 0.04); }
+.gs-card--m .gs-item-sub > span:first-child {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gs-card--m .gs-item-amount { font-size: 13.5px; }
+.gs-card--m .gs-item-arrow { display: none; }
 </style>

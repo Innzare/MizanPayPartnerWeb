@@ -252,4 +252,17 @@ defineExpose({ reload: load })
   font-size: 15px;
   font-weight: 600;
 }
+
+/* ══ Телефон ══ лента во всю ширину, без рамки и скруглений; день — плашкой. */
+@media (max-width: 767px) {
+  .dh-card { padding: 14px 16px; border-radius: 0; border-left: none; border-right: none; }
+  .dh-card > .section-title { font-size: 17px; margin-bottom: 10px !important; }
+  .dh-day { margin-bottom: 14px; }
+  .dh-day-label { font-size: 11.5px; margin-bottom: 8px; }
+  .timeline-item { gap: 10px; padding-bottom: 14px; }
+  .timeline-label { font-size: 14px; line-height: 1.35; }
+  .dh-desc { font-size: 12.5px; margin-top: 1px; }
+  .dh-change { font-size: 12px; }
+  .timeline-date { font-size: 11.5px; }
+}
 </style>

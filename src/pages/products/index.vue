@@ -494,7 +494,7 @@ function openProduct(productId: string) {
 
 /* FAB */
 .fab {
-  position: fixed; bottom: 24px; right: 24px; z-index: 5;
+  position: fixed; bottom: calc(24px + var(--bottom-nav-offset, 0px)); right: 24px; z-index: 5;
   width: 56px; height: 56px; border-radius: 16px; border: none;
   background: #047857; color: #fff;
   display: flex; align-items: center; justify-content: center;

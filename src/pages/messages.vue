@@ -67,7 +67,8 @@ onMounted(async () => {
 .dark .msg-shell { border-color: rgba(255, 255, 255, 0.06); background: rgb(var(--v-theme-surface-deep)); }
 
 @media (max-width: 768px) {
-  .msg-page { height: calc(100vh - 64px); }
+  /* Минус нижние вкладки телефона — иначе поле ввода уходит под них. */
+  .msg-page { height: calc(100dvh - 56px - var(--bottom-nav-offset, 0px)); }
   .msg-shell { border-radius: 10px; }
 }
 </style>

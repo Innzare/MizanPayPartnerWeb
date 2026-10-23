@@ -533,11 +533,11 @@ function getAvatarColor(name?: string) {
 
     <!-- Ближайшие платежи и активные сделки — таблицами, друг под другом -->
     <div class="dash-section-title">Активность</div>
-    <v-row>
+    <v-row class="act-row">
       <!-- Ближайшие платежи -->
       <v-col cols="12">
-        <v-card rounded="lg" elevation="0" border class="h-100">
-          <div class="d-flex align-center justify-space-between pa-5 pb-3">
+        <v-card rounded="lg" elevation="0" border class="h-100 act-card">
+          <div class="d-flex align-center justify-space-between pa-5 pb-3 act-head">
             <div>
               <div class="chart-title">Ближайшие платежи</div>
               <div class="chart-subtitle">{{ upcomingPayments.length }} ожидаемых</div>
@@ -614,8 +614,8 @@ function getAvatarColor(name?: string) {
 
       <!-- Активные сделки -->
       <v-col cols="12">
-        <v-card rounded="lg" elevation="0" border class="h-100">
-          <div class="d-flex align-center justify-space-between pa-5 pb-3">
+        <v-card rounded="lg" elevation="0" border class="h-100 act-card">
+          <div class="d-flex align-center justify-space-between pa-5 pb-3 act-head">
             <div>
               <div class="chart-title">Активные сделки</div>
               <div class="chart-subtitle">{{ dealsActiveCount }} сделок в работе</div>
@@ -904,6 +904,42 @@ function getAvatarColor(name?: string) {
 .kpi-clickable:hover {
   border-color: rgba(var(--v-theme-primary), 0.3);
   background: rgba(var(--v-theme-primary), 0.04);
+}
+
+/* ══ Телефон ══
+   Крупные блоки (сводка, таблицы) — во всю ширину экрана, без скруглений и
+   боковых рамок: поля по краям отнимают у них место. Показатели остаются
+   карточками с полями — так они читаются лучше. */
+@media (max-width: 767px) {
+  .at-page { padding: 0 0 20px; }
+  .hero-card { border-radius: 0; margin-bottom: 0 !important; }
+  .dash-capital-banner {
+    border-radius: 0; border-left: none; border-right: none; border-top: none;
+    margin-bottom: 0 !important; padding: 14px 16px;
+  }
+  .dash-section-title {
+    margin: 0; padding: 20px 16px 8px;
+    font-size: 12px;
+  }
+
+  /* Показатели — прежние карточки, с полями по краям экрана. */
+  .kpi-row { padding: 0 16px; gap: 8px; margin-bottom: 0 !important; }
+
+  /* Активность: карточки во всю ширину, между ними — полоска фона. */
+  .act-row { margin: 0; }
+  .act-row > .v-col { padding: 0; }
+  .act-row > .v-col + .v-col { margin-top: 8px; }
+  .act-card.v-card {
+    border-radius: 0 !important;
+    border-left: none !important; border-right: none !important;
+  }
+  .act-head.pa-5 { padding: 14px 8px 10px 16px !important; }
+  /* Таблица — от края до края, первая и последняя колонки с полем 16px. */
+  .dt-scroll { padding: 0 0 4px; }
+  .dt-th:first-child, .dt-td:first-child { padding-left: 16px; }
+  .dt-th:last-child, .dt-td:last-child { padding-right: 16px; }
+  .chart-title { font-size: 16px; }
+  .dash-link-btn { background: none; padding: 8px; min-height: 40px; font-weight: 600; }
 }
 
 </style>

@@ -7,7 +7,7 @@
 </route>
 
 <script lang="ts" setup>
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { useAuthStore } from "@/stores/auth";
 import logo from "@/assets/images/logo.svg";
 import logoText from "@/assets/images/logo-text.svg";
@@ -27,7 +27,17 @@ const email = ref("");
 const password = ref("");
 const showPassword = ref(false);
 const isLoading = ref(false);
-const error = ref("");
+const emailField = ref<{ focus: () => void } | null>(null);
+const passwordField = ref<{ focus: () => void } | null>(null);
+/** Какое поле обвести красным. Текст ошибки — уведомлением: блок над формой сдвигал её. */
+const invalid = ref<"email" | "password" | "both" | null>(null);
+watch([email, password], () => { invalid.value = null; });
+
+/** Enter в поле email — к паролю (на телефоне кнопка «Далее»), а не отправка пустой формы. */
+const toPassword = () => {
+  if (password.value) handleLogin();
+  else passwordField.value?.focus();
+};
 
 /**
  * Причина, по которой человека выкинуло из кабинета.
@@ -39,18 +49,25 @@ const error = ref("");
 onMounted(() => {
   const notice = localStorage.getItem("auth_notice");
   if (notice) {
-    error.value = notice;
+    toast.show(notice, "warning", 10000);
     localStorage.removeItem("auth_notice");
   }
 });
 
 const handleLogin = async () => {
-  if (!email.value || !password.value) {
-    error.value = "Заполните все поля";
+  if (!email.value.trim()) {
+    invalid.value = "email";
+    toast.error(password.value ? "Введите email" : "Введите email и пароль");
+    emailField.value?.focus();
+    return;
+  }
+  if (!password.value) {
+    invalid.value = "password";
+    toast.error("Введите пароль");
+    passwordField.value?.focus();
     return;
   }
 
-  error.value = "";
   isLoading.value = true;
 
   try {
@@ -59,8 +76,10 @@ const handleLogin = async () => {
     router.push(redirect);
   } catch (e) {
     // Неверный пароль — в форме; сеть и сервер — тостом.
-    if (isAuthFormError(e)) error.value = toUserMessage(e, "Не удалось войти");
-    else toast.error(e, "Не удалось войти — попробуйте ещё раз");
+    if (isAuthFormError(e)) {
+      invalid.value = "both";
+      toast.error(toUserMessage(e, "Не удалось войти"));
+    } else toast.error(e, "Не удалось войти — попробуйте ещё раз");
   } finally {
     isLoading.value = false;
   }
@@ -68,7 +87,7 @@ const handleLogin = async () => {
 </script>
 
 <template>
-  <v-main class="login-page">
+  <v-main class="auth-page">
     <!-- Left panel — showcase -->
     <div class="login-brand d-none d-md-flex">
       <div class="brand-bg" />
@@ -126,39 +145,27 @@ const handleLogin = async () => {
     </div>
 
     <!-- Right panel — form -->
-    <div class="login-form-panel">
-      <div class="login-form-wrapper">
-        <!-- Mobile logo -->
-        <div class="d-md-none text-center mb-8">
-          <div class="d-flex align-center justify-center ga-2">
-            <img :src="logo" width="56" height="56" />
-            <img :src="isDark ? logoTextDark : logoText" alt="MizanPay" style="height: 32px; width: auto;" />
-          </div>
-          <p class="text-body-2 font-weight-semibold login-subtitle">Панель партнера</p>
+    <div class="auth-panel">
+      <div class="auth-card">
+        <!-- Логотип на телефоне: левой панели там нет -->
+        <div class="auth-brand d-md-none">
+          <img :src="logo" alt="" class="auth-brand-logo" />
+          <img :src="isDark ? logoTextDark : logoText" alt="MizanPay" class="auth-brand-text" />
+          <span class="auth-brand-badge">Панель партнёра</span>
         </div>
 
-        <div class="mb-8">
-          <h2 class="login-title mb-2">Вход в аккаунт</h2>
-          <p class="login-subtitle">Введите данные для входа в панель управления</p>
-        </div>
+        <h1 class="auth-title">Вход в аккаунт</h1>
+        <p class="auth-subtitle">Введите данные для входа в панель управления</p>
 
-        <v-alert
-          v-if="error"
-          type="error"
-          variant="tonal"
-          density="compact"
-          class="mb-5"
-          closable
-          @click:close="error = ''"
-        >
-          {{ error }}
-        </v-alert>
 
         <form @submit.prevent="handleLogin">
-          <div class="mb-5">
-            <label class="field-label">Email</label>
+          <div class="auth-field">
+            <label class="auth-label" for="login-email">Email</label>
             <v-text-field
+              id="login-email"
+              ref="emailField"
               v-model="email"
+              :error="invalid === 'email' || invalid === 'both'"
               type="email"
               variant="outlined"
               density="comfortable"
@@ -166,27 +173,49 @@ const handleLogin = async () => {
               prepend-inner-icon="mdi-email-outline"
               hide-details="auto"
               rounded="lg"
+              autocomplete="username"
+              inputmode="email"
+              autocapitalize="none"
+              :spellcheck="false"
+              enterkeyhint="next"
+              @keydown.enter.prevent="toPassword"
             />
           </div>
 
-          <div class="mb-6">
-            <label class="field-label">Пароль</label>
+          <div class="auth-field mb-1">
+            <label class="auth-label" for="login-password">Пароль</label>
             <v-text-field
+              id="login-password"
+              ref="passwordField"
               v-model="password"
+              :error="invalid === 'password' || invalid === 'both'"
               :type="showPassword ? 'text' : 'password'"
               variant="outlined"
               density="comfortable"
               placeholder="Введите пароль"
               prepend-inner-icon="mdi-lock-outline"
-              :append-inner-icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'"
               hide-details="auto"
               rounded="lg"
-              @click:append-inner="showPassword = !showPassword"
-            />
+              autocomplete="current-password"
+              autocapitalize="none"
+              :spellcheck="false"
+              enterkeyhint="go"
+            >
+              <template #append-inner>
+                <button
+                  type="button"
+                  class="auth-eye"
+                  :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'"
+                  @click="showPassword = !showPassword"
+                >
+                  <v-icon :icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'" size="22" />
+                </button>
+              </template>
+            </v-text-field>
           </div>
 
-          <div class="d-flex justify-end mb-4">
-            <router-link to="/forgot-password" class="forgot-link">Забыли пароль?</router-link>
+          <div class="d-flex justify-end mb-3">
+            <router-link to="/forgot-password" class="auth-link">Забыли пароль?</router-link>
           </div>
 
           <v-btn
@@ -196,26 +225,21 @@ const handleLogin = async () => {
             block
             rounded="lg"
             :loading="isLoading"
-            class="login-btn mb-4"
+            class="auth-btn"
           >
             Войти
           </v-btn>
         </form>
-
-        <p class="text-center text-caption mt-10 login-copyright">
-          &copy; {{ new Date().getFullYear() }} MizanPay. Все права защищены.
-        </p>
       </div>
+
+      <p class="auth-footer-note">
+        &copy; {{ new Date().getFullYear() }} MizanPay. Все права защищены.
+      </p>
     </div>
   </v-main>
 </template>
 
 <style scoped>
-.login-page {
-  min-height: 100vh;
-  display: flex;
-}
-
 /* ===== Left brand panel ===== */
 .login-brand {
   width: 42%;
@@ -327,62 +351,6 @@ const handleLogin = async () => {
   color: rgba(255, 255, 255, 0.4);
   margin-top: 1px;
 }
-
-/* ===== Right form panel ===== */
-.login-form-panel {
-  flex: 1;
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 32px;
-  background: rgb(var(--v-theme-surface));
-}
-
-.login-form-wrapper {
-  width: 100%;
-  max-width: 400px;
-}
-
-.login-title {
-  font-size: 1.75rem;
-  font-weight: 800;
-  color: rgba(var(--v-theme-on-surface), 0.95);
-  letter-spacing: -0.02em;
-}
-
-.login-subtitle {
-  font-size: 0.9rem;
-  color: rgba(var(--v-theme-on-surface), 0.6);
-}
-
-.field-label {
-  display: block;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.8);
-  margin-bottom: 6px;
-}
-
-.login-btn {
-  font-weight: 600;
-  letter-spacing: 0;
-  text-transform: none;
-  font-size: 0.95rem;
-}
-
-.forgot-link {
-  font-size: 0.8rem;
-  color: rgb(var(--v-theme-accent));
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.forgot-link:hover {
-  text-decoration: underline;
-}
-
-.login-copyright { color: rgba(var(--v-theme-on-surface), 0.4); }
 
 /* Всё выше — на переменных темы, отдельных правил под тёмные темы не нужно.
    Через `.dark` делать нельзя: класс ставится скриптом, и в момент, когда тема

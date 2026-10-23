@@ -26,6 +26,7 @@ import '@/styles/anchored-menu.css'
 import '@/styles/back-button.css'
 import '@/styles/side-drawer.css'
 import '@/styles/table-columns.css'
+import '@/styles/mobile.css'
 
 // AG Grid — register community modules once for entire app
 import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community'

@@ -10,6 +10,7 @@
  * «вперёд» невозможно, а окно номеров показывает только соседние.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useIsMobile } from '@/composables/useIsMobile'
 
 const props = withDefaults(
   defineProps<{
@@ -51,6 +52,9 @@ const emit = defineEmits<{
   /** Партнёр нажал «Загрузить ещё». */
   (e: 'loadMore'): void
 }>()
+
+/** Телефон: своя короткая разметка — см. шаблон. */
+const { isMobile: isPhone } = useIsMobile()
 
 const pageCount = computed(() => Math.max(1, Math.ceil(props.total / props.perPage)))
 const rangeFrom = computed(() => (props.total === 0 ? 0 : (props.page - 1) * props.perPage + 1))
@@ -198,7 +202,37 @@ function onJumpStep(delta: number) {
 </script>
 
 <template>
-  <div v-if="total > 0" ref="root" class="sp-pager" :class="{ 'sp-pager--compact': compact }">
+  <!-- Телефон: лента подгружается при прокрутке (useAutoLoad), поэтому
+       вместо ряда номеров, размера порции и переключателя — одна строка
+       «сколько показано», а «Наверх» — плавающая кнопка над вкладками. -->
+  <div v-if="total > 0 && isPhone && !compact" ref="root" class="sp-m">
+    <template v-if="autoLoad">
+      <div class="sp-m-info">
+        <template v-if="hasMore">Показано {{ loaded.toLocaleString('ru-RU') }} из {{ total.toLocaleString('ru-RU') }}</template>
+        <template v-else>Показаны все {{ total.toLocaleString('ru-RU') }}</template>
+      </div>
+      <v-progress-circular v-if="busy && hasMore" indeterminate size="20" width="2" color="primary" />
+      <button v-else-if="hasMore" class="sp-m-more" @click="emit('loadMore')">Загрузить ещё</button>
+    </template>
+    <div v-else class="sp-m-pages">
+      <button class="sp-m-arrow" :disabled="page <= 1 || busy" aria-label="Предыдущая страница" @click="goToPage(page - 1)">
+        <v-icon icon="mdi-chevron-left" size="22" />
+      </button>
+      <span class="sp-m-info">{{ rangeFrom }}–{{ rangeTo }} из {{ total.toLocaleString('ru-RU') }}</span>
+      <button class="sp-m-arrow" :disabled="page >= pageCount || busy" aria-label="Следующая страница" @click="goToPage(page + 1)">
+        <v-icon icon="mdi-chevron-right" size="22" />
+      </button>
+    </div>
+    <Teleport to="body">
+      <Transition name="sp-m-fade">
+        <button v-if="scrolled" class="sp-m-top" aria-label="В начало списка" @click="scrollToTop">
+          <v-icon icon="mdi-arrow-up" size="22" />
+        </button>
+      </Transition>
+    </Teleport>
+  </div>
+
+  <div v-else-if="total > 0" ref="root" class="sp-pager" :class="{ 'sp-pager--compact': compact }">
     <div class="sp-info">
       <template v-if="autoLoad">
         Показано {{ loaded.toLocaleString('ru-RU') }} из {{ total.toLocaleString('ru-RU') }}
@@ -486,4 +520,32 @@ function onJumpStep(delta: number) {
   .sp-pager { justify-content: center; gap: 12px; }
   .sp-info { width: 100%; text-align: center; }
 }
+/* ── Телефон ── */
+.sp-m {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  min-height: 56px; padding: 12px 16px;
+}
+.sp-m-info { font-size: 13px; color: rgba(var(--v-theme-on-surface), 0.5); font-variant-numeric: tabular-nums; }
+.sp-m-more {
+  height: 36px; padding: 0 14px; border-radius: 10px;
+  background: rgba(var(--v-theme-primary), 0.1); color: rgb(var(--v-theme-primary));
+  font-size: 13.5px; font-weight: 600;
+}
+.sp-m-pages { display: flex; align-items: center; gap: 8px; }
+.sp-m-arrow {
+  width: 40px; height: 40px; border-radius: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(var(--v-theme-on-surface), 0.06); color: rgba(var(--v-theme-on-surface), 0.75);
+}
+.sp-m-arrow:disabled { opacity: 0.35; }
+.sp-m-top {
+  position: fixed; z-index: 1002;
+  right: 16px; bottom: calc(16px + var(--bottom-nav-offset, 0px));
+  width: 44px; height: 44px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgb(var(--v-theme-surface)); color: rgba(var(--v-theme-on-surface), 0.75);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(var(--v-theme-on-surface), 0.06);
+}
+.sp-m-fade-enter-active, .sp-m-fade-leave-active { transition: opacity 0.2s ease, transform 0.2s ease; }
+.sp-m-fade-enter-from, .sp-m-fade-leave-to { opacity: 0; transform: translateY(8px); }
 </style>

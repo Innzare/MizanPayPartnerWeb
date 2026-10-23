@@ -58,7 +58,7 @@ const colorMap: Record<string, string> = {
           >
             {{ toast.action.label }}
           </button>
-          <button class="gt-close" @click="remove(toast.id)">
+          <button class="gt-close" aria-label="Закрыть" @click="remove(toast.id)">
             <v-icon icon="mdi-close" size="14" />
           </button>
         </div>
@@ -161,5 +161,27 @@ const colorMap: Record<string, string> = {
 
 .gt-slide-move {
   transition: transform 0.2s ease;
+}
+
+/* Телефон: во всю ширину сверху, под вырезом экрана; выезжает сверху, а не
+   сбоку; крестик — под палец. */
+@media (max-width: 600px) {
+  .gt-container {
+    top: calc(10px + env(safe-area-inset-top));
+    left: calc(12px + env(safe-area-inset-left));
+    right: calc(12px + env(safe-area-inset-right));
+    max-width: none;
+  }
+  .gt-toast {
+    min-width: 0;
+    padding: 10px 6px 10px 14px;
+    border-radius: 12px;
+  }
+  .gt-message { font-size: 14px; }
+  .gt-close { width: 36px; height: 36px; border-radius: 10px; }
+  .gt-slide-enter-from,
+  .gt-slide-leave-to {
+    transform: translateY(-16px);
+  }
 }
 </style>

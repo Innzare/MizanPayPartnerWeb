@@ -280,6 +280,40 @@ const progressWidth = computed(() => totalRevenue.value > 0 ? (received.value / 
   background: rgba(232, 185, 49, 0.25); border-color: rgba(232, 185, 49, 0.7);
 }
 
+/* Телефон. Плашка «Деньги в кассах» в правом углу наезжала на заголовок —
+   здесь она строка под прогрессом во всю ширину. Показатели — ровная сетка
+   из трёх колонок, без плашки-подложки: каждый пиксель ширины на счету. */
+@media (max-width: 767px) {
+  .hero-summary { display: flex; flex-direction: column; padding: 18px 16px 16px; }
+  .hs-capital-badge {
+    order: 2; position: static;
+    margin-top: 14px; padding: 10px 12px;
+    backdrop-filter: none;
+  }
+  .hs-capital-info { flex: 1; flex-direction: row; align-items: baseline; gap: 8px; }
+  .hs-capital-value { font-size: 16px; }
+  .hs-capital-label { font-size: 13px; opacity: 0.7; order: -1; flex: 1; }
+  .hs-capital-arrow { opacity: 0.6; }
+  .hs-label { font-size: 12px; }
+  .hs-amount { font-size: 30px; line-height: 1.15; margin: 2px 0; }
+  .hs-metrics {
+    display: grid; grid-template-columns: repeat(3, 1fr); align-items: start;
+    margin-top: 14px; padding: 12px 0 0; border-radius: 0;
+    background: none; border-top: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .hs-metric-divider { display: none; }
+  .hs-metric { text-align: left; padding-right: 6px; }
+  .hs-metric-value { font-size: 15px; white-space: nowrap; }
+  .hs-metric-label { font-size: 11.5px; line-height: 1.25; margin-top: 3px; }
+  .hs-progress { margin-top: 16px; }
+  .hs-received { white-space: nowrap; }
+  .hs-analytics-btn { padding: 7px 12px; }
+}
+@media (max-width: 359px) {
+  .hs-amount { font-size: 26px; }
+  .hs-metric-value { font-size: 14px; }
+}
+
 /* Dark mode */
 .dark .hero-summary {
   background: linear-gradient(135deg, #047857 0%, #064e3b 50%, #022c22 100%);

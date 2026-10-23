@@ -1897,7 +1897,8 @@ function goConnect() { activeTab.value = 'connection' }
      переключение через v-show + кнопку «назад»). */
   .bc-chat-shell {
     grid-template-columns: 1fr;
-    height: calc(100vh - 190px); min-height: 420px;
+    /* Минус нижние вкладки телефона — иначе поле ввода уходит под них. */
+    height: calc(100dvh - 190px - var(--bottom-nav-offset, 0px)); min-height: 420px;
     border-radius: 12px;
   }
   .bc-chat-list { border-right: none; max-height: none; }
