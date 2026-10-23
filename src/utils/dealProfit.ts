@@ -11,7 +11,9 @@
  *   - есть wholesalePrice → totalPrice − wholesalePrice (розничная наценка
  *     вместе с рассрочкой);
  *   - иначе → deal.markup.
- * Доля дохода в каждом рубле платежа = маржа / цена продажи, не больше 1.
+ * Доля дохода в каждом рубле платежа = (маржа − скидка) / цена продажи,
+ * от 0 до 1. Скидка — прощённый заработок; делитель — цена продажи, как в
+ * шаблоне переноса и Excel партнёра (решение владельца 23.10).
  *
  * Запасного пути через markupPercent здесь НЕТ намеренно. Он был, и на трёх
  * битых сделках (markup = 0 при markupPercent > 0) давал доход, которого
@@ -23,6 +25,7 @@ export interface ProfitDeal {
   totalPrice: number
   markup?: number
   wholesalePrice?: number | null
+  discount?: number | null
 }
 
 /** Доля дохода в каждом рубле платежа, ≤ 1. */
@@ -34,7 +37,8 @@ export function dealProfitShare(deal?: ProfitDeal | null): number {
     ? Math.max(0, deal.totalPrice - deal.wholesalePrice!)
     : deal.markup ?? 0
 
-  return Math.min(margin / deal.totalPrice, 1)
+  const discount = Math.max(Math.round(deal.discount ?? 0), 0)
+  return Math.max(0, Math.min((margin - discount) / deal.totalPrice, 1))
 }
 
 /** Сколько дохода приносит платёж на указанную сумму. */
