@@ -43,8 +43,10 @@ export function useCoInvestors() {
 
   // ── Unified investor person (participation across several cashboxes) ──
   // A person groups several per-cashbox stakes under one shared header + link.
+  // slim: без распределения прибыли по стейкам (оно считается по всем сделкам
+  // кассы) — в списке кабинет его не показывает, поля приходят нулями.
   async function fetchPersons() {
-    return api.get<InvestorPerson[]>('/co-investors/persons')
+    return api.get<InvestorPerson[]>('/co-investors/persons?slim=1')
   }
 
   async function fetchPerson(personId: string) {

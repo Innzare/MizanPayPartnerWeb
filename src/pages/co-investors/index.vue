@@ -117,17 +117,19 @@ function shareTypeOption(v: 'FIXED' | 'WEIGHT' | 'COST_FEE') {
 
 async function fetchData() {
   try {
-    const [people] = await Promise.all([
-      fetchPersons(),
-      // Cashboxes are needed for filter chips, badges, and dialog pickers.
-      // Skip if already loaded — store caches across pages.
-      cashboxesStore.items.length === 0 ? cashboxesStore.fetchAll() : Promise.resolve(),
-    ])
-    persons.value = people
+    // Кассы нужны таблице сразу (выбор кассы); список инвесторов — только для
+    // поиска по телефону и окон правки, поэтому таблица его не ждёт: строки
+    // приходят в её собственном запросе месяца.
+    if (cashboxesStore.items.length === 0) await cashboxesStore.fetchAll()
   } catch (e: any) {
     toast.error(e, 'Ошибка загрузки данных')
   } finally {
     pageLoading.value = false
+  }
+  try {
+    persons.value = await fetchPersons()
+  } catch (e: any) {
+    toast.error(e, 'Ошибка загрузки инвесторов')
   }
 }
 

@@ -201,7 +201,14 @@ const hasAny = computed(() => props.months.some((x) => x.gross || x.expectedGros
                 v-if="x.month === selected"
                 class="cmc-bubble"
                 :style="{ bottom: barTop(x) + 10 + 'px' }"
-              >{{ headline(x) }}</span>
+              ><v-icon v-if="x.closed" icon="mdi-lock" size="12" class="cmc-bubble-lock" />{{ headline(x) }}</span>
+              <!-- Закрытый месяц — замок над столбиком, видно сразу на всём графике. -->
+              <span
+                v-else-if="x.closed"
+                class="cmc-lock"
+                :style="{ bottom: barTop(x) + 6 + 'px' }"
+                title="Месяц закрыт"
+              ><v-icon icon="mdi-lock" size="12" /></span>
               <span class="cmc-stack">
                 <span v-for="(s, k) in segments(x)" :key="k" class="cmc-seg-part" :class="s.cls" :style="{ height: s.h + 'px' }" />
                 <span v-if="!segments(x).length && !(mode === 'debt' && x.owedEnd == null)" class="cmc-zero" />
@@ -209,8 +216,7 @@ const hasAny = computed(() => props.months.some((x) => x.gross || x.expectedGros
             </span>
             <span class="cmc-label">{{ shortOf(x.month) }}</span>
             <span class="cmc-mark">
-              <v-icon v-if="x.closed" icon="mdi-lock" size="11" />
-              <i v-else-if="x.current" class="cmc-now" />
+              <i v-if="x.current" class="cmc-now" />
             </span>
           </button>
           </template>
@@ -299,6 +305,15 @@ const hasAny = computed(() => props.months.some((x) => x.gross || x.expectedGros
   transition: opacity 0.15s, transform 0.15s, box-shadow 0.15s;
 }
 .cmc-seg-part { display: block; width: 100%; }
+.cmc-lock {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  pointer-events: none;
+}
+.cmc-bubble-lock { margin-right: 4px; vertical-align: -1px; opacity: 0.85; }
 .cmc-zero { display: block; width: 100%; height: 3px; border-radius: 2px 2px 0 0; background: rgba(var(--v-theme-on-surface), 0.14); }
 /* Цвета — насыщенные, но спокойные: инвесторы — индиго, вы — изумрудный. */
 .cmc-s-inv { background: linear-gradient(180deg, #6a6ff0 0%, #5157dc 100%); }

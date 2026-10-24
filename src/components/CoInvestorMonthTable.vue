@@ -192,6 +192,18 @@ async function load(quiet = false, opts: { nav?: boolean } = {}) {
   }
 }
 
+/**
+ * Идёт загрузка другого месяца (или кассы): вместо прежних цифр — скелетон,
+ * как в «Годовом обзоре», иначе прежние числа выглядели как ответ на новый
+ * месяц. Тихие обновления (после операций, во время пересчёта) его не
+ * показывают.
+ */
+const switching = computed(() =>
+  loading.value && (!data.value || data.value.month !== month.value || data.value.cashBox.id !== cashBoxId.value))
+/** Сколько строк-заглушек показать: как было строк, но в разумных пределах. */
+const skeletonRows = computed(() => Math.min(10, Math.max(4, data.value?.rows.length ?? 6)))
+const TABLE_COLS = 11
+
 // ── Итоги инвесторов кассы за всё время (раскрытая строка) ──
 interface BoxSummaryRow {
   id: string
@@ -247,11 +259,28 @@ function selectMonth(m: string) {
   period.value = rangeForPreset('month', new Date(y!, mm! - 1, 1))
 }
 
-// ── Пересчёт долей (схема v2): пока ждёт или идёт — обновляем раз в 5 с ──
+// ── Пересчёт долей (схема v2): пока ждёт или идёт — раз в 5 с спрашиваем
+// только его состояние (один короткий запрос), а таблицу перечитываем один
+// раз, когда пересчёт закончился. Раньше раз в 5 с перечитывалась вся
+// таблица — тяжёлый запрос ровно тогда, когда база занята пересчётом.
 const recalcBusy = computed(() => !!(data.value?.recalc?.pending || data.value?.recalc?.running))
 let recalcTimer: ReturnType<typeof setInterval> | null = null
+let recalcPolling = false
+async function pollRecalc() {
+  const box = data.value?.cashBox.id
+  if (!box || recalcPolling) return
+  recalcPolling = true
+  try {
+    const st = await api.getSilent<{ pending: boolean; running: boolean }>(
+      `/co-investors/month/recalc-state?${new URLSearchParams({ cashBoxId: box })}`,
+    )
+    if (st && !st.pending && !st.running) await load(true)
+  } finally {
+    recalcPolling = false
+  }
+}
 watch(recalcBusy, (busy, was) => {
-  if (busy && !recalcTimer) recalcTimer = setInterval(() => void load(true), 5000)
+  if (busy && !recalcTimer) recalcTimer = setInterval(() => void pollRecalc(), 5000)
   if (!busy && recalcTimer) {
     clearInterval(recalcTimer)
     recalcTimer = null
@@ -392,8 +421,9 @@ watch([cashBoxId, month], () => {
 })
 onMounted(async () => {
   if (!cashboxes.items.length) await cashboxes.fetchAll()
+  // Выбор кассы сам запускает загрузку (наблюдатель за кассой и месяцем):
+  // второй вызов здесь удваивал тяжёлые запросы при каждом открытии страницы.
   pickInitialBox()
-  if (cashBoxId.value) load()
 })
 defineExpose({ reload: load })
 
@@ -845,7 +875,7 @@ async function submitSettle() {
 
     <template v-else-if="data">
       <!-- Итоги месяца — отдельными карточками, чтобы не терялись -->
-      <div class="cim-kpis">
+      <div class="cim-kpis" :class="{ 'cim-kpis--sk': switching }">
         <div class="cim-kpi">
           <div class="cim-kpi-icon" style="--c: #0f766e"><v-icon icon="mdi-cash-multiple" size="20" /></div>
           <div class="cim-kpi-body">
@@ -924,7 +954,7 @@ async function submitSettle() {
         </div>
       </div>
 
-      <div ref="scrollEl" class="cim-scroll" :class="{ 'cim-scroll--loading': loading }">
+      <div ref="scrollEl" class="cim-scroll" :class="{ 'cim-scroll--loading': loading && !switching }">
         <table class="cim-table">
           <thead>
             <tr>
@@ -957,7 +987,14 @@ async function submitSettle() {
               <th class="cim-act" />
             </tr>
           </thead>
-          <tbody>
+          <tbody v-if="switching">
+            <tr v-for="i in skeletonRows" :key="`sk-${i}`" class="cim-sk-row">
+              <td v-for="n in TABLE_COLS" :key="n" :class="n === 2 ? 'cim-name' : n === 1 ? 'cim-n' : 'cim-num'">
+                <div class="cim-sk" :class="{ 'cim-sk--name': n === 2, 'cim-sk--n': n === 1 || n === TABLE_COLS }" />
+              </td>
+            </tr>
+          </tbody>
+          <tbody v-else>
             <!-- Партнёр -->
             <tr class="cim-partner">
               <td class="cim-n"><v-icon icon="mdi-account-tie" size="16" /></td>
@@ -1215,7 +1252,7 @@ async function submitSettle() {
             </tr>
             </template>
           </tbody>
-          <tfoot v-if="rows.length">
+          <tfoot v-if="rows.length && !switching">
             <tr>
               <td class="cim-n" />
               <td class="cim-name">Итого</td>
@@ -1721,6 +1758,26 @@ async function submitSettle() {
 
 .cim-scroll { overflow-x: auto; transition: opacity 0.15s; }
 .cim-scroll--loading { opacity: 0.55; pointer-events: none; }
+
+/* Скелетон загрузки другого месяца — как в «Годовом обзоре». */
+.cim-sk {
+  height: 12px; width: 70%; margin-left: auto; border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  animation: cim-sk-pulse 1.2s ease-in-out infinite;
+}
+.cim-sk--name { width: 55%; margin-left: 0; }
+.cim-sk--n { width: 18px; margin: 0 auto; }
+.cim-sk-row td { height: 46px; }
+.cim-kpis--sk .cim-kpi-val,
+.cim-kpis--sk .cim-kpi-note {
+  color: transparent !important; border-radius: 6px; width: fit-content; min-width: 90px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  animation: cim-sk-pulse 1.2s ease-in-out infinite;
+}
+@keyframes cim-sk-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
 .cim-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .cim-table thead th {
   text-align: left; font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
