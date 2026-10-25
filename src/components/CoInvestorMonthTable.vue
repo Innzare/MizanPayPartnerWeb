@@ -166,10 +166,26 @@ const monthPrep = computed(() => {
 const data = ref<MonthData | null>(null)
 const loading = ref(false)
 let seq = 0
+
+/**
+ * Уже открытые месяцы кассы: при возврате к месяцу его прежние цифры видны
+ * сразу (приглушённо, без кнопок), пока сервер отдаёт свежие. Забываются
+ * после любой записи — расчёта, закрытия, пересчёта, перезагрузки.
+ */
+const monthMemo = new Map<string, MonthData>()
+const memoKey = (box: string, m: string) => `${box}|${m}`
+/** Поколение памяти: ответ, запрошенный до записи, в неё уже не кладём. */
+let memoGen = 0
+function forgetMonths() { monthMemo.clear(); memoGen++ }
+
 /** `quiet` — фоновое обновление (пока идёт пересчёт): без мигания и ошибок. */
 async function load(quiet = false, opts: { nav?: boolean } = {}) {
   if (!cashBoxId.value) { data.value = null; return }
   const my = ++seq
+  // Не листание и не опрос — значит, что-то записали: прежние месяцы устарели.
+  if (!opts.nav && !quiet) forgetMonths()
+  const remembered = opts.nav ? monthMemo.get(memoKey(cashBoxId.value, month.value)) : undefined
+  if (remembered) data.value = remembered
   // Итоги «за всё время» (раскрытые строки) и месяцы кассы (график) от
   // выбранного месяца не зависят — параллельно с таблицей и только когда
   // могли измениться: другая касса или что-то записали. Листание месяцев и
@@ -181,14 +197,46 @@ async function load(quiet = false, opts: { nav?: boolean } = {}) {
     void loadSeries()
   }
   if (!quiet) loading.value = true
+  const gen = memoGen
   try {
     const q = new URLSearchParams({ cashBoxId: cashBoxId.value, month: month.value, tz: TZ })
     const res = await api.get<MonthData>(`/co-investors/month?${q}`)
+    if (gen === memoGen) monthMemo.set(memoKey(res.cashBox.id, res.month), res)
     if (my === seq) data.value = res
   } catch (e: any) {
+    // Свежие цифры не пришли — прежние из памяти не оставляем: по ним
+    // нельзя проводить расчёт.
+    if (my === seq && remembered) data.value = null
     if (my === seq && !quiet) toast.error(e, 'Не удалось загрузить таблицу')
   } finally {
     if (my === seq) loading.value = false
+  }
+  if (my === seq && !quiet) void prefetchPrev()
+}
+
+/**
+ * Предыдущий месяц — заранее, в память: к нему переходят чаще всего. Заодно
+ * сервер запоминает ответ у себя. Пока идёт пересчёт долей — не нужно: цифры
+ * ещё поменяются.
+ */
+let prefetching = false
+async function prefetchPrev() {
+  const box = cashBoxId.value
+  if (!box || prefetching || recalcBusy.value) return
+  const [y, m] = month.value.split('-').map(Number)
+  const prev = new Date(y!, m! - 2, 1)
+  const pm = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`
+  if (monthMemo.has(memoKey(box, pm))) return
+  prefetching = true
+  const gen = memoGen
+  try {
+    const q = new URLSearchParams({ cashBoxId: box, month: pm, tz: TZ })
+    const res = await api.getSilent<MonthData>(`/co-investors/month?${q}`)
+    if (res && cashBoxId.value === box && gen === memoGen) monthMemo.set(memoKey(box, pm), res)
+  } catch {
+    // Заготовка впрок: не вышло — месяц загрузится, когда его откроют.
+  } finally {
+    prefetching = false
   }
 }
 
@@ -234,7 +282,7 @@ async function loadSummary() {
     if (my === summarySeq) summaryFailed.value = true
   }
 }
-watch(cashBoxId, () => { summary.value = null; summaryFailed.value = false; series.value = []; loadedFor = null })
+watch(cashBoxId, () => { summary.value = null; summaryFailed.value = false; series.value = []; loadedFor = null; forgetMonths() })
 
 // ── Месяцы кассы — график над таблицей ──
 const series = ref<SeriesMonth[]>([])
@@ -285,6 +333,7 @@ watch(recalcBusy, (busy, was) => {
     clearInterval(recalcTimer)
     recalcTimer = null
     if (was) {
+      forgetMonths()
       emit('changed')
       void loadSummary()
       void loadSeries()
@@ -425,7 +474,8 @@ onMounted(async () => {
   // второй вызов здесь удваивал тяжёлые запросы при каждом открытии страницы.
   pickInitialBox()
 })
-defineExpose({ reload: load })
+// Родитель перезагружает таблицу после своих записей (новый инвестор и т. п.).
+defineExpose({ reload: () => load() })
 
 // ── Вид ──
 const rows = computed(() => data.value?.rows ?? [])
@@ -477,6 +527,7 @@ async function confirmCloseAction() {
       tz: TZ,
     })
     closeDialog.value = null
+    forgetMonths()
     void monthLocks.refresh()
     toast.success(action === 'close' ? `${monthLabel.value} закрыт` : `${monthLabel.value} открыт`)
     emit('changed')
@@ -703,9 +754,11 @@ async function submitSettle() {
     if (items.length) {
       data.value = await api.post<MonthData>('/co-investors/month/settle', { ...body, idemKey, items })
       settled = true
+      forgetMonths()
     }
     if (close) {
       data.value = await api.post<MonthData>('/co-investors/month/close', body)
+      forgetMonths()
       void monthLocks.refresh()
     }
     settleOpen.value = false
@@ -771,7 +824,7 @@ async function submitSettle() {
                 <div class="cim-set-select">
                   <select
                     :value="data.payoutDay ?? ''"
-                    :disabled="savingDay"
+                    :disabled="savingDay || loading"
                     @change="setPayoutDay(($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"
                   >
                     <option value="">Не задан</option>
@@ -790,7 +843,7 @@ async function submitSettle() {
                   v-if="auth.can('coinvestors.edit') && data && !isClosed && !data.isFuture"
                   type="button"
                   class="cim-set-item"
-                  :disabled="recalcRequesting || recalcBusy"
+                  :disabled="recalcRequesting || recalcBusy || loading"
                   @click="requestRecalc(); gearOpen = false"
                 >
                   <v-icon icon="mdi-refresh" size="18" />
@@ -845,7 +898,7 @@ async function submitSettle() {
         v-if="auth.can('coinvestors.dividends')"
         type="button"
         class="cim-btn cim-btn--primary"
-        :disabled="!data || data.isFuture || isClosed || recalcBusy || (!activeRows.length && !canCloseHere)"
+        :disabled="!data || loading || data.isFuture || isClosed || recalcBusy || (!activeRows.length && !canCloseHere)"
         :title="isClosed ? 'Месяц закрыт — сначала откройте его' : recalcBusy ? 'Доли пересчитываются — подождите минуту' : 'Выплаты, реинвест, повышение процента и закрытие месяца'"
         @click="openSettle"
       >
@@ -857,7 +910,7 @@ async function submitSettle() {
         v-if="!auth.can('coinvestors.dividends') && !isClosed && auth.can('coinvestors.closeMonth') && data && !data.isFuture && closeInfo"
         type="button"
         class="cim-btn"
-        :disabled="!closeInfo.canClose"
+        :disabled="!closeInfo.canClose || loading"
         :title="closeInfo.closeBlocked || 'Зафиксировать месяц: его оплаты и выплаты станут недоступны'"
         @click="closeDialog = 'close'"
       >
