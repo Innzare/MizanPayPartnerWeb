@@ -47,6 +47,28 @@ export interface DebtorRow {
   lastActivityType: string | null
   dealStatus: string
   resolvedAt: number | null
+  // ── Колонки, перенесённые из таблицы сделок ──
+  createdAt: number | null
+  dealDate: number | null
+  paymentInterval: string
+  firstPaymentDate: number | null
+  /** Конец графика — «Дата окончания». */
+  scheduleEndAt: number | null
+  downPayment: number
+  /** null — у сотрудника нет права видеть закупку. */
+  purchasePrice: number | null
+  markup: number | null
+  discount: number
+  comment: string | null
+  createdByStaffId: string | null
+  createdByStaffName: string | null
+  // Приходят, только если колонку включили (параметр `extras`).
+  clientBirthDate?: string | null
+  clientAddress?: string | null
+  clientRegAddress?: string | null
+  guarantorsList?: Array<{ name: string; phone: string | null; address: string | null }>
+  supplierName?: string | null
+  paidTotal?: number
 }
 
 export interface DebtorSettings {

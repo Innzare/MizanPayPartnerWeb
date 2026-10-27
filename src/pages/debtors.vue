@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDebtorsStore, type DebtorRow, type PromiseStatus, type DebtorAnalytics } from '@/stores/debtors'
@@ -8,7 +9,7 @@ import DateField from '@/components/DateField.vue'
 import { useSections } from '@/composables/useSections'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { formatCurrency, formatDateShort, pluralizeRu } from '@/utils/formatters'
+import { formatCurrency, formatDateShort, formatDateShortYear, pluralizeRu, timeAgo } from '@/utils/formatters'
 import ServerPager from '@/components/ServerPager.vue'
 import { useAutoLoad } from '@/composables/useAutoLoad'
 import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
@@ -113,16 +114,25 @@ interface Col {
   tdStyle?: string
   /** Раздел в меню выбора: плоский список из двух десятков колонок неудобен. */
   group: ColGroup
+  /** Данные считаются отдельно и только когда колонка включена (как в сделках). */
+  extra?: 'clientDetails' | 'guarantors' | 'supplier' | 'paidTotal'
 }
 
-type ColGroup = 'debtor' | 'overdue' | 'payments' | 'work'
+type ColGroup = 'debtor' | 'overdue' | 'payments' | 'deal' | 'money' | 'client' | 'guarantors' | 'work'
 
 const COLUMN_GROUPS: { key: ColGroup; label: string }[] = [
   { key: 'debtor', label: 'Должник' },
   { key: 'overdue', label: 'Просрочка' },
   { key: 'payments', label: 'Платежи' },
+  { key: 'deal', label: 'Договор' },
+  { key: 'money', label: 'Деньги' },
+  { key: 'client', label: 'Клиент' },
+  { key: 'guarantors', label: 'Поручители' },
   { key: 'work', label: 'Работа с должником' },
 ]
+
+/** Закупка и наценка — по праву, как и в карточке сделки. */
+const canSeeCost = auth.can('deals.cost')
 
 const ALL_COLUMNS: Col[] = [
   // ── Должник ──
@@ -143,6 +153,39 @@ const ALL_COLUMNS: Col[] = [
   { key: 'nextPayment', label: 'Следующий платёж', align: 'end', sortable: true, group: 'payments', tdClass: 'text-end text-no-wrap' },
   { key: 'paymentsProgress', label: 'Платежей оплачено', align: 'center', sortable: false, group: 'payments', tdClass: 'text-center text-no-wrap' },
   { key: 'progress', label: 'Прогресс', align: 'center', sortable: true, group: 'payments', tdClass: 'text-center', tdStyle: 'min-width: 130px;' },
+  { key: 'paymentsTotal', label: 'Всего платежей', align: 'center', sortable: false, group: 'payments', tdClass: 'text-center text-no-wrap' },
+  { key: 'paymentsLeft', label: 'Осталось платежей', align: 'center', sortable: false, group: 'payments', tdClass: 'text-center text-no-wrap' },
+  { key: 'payDay', label: 'День оплаты', align: 'center', sortable: false, group: 'payments', tdClass: 'text-center text-no-wrap' },
+  { key: 'lastPayment', label: 'Дата окончания', align: 'end', sortable: false, group: 'payments', tdClass: 'text-end text-medium-emphasis text-no-wrap' },
+
+  // ── Договор (перенесено из таблицы сделок) ──
+  { key: 'dealDate', label: 'Дата договора', align: 'end', sortable: false, group: 'deal', tdClass: 'text-end text-medium-emphasis text-no-wrap' },
+  { key: 'createdAt', label: 'Дата создания', align: 'end', sortable: false, group: 'deal', tdClass: 'text-end text-medium-emphasis text-no-wrap' },
+  { key: 'term', label: 'Срок рассрочки', align: 'center', sortable: false, group: 'deal', tdClass: 'text-center text-no-wrap' },
+  { key: 'createdBy', label: 'Оформил', align: 'start', sortable: false, group: 'deal', tdClass: 'text-no-wrap' },
+  { key: 'supplier', label: 'Поставщик', align: 'start', sortable: false, group: 'deal', extra: 'supplier', tdClass: 'text-no-wrap' },
+  { key: 'comment', label: 'Комментарий', align: 'start', sortable: false, group: 'deal', tdStyle: 'min-width: 220px;' },
+
+  // ── Деньги ──
+  ...(canSeeCost
+    ? [
+        { key: 'purchasePrice', label: 'Стоимость товара', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' } as Col,
+        { key: 'markup', label: 'Наценка', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' } as Col,
+      ]
+    : []),
+  { key: 'downPayment', label: 'Первонач. взнос', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'monthly', label: 'Ежемесячно', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'paidTotal', label: 'Оплачено всего', align: 'end', sortable: false, group: 'money', extra: 'paidTotal', tdClass: 'text-end text-no-wrap' },
+  { key: 'discount', label: 'Скидка', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
+
+  // ── Клиент ──
+  { key: 'clientBirthDate', label: 'Дата рождения', align: 'end', sortable: false, group: 'client', extra: 'clientDetails', tdClass: 'text-end text-no-wrap' },
+  { key: 'clientAddress', label: 'Адрес проживания', align: 'start', sortable: false, group: 'client', extra: 'clientDetails', tdStyle: 'min-width: 220px;' },
+  { key: 'clientRegAddress', label: 'Адрес регистрации', align: 'start', sortable: false, group: 'client', extra: 'clientDetails', tdStyle: 'min-width: 220px;' },
+
+  // ── Поручители ──
+  { key: 'guarantors', label: 'Поручители', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdStyle: 'min-width: 220px;' },
+  { key: 'guarantorAddresses', label: 'Адреса поручителей', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdStyle: 'min-width: 220px;' },
 
   // ── Работа с должником ──
   { key: 'assignedStaff', label: 'Ответственный', align: 'start', sortable: true, group: 'work', tdClass: 'text-start text-no-wrap' },
@@ -208,6 +251,12 @@ const orderedColumns = computed(
 )
 /** Те же, но только включённые — по ним рисуется таблица. */
 const shownColumns = computed(() => orderedColumns.value.filter((c) => visibleCols.value[c.key]))
+/**
+ * Дополнительные данные для включённых колонок (поставщик, поручители,
+ * адреса, оплачено). Сервер считает их только по этой просьбе — иначе
+ * список замедлился бы у всех.
+ */
+const neededExtras = computed(() => [...new Set(shownColumns.value.map((c) => c.extra).filter(Boolean))].join(','))
 function toggleColumn(key: string) { visibleCols.value[key] = !visibleCols.value[key] }
 
 // ── Поиск и наборы колонок ──
@@ -295,8 +344,8 @@ function applySavedColPreset(p: { columns: string[]; order: string[] }) {
   columnOrder.value = [...known, ...DEFAULT_ORDER.filter((k) => !known.includes(k))]
 }
 
-function removeColPreset(p: { id: string; name: string }) {
-  if (!confirm(`Удалить набор колонок «${p.name}»?`)) return
+async function removeColPreset(p: { id: string; name: string }) {
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить набор колонок «${p.name}»?` }))) return
   savedColPresets.value = savedColPresets.value.filter((x) => x.id !== p.id)
   persistColPresets()
 }
@@ -490,9 +539,14 @@ function pageParams() {
     dir: sortDir.value,
     limit: perPage.value,
     offset: (page.value - 1) * perPage.value,
-    extra: filters.query.value,
+    extra: { ...filters.query.value, ...(neededExtras.value ? { extras: neededExtras.value } : {}) },
   }
 }
+
+// Включили колонку с новыми данными — догружаем страницу с ними.
+watch(neededExtras, (now, before) => {
+  if (now.split(',').some((x) => x && !before.split(',').includes(x))) loadPage()
+})
 
 // Смена условий возвращает на первую страницу: иначе можно оказаться на
 // сороковой странице выборки, где всего две.
@@ -603,6 +657,24 @@ async function saveSettings() {
 
 // ── Хелперы строки ──
 function fmtDate(ts: number | null) { return ts ? formatDateShort(new Date(ts).toISOString()) : '—' }
+
+// ── Подписи колонок, перенесённых из таблицы сделок (тот же смысл) ──
+const INTERVAL_UNIT: Record<string, string> = { WEEKLY: 'нед', BIWEEKLY: '×2 нед', MONTHLY: 'мес' }
+function termLabel(r: DebtorRow) { return `${r.numberOfPayments} ${INTERVAL_UNIT[r.paymentInterval] ?? 'мес'}` }
+/** Ежемесячно — (итого − взнос) / число платежей, как в сделках. */
+function monthlyOf(r: DebtorRow) {
+  return r.numberOfPayments > 0 ? Math.round((r.totalPrice - (r.downPayment ?? 0)) / r.numberOfPayments) : 0
+}
+/** Число месяца, в которое клиент платит по графику. */
+function payDayLabel(r: DebtorRow) {
+  const src = r.nextDueDate ?? r.firstPaymentDate
+  return src ? String(new Date(src).getDate()) : '—'
+}
+/** Свежие — «2 ч назад», старше недели — дата с годом. */
+function createdLabel(ts: number | null) {
+  if (!ts) return '—'
+  return Date.now() - ts < 7 * 86_400_000 ? timeAgo(ts) : formatDateShortYear(ts)
+}
 const PROMISE_STATUS_META: Record<PromiseStatus, { label: string; cls: string }> = {
   PENDING: { label: 'Ожидается', cls: 'ps--pending' },
   KEPT: { label: 'Сдержано', cls: 'ps--kept' },
@@ -1041,7 +1113,7 @@ onUnmounted(() => {
                 </div>
 
                 <div class="col-menu-save">
-                  <input
+                  <input v-clear
                     v-model="colPresetName"
                     type="text"
                     placeholder="Сохранить набор как…"
@@ -1052,7 +1124,7 @@ onUnmounted(() => {
 
                 <div class="col-menu-search">
                   <v-icon icon="mdi-magnify" size="15" />
-                  <input v-model="colSearch" type="text" placeholder="Найти колонку" />
+                  <input v-clear v-model="colSearch" type="text" placeholder="Найти колонку" />
                   <button v-if="colSearch" class="col-menu-search-clear" @click="colSearch = ''">
                     <v-icon icon="mdi-close" size="13" />
                   </button>
@@ -1172,7 +1244,7 @@ onUnmounted(() => {
           <div class="d-flex align-center ga-2 flex-grow-1 justify-end">
             <div class="dbt-search">
               <v-icon icon="mdi-magnify" size="18" />
-              <input v-model="search" type="text" :placeholder="`Поиск по клиенту, товару${canSearchAddress ? ', адресу' : ''}, номеру…`" />
+              <input v-clear v-model="search" type="text" :placeholder="`Поиск по клиенту, товару${canSearchAddress ? ', адресу' : ''}, номеру…`" />
               <button v-if="search" type="button" class="dbt-search-clear" title="Очистить" @click="search = ''">
                 <v-icon icon="mdi-close" size="14" />
               </button>
@@ -1424,6 +1496,60 @@ onUnmounted(() => {
 
                 <template v-else-if="c.key === 'lastActivityText'">
                   <span v-if="row.lastActivityText" class="dbt-lastact">{{ row.lastActivityText }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+
+                <!-- ── Колонки, перенесённые из таблицы сделок ── -->
+                <template v-else-if="c.key === 'paymentsTotal'">{{ row.numberOfPayments }}</template>
+                <template v-else-if="c.key === 'paymentsLeft'">{{ Math.max(row.numberOfPayments - row.paidPayments, 0) }}</template>
+                <template v-else-if="c.key === 'payDay'">{{ payDayLabel(row) }}</template>
+                <template v-else-if="c.key === 'lastPayment'">{{ row.scheduleEndAt ? formatDateShortYear(row.scheduleEndAt) : '—' }}</template>
+                <template v-else-if="c.key === 'dealDate'">{{ row.dealDate ? formatDateShortYear(row.dealDate) : '—' }}</template>
+                <template v-else-if="c.key === 'createdAt'">{{ createdLabel(row.createdAt) }}</template>
+                <template v-else-if="c.key === 'term'">{{ termLabel(row) }}</template>
+                <template v-else-if="c.key === 'createdBy'">
+                  <span v-if="row.createdByStaffName">{{ row.createdByStaffName }}</span>
+                  <span v-else class="text-medium-emphasis">{{ row.createdByStaffId ? 'Удалённый сотрудник' : 'Владелец' }}</span>
+                </template>
+                <template v-else-if="c.key === 'supplier'">
+                  <span v-if="row.supplierName">{{ row.supplierName }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'comment'">
+                  <span v-if="row.comment" class="dbt-lastact" :title="row.comment">{{ row.comment }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'purchasePrice'">{{ row.purchasePrice != null ? formatCurrency(row.purchasePrice) : '—' }}</template>
+                <template v-else-if="c.key === 'markup'">{{ row.markup != null ? '+' + formatCurrency(row.markup) : '—' }}</template>
+                <template v-else-if="c.key === 'downPayment'">{{ row.downPayment ? formatCurrency(row.downPayment) : '—' }}</template>
+                <template v-else-if="c.key === 'monthly'">{{ formatCurrency(monthlyOf(row)) }}</template>
+                <template v-else-if="c.key === 'paidTotal'">{{ row.paidTotal != null ? formatCurrency(row.paidTotal) : '—' }}</template>
+                <template v-else-if="c.key === 'discount'">
+                  <span v-if="row.discount">{{ formatCurrency(row.discount) }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'clientBirthDate'">{{ row.clientBirthDate ? formatDateShortYear(row.clientBirthDate) : '—' }}</template>
+                <template v-else-if="c.key === 'clientAddress'">
+                  <span v-if="row.clientAddress" :title="row.clientAddress">{{ row.clientAddress }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'clientRegAddress'">
+                  <span v-if="row.clientRegAddress" :title="row.clientRegAddress">{{ row.clientRegAddress }}</span>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'guarantors'">
+                  <div v-if="row.guarantorsList?.length">
+                    <div v-for="(g, gi) in row.guarantorsList" :key="gi" class="dbt-guarantor">
+                      <div class="text-no-wrap">{{ g.name }}</div>
+                      <div v-if="g.phone" class="dbt-phone text-no-wrap">{{ g.phone }}</div>
+                    </div>
+                  </div>
+                  <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <template v-else-if="c.key === 'guarantorAddresses'">
+                  <span v-if="row.guarantorsList?.some((g) => g.address)">
+                    {{ row.guarantorsList.map((g) => g.address).filter(Boolean).join(', ') }}
+                  </span>
                   <span v-else class="text-medium-emphasis">—</span>
                 </template>
               </td>
@@ -2074,6 +2200,7 @@ onUnmounted(() => {
 .dbt-phone { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
 .dbt-product { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; display: inline-block; vertical-align: bottom; }
 .dbt-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.5); }
+.dbt-guarantor + .dbt-guarantor { margin-top: 6px; }
 .dbt-days { color: #ef4444; font-weight: 600; }
 .dbt-staff { font-size: 13px; }
 .dbt-unassigned { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.4); }
