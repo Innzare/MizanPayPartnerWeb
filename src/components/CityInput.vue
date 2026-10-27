@@ -157,7 +157,7 @@ function plural(n: number): string {
         >
           <div class="ci-search">
             <v-icon icon="mdi-magnify" size="16" />
-            <input
+            <input v-clear
               ref="searchInput"
               v-model="search"
               type="text"

@@ -15,6 +15,7 @@ export type OperationKind =
   | 'WITHDRAW_OWNER'
   | 'WITHDRAW_PROFIT'
   | 'EXPENSE'
+  | 'OTHER_EXPENSE'
   | 'INCOME'
   | 'TRANSFER'
   | 'BORROW'
@@ -37,18 +38,23 @@ export interface OperationKindInfo {
  *
  * `account` — быстрый вход с «Баланса» и из меню счёта: вложить, снять,
  * перевести.
- * Пополнения и расходы — раздел «Бухгалтерия → Пополнения и расходы», где
- * ведутся все ручные движения денег. Виды различаются не названием, а тем,
- * что меняют:
+ * Пополнения и расходы — вкладка «Бухгалтерия → Пополнения и расходы»: деньги
+ * пришли или ушли насовсем. Виды различаются не названием, а тем, что меняют:
  * - капитал — вложение или снятие своих денег навсегда;
  * - прибыль — снятие заработанного, вложенное не трогается;
- * - прочий доход и расход по бизнесу — деньги кассы, без возврата;
- * - временное — деньги вернутся, ни капитал, ни прибыль не меняются;
- * - неразобранное — чем это было, решат позже.
+ * - расход по бизнесу — деньги кассы, без возврата.
+ * «Прочий доход» с 25.10.2026 не заводится (решение владельца): деньги
+ * насовсем — вложение капитала, на время — временное пополнение, неясно
+ * откуда — неизвестный приход. Старые такие операции видны и правятся.
+ * Временные — вкладка «Временные операции»: деньги вернутся (ни капитал, ни
+ * прибыль не меняются) или ещё не ясно, чем это было (неразобранное — решат
+ * позже).
  */
 export const ACCOUNT_KINDS: OperationKind[] = ['DEPOSIT', 'WITHDRAW_PROFIT', 'WITHDRAW_OWNER', 'TRANSFER']
-export const INCOME_KINDS: OperationKind[] = ['DEPOSIT', 'INCOME', 'BORROW', 'PENDING_IN']
-export const EXPENSE_KINDS: OperationKind[] = ['EXPENSE', 'WITHDRAW_PROFIT', 'WITHDRAW_OWNER', 'LEND', 'PENDING_OUT']
+export const INCOME_KINDS: OperationKind[] = ['DEPOSIT']
+export const EXPENSE_KINDS: OperationKind[] = ['EXPENSE', 'OTHER_EXPENSE', 'WITHDRAW_PROFIT', 'WITHDRAW_OWNER']
+export const TEMP_INCOME_KINDS: OperationKind[] = ['BORROW', 'PENDING_IN']
+export const TEMP_EXPENSE_KINDS: OperationKind[] = ['LEND', 'PENDING_OUT']
 
 export const OPERATION_KINDS: OperationKindInfo[] = [
   {
@@ -85,12 +91,14 @@ export const OPERATION_KINDS: OperationKindInfo[] = [
     direction: 'out',
     permission: 'finance.transactions',
   },
+  // Запрос партнёра 26.10.2026: свой вид расхода для своих целей. По деньгам —
+  // как расход по бизнесу, отличается только названием в ленте и журнале.
   {
-    kind: 'INCOME',
-    title: 'Прочий доход',
-    hint: 'Деньги не по сделкам — пришли в кассу',
-    icon: 'mdi-cash-refund',
-    direction: 'in',
+    kind: 'OTHER_EXPENSE',
+    title: 'Иной расход',
+    hint: 'Расход на свои цели — отдельно от расходов по бизнесу',
+    icon: 'mdi-cash-minus',
+    direction: 'out',
     permission: 'finance.transactions',
   },
   {

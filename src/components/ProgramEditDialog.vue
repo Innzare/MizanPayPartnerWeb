@@ -759,11 +759,11 @@ async function save() {
         <div class="ip-row-2">
           <div class="ip-field">
             <label class="ip-label">Название</label>
-            <input v-model="draft.name" class="ip-text" placeholder="Стандарт, Акция «Без переплат»" />
+            <input v-clear v-model="draft.name" class="ip-text" placeholder="Стандарт, Акция «Без переплат»" />
           </div>
           <div class="ip-field">
             <label class="ip-label">Пояснение для продавца</label>
-            <input v-model="draft.description" class="ip-text" placeholder="Когда предлагать этот тариф" />
+            <input v-clear v-model="draft.description" class="ip-text" placeholder="Когда предлагать этот тариф" />
             <!-- Текст показывается в карточке тарифа и при оформлении сделки:
                  без подписи непонятно, откуда он там берётся. -->
             <div class="ip-hint">Видно в карточке тарифа и при оформлении сделки. Можно оставить пустым.</div>
@@ -806,7 +806,7 @@ async function save() {
                 </span>
                 <!-- Свой срок: у кого-то рассрочка на 5 или 10 платежей. -->
                 <span class="ip-term-custom">
-                  <input
+                  <input v-clear
                     v-model.number="customTerm"
                     type="number"
                     min="1"
@@ -890,7 +890,7 @@ async function save() {
                                 <tr v-for="(row, i) in amountEdgeRows" :key="i">
                                   <td class="ip-tbl-edge-val">
                                     <span class="ip-step-chip">
-                                      <input
+                                      <input v-clear
                                         :value="row.value"
                                         v-maska="CURRENCY_MASK"
                                         class="ip-step-input"
@@ -1195,7 +1195,7 @@ async function save() {
                     <label class="ip-part-sample">
                       <span class="ip-part-sample-label">что выйдет за товар</span>
                       <span class="ip-suffix-wrap ip-suffix-wrap--sample">
-                        <input
+                        <input v-clear
                           :value="sample"
                           v-maska="CURRENCY_MASK"
                           class="ip-text ip-text--sample"
@@ -1360,21 +1360,21 @@ async function save() {
               <span></span>
             </div>
             <div v-for="(r, i) in rawRules" :key="i" class="ip-raw-row">
-              <input
+              <input v-clear
                 :value="r.amountFrom ?? ''"
                 v-maska="CURRENCY_MASK"
                 class="ip-cell"
                 placeholder="0"
                 @maska="(e: any) => (r.amountFrom = parseMasked(e))"
               />
-              <input
+              <input v-clear
                 :value="r.amountTo ?? ''"
                 v-maska="CURRENCY_MASK"
                 class="ip-cell"
                 placeholder="без предела"
                 @maska="(e: any) => (r.amountTo = parseMasked(e))"
               />
-              <input v-model.number="r.termPayments" type="number" min="1" class="ip-cell" />
+              <input v-clear v-model.number="r.termPayments" type="number" min="1" class="ip-cell" />
               <NumberStepper v-model="r.markupPercent" :max="500" />
               <NumberStepper v-model="r.minDownPaymentPercent" :max="99" :precision="0" />
               <button class="ip-step-del" title="Удалить строку" @click="removeRawRule(i)">
@@ -1438,7 +1438,7 @@ async function save() {
             <div class="ip-field">
               <label class="ip-label">Наценка не меньше</label>
               <span class="ip-suffix-wrap">
-                <input
+                <input v-clear
                   :value="draft.minMarkupAmount ?? ''"
                   v-maska="CURRENCY_MASK"
                   class="ip-text"
@@ -1490,7 +1490,7 @@ async function save() {
           <div class="ip-sample-head">
             <span>Товар за</span>
             <span class="ip-suffix-wrap ip-suffix-wrap--sample">
-              <input
+              <input v-clear
                 :value="sample"
                 v-maska="CURRENCY_MASK"
                 class="ip-text ip-text--sample"

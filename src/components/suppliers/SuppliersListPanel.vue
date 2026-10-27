@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useSuppliersStore, type SupplierRow } from '@/stores/suppliers'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -11,6 +12,7 @@ import SupplierSparkline from '@/components/suppliers/SupplierSparkline.vue'
 
 const store = useSuppliersStore()
 const auth = useAuthStore()
+const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 function openDetail(s: SupplierRow) { router.push(`/suppliers/${s.id}`) }
@@ -64,7 +66,8 @@ const canEdit = computed(() => auth.can('suppliers.edit'))
 const canDelete = computed(() => auth.can('suppliers.delete'))
 
 const search = ref('')
-const onlyDebt = ref(false)
+// ?debt=1 — пришли из кассы по плитке «Долг поставщикам»: сразу только должники.
+const onlyDebt = ref(route.query.debt === '1')
 const sort = ref<'debt' | 'name'>('debt')
 
 const formOpen = ref(false)
@@ -102,7 +105,7 @@ async function onSaved() {
 }
 
 async function removeSupplier(s: SupplierRow) {
-  if (!confirm(`Удалить партнёра «${s.name}»?`)) return
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить партнёра «${s.name}»?` }))) return
   try {
     const res = await store.remove(s.id)
     toast.success(res.archived ? 'Партнёр архивирован (есть история)' : 'Партнёр удалён')
@@ -156,7 +159,7 @@ onMounted(reload)
           <div class="d-flex align-center ga-2 flex-wrap">
             <div class="sup-search">
               <v-icon icon="mdi-magnify" size="18" />
-              <input v-model="search" type="text" placeholder="Поиск по названию, городу, телефону…" @input="onSearch" />
+              <input v-clear v-model="search" type="text" placeholder="Поиск по названию, городу, телефону…" @input="onSearch" />
               <button v-if="search" type="button" class="sup-search-clear" title="Очистить" @click="search = ''; onSearch()">
                 <v-icon icon="mdi-close" size="14" />
               </button>

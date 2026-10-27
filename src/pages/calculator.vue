@@ -184,7 +184,7 @@ function reset() {
           <div class="form-field mb-4">
             <label class="field-label">Закупочная цена <span class="required">*</span></label>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 :value="inputs.purchasePrice || ''"
                 v-maska="CURRENCY_MASK"
                 @maska="(e: any) => inputs.purchasePrice = parseMasked(e)"
@@ -224,7 +224,7 @@ function reset() {
               >{{ opt }}%</button>
             </div>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 v-model.number="inputs.markupValue"
                 type="number"
                 class="field-input"
@@ -239,7 +239,7 @@ function reset() {
           <div v-if="inputs.markupType === 'fixed'" class="form-field mb-4">
             <label class="field-label">Итоговая цена</label>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 :value="totalPriceInput"
                 v-maska="CURRENCY_MASK"
                 @maska="(e: any) => onTotalPriceInput(parseMasked(e))"
@@ -277,7 +277,7 @@ function reset() {
             <!-- Fixed (₽) mode -->
             <template v-if="downPaymentType === 'fixed'">
               <div class="input-with-suffix" :class="{ 'input-with-suffix--error': downPaymentError }">
-                <input
+                <input v-clear
                   :value="inputs.downPayment || ''"
                   v-maska="CURRENCY_MASK"
                   @maska="(e: any) => setDownPaymentFixed(parseMasked(e))"
@@ -304,7 +304,7 @@ function reset() {
                 >{{ opt }}%</button>
               </div>
               <div class="input-with-suffix" :class="{ 'input-with-suffix--error': downPaymentError }">
-                <input
+                <input v-clear
                   v-model.number="dpPercentModel"
                   type="number"
                   class="field-input"
@@ -316,7 +316,7 @@ function reset() {
               </div>
               <label class="field-label mt-3 d-block">Сумма взноса</label>
               <div class="input-with-suffix">
-                <input
+                <input v-clear
                   :value="dpRublesModel || ''"
                   v-maska="CURRENCY_MASK"
                   @maska="(e: any) => dpRublesModel = parseMasked(e)"
@@ -348,7 +348,7 @@ function reset() {
               >{{ opt }} мес</button>
             </div>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 v-model.number="inputs.termMonths"
                 type="number"
                 class="field-input"

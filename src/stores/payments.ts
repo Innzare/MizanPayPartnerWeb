@@ -188,6 +188,8 @@ export const usePaymentsStore = defineStore('payments', () => {
       shortfallNote?: string
       /** Переплатой сначала закрыть недоплаты прошлых месяцев. */
       coverDebts?: boolean
+      /** Оплата неразобранным поступлением: счёт и дата — из него. */
+      pendingOperationId?: string
     }
   ) {
     try {

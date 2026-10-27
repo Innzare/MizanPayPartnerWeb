@@ -397,37 +397,37 @@ async function deleteProduct() {
 
           <div class="mb-3">
             <label class="field-label">Название</label>
-            <input v-model="editForm.title" class="field-input" />
+            <input v-clear v-model="editForm.title" class="field-input" />
           </div>
 
           <div class="mb-3">
             <label class="field-label">Описание</label>
-            <textarea v-model="editForm.description" class="field-input field-textarea" rows="3" />
+            <textarea v-clear v-model="editForm.description" class="field-input field-textarea" rows="3" />
           </div>
 
           <div class="d-flex ga-3 mb-3">
             <div class="flex-grow-1">
               <label class="field-label">Цена</label>
-              <input :value="editForm.price || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => editForm.price = parseMasked(e)" type="text" inputmode="numeric" class="field-input" />
+              <input v-clear :value="editForm.price || ''" v-maska="CURRENCY_MASK" @maska="(e: any) => editForm.price = parseMasked(e)" type="text" inputmode="numeric" class="field-input" />
             </div>
             <div class="flex-grow-1">
               <label class="field-label">Город</label>
-              <input v-model="editForm.city" class="field-input" />
+              <input v-clear v-model="editForm.city" class="field-input" />
             </div>
           </div>
 
           <div class="d-flex ga-3 mb-3">
             <div class="flex-grow-1">
               <label class="field-label">Срок от (мес)</label>
-              <input v-model.number="editForm.minTermMonths" type="number" class="field-input" />
+              <input v-clear v-model.number="editForm.minTermMonths" type="number" class="field-input" />
             </div>
             <div class="flex-grow-1">
               <label class="field-label">Срок до (мес)</label>
-              <input v-model.number="editForm.maxTermMonths" type="number" class="field-input" />
+              <input v-clear v-model.number="editForm.maxTermMonths" type="number" class="field-input" />
             </div>
             <div class="flex-grow-1">
               <label class="field-label">Взнос (%)</label>
-              <input v-model.number="editForm.minDownPaymentPercent" type="number" class="field-input" />
+              <input v-clear v-model.number="editForm.minDownPaymentPercent" type="number" class="field-input" />
             </div>
           </div>
 

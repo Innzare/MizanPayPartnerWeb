@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import UnmarkPaidDialog from '@/components/UnmarkPaidDialog.vue'
 import { useMonthLocks } from '@/composables/useMonthLocks'
 import { useDealsStore } from '@/stores/deals'
@@ -307,7 +308,7 @@ async function restoreDeal() {
 }
 
 async function permanentDeleteDeal() {
-  if (!confirm('Удалить сделку навсегда? Это действие необратимо.')) return
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить сделку навсегда?', text: 'Это действие необратимо.' }))) return
   deleting.value = true
   try {
     await dealsStore.permanentDelete(dealId.value)
@@ -1839,7 +1840,7 @@ async function confirmReopen() {
             </div>
 
             <template v-if="commentEditing">
-              <textarea
+              <textarea v-clear
                 v-model="commentDraft"
                 class="deal-comment-input"
                 rows="3"
@@ -2383,7 +2384,7 @@ async function confirmReopen() {
           <div class="mb-4">
             <label class="field-label">Сумма платежа</label>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 :value="addPaymentAmount || ''"
                 v-maska="CURRENCY_MASK"
                 @maska="(e: any) => addPaymentAmount = parseMasked(e)"
@@ -2402,9 +2403,9 @@ async function confirmReopen() {
 
           <div class="mb-5">
             <label class="field-label">Комментарий (необязательно)</label>
-            <input
+            <textarea v-clear
               v-model="addPaymentNote"
-              type="text"
+              rows="2"
               maxlength="200"
               placeholder="Например: остаток после недоплат"
               class="field-input"

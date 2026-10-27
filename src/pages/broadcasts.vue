@@ -1033,7 +1033,7 @@ function goConnect() { activeTab.value = 'connection' }
           <div class="bc-search-row">
             <div class="bc-search-wrap">
               <v-icon icon="mdi-magnify" size="18" class="bc-search-icon" />
-              <input v-model="search" type="text" class="bc-search" placeholder="Поиск по клиенту, телефону или товару…" />
+              <input v-clear v-model="search" type="text" class="bc-search" placeholder="Поиск по клиенту, телефону или товару…" />
               <button v-if="search" class="bc-search-clear" @click="search = ''" title="Очистить"><v-icon icon="mdi-close" size="14" /></button>
             </div>
             <button
@@ -1228,7 +1228,7 @@ function goConnect() { activeTab.value = 'connection' }
                 <span class="bc-tpl-name">Обычное напоминание</span>
                 <span class="bc-tag bc-tag--green">до срока оплаты</span>
               </div>
-              <textarea ref="templateRef" v-model="waSettings.template" class="bc-tpl-area" rows="3" placeholder="Текст напоминания..." />
+              <textarea v-clear ref="templateRef" v-model="waSettings.template" class="bc-tpl-area" rows="3" placeholder="Текст напоминания..." />
               <div class="bc-var-row"><span class="bc-var-label">Вставить:</span><button v-for="v in templateVars" :key="'t'+v" class="bc-var-chip" @click="insertVar('template', v)">{{ v }}</button></div>
               <div v-if="waSettings.template" class="bc-tpl-preview">
                 <span class="bc-tpl-preview-label"><v-icon icon="mdi-eye-outline" size="12" /> Превью</span>
@@ -1242,7 +1242,7 @@ function goConnect() { activeTab.value = 'connection' }
                 <span class="bc-tpl-name">При просрочке</span>
                 <span class="bc-tag bc-tag--red">срок прошёл</span>
               </div>
-              <textarea ref="overdueTemplateRef" v-model="waSettings.overdueTemplate" class="bc-tpl-area" rows="3" placeholder="Текст для просроченных..." />
+              <textarea v-clear ref="overdueTemplateRef" v-model="waSettings.overdueTemplate" class="bc-tpl-area" rows="3" placeholder="Текст для просроченных..." />
               <div class="bc-var-row"><span class="bc-var-label">Вставить:</span><button v-for="v in templateVars" :key="'o'+v" class="bc-var-chip" @click="insertVar('overdueTemplate', v)">{{ v }}</button></div>
               <div v-if="waSettings.overdueTemplate" class="bc-tpl-preview">
                 <span class="bc-tpl-preview-label"><v-icon icon="mdi-eye-outline" size="12" /> Превью</span>
@@ -1267,7 +1267,7 @@ function goConnect() { activeTab.value = 'connection' }
                 <span class="bc-tpl-name">Сводное напоминание</span>
                 <span class="bc-tag bc-tag--blue">только ручная рассылка</span>
               </div>
-              <textarea ref="summaryTemplateRef" v-model="waSettings.summaryTemplate" class="bc-tpl-area" rows="6" placeholder="Текст сводного напоминания..." />
+              <textarea v-clear ref="summaryTemplateRef" v-model="waSettings.summaryTemplate" class="bc-tpl-area" rows="6" placeholder="Текст сводного напоминания..." />
               <div class="bc-var-row"><span class="bc-var-label">Вставить:</span><button v-for="v in summaryTemplateVars" :key="'s'+v" class="bc-var-chip" @click="insertVar('summaryTemplate', v)">{{ v }}</button></div>
               <div class="bc-var-legend">
                 <div><code>{имя}</code> — имя клиента</div>
@@ -1313,7 +1313,7 @@ function goConnect() { activeTab.value = 'connection' }
         <aside class="bc-chat-list" v-show="!isMobile || (connected && !selectedChat)">
           <div v-if="connected" class="bc-chat-search">
             <v-icon icon="mdi-magnify" size="16" />
-            <input v-model="chatSearch" placeholder="Поиск клиента…" />
+            <input v-clear v-model="chatSearch" placeholder="Поиск клиента…" />
           </div>
           <button v-if="connected && overdueCount > 0" class="bc-chat-filter" :class="{ active: onlyOverdue }" @click="onlyOverdue = !onlyOverdue">
             Только просроченные · {{ overdueCount }}
@@ -1430,7 +1430,7 @@ function goConnect() { activeTab.value = 'connection' }
               </template>
             </div>
             <div class="bc-chat-reply">
-              <input v-model="replyText" placeholder="Написать сообщение…" @keydown.enter="sendReply" />
+              <input v-clear v-model="replyText" placeholder="Написать сообщение…" @keydown.enter="sendReply" />
               <button class="bc-chat-send" :disabled="replySending || !replyText.trim()" @click="sendReply">
                 <v-progress-circular v-if="replySending" indeterminate size="16" width="2" color="#fff" />
                 <v-icon v-else icon="mdi-send" size="18" />

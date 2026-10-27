@@ -28,6 +28,7 @@ declare module 'vue-router/auto-routes' {
     '/accounting/points/[id]': RouteRecordInfo<'/accounting/points/[id]', '/accounting/points/:id', { id: ParamValue<true> }, { id: ParamValue<false> }>,
     '/accounting/reports': RouteRecordInfo<'/accounting/reports', '/accounting/reports', Record<never, never>, Record<never, never>>,
     '/accounting/temporary': RouteRecordInfo<'/accounting/temporary', '/accounting/temporary', Record<never, never>, Record<never, never>>,
+    '/accounting/temporary-ops': RouteRecordInfo<'/accounting/temporary-ops', '/accounting/temporary-ops', Record<never, never>, Record<never, never>>,
     '/activity': RouteRecordInfo<'/activity', '/activity', Record<never, never>, Record<never, never>>,
     '/analytics': RouteRecordInfo<'/analytics', '/analytics', Record<never, never>, Record<never, never>>,
     '/backups': RouteRecordInfo<'/backups', '/backups', Record<never, never>, Record<never, never>>,
@@ -132,6 +133,10 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/accounting/temporary.vue': {
       routes: '/accounting/temporary'
+      views: never
+    }
+    'src/pages/accounting/temporary-ops.vue': {
+      routes: '/accounting/temporary-ops'
       views: never
     }
     'src/pages/activity.vue': {

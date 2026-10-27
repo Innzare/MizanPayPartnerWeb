@@ -51,6 +51,9 @@ export interface AccountView {
   disabledAt: string | null
   disabledReason: string | null
   disabledUntil: string | null
+  /** Банк заблокировал карту: деньги есть, но пользоваться ими нельзя. */
+  bankBlockedAt?: string | null
+  bankBlockedReason?: string | null
   pickup: {
     contactName: string | null
     contactPhone: string | null
@@ -103,22 +106,50 @@ export interface AvailableStep {
   key: string
   sign: '+' | '-' | '='
   amount: number
+  /** Группа строки «откуда деньги»: инвесторы, вы, сделки… adjust — поправки учёта. */
+  group?: 'investors' | 'partner' | 'deals' | 'ops' | 'temporary' | 'adjust' | 'other'
+  /** Из чего сложилась строка. */
+  detail?: AvailableStep[]
 }
 
 export interface AvailableMoney {
   inflow: AvailableStep[]
+  /** Всего пришло, всего ушло и разница — сколько должно быть по учёту. */
+  flow?: { in: number; out: number; journal: number }
+  /** В кассе = на счетах + не разнесено. */
+  reconciliation?: { cashInBox: number; accountsTotal: number; unallocated: number }
   cashInBox: number
   locked: AvailableStep[]
   available: number
+  /** Сколько останется после расчёта с поставщиками — явной строкой, не вычетом. */
+  afterSuppliers?: number
+  /** Взгляд от счетов: на счетах − долг поставщикам − заблокировано банком. */
+  accounts?: {
+    total: number
+    bankBlocked: number
+    bankBlockedCount: number
+    supplierDebt: number
+    free: number
+  }
   notes: {
     inProgress: number
     supplierDebt: number
     clientsOwe: number
     lentOut: number
     unallocated: number
+    owedToCoInvestors?: number
+    borrowed?: number
+    pendingCapitalReturns?: number
   }
   /** На счетах записано больше, чем есть в кассе — цифра неточна. */
   warnings: Array<'accountsExceedCash'>
+}
+
+/** Деньги кассы и их раскладка по счетам: журнал = счета + не разнесено. */
+export interface UnallocatedMoney {
+  available: number
+  allocated: number
+  unallocated: number
 }
 
 /** Пункт приёма, из которого пора забрать деньги. */
@@ -143,8 +174,10 @@ export interface PendingOpView {
   date: string
   note: string | null
   personName: string | null
+  /** Название — чтобы легче ориентироваться. */
+  title?: string | null
   status: 'PENDING' | 'RESOLVED'
-  account: { id: string; name: string; code: string; color: string; bank?: AccountBank | null }
+  account: { id: string; name: string; code: string; color: string; bank?: AccountBank | null; cashBoxId?: string | null }
 }
 
 /** Обязательство: взяли в долг или дали в долг. */
@@ -152,6 +185,8 @@ export interface LiabilityView {
   id: string
   direction: 'BORROWED' | 'LENT'
   personName: string
+  /** Название — чтобы легче ориентироваться. */
+  title?: string | null
   principal: number
   repaid: number
   left: number
@@ -159,11 +194,71 @@ export interface LiabilityView {
   note: string | null
   status: 'ACTIVE' | 'CLOSED'
   overdue: boolean
+  /** Когда записали долг — дата строки, если он взят до выбранного периода. */
+  createdAt?: string
+  /** Касса долга: довыдачи и возвраты — только со счетов этой кассы. */
+  cashBoxId?: string | null
+  cashBoxName?: string | null
+  /** Сколько раз выдавали по долгу: больше одного — «взяли ещё». */
+  issueCount?: number
+  /** Из погашенного — перенесено в основные (у «дали в долг»). */
+  converted?: number
+}
+
+/** Выдача или возврат по долгу — строка истории в карточке. */
+/** Чем стала перенесённая в основные часть долга «дали». */
+export type LiabilityConvertKind = 'EXPENSE' | 'OTHER_EXPENSE' | 'WITHDRAW_PROFIT' | 'WITHDRAW_OWNER'
+
+export interface LiabilityMovementView {
+  id: string
+  /** ISSUE — выдача, REPAY — возврат, CONVERT — перенесено в основные. */
+  kind: 'ISSUE' | 'REPAY' | 'CONVERT'
+  /** 1 — первая выдача, 2+ — «ещё»; у возвратов null. */
+  issueNo: number | null
+  amount: number
+  date: string
+  note: string | null
+  account: { id: string; name: string; code: string; color: string; bank?: AccountBank | null } | null
+  /** Кто записал — сотрудник; null — сам партнёр. */
+  actorName: string | null
+  /** Месяц кассы закрыт: править и удалять нельзя. */
+  locked: boolean
+  /** Перенос в основные: вид и операция, которой он стал. */
+  convertKind?: LiabilityConvertKind | null
+  transactionId?: string | null
+  capitalEntryId?: string | null
+}
+
+/** Карточка долга: сам долг, его касса и вся история. */
+export interface LiabilityCard {
+  id: string
+  direction: 'BORROWED' | 'LENT'
+  personName: string
+  title?: string | null
+  note: string | null
+  dueDate: string | null
+  status: 'ACTIVE' | 'CLOSED'
+  createdAt: string
+  closedAt: string | null
+  cashBox: { id: string; name: string } | null
+  principal: number
+  /** Погашено: возвраты деньгами + перенесённое в основные. */
+  repaid: number
+  /** Из погашенного — перенесено в основные. */
+  converted?: number
+  /** Вернули деньгами. */
+  repaidCash?: number
+  left: number
+  overdue: boolean
+  movements: LiabilityMovementView[]
 }
 
 /** Раздел «Пополнения и расходы»: все ручные движения денег. */
 /** Смысловая группа операции раздела «Пополнения и расходы». */
 export type FlowGroup = 'capital' | 'regular' | 'temporary' | 'pending' | 'transfer'
+
+/** Операция «Пополнений и расходов», которой стала часть долга «дали». */
+export interface ConvertedFrom { liabilityId: string; movementId: string; personName: string }
 
 /** Что можно сделать с операцией из ленты раздела. */
 export type FlowRef =
@@ -171,10 +266,21 @@ export type FlowRef =
       type: 'transaction'; id: string; categoryId: string | null; cashBoxId: string | null
       /** Флаги операции (окно правки сохраняет их как есть). Нет — старый сервер. */
       affectsInvestors?: boolean; fromCapital?: boolean
+      /** Вид расхода: «по бизнесу» или «иной». */
+      expenseKind?: 'BUSINESS' | 'OTHER'
+      /** Расход перенесён из временного снятия — правится и удаляется в карточке долга. */
+      convertedFrom?: ConvertedFrom
     }
-  | { type: 'capital'; id: string; cashBoxId: string }
-  | { type: 'pending'; id: string }
-  | { type: 'liability'; id: string }
+  | { type: 'capital'; id: string; cashBoxId: string; convertedFrom?: ConvertedFrom }
+  | {
+      type: 'pending'
+      id: string
+      /** Чем стала разобранная: сделка или долг — клик ведёт туда. */
+      link?: { kind: 'deal'; dealId: string } | { kind: 'liability'; liabilityId: string }
+      /** Разбор можно отменить (только «перевели по ошибке — вернули»). */
+      undoable?: boolean
+    }
+  | { type: 'liability'; id: string; movementId?: string; movementKind?: 'ISSUE' | 'REPAY' | 'CONVERT' }
   | { type: 'transfer'; id: string }
 
 export interface TemporarySummary {
@@ -213,7 +319,10 @@ export interface TemporarySummary {
     date: string
     note: string | null
     personName: string | null
+    title?: string | null
     accountName: string | null
+    /** Счёт целиком — окна разбора и правки открываются прямо из ленты. */
+    account: PendingOpView['account'] | null
   }>
   history: Array<{
     id: string
@@ -230,6 +339,10 @@ export interface TemporarySummary {
     openItem: boolean
     /** Разобранная неразобранная: чем оказалась. В итог не входит. */
     resolvedAs: string | null
+    /** Справочная строка (перенос в основные) — в итоги не входит. */
+    neutral?: boolean
+    /** Название временной операции (долга или денег без назначения). */
+    name?: string | null
     ref: FlowRef
     /** Снятие, в котором были и прибыль, и капитал: две строки, одна операция. */
     split: { total: number; profit: number; capital: number } | null
@@ -249,7 +362,9 @@ export interface CashBoxProfit {
   investedCapital: number
   /** Уже причитается со-инвесторам — снимать эти деньги не стоит. */
   pendingCIPayout: number
-  /** Меньшее из прибыли и «Доступно сейчас». */
+  /** Сколько можно забрать себе: доступно − прибыль инвесторов к выплате − займы. */
+  availableForWithdraw?: number
+  /** Меньшее из прибыли и того, что можно забрать себе. */
   canWithdrawNow: number
   /** Прибыли ещё нет в деньгах — она в товаре. */
   inGoods: number
@@ -499,6 +614,12 @@ export const useAccountingStore = defineStore('accounting', () => {
     await fetchAccounts()
   }
 
+  /** Банк заблокировал карту — или снял блокировку. */
+  async function setBankBlocked(id: string, blocked: boolean, reason?: string) {
+    await api.patch(`/accounting/accounts/${id}/bank-block`, { blocked, reason })
+    await fetchAccounts()
+  }
+
   /** Пересобрать остатки из движений — лечение расхождения самопроверки. */
   async function recomputeBalances(accountId?: string) {
     const res = await api.post<{ fixed: any[] }>('/accounting/accounts/recompute', { accountId })
@@ -528,7 +649,7 @@ export const useAccountingStore = defineStore('accounting', () => {
    * Приходит из кассового расчёта, а не из счетов: сумма счетов и этой строки
    * обязана сходиться с тем, что партнёр видит в кассах.
    */
-  const unallocated = ref<{ available: number; allocated: number; unallocated: number } | null>(null)
+  const unallocated = ref<UnallocatedMoney | null>(null)
 
   async function fetchUnallocated() {
     unallocated.value = await api.get('/finance/capital/unallocated')
@@ -542,7 +663,7 @@ export const useAccountingStore = defineStore('accounting', () => {
    * нельзя — сумма счетов кассы обязана сходиться с её деньгами.
    */
   async function fetchCashBoxFree(cashBoxId: string) {
-    return api.get<{ available: number; allocated: number; unallocated: number }>(
+    return api.get<UnallocatedMoney>(
       `/finance/capital/unallocated?cashBoxId=${encodeURIComponent(cashBoxId)}`,
     )
   }
@@ -597,23 +718,8 @@ export const useAccountingStore = defineStore('accounting', () => {
     return res
   }
 
-  /**
-   * Буфер неопределённости: что висит неразобранным.
-   *
-   * Сумму показываем на «Балансе» постоянно — пока буфер не пуст, часть денег
-   * не отнесена ни к чему, и без напоминания разбор откладывается навсегда.
-   */
-  const pendingOps = ref<PendingOpView[]>([])
-  const pendingTotals = ref<{ count: number; amount: number }>({ count: 0, amount: 0 })
-
-  async function fetchPending() {
-    const res = await api.get<{ items: PendingOpView[]; pending: { count: number; amount: number } }>(
-      '/accounting/pending',
-    )
-    pendingOps.value = res.items ?? []
-    pendingTotals.value = res.pending ?? { count: 0, amount: 0 }
-    return res
-  }
+  // Деньги без назначения: список и итог приходят с лентой «Временных»
+  // (fetchTemporary) — целиком, без отдельного запроса с пределом строк.
 
   async function createPending(payload: {
     direction: 'IN' | 'OUT'
@@ -621,19 +727,58 @@ export const useAccountingStore = defineStore('accounting', () => {
     accountId: string
     note?: string
     personName?: string
+    title?: string
+    date?: string
   }) {
     const res = await api.post('/accounting/pending', payload)
-    await Promise.all([fetchAccounts(), fetchPending()])
+    void fetchAccounts().catch(() => {})
     return res
   }
 
-  /** Сказать, чем операция оказалась. Деньги при этом не двигаются второй раз. */
+  /** Исправить неразобранную: прежнее движение по счёту гасится, пишется новое. */
+  async function updatePending(
+    id: string,
+    payload: { amount?: number; date?: string; accountId?: string; note?: string | null; personName?: string | null; title?: string | null },
+  ) {
+    const res = await api.patch(`/accounting/pending/${id}`, payload)
+    void fetchAccounts().catch(() => {})
+    return res
+  }
+
+  /** Разделить неразобранную на две части — каждую разбирают отдельно. */
+  async function splitPending(id: string, amount: number) {
+    return api.post(`/accounting/pending/${id}/split`, { amount })
+  }
+
+  /** Отменить разбор «перевели по ошибке — вернули»: поступление снова ждёт разбора. */
+  async function unresolvePending(id: string) {
+    const res = await api.post(`/accounting/pending/${id}/unresolve`, {})
+    void fetchAccounts().catch(() => {})
+    return res
+  }
+
+  /** Удалить неразобранную — деньги на счёте откатываются встречной записью. */
+  async function deletePending(id: string) {
+    const res = await api.delete(`/accounting/pending/${id}`)
+    void fetchAccounts().catch(() => {})
+    return res
+  }
+
+  /**
+   * Сказать, чем операция оказалась. Деньги при этом не двигаются второй раз.
+   * Выдача: расход или «деньги вернули». Поступление: возврат нашего долга или
+   * ошибочный перевод; оплата по сделке — через окно оплаты платежа.
+   */
   async function resolvePending(
     id: string,
-    target: { type: 'EXPENSE' | 'INCOME' | 'RETURNED'; categoryId?: string | null; note?: string },
+    target:
+      | { type: 'EXPENSE'; categoryId?: string | null; note?: string }
+      | { type: 'RETURNED'; note?: string }
+      | { type: 'LENT_REPAY'; liabilityId: string; note?: string }
+      | { type: 'MISTAKEN_RETURNED'; accountId: string; date?: string; note?: string },
   ) {
     const res = await api.post(`/accounting/pending/${id}/resolve`, target)
-    await Promise.all([fetchAccounts(), fetchPending()])
+    void fetchAccounts().catch(() => {})
     return res
   }
 
@@ -689,17 +834,86 @@ export const useAccountingStore = defineStore('accounting', () => {
     personName: string
     amount: number
     accountId?: string | null
+    cashBoxId?: string | null
+    date?: string
     dueDate?: string
     note?: string
+    title?: string
   }) {
     const res = await api.post('/accounting/liabilities', payload)
     await Promise.all([fetchAccounts(), fetchLiabilities()])
     return res
   }
 
-  async function repayLiability(id: string, payload: { amount: number; accountId?: string | null }) {
+  /** Карточка долга со всей историей выдач и возвратов. */
+  async function fetchLiability(id: string) {
+    return api.get<LiabilityCard>(`/accounting/liabilities/${id}`)
+  }
+
+  type MovementPayload = { amount: number; accountId?: string | null; date?: string; note?: string }
+
+  /** «Взяли ещё» / «Дали ещё» по тому же долгу. */
+  async function issueMoreLiability(id: string, payload: MovementPayload & { dueDate?: string | null }) {
+    const res = await api.post(`/accounting/liabilities/${id}/issue`, payload)
+    void fetchAccounts().catch(() => {})
+    return res
+  }
+
+  /**
+   * «Перенести в основные»: часть долга «дали» становится расходом или
+   * снятием партнёра. Деньги на счетах не меняются — ушли ещё при выдаче.
+   */
+  async function convertLiability(
+    id: string,
+    payload: {
+      amount: number
+      kind: LiabilityConvertKind
+      accountId?: string | null
+      date?: string
+      note?: string
+      categoryId?: string | null
+      affectsInvestors?: boolean
+      fromCapital?: boolean
+      effectiveFrom?: string | null
+    },
+  ) {
+    const res = await api.post(`/accounting/liabilities/${id}/convert`, payload)
+    void fetchAccounts().catch(() => {})
+    return res
+  }
+
+  async function repayLiability(id: string, payload: MovementPayload) {
     const res = await api.post(`/accounting/liabilities/${id}/repay`, payload)
-    await Promise.all([fetchAccounts(), fetchLiabilities()])
+    void fetchAccounts().catch(() => {})
+    return res
+  }
+
+  /** С кем, срок, заметка — денег не двигает. */
+  async function updateLiability(id: string, payload: { personName?: string; dueDate?: string | null; note?: string | null; title?: string | null }) {
+    return api.patch(`/accounting/liabilities/${id}`, payload)
+  }
+
+  /** Исправить выдачу или возврат: сумма, счёт, дата, заметка. */
+  async function updateLiabilityMovement(
+    id: string,
+    movementId: string,
+    payload: { amount?: number; accountId?: string | null; date?: string; note?: string | null },
+  ) {
+    const res = await api.patch(`/accounting/liabilities/${id}/movements/${movementId}`, payload)
+    void fetchAccounts().catch(() => {})
+    return res
+  }
+
+  async function deleteLiabilityMovement(id: string, movementId: string) {
+    const res = await api.delete<{ deletedLiability: boolean }>(`/accounting/liabilities/${id}/movements/${movementId}`)
+    void fetchAccounts().catch(() => {})
+    return res
+  }
+
+  /** Долг целиком — со всеми выдачами и возвратами. */
+  async function deleteLiability(id: string) {
+    const res = await api.delete(`/accounting/liabilities/${id}`)
+    void fetchAccounts().catch(() => {})
     return res
   }
 
@@ -803,6 +1017,17 @@ export const useAccountingStore = defineStore('accounting', () => {
     return res
   }
 
+  /**
+   * Разнести «не разнесено по счетам» на счета одной кассы. Отдельная
+   * операция, а не пересчёт: пересчёт в «не разнесено» не входит, и раньше
+   * счёт рос, а «не разнесено» оставалось прежним.
+   */
+  async function allocate(payload: { items: Array<{ accountId: string; amount: number }>; note?: string }) {
+    const res = await api.post('/accounting/allocate', payload)
+    await fetchAccounts()
+    return res
+  }
+
   async function fetchTransfers(accountId?: string) {
     const qs = accountId ? `?accountId=${accountId}` : ''
     return api.get<TransferView[]>(`/accounting/transfers${qs}`)
@@ -820,7 +1045,7 @@ export const useAccountingStore = defineStore('accounting', () => {
    * работают на прежних экранах.
    */
   async function createOperation(payload: {
-    kind: 'DEPOSIT' | 'WITHDRAW_OWNER' | 'WITHDRAW_PROFIT' | 'EXPENSE' | 'INCOME' | 'TRANSFER'
+    kind: 'DEPOSIT' | 'WITHDRAW_OWNER' | 'WITHDRAW_PROFIT' | 'EXPENSE' | 'OTHER_EXPENSE' | 'INCOME' | 'TRANSFER'
     amount: number
     accountId?: string | null
     toAccountId?: string | null
@@ -929,14 +1154,16 @@ export const useAccountingStore = defineStore('accounting', () => {
     cancelRun,
 
     accounts, banks, tags, loading, balanceIssues, unallocated, limits, pickups,
-    pendingOps, pendingTotals, liabilities, liabilityTotals, available, fetchAvailable,
+    liabilities, liabilityTotals, available, fetchAvailable,
     fetchAccounts, fetchBanks, fetchTags, suggestCode,
-    createAccount, updateAccount, toggleAccount,
+    createAccount, updateAccount, toggleAccount, setBankBlocked,
     removeAccount,
     createTag, removeTag, checkBalances, recomputeBalances, fetchUnallocated, fetchCashBoxFree,
     fetchHistory, fetchFeed, transfer, reconcile, fetchTransfers, fetchReconciliations, createOperation, fetchProfit,
-    fetchLimits, fetchPending, createPending, resolvePending,
+    allocate,
+    fetchLimits, createPending, updatePending, deletePending, resolvePending, splitPending, unresolvePending,
     fetchLiabilities, fetchTemporary, createLiability, repayLiability,
+    fetchLiability, issueMoreLiability, convertLiability, updateLiability, updateLiabilityMovement, deleteLiabilityMovement, deleteLiability,
     fetchTurnover, fetchCashFlowReport, fetchAging,
     fetchAuditChecks, fetchCriticalActions,
   }

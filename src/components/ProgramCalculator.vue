@@ -270,7 +270,7 @@ const markupLabel = computed(() => {
           <span>Цена товара</span>
         </div>
         <div class="pc-input-wrap">
-          <input
+          <input v-clear
             :value="price"
             v-maska="CURRENCY_MASK"
             class="pc-input"
@@ -293,7 +293,7 @@ const markupLabel = computed(() => {
           <span class="pc-label-note">{{ downShare }}</span>
         </div>
         <div class="pc-input-wrap">
-          <input
+          <input v-clear
             :value="downPayment"
             v-maska="CURRENCY_MASK"
             class="pc-input"

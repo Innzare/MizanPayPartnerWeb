@@ -85,7 +85,7 @@ async function run() {
 
         <div class="dd-field">
           <label class="dd-label">Введите слово <b>{{ WORD }}</b></label>
-          <input
+          <input v-clear
             v-model="confirmation"
             class="dd-input"
             :placeholder="WORD"

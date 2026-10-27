@@ -22,7 +22,7 @@
       <div class="fcd-body">
         <div class="fcd-field">
           <label class="fcd-label">Название</label>
-          <input
+          <input v-clear
             ref="nameInputRef"
             v-model="form.name"
             class="fcd-input"

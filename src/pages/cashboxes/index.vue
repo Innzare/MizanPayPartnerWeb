@@ -32,13 +32,17 @@ const { capital, fetchCapital } = useCapital()
 
 const showCreate = ref(false)
 const editing = ref<CashBoxSummary | null>(null)
-// Очистка кассы из окна «Изменить» — подтверждение словом и паролем.
+// Очистка кассы — пунктом меню карточки, своим окном (подтверждение словом и
+// паролем). Только владельцу и только если в кассе есть что стирать.
 const resetBox = ref<CashBoxSummary | null>(null)
 const showReset = ref(false)
-function askReset() {
-  resetBox.value = editing.value
-  showReset.value = !!resetBox.value
+function askReset(box: CashBoxSummary) {
+  resetBox.value = box
+  showReset.value = true
 }
+const canReset = (box: CashBoxSummary) =>
+  authStore.isOwner && (box.dealsCount > 0 || Math.round(box.balance) !== 0 || box.initialCapital > 0)
+const canDeleteBox = (box: CashBoxSummary) => !box.isDefault && authStore.can('cashboxes.delete')
 function afterReset() {
   // Перезагрузка: суммы касс и списки держат старые данные.
   window.location.reload()
@@ -267,9 +271,15 @@ async function openInfo(box: CashBoxSummary, e: Event) {
                     <v-icon icon="mdi-pencil-outline" size="16" />
                     <span>Изменить</span>
                   </button>
-                  <template v-if="!box.isDefault">
+                  <template v-if="canReset(box) || canDeleteBox(box)">
                     <div class="cb-menu-divider" />
+                    <!-- Удаляет сделки, платежи и операции; сама касса остаётся. -->
+                    <button v-if="canReset(box)" class="cb-menu-item cb-menu-item--danger" @click="askReset(box)">
+                      <v-icon icon="mdi-broom" size="16" />
+                      <span>Очистить кассу</span>
+                    </button>
                     <button
+                      v-if="canDeleteBox(box)"
                       class="cb-menu-item cb-menu-item--danger"
                       @click="handleDelete(box, $event as any)"
                     >
@@ -333,7 +343,7 @@ async function openInfo(box: CashBoxSummary, e: Event) {
     </template>
 
     <!-- Create/edit dialog -->
-    <CashBoxEditDialog v-model="showCreate" :cashbox="editing" @reset="askReset" @delete="editing && handleDelete(editing)" />
+    <CashBoxEditDialog v-model="showCreate" :cashbox="editing" />
     <CashBoxResetDialog
       v-if="resetBox"
       v-model="showReset"

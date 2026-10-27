@@ -86,7 +86,7 @@ async function save() {
       <div class="rc-field">
         <label class="rc-label">Пересчитано на самом деле</label>
         <div class="rc-suffix-wrap">
-          <input
+          <input v-clear
             :value="actual ?? ''"
             v-maska="CURRENCY_MASK"
             type="text"
@@ -115,7 +115,7 @@ async function save() {
 
       <div class="rc-field">
         <label class="rc-label">Комментарий</label>
-        <input v-model="note" class="rc-input" placeholder="Пересчёт в конце смены" />
+        <textarea v-clear v-model="note" class="rc-input rc-textarea" rows="2" placeholder="Пересчёт в конце смены" />
         <div v-if="delta !== null && delta !== 0" class="rc-hint">
           Напишите, откуда расхождение, пока помните: через месяц это уже не восстановить.
         </div>
@@ -156,6 +156,8 @@ async function save() {
   font-size: 14px; outline: none;
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
+/* Комментарий — многострочный, как везде в кабинете. */
+.rc-textarea { display: block; height: auto; min-height: 64px; padding: 10px 14px; line-height: 1.45; resize: vertical; font-family: inherit; }
 .rc-input:focus { border-color: #047857; }
 .rc-suffix-wrap { position: relative; }
 .rc-suffix-wrap .rc-input { padding-right: 34px; }

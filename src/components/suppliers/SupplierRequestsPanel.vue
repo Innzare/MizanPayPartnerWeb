@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useSuppliersStore, type SupplierRequest, type SupplierRequestStatus } from '@/stores/suppliers'
@@ -102,7 +103,7 @@ async function setStatus(r: SupplierRequest, status: 'NEW' | 'REJECTED' | 'CANCE
 }
 
 async function removeRequest(r: SupplierRequest) {
-  if (!confirm(`Удалить заявку «${r.productName}»?`)) return
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить заявку «${r.productName}»?` }))) return
   try {
     await store.removeRequest(r.id)
     toast.success('Заявка удалена')
@@ -151,7 +152,7 @@ onMounted(() => {
           <div class="d-flex align-center ga-2 flex-wrap">
             <div class="sup-search">
               <v-icon icon="mdi-magnify" size="18" />
-              <input v-model="search" type="text" placeholder="Поиск по товару, партнёру, клиенту…" />
+              <input v-clear v-model="search" type="text" placeholder="Поиск по товару, партнёру, клиенту…" />
               <button v-if="search" type="button" class="sup-search-clear" title="Очистить" @click="search = ''">
                 <v-icon icon="mdi-close" size="14" />
               </button>

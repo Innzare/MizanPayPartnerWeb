@@ -380,7 +380,7 @@ async function saveStake() {
             <div class="pp-field mb-3">
               <label class="pp-field-label">Капитал <span style="color: #ef4444;">*</span></label>
               <div class="pp-field-input-wrap">
-                <input
+                <input v-clear
                   :value="block.capital || ''"
                   v-maska="CURRENCY_MASK"
                   @maska="(e: any) => block.capital = parseMasked(e)"
@@ -434,7 +434,7 @@ async function saveStake() {
                 >{{ p }}%</button>
               </div>
               <div class="pp-field-input-wrap">
-                <input v-model.number="block.costFeeDefaultRatePct" type="number" class="pp-field-input" placeholder="напр. 5" min="0" max="100" />
+                <input v-clear v-model.number="block.costFeeDefaultRatePct" type="number" class="pp-field-input" placeholder="напр. 5" min="0" max="100" />
                 <span class="pp-field-suffix">%</span>
               </div>
             </div>
@@ -452,7 +452,7 @@ async function saveStake() {
                 >{{ p }}%</button>
               </div>
               <div class="pp-field-input-wrap">
-                <input v-model.number="block.profitPercent" type="number" class="pp-field-input" placeholder="30" min="1" max="99" />
+                <input v-clear v-model.number="block.profitPercent" type="number" class="pp-field-input" placeholder="30" min="1" max="99" />
                 <span class="pp-field-suffix">%</span>
               </div>
             </div>
@@ -470,7 +470,7 @@ async function saveStake() {
                 >{{ p }}%</button>
               </div>
               <div class="pp-field-input-wrap">
-                <input v-model.number="block.managementFeePct" type="number" class="pp-field-input" placeholder="0" min="0" max="100" />
+                <input v-clear v-model.number="block.managementFeePct" type="number" class="pp-field-input" placeholder="0" min="0" max="100" />
                 <span class="pp-field-suffix">%</span>
               </div>
             </div>

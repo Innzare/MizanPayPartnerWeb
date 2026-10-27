@@ -595,7 +595,7 @@ function renderStars(rating: number): string[] {
       <div class="rg-hero-content">
         <div class="rg-search-wrap">
           <v-icon icon="mdi-magnify" size="22" class="rg-search-icon" />
-          <input
+          <input v-clear
             v-model="search"
             type="text"
             class="rg-search-input"
@@ -1138,7 +1138,7 @@ function renderStars(rating: number): string[] {
           <!-- Name -->
           <div class="rg-field mb-4">
             <label class="rg-field-label">Имя клиента <span style="color: #ef4444;">*</span></label>
-            <input
+            <input v-clear
               v-model="blacklistForm.name"
               type="text"
               class="rg-field-input"
@@ -1149,7 +1149,7 @@ function renderStars(rating: number): string[] {
           <!-- Reason -->
           <div class="rg-field">
             <label class="rg-field-label">Причина</label>
-            <textarea
+            <textarea v-clear
               v-model="blacklistForm.reason"
               class="rg-field-textarea"
               placeholder="Опишите причину добавления в чёрный список..."
@@ -1191,7 +1191,7 @@ function renderStars(rating: number): string[] {
           <!-- Name -->
           <div class="rg-field mb-4">
             <label class="rg-field-label">Имя клиента <span style="color: #ef4444;">*</span></label>
-            <input
+            <input v-clear
               v-model="reviewForm.name"
               type="text"
               class="rg-field-input"
@@ -1219,7 +1219,7 @@ function renderStars(rating: number): string[] {
           <!-- Comment -->
           <div class="rg-field">
             <label class="rg-field-label">Комментарий</label>
-            <textarea
+            <textarea v-clear
               v-model="reviewForm.comment"
               class="rg-field-textarea"
               placeholder="Расскажите о вашем опыте работы с этим клиентом..."

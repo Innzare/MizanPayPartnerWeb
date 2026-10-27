@@ -19,6 +19,7 @@ import { useToast } from '@/composables/useToast'
 import { useSections } from '@/composables/useSections'
 import { useSendPdfWhatsApp } from '@/composables/useSendPdfWhatsApp'
 import DateField from '@/components/DateField.vue'
+import SelectField from '@/components/SelectField.vue'
 import PaymentSourcePicker from '@/components/PaymentSourcePicker.vue'
 import PaymentSchedulePreview from '@/components/PaymentSchedulePreview.vue'
 import { formatCurrency, formatDate, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
@@ -31,6 +32,7 @@ import { dueYearMonth, monthAccusative } from '@/utils/paymentAttribution'
 import * as money from '@/utils/paymentMath'
 import { useOperationDate } from '@/composables/useOperationDate'
 import type { Deal, Payment, User } from '@/types'
+import type { PendingOpView } from '@/stores/accounting'
 
 const props = withDefaults(
   defineProps<{
@@ -39,6 +41,11 @@ const props = withDefaults(
     payment: Payment | null
     deal: Deal | null
     fullscreen?: boolean
+    /**
+     * Оплатить этим неразобранным поступлением — окно открыто из разбора
+     * «Чем это оказалось?». Без него поступление можно выбрать в окне.
+     */
+    pendingOp?: PendingOpView | null
   }>(),
   { fullscreen: false },
 )
@@ -214,6 +221,61 @@ const allocations = ref<Array<{ accountId: string; amount: number }> | null>(nul
 const proofPreview = ref('')
 const proofInputRef = ref<HTMLInputElement | null>(null)
 
+// ── Оплата неразобранным поступлением ───────────────────────────────────────
+// Деньги уже на счёте («Неизвестный приход») — ими и оплачиваем: счёт, дата и
+// сумма берутся из поступления, а оно становится «оплата по сделке №…».
+// Без этого оплату провели бы мимо, и на счёте деньги посчитались бы дважды.
+const pendingChoices = ref<PendingOpView[]>([])
+const selectedPendingId = ref<string | null>(null)
+const selectedPending = computed(() => pendingChoices.value.find((p) => p.id === selectedPendingId.value) ?? null)
+
+async function loadPendingChoices() {
+  pendingChoices.value = props.pendingOp ? [props.pendingOp] : []
+  selectedPendingId.value = props.pendingOp?.id ?? null
+  // Оплата поступлением — это и его разбор: без права на разбор не предлагаем
+  // (и не дёргаем список, который ответил бы отказом на каждое окно оплаты).
+  if (props.pendingOp || !authStore.can('accounting.pending.resolve')) return
+  try {
+    const res = await api.get<{ items: PendingOpView[] }>('/accounting/pending?status=PENDING&limit=200')
+    // Только поступления кассы этой сделки: оплатить сделку деньгами другой
+    // кассы нельзя (сервер откажет) — такие и не предлагаем.
+    const dealBox = props.deal?.cashBoxId ?? null
+    pendingChoices.value = (res.items ?? []).filter(
+      (p) => p.direction === 'IN' && (!dealBox || !p.account.cashBoxId || p.account.cashBoxId === dealBox),
+    )
+  } catch {
+    // Нет права видеть операции без назначения — выбора просто нет.
+    pendingChoices.value = []
+  }
+}
+
+/** Совпадающие по сумме с платежом — первыми. */
+const pendingOptions = computed(() => {
+  const need = Math.round(target.value?.amount ?? 0)
+  return [...pendingChoices.value]
+    .sort((a, b) => Number(Math.round(b.amount) === need) - Number(Math.round(a.amount) === need))
+    .map((p) => ({
+      value: p.id,
+      label: `${formatCurrency(p.amount)} · ${shortDate(p.date)} · ${p.personName || p.note || p.account.name}`,
+      hint: Math.round(p.amount) === need ? 'сумма совпадает' : p.account.name,
+    }))
+})
+
+watch(selectedPendingId, (id, prev) => {
+  const op = pendingChoices.value.find((p) => p.id === id)
+  if (op) {
+    payMode.value = 'MONTH'
+    enteredAmount.value = Math.round(op.amount)
+    paidAt.value = money.toDateInput(op.date)
+    accountId.value = op.account.id
+    allocations.value = null
+  } else if (prev) {
+    enteredAmount.value = Math.round(target.value?.amount ?? 0)
+    paidAt.value = todayYmd.value
+    accountId.value = null
+  }
+})
+
 const todayYmd = computed(() => money.toDateInput(new Date()))
 
 /** «2 платежа», «5 платежей» — сводка в шапке читается как фраза. */
@@ -254,6 +316,7 @@ watch(
     // вкладка оплаты.
     scheduleOpen.value = false
     payTab.value = 'pay'
+    await loadPendingChoices()
 
     // График перечитываем всегда, даже если он есть в памяти: по нему
     // подставляется сумма досрочного погашения, и устаревший остаток отправил
@@ -696,8 +759,8 @@ async function confirm_() {
   submitting.value = true
   try {
     // Дата сильно в прошлом — переспрашиваем: доход и касса за тот период
-    // изменятся задним числом.
-    const ask = opDate.confirmMessage(paidAt.value)
+    // изменятся задним числом. У поступления дата уже узаконена.
+    const ask = selectedPending.value ? null : opDate.confirmMessage(paidAt.value)
     if (ask && !confirm(ask)) return
 
     let proofScreenshot: string | undefined
@@ -731,6 +794,12 @@ async function confirm_() {
     // Доли уходят только когда сошлись с суммой — иначе сервер откажет, и
     // правильно сделает: деньги не должны появляться из ниоткуда.
     if (allocations.value?.length) payload.allocations = allocations.value
+    // Оплата поступлением: счёт и дату сервер возьмёт из него сам.
+    if (selectedPending.value) {
+      payload.pendingOperationId = selectedPending.value.id
+      delete payload.allocations
+    }
+    const fromPending = !!selectedPending.value
     const paidAmount = payload.amount
 
     // Намерение фиксируем ДО отметки: после неё график меняется и расчёт
@@ -759,7 +828,8 @@ async function confirm_() {
     if (authStore.can('payments.unmarkPaid') && !tailToAdd) {
       const paidId = t.id
       const debtSuffix = debtChosen.value ? `, долг ${formatCurrency(shortfall.value)}` : ''
-      toast.showWithAction(`Платёж на ${formatCurrency(paidAmount ?? t.amount)} отмечен${debtSuffix}`, {
+      const pendingSuffix = fromPending ? ', поступление разобрано' : ''
+      toast.showWithAction(`Платёж на ${formatCurrency(paidAmount ?? t.amount)} отмечен${debtSuffix}${pendingSuffix}`, {
         label: 'Отменить',
         handler: async () => {
           try {
@@ -881,17 +951,19 @@ async function confirm_() {
         <div class="mb-4">
           <div class="qp-amount-row">
             <div class="input-with-suffix qp-amount-input" :class="{ 'qp-amount-input--empty': !hasAmount }">
-              <input
+              <input v-clear
                 :value="enteredAmount || ''"
                 v-maska="CURRENCY_MASK"
                 type="text"
                 inputmode="numeric"
                 class="field-input"
+                :disabled="!!selectedPending"
+                :title="selectedPending ? 'Сумма — из поступления' : ''"
                 @maska="(e: any) => enteredAmount = parseMasked(e)"
               />
               <span class="input-suffix">₽</span>
             </div>
-            <div v-if="canPayEarly" class="qp-modes">
+            <div v-if="canPayEarly && !selectedPending" class="qp-modes">
               <button
                 type="button"
                 class="qp-mode"
@@ -1039,7 +1111,7 @@ async function confirm_() {
                 <label class="field-label">
                   Комментарий <span class="qp-sect-note">необязательно</span>
                 </label>
-                <textarea
+                <textarea v-clear
                   v-model="debtNote"
                   class="field-input qp-debt-note"
                   rows="2"
@@ -1071,7 +1143,7 @@ async function confirm_() {
                 <span class="qp-manual-old">{{ formatCurrency(row.amount) }}</span>
                 <v-icon icon="mdi-arrow-right" size="13" class="qp-manual-arrow" />
                 <div class="qp-manual-input">
-                  <input
+                  <input v-clear
                     :value="manualSchedule[row.id] ?? 0"
                     type="text"
                     inputmode="numeric"
@@ -1204,7 +1276,25 @@ async function confirm_() {
              один сплошной блок, и было неясно, что к чему относится. -->
         <!-- Рамка на самом компоненте, а не обёрткой: у партнёра без счетов он
              не рендерится вовсе, и пустая рамка висела бы просто так. -->
+        <!-- Неразобранное поступление: деньги уже на счёте — ими и оплачиваем. -->
+        <div v-if="pendingChoices.length" class="qp-field mb-3">
+          <label class="field-label">Оплатить поступлением без назначения</label>
+          <SelectField
+            v-model="selectedPendingId"
+            :options="pendingOptions"
+            :disabled="!!pendingOp"
+            empty-label="Нет — обычная оплата"
+            placeholder="Нет — обычная оплата"
+          />
+          <div v-if="selectedPending" class="qp-pending-hint">
+            Деньги уже пришли {{ formatDate(selectedPending.date) }} на счёт «{{ selectedPending.account.name }}» —
+            ими и оплачиваем. Сумма оплаты — ровно {{ formatCurrency(selectedPending.amount) }}; если это только
+            часть, сначала разделите поступление во «Временных операциях».
+          </div>
+        </div>
+
         <PaymentSourcePicker
+          v-if="!selectedPending"
           v-model="accountId"
           v-model:allocations="allocations"
           :total="enteredAmount ?? target?.amount ?? 0"
@@ -1213,7 +1303,7 @@ async function confirm_() {
         />
 
         <!-- Дата оплаты -->
-        <div class="qp-field">
+        <div v-if="!selectedPending" class="qp-field">
           <label class="field-label">Когда получили деньги</label>
           <!-- Деньги нельзя получить завтра: будущая дата увела бы операцию в
                журнале выше сегодняшних. -->
@@ -1274,7 +1364,7 @@ async function confirm_() {
           <div class="qp-sect-label">
             Комментарий к платежу <span class="qp-sect-note">необязательно</span>
           </div>
-          <textarea
+          <textarea v-clear
             v-model="payNote"
             class="field-input qp-note-input"
             rows="4"
@@ -1440,6 +1530,9 @@ async function confirm_() {
 
 /* Сумма и режим одной строкой: кнопки лишь подставляют сумму в поле, отдельный
    ряд сверху занимал место, ничего не добавляя. */
+.qp-pending-hint {
+  margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: rgba(var(--v-theme-on-surface), 0.6);
+}
 .qp-amount-row {
   display: flex;
   align-items: stretch;

@@ -86,7 +86,13 @@ const planned = computed(() =>
 const rest = computed(() => goal.value - planned.value)
 const overflow = computed(() => rest.value < 0)
 
-const canSave = computed(() => planned.value > 0 && !overflow.value && !saving.value)
+/**
+ * Касса не выбрана, а счета — разных касс: разносить можно только внутри
+ * одной кассы (деньги кассы лежат на её счетах) — просим выбрать кассу.
+ */
+const multiBox = computed(() => !props.cashBoxId && new Set(accounts.value.map((a) => a.cashBoxId)).size > 1)
+
+const canSave = computed(() => planned.value > 0 && !overflow.value && !saving.value && !multiBox.value)
 
 watch(
   () => props.modelValue,
@@ -121,10 +127,9 @@ function clear() {
 }
 
 /**
- * Записываем по счёту за раз: каждый пересчёт — отдельная запись в истории с
- * автором и комментарием, как если бы партнёр сделал их руками. Если что-то
- * упало на середине, уже записанное остаётся: деньги нигде не теряются, а
- * повторный заход покажет уже уменьшенный остаток «не разнесено».
+ * Одна операция «разнесение» на все счета сразу — целиком или никак. Раньше
+ * здесь писался пересчёт каждого счёта, а пересчёт в «не разнесено» не
+ * входит: остаток счёта рос, «не разнесено» не уменьшалось, и блок не уходил.
  */
 async function save() {
   if (!canSave.value) return
@@ -132,16 +137,11 @@ async function save() {
   savedCount.value = 0
   const comment = note.value.trim() || 'Разнесение остатков по счетам'
   try {
-    for (const [accountId, add] of Object.entries(plan.value)) {
-      const acc = accounts.value.find((a) => a.id === accountId)
-      if (!acc || !add) continue
-      await store.reconcile({
-        accountId,
-        actualAmount: Math.round((acc.balance ?? 0) + add),
-        note: comment,
-      })
-      savedCount.value += 1
-    }
+    const items = Object.entries(plan.value)
+      .filter(([, add]) => !!add)
+      .map(([accountId, add]) => ({ accountId, amount: Math.round(add) }))
+    await store.allocate({ items, note: comment })
+    savedCount.value = items.length
     await store.fetchUnallocated()
     toast.success(
       savedCount.value === 1
@@ -214,7 +214,7 @@ async function save() {
               </div>
             </div>
             <div class="al-input-wrap">
-              <input
+              <input v-clear
                 :value="plan[a.id] ?? ''"
                 v-maska="CURRENCY_MASK"
                 type="text"
@@ -243,11 +243,15 @@ async function save() {
       </div>
 
       <div class="al-foot">
+        <div v-if="multiBox" class="al-multibox">
+          Счета здесь из разных касс. Выберите кассу вверху страницы — деньги кассы разносятся только по её счетам.
+        </div>
         <div class="al-note">
-          <label class="al-note-label">Комментарий к пересчёту</label>
-          <input
+          <label class="al-note-label">Комментарий к разнесению</label>
+          <textarea v-clear
             v-model="note"
-            class="al-input al-input--wide"
+            class="al-input al-input--wide al-textarea"
+            rows="2"
             placeholder="Разнесение остатков по счетам"
           />
         </div>
@@ -350,6 +354,8 @@ async function save() {
   box-shadow: 0 0 0 3px color-mix(in srgb, #047857 10%, transparent);
 }
 .al-input--wide { width: 100%; text-align: left; padding: 0 12px; }
+/* Комментарий — многострочный, как везде в кабинете. */
+.al-textarea { display: block; height: auto; min-height: 60px; padding: 9px 12px; line-height: 1.45; resize: vertical; font-family: inherit; }
 .al-input-suffix {
   position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
   font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.4);
@@ -381,6 +387,10 @@ async function save() {
 .al-foot {
   padding: 14px 24px 20px;
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+}
+.al-multibox {
+  margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+  background: rgba(245, 158, 11, 0.1); color: #b45309; font-weight: 600;
 }
 .al-note-label {
   display: block; font-size: 12.5px; margin-bottom: 6px;

@@ -23,7 +23,7 @@
           <v-icon icon="mdi-arrow-left" size="22" />
         </button>
         <v-icon v-else icon="mdi-magnify" size="20" class="gs-search-icon" />
-        <input
+        <input v-clear
           ref="inputRef"
           v-model="query"
           type="search"

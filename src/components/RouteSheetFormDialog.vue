@@ -248,17 +248,17 @@ async function save() {
                   #{{ d.dealNumber }} · {{ d.productName }}<span class="rs-debt-rem"> (остаток {{ formatCurrency(d.remaining) }})</span>
                   <span v-if="d.locked" class="rs-debt-lock">уже в листе №{{ d.routeSheetNumber }}</span>
                 </span>
-                <input v-if="d.on && !d.locked" type="number" min="0" :max="d.remaining" v-model.number="d.amount" class="rs-debt-amt" @click.prevent.stop />
+                <input v-clear v-if="d.on && !d.locked" type="number" min="0" :max="d.remaining" v-model.number="d.amount" class="rs-debt-amt" @click.prevent.stop />
               </label>
             </div>
             <div v-else class="rs-debt-empty">У поставщика нет открытых долгов</div>
-            <input v-model="l.comment" type="text" placeholder="Комментарий для сотрудника…" class="rs-line-comment" />
+            <textarea v-clear v-model="l.comment" rows="2" placeholder="Комментарий для сотрудника…" class="rs-line-comment" />
           </div>
         </template>
 
         <div class="form-field mt-3">
           <label class="field-label">Общая заметка</label>
-          <textarea v-model="note" class="field-input field-textarea" rows="2" placeholder="Куда ехать, что уточнить…"></textarea>
+          <textarea v-clear v-model="note" class="field-input field-textarea" rows="2" placeholder="Куда ехать, что уточнить…"></textarea>
         </div>
 
         <div v-if="error" class="text-error text-body-2">{{ error }}</div>
@@ -293,7 +293,7 @@ async function save() {
 .rs-debt-rem { color: rgba(var(--v-theme-on-surface), 0.5); }
 .rs-debt-lock { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: rgba(245,158,11,0.15); color: #b45309; }
 .rs-debt-amt { width: 96px; height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid rgba(var(--v-theme-on-surface), 0.16); background: rgb(var(--v-theme-surface)); color: inherit; font-size: 13px; text-align: right; outline: none; }
-.rs-line-comment { width: 100%; margin-top: 8px; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12); background: transparent; color: inherit; font-size: 13px; outline: none; }
+.rs-line-comment { display: block; width: 100%; margin-top: 8px; min-height: 52px; padding: 7px 10px; line-height: 1.4; resize: vertical; font-family: inherit; border-radius: 8px; border: 1px solid rgba(var(--v-theme-on-surface), 0.12); background: transparent; color: inherit; font-size: 13px; outline: none; }
 .rs-total { font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.7); }
 .rs-total b { color: #047857; font-size: 15px; }
 </style>

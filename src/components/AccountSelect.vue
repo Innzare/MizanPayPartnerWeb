@@ -89,6 +89,7 @@ const showGroupTitles = computed(() => groups.value.length > 1)
  */
 const accounting = useAccountingStore()
 function unavailable(a: AccountView): string | null {
+  if (a.bankBlockedAt) return 'заблокирована банком'
   if (a.disabledAt) return 'недоступна'
   return accounting.limits.find((l) => l.id === a.id)?.limits.full ? 'лимит исчерпан' : null
 }

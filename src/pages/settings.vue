@@ -876,20 +876,20 @@ const plans = [
               <div class="form-row-2">
                 <div class="form-field">
                   <label class="field-label">Имя <span class="required">*</span></label>
-                  <input v-model="editForm.firstName" type="text" class="field-input" placeholder="Имя" />
+                  <input v-clear v-model="editForm.firstName" type="text" class="field-input" placeholder="Имя" />
                 </div>
                 <div class="form-field">
                   <label class="field-label">Фамилия <span class="required">*</span></label>
-                  <input v-model="editForm.lastName" type="text" class="field-input" placeholder="Фамилия" />
+                  <input v-clear v-model="editForm.lastName" type="text" class="field-input" placeholder="Фамилия" />
                 </div>
               </div>
               <div class="form-field">
                 <label class="field-label">Отчество</label>
-                <input v-model="editForm.patronymic" type="text" class="field-input" placeholder="Отчество (необязательно)" />
+                <input v-clear v-model="editForm.patronymic" type="text" class="field-input" placeholder="Отчество (необязательно)" />
               </div>
               <div class="form-field">
                 <label class="field-label">Название компании</label>
-                <input v-model="editForm.companyName" type="text" class="field-input" placeholder="Название компании (необязательно)" />
+                <input v-clear v-model="editForm.companyName" type="text" class="field-input" placeholder="Название компании (необязательно)" />
               </div>
               <div class="form-field">
                 <label class="field-label">Телефон <span class="required">*</span></label>
@@ -998,7 +998,7 @@ const plans = [
             <div class="form-field" style="max-width: 320px;">
               <label class="field-label">Разрешить датировать назад, дней</label>
               <div class="d-flex ga-2 align-center">
-                <input
+                <input v-clear
                   v-model.number="backdateWindow"
                   type="number"
                   min="0"
@@ -1277,7 +1277,7 @@ const plans = [
               <v-icon icon="mdi-bell-outline" size="14" color="primary" />
               Напоминание о платеже
             </div>
-            <textarea
+            <textarea v-clear
               ref="templateRef"
               v-model="waSettings.template"
               class="wa-template-textarea"
@@ -1308,7 +1308,7 @@ const plans = [
               <v-icon icon="mdi-alert-circle-outline" size="14" color="error" />
               При просрочке платежа
             </div>
-            <textarea
+            <textarea v-clear
               ref="overdueTemplateRef"
               v-model="waSettings.overdueTemplate"
               class="wa-template-textarea"
@@ -1338,7 +1338,7 @@ const plans = [
               Сводное напоминание (несколько платежей у клиента)
               <span class="wa-template-hint">используется только при ручной рассылке</span>
             </div>
-            <textarea
+            <textarea v-clear
               ref="summaryTemplateRef"
               v-model="waSettings.summaryTemplate"
               class="wa-template-textarea"
@@ -1888,7 +1888,7 @@ const plans = [
             <!-- Comment -->
             <div class="sub-dialog-field">
               <label class="sub-dialog-label">Комментарий <span style="opacity: 0.4;">(необязательно)</span></label>
-              <textarea
+              <textarea v-clear
                 v-model="requestMessage"
                 class="sub-dialog-textarea"
                 placeholder="Например: хочу перейти с текущего плана..."

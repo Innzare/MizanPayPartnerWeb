@@ -60,7 +60,11 @@ const cashBoxId = ref<string | null>(null)
 const categoryId = ref<string | null>(null)
 const note = ref('')
 const personName = ref('')
+/** Название временной операции — чтобы легче ориентироваться в списке. */
+const opTitle = ref('')
 const date = ref('')
+/** Срок возврата долга — необязательный. */
+const dueDate = ref('')
 const saving = ref(false)
 /** Ключ защиты от двойной отправки — живёт одно открытие формы. */
 const idemKey = ref('')
@@ -112,12 +116,22 @@ interface CapitalInfo {
   availableCapital: number
   /** «Доступно сейчас» с «Баланса»: деньги кассы за вычетом занятых. */
   available: number
+  /** Сколько можно забрать себе: доступно − прибыль инвесторов к выплате − займы. */
+  availableForWithdraw?: number
   canWithdrawNow: number
   inGoods: number
   lockedAmount: number
   pendingCIPayout: number
+  /** Чем заняты деньги — ключи шагов «Доступно сейчас» с «Баланса». */
+  locked: Array<{ key: string; amount: number }>
+  /** Из чего сложилось «Заработано»: прибыль сделок − расходы − уже снятое. */
+  dealProfit: number
+  businessExpenses: number
+  withdrawnProfit: number
 }
 const capital = ref<CapitalInfo | null>(null)
+/** Цифры капитала грузятся — на их месте скелетон, а не пустота. */
+const capitalLoading = ref(false)
 const isWithdraw = computed(() => kind.value === 'WITHDRAW_OWNER' || kind.value === 'WITHDRAW_PROFIT')
 const isProfit = computed(() => kind.value === 'WITHDRAW_PROFIT')
 const isCapital = computed(() => kind.value === 'DEPOSIT' || isWithdraw.value)
@@ -125,6 +139,7 @@ async function loadCapital() {
   capital.value = null
   if (!isCapital.value || !cashBoxId.value) return
   const box = cashBoxId.value
+  capitalLoading.value = true
   try {
     // Те же цифры, что в карточке кассы, одним запросом — и для тех, кто ведёт
     // капитал без права смотреть карточку кассы.
@@ -141,11 +156,18 @@ async function loadCapital() {
           inGoods: row.inGoods,
           lockedAmount: row.lockedAmount,
           pendingCIPayout: row.pendingCIPayout,
+          locked: row.locked ?? [],
+          dealProfit: row.dealProfit,
+          businessExpenses: row.businessExpenses,
+          withdrawnProfit: row.withdrawnProfit,
         }
       : null
   } catch {
     // Нет права видеть капитал — операция всё равно проверяется сервером.
     capital.value = null
+  } finally {
+    // Сменили кассу, пока шёл запрос, — загрузку ведёт уже новый запрос.
+    if (cashBoxId.value === box) capitalLoading.value = false
   }
 }
 /**
@@ -166,17 +188,45 @@ const overProfit = computed(
   () => isProfit.value && !!capital.value && (amount.value ?? 0) > capital.value.withdrawableProfit,
 )
 /**
- * Предел снятия — «Доступно сейчас», как на «Балансе», а не вся касса: деньги
- * на пунктах приёма или причитающиеся инвесторам на руки не возьмёшь.
+ * Предел снятия — не вся касса: деньги на пунктах приёма не возьмёшь, а
+ * прибыль инвесторов к выплате и взятое в долг — не ваши. В «Доступно сейчас»
+ * они только напоминание, а здесь — предел (сервер: availableForWithdraw).
  */
+const withdrawLimit = computed(() => Math.max(0, capital.value?.availableForWithdraw ?? capital.value?.available ?? 0))
 const overAvailable = computed(
-  () => isWithdraw.value && !!capital.value && (amount.value ?? 0) > Math.max(0, capital.value.available),
+  () => isWithdraw.value && !!capital.value && (amount.value ?? 0) > withdrawLimit.value,
 )
+/** Чем заняты деньги — подписи шагов «Доступно сейчас» с «Баланса». */
+const LOCKED_LABEL: Record<string, string> = {
+  atPoints: 'в пунктах приёма',
+  inHands: 'на руках у сотрудников',
+  disabledAccounts: 'на отключённых счетах',
+  pendingIn: 'пришло без назначения',
+  pendingOut: 'выдано под отчёт',
+  owedToCoInvestors: 'причитается со-инвесторам',
+  borrowed: 'взято в долг',
+}
+/**
+ * «Откуда эти цифры» — расчёт столбиком по нажатию. Заработанное — не
+ * обязательно деньги в кассе: часть прибыли снова в товаре, часть денег
+ * кассы занята; разница ровно из этих частей.
+ */
+const showCalc = ref(false)
+const profitGap = computed(() => {
+  const c = capital.value
+  if (!isProfit.value || !c) return null
+  const gap = Math.max(0, Math.round(c.withdrawableProfit - c.canWithdrawNow))
+  const parts: Array<{ amount: number; label: string }> = []
+  if (gap > 0 && c.inGoods > 0) parts.push({ amount: c.inGoods, label: 'в товаре' })
+  if (gap > 0) for (const l of c.locked) if (l.amount > 0) parts.push({ amount: l.amount, label: LOCKED_LABEL[l.key] ?? 'занято' })
+  return { gap, parts }
+})
+
 /** Почему больше снять нельзя — теми же словами, что в шапке раздела. */
 const overText = computed(() => {
   const c = capital.value
   if (!c) return ''
-  const parts = [`Сейчас доступно только ${formatCurrency(Math.max(0, c.available))}`]
+  const parts = [`Сейчас забрать себе можно только ${formatCurrency(withdrawLimit.value)}`]
   const why: string[] = []
   if (isProfit.value && c.inGoods > 0) why.push(`${formatCurrency(c.inGoods)} прибыли ещё в товаре`)
   if (isProfit.value && c.lockedAmount > 0) why.push(`${formatCurrency(c.lockedAmount)} заняты (см. «Доступно сейчас» на «Балансе»)`)
@@ -188,16 +238,20 @@ const belowReserve = computed(
     capital.value.availableCapital - (amount.value ?? 0) < capital.value.pendingCIPayout,
 )
 /** Дата — там, где сервер её принимает: доход, расход и перевод. */
-const needsDate = computed(() => kind.value === 'EXPENSE' || kind.value === 'INCOME' || kind.value === 'TRANSFER')
+const needsDate = computed(() =>
+  isExpense.value || kind.value === 'INCOME' || kind.value === 'TRANSFER' || isLoan.value || isPending.value,
+)
 
 // ── Деление с инвесторами ──
 // Расход может уменьшать прибыль месяца, которую делят с инвесторам.
 const affectsInvestors = ref(false)
-const showAffects = computed(() => kind.value === 'EXPENSE' && sections.visible('coInvestors'))
+/** «Иной расход» — по деньгам как расход по бизнесу: те же поля и флаги. */
+const isExpense = computed(() => kind.value === 'EXPENSE' || kind.value === 'OTHER_EXPENSE')
+const showAffects = computed(() => isExpense.value && sections.visible('coInvestors'))
 // Расход «из прибыли» (по умолчанию, как всегда было) или «из капитала» —
 // тогда он уменьшает ваш капитал в делении; доход — «в прибыль» / «в капитал».
 const fromCapital = ref(false)
-const showFromCapital = computed(() => (kind.value === 'EXPENSE' || kind.value === 'INCOME') && sections.visible('coInvestors'))
+const showFromCapital = computed(() => (isExpense.value || kind.value === 'INCOME') && sections.visible('coInvestors'))
 // Пополнение — «приносит прибыль с», снятие капитала — «не приносит прибыль
 // с». По умолчанию — сегодня: деньги работают сразу.
 const effectiveDay = ref('')
@@ -262,12 +316,14 @@ const afterFrom = computed(() =>
 )
 const goesNegative = computed(() => afterFrom.value !== null && Math.round(afterFrom.value) < 0)
 
-const needsCategory = computed(() => kind.value === 'EXPENSE' || kind.value === 'INCOME')
+const needsCategory = computed(() => isExpense.value || kind.value === 'INCOME')
 const isPending = computed(() => kind.value === 'PENDING_IN' || kind.value === 'PENDING_OUT')
 const isLoan = computed(() => kind.value === 'BORROW' || kind.value === 'LEND')
 
 const canSave = computed(() => {
   if (!kind.value || (amount.value ?? 0) <= 0 || overAvailable.value || overProfit.value) return false
+  // Снятие — только когда видно, сколько доступно: цифры ещё грузятся.
+  if (isWithdraw.value && capitalLoading.value) return false
   // Без имени второй стороны долг через месяц не восстановить по памяти.
   if (isLoan.value && !personName.value.trim()) return false
   if (needsTarget.value) return !!accountId.value && !!toAccountId.value && accountId.value !== toAccountId.value
@@ -285,7 +341,10 @@ watch(
     newCategory.value = null
     note.value = ''
     personName.value = ''
+    opTitle.value = ''
     date.value = ''
+    dueDate.value = ''
+    showCalc.value = false
     affectsInvestors.value = false
     fromCapital.value = false
     effectiveDay.value = kind.value === 'DEPOSIT' || kind.value === 'WITHDRAW_OWNER' ? todayIso() : ''
@@ -323,6 +382,8 @@ async function save() {
         accountId: accountId.value,
         note: note.value.trim() || undefined,
         personName: personName.value.trim() || undefined,
+        title: opTitle.value.trim() || undefined,
+        date: date.value || undefined,
       })
       toast.success('Записано — разберёте позже')
       open.value = false
@@ -337,7 +398,12 @@ async function save() {
         personName: personName.value.trim(),
         amount: amount.value!,
         accountId: accountId.value,
+        // Касса долга: довыдачи и возвраты потом идут только с её счетов.
+        cashBoxId: cashBoxId.value,
+        date: date.value || undefined,
+        dueDate: dueDate.value || undefined,
         note: note.value.trim() || undefined,
+        title: opTitle.value.trim() || undefined,
       })
       toast.success(kind.value === 'BORROW' ? 'Долг записан' : 'Записано: дали в долг')
       open.value = false
@@ -346,7 +412,7 @@ async function save() {
     }
 
     await store.createOperation({
-      kind: kind.value as 'DEPOSIT' | 'WITHDRAW_OWNER' | 'WITHDRAW_PROFIT' | 'EXPENSE' | 'INCOME' | 'TRANSFER',
+      kind: kind.value as 'DEPOSIT' | 'WITHDRAW_OWNER' | 'WITHDRAW_PROFIT' | 'EXPENSE' | 'OTHER_EXPENSE' | 'INCOME' | 'TRANSFER',
       amount: amount.value!,
       accountId: accountId.value,
       toAccountId: needsTarget.value ? toAccountId.value : null,
@@ -383,7 +449,7 @@ async function save() {
           <div class="op-field">
             <label class="op-label">Сумма</label>
             <div class="op-suffix-wrap">
-              <input
+              <input v-clear
                 :value="amount || ''"
                 v-maska="CURRENCY_MASK"
                 type="text"
@@ -422,10 +488,19 @@ async function save() {
               class="op-max"
               @click="amount = Math.min(capital.investedCapital, capital.available)"
             >Снять весь вложенный капитал ({{ formatCurrency(Math.min(capital.investedCapital, capital.available)) }})</button>
+            <!-- Пока считаем, сколько можно снять, — место под подсказку. -->
+            <i v-else-if="isWithdraw && capitalLoading" class="op-sk op-sk--link" />
           </div>
 
           <!-- Капитал кассы: сколько вложено, сколько заработано и сколько денег
                в кассе сейчас. Без них снятие делали бы вслепую. -->
+          <!-- Цифры ещё грузятся: скелетон той же формы, что и блок ниже. -->
+          <div v-if="isCapital && capitalLoading && !capital" class="op-cap" aria-busy="true">
+            <div v-for="i in (isProfit ? 2 : 3)" :key="i" class="op-cap-item">
+              <i class="op-sk op-sk--label" />
+              <i class="op-sk op-sk--value" />
+            </div>
+          </div>
           <div v-if="isCapital && capital" class="op-cap">
             <div class="op-cap-item" :class="{ 'op-cap-item--main': isProfit }">
               <span>{{ isProfit ? 'Можно снять сейчас' : 'Прибыль к снятию' }}</span>
@@ -435,10 +510,35 @@ async function save() {
               <span>{{ isProfit ? 'Заработано и не снято' : 'Вложено' }}</span>
               <strong>{{ formatCurrency(isProfit ? capital.withdrawableProfit : capital.investedCapital) }}</strong>
             </div>
-            <div class="op-cap-item">
+            <!-- При снятии прибыли «Доступно сейчас» не показываем: «Можно снять
+                 сейчас» — меньшее из него и заработанного, так что оно либо
+                 совпадает, либо больше за счёт капитала, который этой
+                 операцией не снять. Подробности — в «Откуда эти цифры». -->
+            <div v-if="!isProfit" class="op-cap-item">
               <span>Доступно сейчас</span><strong>{{ formatCurrency(capital.available) }}</strong>
             </div>
           </div>
+
+          <!-- Откуда эти цифры — расчёт столбиком по нажатию, без лишних слов. -->
+          <template v-if="profitGap">
+            <button type="button" class="op-why-toggle" @click="showCalc = !showCalc">
+              Откуда эти цифры
+              <v-icon :icon="showCalc ? 'mdi-chevron-up' : 'mdi-chevron-down'" size="16" />
+            </button>
+            <div v-if="showCalc" class="op-calc">
+              <div class="op-calc-row op-calc-row--head"><span>Заработано</span><b>{{ formatCurrency(capital!.withdrawableProfit) }}</b></div>
+              <div class="op-calc-row"><span>прибыль по сделкам</span><span>{{ formatCurrency(capital!.dealProfit) }}</span></div>
+              <div class="op-calc-row"><span>расходы</span><span>−{{ formatCurrency(capital!.businessExpenses) }}</span></div>
+              <div class="op-calc-row"><span>уже снято</span><span>−{{ formatCurrency(capital!.withdrawnProfit) }}</span></div>
+              <template v-if="profitGap.gap > 0">
+                <div class="op-calc-row op-calc-row--head"><span>Сейчас не взять</span><b>−{{ formatCurrency(profitGap.gap) }}</b></div>
+                <div v-for="(p, i) in profitGap.parts" :key="i" class="op-calc-row">
+                  <span>{{ p.label }}</span><span>{{ formatCurrency(p.amount) }}</span>
+                </div>
+              </template>
+              <div class="op-calc-row op-calc-row--total"><span>Можно снять сейчас</span><b>{{ formatCurrency(capital!.canWithdrawNow) }}</b></div>
+            </div>
+          </template>
 
           <!-- Касса стоит выше счёта: она отвечает, чьи это деньги, и от неё
                зависит, из каких счетов вообще можно выбирать. -->
@@ -466,12 +566,24 @@ async function save() {
             />
           </div>
 
+          <!-- Название временной операции — по нему её находят в списке. -->
+          <div v-if="isLoan || isPending" class="op-field">
+            <label class="op-label">Название</label>
+            <input v-clear v-model="opTitle" class="op-input" maxlength="120" placeholder="Например: на закупку телефонов" />
+          </div>
+
           <div v-if="kind === 'PENDING_OUT' || isLoan" class="op-field">
             <label class="op-label">
               {{ isLoan ? (kind === 'BORROW' ? 'Чьи деньги' : 'У кого деньги') : 'За кем числятся деньги' }}
             </label>
-            <input v-model="personName" class="op-input" placeholder="Например: Ахмед (брат)" />
+            <input v-clear v-model="personName" class="op-input" placeholder="Например: Ахмед (брат)" />
             <div class="op-hint">Через месяц по памяти это уже не восстановить</div>
+          </div>
+
+          <div v-if="isLoan" class="op-field">
+            <label class="op-label">Вернуть до</label>
+            <DateField v-model="dueDate" :min="date || todayIso()" plain />
+            <div class="op-hint">Необязательно. Прошёл срок, а деньги не вернулись — покажем просрочку.</div>
           </div>
 
           <div v-if="needsCategory" class="op-field">
@@ -486,7 +598,7 @@ async function save() {
               <button type="button" class="op-link" @click="newCategory = ''">+ Новая статья</button>
             </div>
             <div v-else class="op-newcat">
-              <input
+              <input v-clear
                 v-model="newCategory"
                 class="op-input"
                 placeholder="Например: Аренда"
@@ -550,7 +662,7 @@ async function save() {
 
           <div class="op-field">
             <label class="op-label">Комментарий</label>
-            <input v-model="note" class="op-input" :placeholder="isWithdraw ? 'Например: на личные нужды' : 'Например: аренда за август'" />
+            <textarea v-clear v-model="note" class="op-input op-textarea" rows="2" :placeholder="isWithdraw ? 'Например: на личные нужды' : 'Например: аренда за август'" />
           </div>
 
           <!-- Что произойдёт с капиталом. Пишем прямо: это то самое место,
@@ -573,7 +685,7 @@ async function save() {
               </template>
             </span>
             <span v-else-if="kind === 'WITHDRAW_OWNER'">Вложенный капитал уменьшится — прибыль не тронута</span>
-            <span v-else-if="kind === 'EXPENSE'">Расход уменьшит деньги кассы</span>
+            <span v-else-if="isExpense">Расход уменьшит деньги кассы</span>
             <span v-else-if="kind === 'BORROW'">
               Деньги появятся на счёте, но собственный капитал не вырастет —
               они чужие и в прибыли не участвуют
@@ -633,6 +745,8 @@ async function save() {
   background: rgba(var(--v-theme-on-surface), 0.02);
   font-size: 14px; outline: none; color: rgba(var(--v-theme-on-surface), 0.85);
 }
+/* Комментарий — многострочный, как везде в кабинете. */
+.op-textarea { display: block; height: auto; min-height: 64px; padding: 10px 14px; line-height: 1.45; resize: vertical; font-family: inherit; }
 .op-input:focus { border-color: #047857; }
 .op-input--bad { border-color: #dc2626; }
 .op-hint { display: block; font-size: 12px; line-height: 1.4; margin-top: 4px; color: rgba(var(--v-theme-on-surface), 0.55); }
@@ -684,13 +798,39 @@ async function save() {
   font-size: 12.5px; font-weight: 600; color: #047857;
 }
 .op-cap {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px;
   margin-top: 12px; padding: 10px 12px; border-radius: 10px;
   background: rgba(var(--v-theme-on-surface), 0.035);
 }
 .op-cap-item { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: rgba(var(--v-theme-on-surface), 0.5); }
 .op-cap-item strong { font-size: 13.5px; color: rgba(var(--v-theme-on-surface), 0.85); font-variant-numeric: tabular-nums; }
 .op-cap-item--main strong { color: #047857; }
+.op-sk {
+  display: block; border-radius: 6px;
+  background: linear-gradient(90deg, rgba(var(--v-theme-on-surface), 0.06), rgba(var(--v-theme-on-surface), 0.12), rgba(var(--v-theme-on-surface), 0.06));
+  background-size: 200% 100%; animation: op-shimmer 1.2s linear infinite;
+}
+.op-sk--label { width: 70%; height: 10px; margin: 2px 0 4px; }
+.op-sk--value { width: 55%; height: 15px; }
+.op-sk--link { width: 220px; height: 12px; margin-top: 8px; }
+@keyframes op-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.op-why-toggle {
+  display: inline-flex; align-items: center; gap: 2px; margin-top: 6px; padding: 3px 8px 3px 10px;
+  border: none; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 600;
+  background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.op-why-toggle:hover { color: #047857; }
+.op-calc {
+  margin-top: 6px; padding: 8px 12px; border-radius: 10px; font-size: 12.5px;
+  background: rgba(var(--v-theme-on-surface), 0.035); color: rgba(var(--v-theme-on-surface), 0.6);
+}
+.op-calc-row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0 2px 12px; font-variant-numeric: tabular-nums; }
+.op-calc-row--head { padding-left: 0; margin-top: 4px; color: rgba(var(--v-theme-on-surface), 0.85); }
+.op-calc-row--head:first-child { margin-top: 0; }
+.op-calc-row--total {
+  padding-left: 0; margin-top: 6px; padding-top: 6px;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1); color: #047857;
+}
 .op-link {
   padding: 0; border: none; background: none; cursor: pointer;
   font-size: 12.5px; font-weight: 600; color: #047857;

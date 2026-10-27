@@ -1728,7 +1728,7 @@ function pluralDeals(n: number) {
           <div class="field mb-3">
             <label class="field-label">Сумма выплаты</label>
             <div class="field-input-wrap">
-              <input
+              <input v-clear
                 :key="payAmountKey"
                 :value="payForm.amount || ''"
                 v-maska="CURRENCY_MASK"
@@ -1784,7 +1784,7 @@ function pluralDeals(n: number) {
 
           <div class="field">
             <label class="field-label">Комментарий</label>
-            <input v-model="payForm.note" type="text" class="field-input" placeholder="Например: за март" />
+            <textarea v-clear v-model="payForm.note" class="field-input field-textarea" rows="2" placeholder="Например: за март" />
           </div>
         </div>
         <div class="dialog-actions">
@@ -1849,7 +1849,7 @@ function pluralDeals(n: number) {
           <div class="field mb-3">
             <label class="field-label">Сумма</label>
             <div class="field-input-wrap">
-              <input
+              <input v-clear
                 :key="capitalAmountKey"
                 :value="capitalForm.amount || ''"
                 v-maska="CURRENCY_MASK"
@@ -1895,7 +1895,7 @@ function pluralDeals(n: number) {
 
           <div v-if="capitalMode !== 'reinvest'" class="field mb-3">
             <label class="field-label">Комментарий</label>
-            <input v-model="capitalForm.note" type="text" class="field-input" placeholder="Например: довнесение" />
+            <textarea v-clear v-model="capitalForm.note" class="field-input field-textarea" rows="2" placeholder="Например: довнесение" />
           </div>
 
           <!-- Наглядный итог операции -->
@@ -2801,6 +2801,8 @@ function pluralDeals(n: number) {
   color: rgba(var(--v-theme-on-surface), 0.85);
   transition: all 0.15s; font-family: inherit;
 }
+/* Комментарий — многострочный, как везде в кабинете. */
+.field-textarea { display: block; height: auto; min-height: 64px; padding: 10px 14px; line-height: 1.45; resize: vertical; font-family: inherit; }
 .field-input:focus { border-color: #7c3aed; background: rgba(var(--v-theme-on-surface), 0.06); box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.08); }
 .field-input-wrap { position: relative; }
 .field-input-wrap .field-input { padding-right: 36px; }

@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -69,8 +70,8 @@ function open() {
   router.push({ path: '/create-deal', query: { resume: '1' } })
 }
 
-function discard() {
-  if (!confirm('Удалить незавершённый черновик сделки?')) return
+async function discard() {
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить незавершённый черновик сделки?' }))) return
   dealDraft.clear()
 }
 </script>

@@ -397,7 +397,7 @@ onBeforeUnmount(() => {
           Сделки не найдены
         </div>
 
-        <textarea
+        <textarea v-clear
           ref="textareaRef"
           v-model="draft"
           class="cp-input"

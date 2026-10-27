@@ -269,7 +269,7 @@ function onJumpStep(delta: number) {
         <!-- Текущая страница — поле ввода прямо в ряду номеров: щёлкнул,
              напечатал 37, Enter — и ты там. Отдельный блок «перейти к
              странице» для этого не нужен. -->
-        <input
+        <input v-clear
           v-if="pw.num === page"
           v-model="jumpValue"
           class="sp-btn sp-current"

@@ -9,6 +9,7 @@
  * Состояние и подписи — в `useDealsFilters`: тот же набор кормит запрос к
  * серверу и адрес страницы, поэтому панель здесь занимается только вводом.
  */
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { computed, ref, watch } from 'vue'
 import SelectField from '@/components/SelectField.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -64,8 +65,8 @@ function savePreset() {
  * Удаление набора спрашиваем: восстановить его нечем — наборы хранятся в
  * браузере, а крестик стоит вплотную к названию, по которому набор применяют.
  */
-function removePreset(p: { id: string; name: string }) {
-  if (!confirm(`Удалить набор «${p.name}»?`)) return
+async function removePreset(p: { id: string; name: string }) {
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить набор «${p.name}»?` }))) return
   emit('remove-preset', p.id)
 }
 
@@ -259,7 +260,7 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
           </span>
         </div>
         <div v-if="activeCount" class="fp-row">
-          <input v-model="presetName" class="fp-input" placeholder="Название набора" @keyup.enter="savePreset" />
+          <input v-clear v-model="presetName" class="fp-input" placeholder="Название набора" @keyup.enter="savePreset" />
           <button class="fp-preset" :disabled="!presetName.trim()" @click="savePreset">Сохранить</button>
         </div>
       </section>
@@ -400,9 +401,9 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
         <div class="fp-range">
           <span class="fp-range-label">Сумма договора</span>
           <div class="fp-row">
-            <input :value="state.totalFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
+            <input v-clear :value="state.totalFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
               @maska="(e: any) => setNum('totalFrom', parseMasked(e))" />
-            <input :value="state.totalTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
+            <input v-clear :value="state.totalTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
               @maska="(e: any) => setNum('totalTo', parseMasked(e))" />
           </div>
         </div>
@@ -410,9 +411,9 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
         <div class="fp-range">
           <span class="fp-range-label">Остаток долга</span>
           <div class="fp-row">
-            <input :value="state.remainingFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
+            <input v-clear :value="state.remainingFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
               @maska="(e: any) => setNum('remainingFrom', parseMasked(e))" />
-            <input :value="state.remainingTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
+            <input v-clear :value="state.remainingTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
               @maska="(e: any) => setNum('remainingTo', parseMasked(e))" />
           </div>
         </div>
@@ -420,9 +421,9 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
         <div class="fp-range">
           <span class="fp-range-label">Ежемесячный платёж</span>
           <div class="fp-row">
-            <input :value="state.monthlyFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
+            <input v-clear :value="state.monthlyFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
               @maska="(e: any) => setNum('monthlyFrom', parseMasked(e))" />
-            <input :value="state.monthlyTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
+            <input v-clear :value="state.monthlyTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
               @maska="(e: any) => setNum('monthlyTo', parseMasked(e))" />
           </div>
         </div>
@@ -430,9 +431,9 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
         <div class="fp-range">
           <span class="fp-range-label">Срок, месяцев</span>
           <div class="fp-row">
-            <input :value="state.termFrom ?? ''" type="number" min="1" class="fp-input" placeholder="от"
+            <input v-clear :value="state.termFrom ?? ''" type="number" min="1" class="fp-input" placeholder="от"
               @input="(e: any) => setNum('termFrom', e.target.value)" />
-            <input :value="state.termTo ?? ''" type="number" min="1" class="fp-input" placeholder="до"
+            <input v-clear :value="state.termTo ?? ''" type="number" min="1" class="fp-input" placeholder="до"
               @input="(e: any) => setNum('termTo', e.target.value)" />
           </div>
         </div>
@@ -440,9 +441,9 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
         <div class="fp-range">
           <span class="fp-range-label">Сумма просрочки</span>
           <div class="fp-row">
-            <input :value="state.overdueFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
+            <input v-clear :value="state.overdueFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
               @maska="(e: any) => setNum('overdueFrom', parseMasked(e))" />
-            <input :value="state.overdueTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
+            <input v-clear :value="state.overdueTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
               @maska="(e: any) => setNum('overdueTo', parseMasked(e))" />
           </div>
         </div>
@@ -510,7 +511,7 @@ function setNum(key: keyof DealsFilterState, raw: unknown) {
             Сбросить
           </button>
         </div>
-        <input
+        <input v-clear
           v-model="state.product"
           class="fp-input"
           placeholder="Название товара"

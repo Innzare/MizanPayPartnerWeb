@@ -177,7 +177,7 @@ async function save() {
             <div class="lm-field">
               <label class="lm-label">Максимум за операцию</label>
               <div class="lm-input-wrap">
-                <input
+                <input v-clear
                   :value="form.perOpMax || ''"
                   v-maska="CURRENCY_MASK"
                   type="text"
@@ -202,14 +202,14 @@ async function save() {
           <div v-if="on.w1" class="lm-rule-body">
             <div class="lm-days">
               За последние
-              <input v-model.number="form.w1Days" type="number" min="1" max="365" class="lm-days-input" />
+              <input v-clear v-model.number="form.w1Days" type="number" min="1" max="365" class="lm-days-input" />
               дней
             </div>
             <div class="lm-two">
               <div class="lm-field">
                 <label class="lm-label">Сумма переводов</label>
                 <div class="lm-input-wrap">
-                  <input
+                  <input v-clear
                     :value="form.w1SumMax || ''"
                     v-maska="CURRENCY_MASK"
                     type="text"
@@ -223,7 +223,7 @@ async function save() {
               </div>
               <div class="lm-field">
                 <label class="lm-label">Количество переводов</label>
-                <input
+                <input v-clear
                   v-model.number="form.w1CountMax"
                   type="number"
                   min="1"
@@ -244,14 +244,14 @@ async function save() {
           <div v-if="on.w2" class="lm-rule-body">
             <div class="lm-days">
               За последние
-              <input v-model.number="form.w2Days" type="number" min="1" max="365" class="lm-days-input" />
+              <input v-clear v-model.number="form.w2Days" type="number" min="1" max="365" class="lm-days-input" />
               дней
             </div>
             <div class="lm-two">
               <div class="lm-field">
                 <label class="lm-label">Сумма переводов</label>
                 <div class="lm-input-wrap">
-                  <input
+                  <input v-clear
                     :value="form.w2SumMax || ''"
                     v-maska="CURRENCY_MASK"
                     type="text"
@@ -265,7 +265,7 @@ async function save() {
               </div>
               <div class="lm-field">
                 <label class="lm-label">Количество переводов</label>
-                <input
+                <input v-clear
                   v-model.number="form.w2CountMax"
                   type="number"
                   min="1"

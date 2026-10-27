@@ -279,7 +279,7 @@ const proofEnlarged = ref(false)
         <!-- ── Комментарий ────────────────────────────────────────────── -->
         <div v-show="tab === 'note'" class="pd-note-tab">
           <label class="pd-doc-label">Комментарий к платежу</label>
-          <textarea
+          <textarea v-clear
             v-model="noteDraft"
             class="pd-textarea"
             rows="5"

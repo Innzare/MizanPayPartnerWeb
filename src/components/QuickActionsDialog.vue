@@ -52,7 +52,7 @@
         <!-- Product -->
         <div class="mb-4">
           <label class="field-label">Товар</label>
-          <input
+          <input v-clear
             v-model="sale.productName"
             type="text"
             placeholder="Например, iPhone 15 Pro 256"
@@ -65,7 +65,7 @@
           <div class="flex-grow-1">
             <label class="field-label">Закупка</label>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 v-model="sale.purchasePrice"
                 v-maska="CURRENCY_MASK"
                 type="text"
@@ -92,7 +92,7 @@
           <div class="flex-grow-1">
             <label class="field-label">Наценка</label>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 v-model.number="sale.markupPercent"
                 type="number"
                 placeholder="15"
@@ -108,7 +108,7 @@
           <div class="flex-grow-1">
             <label class="field-label">Срок</label>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 v-model.number="sale.numberOfPayments"
                 type="number"
                 placeholder="6"
@@ -120,7 +120,7 @@
           <div class="flex-grow-1">
             <label class="field-label">Первонач. взнос</label>
             <div class="input-with-suffix">
-              <input
+              <input v-clear
                 v-model="sale.downPayment"
                 v-maska="CURRENCY_MASK"
                 type="text"
@@ -263,7 +263,7 @@
         <div class="mb-4">
           <div class="search-input-wrap">
             <v-icon icon="mdi-magnify" size="18" class="search-input-icon" />
-            <input
+            <input v-clear
               ref="searchInputRef"
               v-model="search"
               type="text"
@@ -353,7 +353,7 @@
                 <div class="flex-grow-1">
                   <label class="field-label">Сумма поступления</label>
                   <div class="input-with-suffix">
-                    <input
+                    <input v-clear
                       v-model="payForm.amount"
                       v-maska="CURRENCY_MASK"
                       type="text"

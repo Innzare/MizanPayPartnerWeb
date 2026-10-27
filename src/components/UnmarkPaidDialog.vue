@@ -111,7 +111,7 @@ async function run() {
           {{ v }}
         </button>
       </div>
-      <textarea
+      <textarea v-clear
         v-model="text"
         class="up-input"
         rows="2"

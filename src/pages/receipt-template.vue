@@ -197,28 +197,28 @@ function preview() {
 
         <div class="form-field">
           <label class="field-label">Название компании</label>
-          <input v-model="form.companyName" class="field-input" placeholder="ИП Умаев Ш. А." />
+          <input v-clear v-model="form.companyName" class="field-input" placeholder="ИП Умаев Ш. А." />
         </div>
 
         <div class="form-row-2">
           <div class="form-field">
             <label class="field-label">Телефон</label>
-            <input v-model="form.phone" class="field-input" placeholder="+7 928 000-11-22" />
+            <input v-clear v-model="form.phone" class="field-input" placeholder="+7 928 000-11-22" />
           </div>
           <div class="form-field">
             <label class="field-label">ИНН</label>
-            <input v-model="form.inn" class="field-input" placeholder="2013001122" />
+            <input v-clear v-model="form.inn" class="field-input" placeholder="2013001122" />
           </div>
         </div>
 
         <div class="form-field">
           <label class="field-label">Адрес</label>
-          <input v-model="form.address" class="field-input" placeholder="Грозный, пр. Победы, 12" />
+          <input v-clear v-model="form.address" class="field-input" placeholder="Грозный, пр. Победы, 12" />
         </div>
 
         <div class="form-field">
           <label class="field-label">Сайт или страница</label>
-          <input v-model="form.site" class="field-input" placeholder="instagram.com/…" />
+          <input v-clear v-model="form.site" class="field-input" placeholder="instagram.com/…" />
         </div>
       </v-card>
 
@@ -239,7 +239,7 @@ function preview() {
 
         <div v-if="form.blocks.includes('requisites')" class="form-field mt-3">
           <label class="field-label">Реквизиты для перевода</label>
-          <textarea
+          <textarea v-clear
             v-model="form.requisites"
             class="field-input field-textarea"
             rows="3"
@@ -257,7 +257,7 @@ function preview() {
 
         <div class="form-field mt-3">
           <label class="field-label">Строка внизу</label>
-          <input
+          <input v-clear
             v-model="form.footerText"
             class="field-input"
             placeholder="Спасибо, что выбрали нас! Вопросы — по телефону выше"

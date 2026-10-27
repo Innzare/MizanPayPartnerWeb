@@ -6,6 +6,7 @@
  * `styles/filter-panel.css`). Условия здесь про состояние договоров человека:
  * есть ли просрочка, остались ли действующие, из реестра ли он.
  */
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { computed, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useClientCities } from '@/composables/useClientCities'
@@ -90,8 +91,8 @@ function savePreset() {
   presetName.value = ''
 }
 
-function removePreset(p: { id: string; name: string }) {
-  if (!confirm(`Удалить набор «${p.name}»?`)) return
+async function removePreset(p: { id: string; name: string }) {
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить набор «${p.name}»?` }))) return
   emit('remove-preset', p.id)
 }
 </script>
@@ -141,7 +142,7 @@ function removePreset(p: { id: string; name: string }) {
             </span>
           </div>
           <div v-if="activeCount" class="fp-row">
-            <input v-model="presetName" class="fp-input" placeholder="Название набора" @keyup.enter="savePreset" />
+            <input v-clear v-model="presetName" class="fp-input" placeholder="Название набора" @keyup.enter="savePreset" />
             <button class="fp-preset" :disabled="!presetName.trim()" @click="savePreset">Сохранить</button>
           </div>
         </section>
@@ -196,7 +197,7 @@ function removePreset(p: { id: string; name: string }) {
               Сбросить
             </button>
           </div>
-          <input v-model="state.product" class="fp-input" placeholder="Название товара" list="cf-product-list" />
+          <input v-clear v-model="state.product" class="fp-input" placeholder="Название товара" list="cf-product-list" />
           <datalist id="cf-product-list">
             <option v-for="p in productOptions" :key="p" :value="p" />
           </datalist>

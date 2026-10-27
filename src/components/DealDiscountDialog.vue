@@ -255,7 +255,7 @@ async function submit() {
         <div v-if="!isRemove" class="mb-4">
           <label class="field-label">Сумма скидки</label>
           <div class="input-with-suffix">
-            <input
+            <input v-clear
               :value="amount || ''"
               v-maska="CURRENCY_MASK"
               type="text"
@@ -298,7 +298,7 @@ async function submit() {
                 <span class="dd-manual-old">{{ formatCurrency(row.amount) }}</span>
                 <v-icon icon="mdi-arrow-right" size="13" class="dd-manual-arrow" />
                 <div class="dd-manual-input">
-                  <input
+                  <input v-clear
                     :value="manualSchedule[row.id] ?? 0"
                     type="text"
                     inputmode="numeric"

@@ -10,6 +10,7 @@
  * десятка разных людей. Совпадение с чужим номером — предупреждение, а не
  * запрет: решает человек.
  */
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import PhoneField from '@/components/PhoneField.vue'
@@ -140,7 +141,7 @@ async function save() {
 }
 
 async function remove(p: ExtraPhone) {
-  if (!confirm(`Удалить номер ${formatPhone(p.phone)}?`)) return
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить номер ${formatPhone(p.phone)}?` }))) return
   try {
     await api.delete(`/client-profiles/${props.profileId}/phones/${p.id}`)
     await load()
@@ -234,7 +235,7 @@ function chatHref(phone: string) {
 
     <div v-if="editing" class="cph-form">
       <PhoneField v-model="editing.phone" plain autofocus />
-      <input
+      <input v-clear
         v-model="editing.label"
         class="cph-input"
         maxlength="40"

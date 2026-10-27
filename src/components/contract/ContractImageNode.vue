@@ -452,7 +452,7 @@ const { isDark } = useIsDark()
           <div class="ci-row">
             <label class="ci-field">
               <span>Ширина</span>
-              <input type="number" min="1" :value="widthNumber" @change="applyWidth(($event.target as HTMLInputElement).valueAsNumber)" />
+              <input v-clear type="number" min="1" :value="widthNumber" @change="applyWidth(($event.target as HTMLInputElement).valueAsNumber)" />
             </label>
             <div class="ci-unit">
               <button :class="{ active: unit === 'px' }" @mousedown.prevent @click="setUnit('px')">px</button>
@@ -462,7 +462,7 @@ const { isDark } = useIsDark()
           <div class="ci-row">
             <label class="ci-field">
               <span>Высота</span>
-              <input
+              <input v-clear
                 type="number" min="1"
                 :value="heightNumber"
                 :class="{ 'ci-field--auto': autoHeight }"
@@ -499,19 +499,19 @@ const { isDark } = useIsDark()
           <div class="ci-grid4">
             <label class="ci-field">
               <span>Сверху</span>
-              <input type="number" min="0" max="200" :value="a.marginTop" @change="setMargin('marginTop', ($event.target as HTMLInputElement).valueAsNumber)" />
+              <input v-clear type="number" min="0" max="200" :value="a.marginTop" @change="setMargin('marginTop', ($event.target as HTMLInputElement).valueAsNumber)" />
             </label>
             <label class="ci-field">
               <span>Справа</span>
-              <input type="number" min="0" max="200" :value="a.marginRight" @change="setMargin('marginRight', ($event.target as HTMLInputElement).valueAsNumber)" />
+              <input v-clear type="number" min="0" max="200" :value="a.marginRight" @change="setMargin('marginRight', ($event.target as HTMLInputElement).valueAsNumber)" />
             </label>
             <label class="ci-field">
               <span>Снизу</span>
-              <input type="number" min="0" max="200" :value="a.marginBottom" @change="setMargin('marginBottom', ($event.target as HTMLInputElement).valueAsNumber)" />
+              <input v-clear type="number" min="0" max="200" :value="a.marginBottom" @change="setMargin('marginBottom', ($event.target as HTMLInputElement).valueAsNumber)" />
             </label>
             <label class="ci-field">
               <span>Слева</span>
-              <input type="number" min="0" max="200" :value="a.marginLeft" @change="setMargin('marginLeft', ($event.target as HTMLInputElement).valueAsNumber)" />
+              <input v-clear type="number" min="0" max="200" :value="a.marginLeft" @change="setMargin('marginLeft', ($event.target as HTMLInputElement).valueAsNumber)" />
             </label>
           </div>
         </div>
@@ -522,12 +522,12 @@ const { isDark } = useIsDark()
           <div class="ci-row">
             <label class="ci-field">
               <span>Рамка</span>
-              <input type="number" min="0" max="12" :value="a.borderWidth" @change="set({ borderWidth: Math.max(0, Math.min(12, ($event.target as HTMLInputElement).valueAsNumber || 0)) })" />
+              <input v-clear type="number" min="0" max="12" :value="a.borderWidth" @change="set({ borderWidth: Math.max(0, Math.min(12, ($event.target as HTMLInputElement).valueAsNumber || 0)) })" />
             </label>
             <input class="ci-color" type="color" :value="a.borderColor || '#000000'" @input="set({ borderColor: ($event.target as HTMLInputElement).value })" />
             <label class="ci-field">
               <span>Скругление</span>
-              <input type="number" min="0" max="200" :value="a.radius" @change="set({ radius: Math.max(0, Math.min(200, ($event.target as HTMLInputElement).valueAsNumber || 0)) })" />
+              <input v-clear type="number" min="0" max="200" :value="a.radius" @change="set({ radius: Math.max(0, Math.min(200, ($event.target as HTMLInputElement).valueAsNumber || 0)) })" />
             </label>
           </div>
 

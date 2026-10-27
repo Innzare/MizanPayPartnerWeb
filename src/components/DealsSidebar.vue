@@ -212,7 +212,7 @@ function statusChipLabel(status: string): string {
         <!-- Search -->
         <div class="ds-search-wrap">
           <v-icon icon="mdi-magnify" size="16" class="ds-search-icon" />
-          <input
+          <input v-clear
             v-model="search"
             type="text"
             placeholder="Поиск по товару, клиенту, номеру…"

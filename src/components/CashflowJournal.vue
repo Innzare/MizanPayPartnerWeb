@@ -44,7 +44,7 @@
         <!-- Search -->
         <div class="cfj-search-wrap">
           <v-icon icon="mdi-magnify" size="14" class="cfj-search-icon" />
-          <input
+          <input v-clear
             v-model="searchInput"
             type="text"
             placeholder="Поиск..."
@@ -121,9 +121,9 @@
             <v-icon :icon="typeStyle(row.entry.type).icon" size="16" />
           </div>
           <div class="cfj-row-main">
-            <div class="cfj-row-title">{{ row.entry.note || typeStyle(row.entry.type).label }}</div>
+            <div class="cfj-row-title">{{ row.entry.note || entryLabel(row.entry) }}</div>
             <div class="cfj-row-meta">
-              <span class="cfj-row-type">{{ typeStyle(row.entry.type).label }}</span>
+              <span class="cfj-row-type">{{ entryLabel(row.entry) }}</span>
               <template v-if="row.entry.dealNumber !== null">
                 <span class="cfj-row-dot">·</span>
                 <span class="cfj-row-deal">#{{ row.entry.dealNumber }}</span>
@@ -255,6 +255,9 @@ const TYPE_META: Record<CashFlowEntryType, { label: string; icon: string; bg: st
   LOAN_REPAY_OUT:     { label: 'Возврат временного пополнения',  icon: 'mdi-cash-refund',     bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
   LENT_OUT:           { label: 'Временное снятие',   icon: 'mdi-hand-extended-outline', bg: 'rgba(245, 158, 11, 0.10)', fg: '#d97706' },
   LENT_REPAY_IN:      { label: 'Возврат временного снятия',   icon: 'mdi-cash-refund',     bg: 'rgba(4, 120, 87, 0.10)',   fg: '#047857' },
+  // Товар взят в долг: закупка не стоила кассе денег — серая, «не деньги».
+  SUPPLIER_CREDIT_IN: { label: 'Товар в долг у поставщика', icon: 'mdi-truck-delivery-outline', bg: 'rgba(var(--v-theme-on-surface), 0.06)', fg: 'rgba(var(--v-theme-on-surface), 0.55)' },
+  SUPPLIER_PAYOUT_OUT: { label: 'Выплата поставщику', icon: 'mdi-cash-minus', bg: 'rgba(239, 68, 68, 0.10)', fg: '#dc2626' },
 }
 
 /**
@@ -272,6 +275,10 @@ const UNKNOWN_TYPE = {
 }
 function typeStyle(t: CashFlowEntryType) {
   return TYPE_META[t] ?? UNKNOWN_TYPE
+}
+/** Подпись записи: «Иной расход» — свой вид, хотя по деньгам это ручной расход. */
+function entryLabel(e: CashFlowEntry): string {
+  return e.otherExpense ? 'Иной расход' : typeStyle(e.type).label
 }
 
 // User-facing list of type filter chips (only the ones that appear in partner's journal)

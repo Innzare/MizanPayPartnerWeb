@@ -621,6 +621,7 @@
 </template>
 
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { toUserMessage } from '@/api/errors'
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -910,7 +911,7 @@ async function onAddRow() {
 }
 
 async function onDeleteRow(rowIdx: number) {
-  if (!confirm('Удалить эту строку из черновика? Действие не отменить.')) return
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить эту строку из черновика?', text: 'Действие не отменить.' }))) return
   // Drop any pending patch that targets this row — it would 404 server-side
   // after the delete since rowIdx no longer exists.
   pendingPatches.value = pendingPatches.value.filter((p) => p.rowIdx !== rowIdx)

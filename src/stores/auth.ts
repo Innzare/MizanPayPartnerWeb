@@ -34,6 +34,7 @@ const NAV_PERMISSION: Record<string, string> = {
   // «Пополнения и расходы»: ручные операции переехали сюда из карточки кассы —
   // кто вёл их там, не должен потерять доступ.
   '/accounting/temporary': 'accounting.view|finance.transactions|finance.capital',
+  '/accounting/temporary-ops': 'accounting.view|finance.capital|accounting.pending.create',
   '/accounting/audit': 'accounting.audit',
   '/accounting': 'accounting.view',
   '/registry': 'registry.view',

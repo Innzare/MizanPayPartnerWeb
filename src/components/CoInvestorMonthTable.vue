@@ -1424,7 +1424,7 @@ async function submitSettle() {
                 нельзя. Применится ко всем инвесторам «по вкладу», у каждого можно поправить в его строке.
               </InfoTip>
               <div class="cim-in-wrap">
-                <input
+                <input v-clear
                   v-model.number="allPct"
                   type="number"
                   max="100"
@@ -1462,7 +1462,7 @@ async function submitSettle() {
                     <span v-else>{{ pct(l.pct) }}</span>
                   </template>
                   <div v-else class="cim-in-wrap">
-                    <input
+                    <input v-clear
                       v-model.number="l.pct"
                       type="number"
                       :min="l.row.basePct"
@@ -1486,7 +1486,7 @@ async function submitSettle() {
                 </div>
                 <div class="cim-r" data-l="Выплатить">
                   <div class="cim-in-wrap">
-                    <input
+                    <input v-clear
                       :value="maskedMoney(l.pay)"
                       v-maska="CURRENCY_MASK"
                       type="text"
@@ -1500,7 +1500,7 @@ async function submitSettle() {
                 </div>
                 <div v-if="canReinvest" class="cim-r" data-l="В капитал">
                   <div class="cim-in-wrap">
-                    <input
+                    <input v-clear
                       :value="maskedMoney(l.reinvest)"
                       v-maska="CURRENCY_MASK"
                       type="text"

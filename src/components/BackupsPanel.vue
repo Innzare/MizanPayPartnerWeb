@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { errorFromResponse } from '@/api/errors'
 /**
  * Резервные копии данных.
@@ -479,7 +480,7 @@ async function emailBackup(f: BackupFile) {
 /** Удалить копию: неудачные и лишние накапливаются, место не бесконечно. */
 async function removeBackup(f: BackupFile) {
   const when = whenLabel(f.createdAt)
-  if (!confirm(`Удалить копию от ${when}? Файлы будут стёрты безвозвратно.`)) return
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить копию от ${when}?`, text: `Файлы будут стёрты безвозвратно.` }))) return
   try {
     await api.delete(`/backups/${f.id}`)
     files.value = files.value.filter((x) => x.id !== f.id)
@@ -585,7 +586,7 @@ function toggleWeekday(day: number) {
             <div class="bk-row-title">Раз во сколько часов</div>
             <div class="bk-row-hint">На вашем тарифе — не чаще, чем раз в {{ schedule.minHours }} ч</div>
           </div>
-          <input
+          <input v-clear
             v-model.number="schedule.everyNHours"
             type="number"
             :min="schedule.minHours"

@@ -406,12 +406,12 @@ const enabledCount = computed(() => items.value.filter((i) => i.enabled).length)
         <div class="mt-editor-body">
           <div v-if="editing.event === 'BEFORE_DUE'" class="mt-days">
             Напомнить за
-            <input v-model.number="draft.offsetDays" type="number" min="1" max="30" class="mt-days-input" />
+            <input v-clear v-model.number="draft.offsetDays" type="number" min="1" max="30" class="mt-days-input" />
             дней до срока
           </div>
 
           <label class="mt-label">Текст сообщения</label>
-          <textarea ref="bodyRef" v-model="draft.body" class="mt-textarea" rows="6"></textarea>
+          <textarea v-clear ref="bodyRef" v-model="draft.body" class="mt-textarea" rows="6"></textarea>
 
           <div class="mt-ph-label">Подставить данные клиента:</div>
           <div class="mt-ph-list">

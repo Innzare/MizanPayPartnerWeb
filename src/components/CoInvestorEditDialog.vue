@@ -337,7 +337,7 @@ async function save() {
 
         <div class="ced-field mb-4">
           <label class="ced-label">Имя <span style="color: #ef4444;">*</span></label>
-          <input v-model="pName" type="text" class="ced-input" placeholder="Фамилия Имя" />
+          <input v-clear v-model="pName" type="text" class="ced-input" placeholder="Фамилия Имя" />
         </div>
 
         <div class="ced-field mb-4">
@@ -435,7 +435,7 @@ async function save() {
           <div class="ced-field mb-3">
             <label class="ced-label">Капитал <span style="color: #ef4444;">*</span></label>
             <div class="ced-input-wrap">
-              <input
+              <input v-clear
                 :value="block.capital || ''"
                 v-maska="CURRENCY_MASK"
                 @maska="(e: any) => block.capital = parseMasked(e)"
@@ -492,7 +492,7 @@ async function save() {
               >{{ p }}%</button>
             </div>
             <div class="ced-input-wrap">
-              <input v-model.number="block.costFeeDefaultRatePct" type="number" class="ced-input" placeholder="напр. 5" min="0" max="100" />
+              <input v-clear v-model.number="block.costFeeDefaultRatePct" type="number" class="ced-input" placeholder="напр. 5" min="0" max="100" />
               <span class="ced-suffix">%</span>
             </div>
           </div>
@@ -510,7 +510,7 @@ async function save() {
               >{{ p }}%</button>
             </div>
             <div class="ced-input-wrap">
-              <input v-model.number="block.profitPercent" type="number" class="ced-input" placeholder="30" min="1" max="99" />
+              <input v-clear v-model.number="block.profitPercent" type="number" class="ced-input" placeholder="30" min="1" max="99" />
               <span class="ced-suffix">%</span>
             </div>
           </div>
@@ -528,7 +528,7 @@ async function save() {
               >{{ p }}%</button>
             </div>
             <div class="ced-input-wrap">
-              <input v-model.number="block.managementFeePct" type="number" class="ced-input" placeholder="0" min="0" max="100" />
+              <input v-clear v-model.number="block.managementFeePct" type="number" class="ced-input" placeholder="0" min="0" max="100" />
               <span class="ced-suffix">%</span>
             </div>
           </div>

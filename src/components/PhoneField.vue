@@ -191,7 +191,7 @@ defineExpose({ formatted: computed(() => formatE164(toE164(national.value, count
         <v-card rounded="lg" elevation="8" class="phone-field-menu">
           <div class="phone-field-search">
             <v-icon icon="mdi-magnify" size="16" />
-            <input v-model="search" type="text" placeholder="Страна или код" />
+            <input v-clear v-model="search" type="text" placeholder="Страна или код" />
           </div>
           <div class="phone-field-list">
             <button
@@ -210,7 +210,7 @@ defineExpose({ formatted: computed(() => formatE164(toE164(national.value, count
           </div>
         </v-card>
       </v-menu>
-      <input
+      <input v-clear
         ref="inputRef"
         :value="display"
         type="tel"
@@ -251,7 +251,7 @@ defineExpose({ formatted: computed(() => formatE164(toE164(national.value, count
           <v-card rounded="lg" elevation="8" class="phone-field-menu">
             <div class="phone-field-search">
               <v-icon icon="mdi-magnify" size="16" />
-              <input v-model="search" type="text" placeholder="Страна или код" />
+              <input v-clear v-model="search" type="text" placeholder="Страна или код" />
             </div>
             <div class="phone-field-list">
               <button

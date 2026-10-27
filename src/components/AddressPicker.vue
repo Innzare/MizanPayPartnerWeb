@@ -255,7 +255,7 @@ onBeforeUnmount(() => {
          строя полей вокруг. -->
     <div class="ap-search">
       <v-icon icon="mdi-magnify" size="18" class="ap-search-icon" />
-      <input
+      <input v-clear
         v-model="search"
         type="text"
         class="ap-input"

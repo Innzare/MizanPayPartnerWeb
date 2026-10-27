@@ -1,0 +1,24 @@
+/**
+ * Крестик быстрой очистки поля — директива v-clear (src/directives/clear.ts).
+ * Вид — как у прежнего ручного крестика в форме сделки (.input-clear).
+ * Положение (right/top) директива ставит сама: оно зависит от суффикса поля.
+ */
+.v-clear-btn {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), 0.35);
+  cursor: pointer;
+  z-index: 1;
+}
+.v-clear-btn:hover {
+  background: rgba(var(--v-theme-on-surface), 0.07);
+  color: rgba(var(--v-theme-on-surface), 0.75);
+}

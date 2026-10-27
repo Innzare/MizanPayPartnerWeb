@@ -378,11 +378,13 @@
         clearable
         class="mb-3"
       />
-      <v-text-field
+      <v-textarea
         label="Заметка (кому, как — опционально)"
         v-model="saveForm.recipientNote"
         density="comfortable"
         variant="outlined"
+        rows="2"
+        auto-grow
       />
 
       <div class="d-flex ga-3 mt-2">
@@ -394,6 +396,7 @@
 </template>
 
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { toUserMessage } from '@/api/errors'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
@@ -489,7 +492,7 @@ async function onConfirmSave() {
 }
 
 async function onDeletePayment(id: string) {
-  if (!confirm('Удалить эту запись?')) return
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить эту запись?' }))) return
   try {
     await deletePayment(id)
     showToast('Запись удалена', 'success')

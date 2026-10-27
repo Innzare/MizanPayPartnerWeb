@@ -8,7 +8,8 @@ import ServerPager from '@/components/ServerPager.vue'
 import DateField from '@/components/DateField.vue'
 import { useCashBoxesStore, type CashBoxSummary } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
-import { isAccountNegative, useAccountingStore } from '@/stores/accounting'
+import { isAccountNegative, useAccountingStore, type AvailableMoney, type AvailableStep } from '@/stores/accounting'
+import { FLOW_ORDER, stepText } from '@/utils/availableSteps'
 import BankLogo from '@/components/BankLogo.vue'
 import type { AnalyticsSummary, AnalyticsMonthlyRow } from '@/types/analytics'
 import { useToast } from '@/composables/useToast'
@@ -126,8 +127,13 @@ interface CapitalDetails {
     manualBalance: number
     capitalTopup: number
     capitalWithdraw: number
+    loansNet?: number
+    supplierCredit?: number
+    supplierPayouts?: number
     journalOther: number
   }
+  /** Сколько ещё должны поставщикам — напоминание, из денег кассы не вычитается. */
+  supplierDebt?: number
   /**
    * Статистика по сделкам кассы. Раньше веб считал её сам, пройдя по всему
    * массиву сделок; теперь сами сделки приезжают постранично, а суммы даёт
@@ -433,20 +439,81 @@ const accountsCountLabel = computed(() => {
 
 const box = ref<CashBoxSummary | null>(null)
 const capitalDetails = ref<CapitalDetails | null>(null)
+type FlowRow = { key: string; label: string; value: number; hint: string; base?: boolean; total?: boolean; final?: boolean; muted?: boolean }
+
 /**
- * Расклад «Доступного капитала» по слагаемым. Порядок — как деньги движутся:
- * сначала то, что в кассу завели, потом обороты по сделкам и выплаты.
- * Нулевые строки прячем, чтобы не забивать панель, но базовые (заведённые
- * деньги) показываем всегда — иначе расклад читается как обрубленный.
+ * Расклад «Доступно сейчас» по кассе — тот же, что в «Балансе» бухгалтерии:
+ * каждое движение своей строкой (вложили и вывели — порознь, а не сальдо),
+ * потом поправки, то, чем пользоваться нельзя, и «доступно». Нужен ещё и
+ * доступ к остаткам счетов: без него — прежний короткий расклад.
  */
-const availableRows = computed(() => {
+const canSeeAvailable = computed(() => canSeeCapital.value && auth.can('finance.view') && auth.can('accounting.balanceView'))
+const avail = ref<AvailableMoney | null>(null)
+async function loadAvailable() {
+  if (!canSeeAvailable.value) return
+  try {
+    avail.value = await api.get<AvailableMoney>(`/finance/available?cashBoxId=${encodeURIComponent(id.value)}`)
+  } catch {
+    avail.value = null // покажем прежний расклад
+  }
+}
+/** Реинвест и товар в долг — «не живые деньги»: строки приглушены. */
+const MUTED_ROWS = new Set(['ciReinvest', 'dividendsReinvested', 'supplierCredit'])
+const signed = (st: AvailableStep) => (st.sign === '-' ? -st.amount : st.amount)
+
+const fullAvailableRows = computed<FlowRow[] | null>(() => {
+  const a = avail.value
+  if (!a) return null
+  const order = (st: AvailableStep) => FLOW_ORDER.indexOf(st.group ?? 'other')
+  const flow = a.inflow
+    .filter((st) => st.group !== 'adjust' && st.amount !== 0)
+    .map((st, i) => ({ st, i }))
+    .sort((x, y) => order(x.st) - order(y.st) || x.i - y.i)
+    .map((x) => x.st)
+  const rows: FlowRow[] = []
+  for (const st of flow) {
+    // Составную строку («вы вложили» = стартовый капитал + пополнения)
+    // раскрываем: на странице кассы места хватает, а слагаемые нагляднее.
+    const parts = st.detail && st.detail.length > 1 ? st.detail : [st]
+    for (const d of parts) {
+      if (!d.amount) continue
+      const t = stepText(d)
+      rows.push({
+        key: d.key,
+        label: d.key === 'seed' ? 'Стартовый капитал кассы' : t.title,
+        value: signed(d),
+        hint: t.note,
+        muted: MUTED_ROWS.has(d.key),
+      })
+    }
+  }
+  rows.push({ key: 'journal', label: 'Деньги в кассе', value: a.flow?.journal ?? 0, hint: '', total: true })
+  const adjust = a.inflow.filter((st) => st.group === 'adjust' && st.amount !== 0)
+  for (const st of adjust) rows.push({ key: `adj-${st.key}`, label: stepText(st).title, value: signed(st), hint: stepText(st).note })
+  if (adjust.length) rows.push({ key: 'cashInBox', label: 'Есть на самом деле', value: a.cashInBox, hint: 'С поправками, о которых журнал кассы не знает', total: true })
+  for (const st of a.locked.filter((x) => x.amount !== 0)) {
+    const t = stepText(st, true)
+    rows.push({ key: `lock-${st.key}`, label: t.title, value: -st.amount, hint: t.note })
+  }
+  rows.push({ key: 'available', label: 'Доступно сейчас', value: a.available, hint: 'Можно тратить прямо сейчас', total: true, final: true })
+  return rows
+})
+
+/**
+ * Прежний расклад — по сводке кассы (без доступа к остаткам счетов).
+ * Порядок — как деньги движутся: сначала то, что в кассу завели, потом
+ * обороты по сделкам и выплаты. Нулевые строки прячем, базовые показываем
+ * всегда — иначе расклад читается как обрубленный.
+ */
+const availableRows = computed<FlowRow[]>(() => {
+  if (fullAvailableRows.value) return fullAvailableRows.value
   const b = capitalDetails.value?.availableBreakdown
   if (!b) return []
   const rows = [
     { key: 'seed', label: 'Стартовый капитал кассы', value: b.initialCapital, base: true, hint: '', always: true },
     {
-      key: 'ci', label: 'Заведено инвесторами', value: b.coInvestorCashIn, base: true,
-      hint: 'Живые деньги, которые инвесторы внесли в эту кассу', always: true,
+      key: 'ci', label: 'Инвесторы: внесли минус вывели', value: b.coInvestorCashIn, base: true,
+      hint: 'Вклады инвесторов этой кассы за вычетом возвращённых', always: true,
     },
     {
       key: 'topup', label: 'Пополнения капитала', value: b.capitalTopup, base: false,
@@ -473,6 +540,18 @@ const availableRows = computed(() => {
       hint: 'Доходы минус расходы, внесённые вручную', always: false,
     },
     {
+      key: 'loans', label: 'Временные операции', value: b.loansNet ?? 0, base: false,
+      hint: 'Взяли и вернули в долг, дали и нам вернули', always: false,
+    },
+    {
+      key: 'supplierCredit', label: 'Товар в долг у поставщиков', value: b.supplierCredit ?? 0, base: false,
+      hint: 'Закупка взята в долг — из кассы при покупке ничего не ушло', always: false,
+    },
+    {
+      key: 'supplierPayouts', label: 'Выплачено поставщикам', value: b.supplierPayouts ?? 0, base: false,
+      hint: 'Деньги, отданные поставщикам за товар, взятый в долг', always: false,
+    },
+    {
       key: 'other', label: 'Прочие движения', value: b.journalOther, base: false,
       hint: 'Записи журнала, не попавшие в строки выше', always: false,
     },
@@ -493,7 +572,8 @@ const showEdit = ref(false)
 const pageHeader = usePageHeaderStore()
 
 // Открывается журнал кассы: на странице кассы чаще всего ищут операцию.
-const wfExpanded = ref<string | null>('journal')
+// ?section=available — пришли из «Баланса» по кнопке «Доступно сейчас».
+const wfExpanded = ref<string | null>(route.query.section === 'available' ? 'available' : 'journal')
 
 /**
  * Разделы водопада: название раздела и пояснение к нему. Заголовок панели
@@ -505,7 +585,7 @@ const WF_SECTIONS: Record<string, { label: string; hint: string; icon: string; c
   capital: { label: 'Общий капитал', hint: 'Сколько денег вложено в дело', icon: 'mdi-bank-outline', color: '#6366f1' },
   profit: { label: 'Чистая прибыль', hint: 'Прибыль по сделкам кассы', icon: 'mdi-trending-up', color: '#10b981' },
   deployed: { label: 'В работе', hint: 'Капитал в активных сделках', icon: 'mdi-progress-clock', color: '#f59e0b' },
-  manual: { label: 'Расходы по бизнесу', hint: 'Аренда, зарплата, реклама — вносятся в Бухгалтерии', icon: 'mdi-cart-arrow-down', color: '#ef4444' },
+  manual: { label: 'Расходы', hint: 'По бизнесу и иные — вносятся в Бухгалтерии', icon: 'mdi-cart-arrow-down', color: '#ef4444' },
   available: { label: 'Деньги в кассе', hint: 'Из чего сложились деньги в кассе', icon: 'mdi-safe-square-outline', color: '#047857' },
   pendingCI: { label: 'Резерв для инвесторов', hint: 'Начислено инвесторам, но ещё не выплачено', icon: 'mdi-account-cash-outline', color: '#f59e0b' },
   journal: { label: 'Журнал кассы', hint: 'Все движения денег кассы', icon: 'mdi-book-open-page-variant-outline', color: '#475569' },
@@ -559,7 +639,7 @@ const wfHero = computed(() => {
     const b = d.manualBreakdown
     hero.amount = signed(d.manualBalance)
     if (b) {
-      hero.metrics.push({ label: `Расходы по бизнесу · ${b.expenseCount}`, value: b.expense > 0 ? `−${money(b.expense)}` : money(0) })
+      hero.metrics.push({ label: `Расходы · ${b.expenseCount}`, value: b.expense > 0 ? `−${money(b.expense)}` : money(0) })
       if (b.income) hero.metrics.push({ label: `Прочие доходы · ${b.incomeCount}`, value: `+${money(b.income)}` })
       if (b.transfers) hero.metrics.push({ label: 'Старые переводы между кассами', value: signed(b.transfers) })
     }
@@ -679,6 +759,7 @@ async function refreshAfterMutation() {
     // Без этого удалённая операция оставалась на экране, а счётчик и итоги
     // уже показывали новое значение — экран спорил сам с собой.
     manualOperations.value.length || wfExpanded.value === 'manual' ? loadManualOperations() : Promise.resolve(),
+    avail.value || wfExpanded.value === 'available' ? loadAvailable() : Promise.resolve(),
   ])
   // Re-sync local `box` with the refreshed store data so the header values
   // (balance, dealsCount, activeDealsCount) stay in sync without remounting.
@@ -693,6 +774,7 @@ watch(() => id.value, () => {
   profitDeals.value = emptySection()
   activeDeals.value = emptySection()
   dealPayments.value = {}
+  avail.value = null
   loadAll()
 })
 // В шапку — имя кассы. Чистим при уходе, иначе оно утечёт на соседний экран.
@@ -871,7 +953,8 @@ watch(wfExpanded, (v) => {
   if (v === 'profit' && !profitDeals.value.items.length) loadDealsSection('profit')
   if (v === 'deployed' && !activeDeals.value.items.length) loadDealsSection('active')
   if (v === 'manual' && !manualOperations.value.length) loadManualOperations()
-})
+  if (v === 'available' && !avail.value) loadAvailable()
+}, { immediate: true })
 watch(() => profitDeals.value.page, () => loadDealsSection('profit'))
 watch(() => activeDeals.value.page, () => loadDealsSection('active'))
 
@@ -995,8 +1078,8 @@ const availableCap = computed(() =>
 const pendingCIPayout = computed(() => capitalDetails.value?.pendingCIPayout ?? 0)
 
 // ─── Пополнения и расходы — в Бухгалтерии ─────────────────────────────────────
-// Все ручные движения денег (капитал, доходы и расходы, временные) ведутся в
-// одном разделе; из кассы открываем его уже отфильтрованным по этой кассе.
+// Ручные движения денег (капитал, доходы и расходы) ведутся в одном разделе;
+// из кассы открываем его уже отфильтрованным по этой кассе.
 const canOpenFlows = computed(() => auth.canAccess('/accounting/temporary'))
 function openFlows() {
   void router.push({ path: '/accounting/temporary', query: { cashBoxId: id.value } })
@@ -1007,11 +1090,14 @@ function openJournal() {
   wfExpanded.value = 'journal'
 }
 
-/** Все расходы по бизнесу этой кассы — сразу нужная ветка и «за всё время». */
+/**
+ * Все расходы этой кассы «за всё время». Без фильтра вида: в плитке сложены и
+ * расходы по бизнесу, и иные — список должен показать обе части итога.
+ */
 function openExpenses() {
   void router.push({
     path: '/accounting/temporary',
-    query: { cashBoxId: id.value, tab: 'out', section: 'main', kind: 'expense', period: 'all' },
+    query: { cashBoxId: id.value, tab: 'out', period: 'all' },
   })
 }
 
@@ -1477,7 +1563,7 @@ const showDelete = ref(false)
                 {{ capitalDetails.manualBalance > 0 ? '+' : '' }}{{ formatCurrency(capitalDetails.manualBalance) }}
               </div>
               <div class="wf-item-label">
-                Расходы по бизнесу · {{ capitalDetails.manualBreakdown?.expenseCount ?? capitalDetails.manualCount ?? 0 }}
+                Расходы · {{ capitalDetails.manualBreakdown?.expenseCount ?? capitalDetails.manualCount ?? 0 }}
               </div>
               <!-- Сальдо почти всегда — одни расходы. Если были прочие доходы или
                    старые переводы между кассами, показываем их, иначе цифра
@@ -1510,6 +1596,24 @@ const showDelete = ref(false)
                 <v-icon icon="mdi-information-outline" size="11" class="ml-1" />
               </div>
                           <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
+            </button>
+
+            <!-- Долг поставщикам — напоминание: деньги в кассе, партнёр
+                 распоряжается ими сам. Клик — в раздел «Партнёры», сразу только те,
+                 кому должны. -->
+            <button
+              v-if="(capitalDetails.supplierDebt ?? 0) > 0"
+              class="wf-item wf-item--reserve"
+              @click="router.push({ path: '/suppliers', query: { debt: '1' } })"
+            >
+              <div class="wf-item-value" style="color: #f59e0b;">
+                {{ formatCurrency(capitalDetails.supplierDebt ?? 0) }}
+              </div>
+              <div class="wf-item-label">
+                Долг поставщикам
+                <v-icon icon="mdi-information-outline" size="11" class="ml-1" title="Не вычитается из денег кассы — это напоминание, сколько вы ещё должны за товар" />
+              </div>
+              <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
             </button>
 
             <!-- Phase 2 cash-basis: obligation owed to CIs. Reported as a
@@ -1602,15 +1706,15 @@ const showDelete = ref(false)
                   v-for="r in availableRows"
                   :key="r.key"
                   class="wf-flow-row"
-                  :class="{ 'wf-flow-row--base': r.base }"
+                  :class="{ 'wf-flow-row--base': r.base, 'wf-flow-row--total': r.total, 'wf-flow-row--final': r.final, 'wf-flow-row--muted': r.muted }"
                 >
                   <div class="wf-flow-main">
                     <span class="wf-flow-label">{{ r.label }}</span>
                     <span
                       class="wf-flow-val"
-                      :class="r.value > 0 ? 'wf-flow-val--in' : r.value < 0 ? 'wf-flow-val--out' : ''"
+                      :class="r.total ? '' : r.value > 0 ? 'wf-flow-val--in' : r.value < 0 ? 'wf-flow-val--out' : ''"
                     >
-                      {{ r.value > 0 && !r.base ? '+' : '' }}{{ formatCurrency(r.value) }}
+                      {{ r.value > 0 && !r.base && !r.total ? '+' : '' }}{{ formatCurrency(r.value) }}
                     </span>
                   </div>
                   <div v-if="r.hint" class="wf-flow-hint">{{ r.hint }}</div>
@@ -2342,6 +2446,12 @@ const showDelete = ref(false)
 .wf-flow-val--out { color: #ef4444; }
 .wf-flow-row--total .wf-flow-label { font-weight: 700; }
 .wf-flow-row--total .wf-flow-val { font-size: 17px; font-weight: 800; }
+/* Итог перед вычетами — не в конце списка: под ним ещё строки. */
+.wf-flow-row--total:not(.wf-flow-row--final) { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.05); padding-bottom: 10px; }
+.wf-flow-row--total:not(.wf-flow-row--final) .wf-flow-val { font-size: 15px; }
+.wf-flow-row--final .wf-flow-label, .wf-flow-row--final .wf-flow-val { color: #047857; }
+.wf-flow-row--muted .wf-flow-label, .wf-flow-row--muted .wf-flow-val { color: rgba(var(--v-theme-on-surface), 0.45); }
+.dark .wf-flow-row--final .wf-flow-label, .dark .wf-flow-row--final .wf-flow-val { color: #34d399; }
 .wf-flow-hint {
   font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
   margin-top: 2px; line-height: 1.4; max-width: 92%;

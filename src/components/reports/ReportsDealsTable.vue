@@ -171,7 +171,7 @@ function dateStr(iso: string) {
       </div>
       <div class="d-flex align-center ga-2 flex-wrap">
         <div class="rt-search-wrap">
-          <input v-model="search" class="rt-search" placeholder="Товар или клиент…" >
+          <input v-clear v-model="search" class="rt-search" placeholder="Товар или клиент…" >
           <button v-if="search" type="button" class="rt-search-wrap-clear" title="Очистить" @click="search = ''">
             <v-icon icon="mdi-close" size="14" />
           </button>

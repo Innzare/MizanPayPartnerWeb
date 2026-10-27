@@ -717,7 +717,7 @@ onBeforeUnmount(() => {
                иначе ищут глазами сверху вниз. -->
           <div class="sf-search">
             <v-icon icon="mdi-magnify" size="16" class="sf-search-icon" />
-            <input v-model="search" type="text" class="sf-search-input" placeholder="Имя или почта" />
+            <input v-clear v-model="search" type="text" class="sf-search-input" placeholder="Имя или почта" />
             <button v-if="search" class="sf-search-clear" title="Очистить" @click="search = ''">
               <v-icon icon="mdi-close" size="14" />
             </button>
@@ -1031,16 +1031,16 @@ onBeforeUnmount(() => {
             <div class="sf-form-row">
               <div class="sf-field">
                 <label class="sf-label">Фамилия</label>
-                <input v-model="addForm.lastName" type="text" class="sf-input" placeholder="Магомедов" />
+                <input v-clear v-model="addForm.lastName" type="text" class="sf-input" placeholder="Магомедов" />
               </div>
               <div class="sf-field">
                 <label class="sf-label">Имя</label>
-                <input v-model="addForm.firstName" type="text" class="sf-input" placeholder="Ахмед" />
+                <input v-clear v-model="addForm.firstName" type="text" class="sf-input" placeholder="Ахмед" />
               </div>
             </div>
             <div class="sf-field">
               <label class="sf-label">Почта для входа</label>
-              <input v-model="addForm.email" type="email" class="sf-input" placeholder="name@example.com" />
+              <input v-clear v-model="addForm.email" type="email" class="sf-input" placeholder="name@example.com" />
               <div class="sf-field-hint">На неё придут логин и пароль — это и есть доступ в систему</div>
             </div>
           </div>
@@ -1317,7 +1317,7 @@ onBeforeUnmount(() => {
 
           <div class="sf-attach-search-wrap mb-3">
             <v-icon icon="mdi-magnify" size="16" class="sf-attach-search-icon" />
-            <input
+            <input v-clear
               v-model="attachSearch"
               type="text"
               class="sf-attach-search-input"

@@ -447,19 +447,19 @@ onBeforeUnmount(() => { editor.value?.destroy() })
             <div class="cb-margins-grid">
               <div class="cb-margin-field">
                 <label>Сверху</label>
-                <input type="number" v-model.number="margins.top" min="0" max="60" />
+                <input v-clear type="number" v-model.number="margins.top" min="0" max="60" />
               </div>
               <div class="cb-margin-field">
                 <label>Снизу</label>
-                <input type="number" v-model.number="margins.bottom" min="0" max="60" />
+                <input v-clear type="number" v-model.number="margins.bottom" min="0" max="60" />
               </div>
               <div class="cb-margin-field">
                 <label>Слева</label>
-                <input type="number" v-model.number="margins.left" min="0" max="60" />
+                <input v-clear type="number" v-model.number="margins.left" min="0" max="60" />
               </div>
               <div class="cb-margin-field">
                 <label>Справа</label>
-                <input type="number" v-model.number="margins.right" min="0" max="60" />
+                <input v-clear type="number" v-model.number="margins.right" min="0" max="60" />
               </div>
             </div>
           </div>

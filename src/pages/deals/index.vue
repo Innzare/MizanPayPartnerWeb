@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import SearchInput from '@/components/SearchInput.vue'
 import { useDealsStore } from '@/stores/deals'
 import { usePaymentsStore } from '@/stores/payments'
@@ -156,7 +157,7 @@ async function saveFolder() {
 }
 
 async function handleDeleteFolder(folder: DealFolder) {
-  if (!confirm(`Удалить папку «${folder.name}»? Сделки не удалятся.`)) return
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить папку «${folder.name}»?`, text: `Сделки не удалятся.` }))) return
   try {
     await deleteFolder(folder.id)
     if (activeFolder.value === folder.id) activeFolder.value = null
@@ -450,7 +451,7 @@ async function restoreSelected() {
 }
 
 async function emptyTrash() {
-  if (!confirm('Удалить все сделки из корзины навсегда? Это действие необратимо.')) return
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить все сделки из корзины навсегда?', text: 'Это действие необратимо.' }))) return
   deleting.value = true
   try {
     await dealsStore.emptyTrash()
@@ -473,7 +474,7 @@ async function restoreOne(id: string) {
 }
 
 async function permanentDeleteOne(id: string) {
-  if (!confirm('Удалить сделку навсегда? Это действие необратимо.')) return
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить сделку навсегда?', text: 'Это действие необратимо.' }))) return
   try {
     await dealsStore.permanentDelete(id)
     toast.success('Сделка удалена навсегда')
@@ -485,7 +486,7 @@ async function permanentDeleteOne(id: string) {
 
 async function permanentDeleteSelected() {
   if (!selectedIds.value.size) return
-  if (!confirm(`Удалить ${selectedIds.value.size} сделок навсегда? Это действие необратимо.`)) return
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить ${selectedIds.value.size} сделок навсегда?`, text: `Это действие необратимо.` }))) return
   deleting.value = true
   try {
     for (const id of selectedIds.value) {
@@ -778,8 +779,8 @@ function applySavedColPreset(p: { columns: string[]; order: string[] }) {
   columnOrder.value = [...known, ...DEFAULT_ORDER.filter((k) => !known.includes(k))]
 }
 
-function removeColPreset(p: { id: string; name: string }) {
-  if (!confirm(`Удалить набор колонок «${p.name}»?`)) return
+async function removeColPreset(p: { id: string; name: string }) {
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить набор колонок «${p.name}»?` }))) return
   savedColPresets.value = savedColPresets.value.filter((x) => x.id !== p.id)
   persistColPresets()
 }
@@ -1683,7 +1684,7 @@ async function refreshSelectedDeal(dealId: string) {
           </div>
 
           <div class="col-menu-save">
-            <input
+            <input v-clear
               v-model="colPresetName"
               type="text"
               placeholder="Сохранить набор как…"
@@ -1694,7 +1695,7 @@ async function refreshSelectedDeal(dealId: string) {
 
           <div class="col-menu-search">
             <v-icon icon="mdi-magnify" size="15" />
-            <input v-model="colSearch" type="text" placeholder="Найти колонку" />
+            <input v-clear v-model="colSearch" type="text" placeholder="Найти колонку" />
             <button v-if="colSearch" class="col-menu-search-clear" @click="colSearch = ''">
               <v-icon icon="mdi-close" size="13" />
             </button>
@@ -2717,7 +2718,7 @@ async function refreshSelectedDeal(dealId: string) {
         <div class="fd-body">
           <div class="fd-field">
             <label class="fd-label">Название</label>
-            <input v-model="folderForm.name" class="fd-input" placeholder="Например: Телефоны" autofocus />
+            <input v-clear v-model="folderForm.name" class="fd-input" placeholder="Например: Телефоны" autofocus />
           </div>
 
           <div class="fd-field">

@@ -100,7 +100,7 @@ async function save() {
           <v-icon icon="mdi-restore" size="14" />Стандартный
         </button>
       </div>
-      <textarea
+      <textarea v-clear
         id="gf-format"
         ref="editor"
         v-model="template"

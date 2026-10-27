@@ -268,16 +268,16 @@ async function save() {
         <div class="form-row-2">
           <div class="form-field">
             <label class="field-label">Фамилия <span class="required">*</span></label>
-            <input v-model="form.lastName" type="text" class="field-input" placeholder="Иванов" />
+            <input v-clear v-model="form.lastName" type="text" class="field-input" placeholder="Иванов" />
           </div>
           <div class="form-field">
             <label class="field-label">Имя <span class="required">*</span></label>
-            <input v-model="form.firstName" type="text" class="field-input" placeholder="Иван" />
+            <input v-clear v-model="form.firstName" type="text" class="field-input" placeholder="Иван" />
           </div>
         </div>
         <div class="form-field">
           <label class="field-label">Отчество</label>
-          <input v-model="form.patronymic" type="text" class="field-input" placeholder="Сергеевич" />
+          <input v-clear v-model="form.patronymic" type="text" class="field-input" placeholder="Сергеевич" />
         </div>
 
         <!-- Телефоны вместе: основной и «как ещё дозвониться». Раньше вторые
@@ -296,16 +296,16 @@ async function save() {
         <div class="form-row-2">
           <div class="form-field">
             <label class="field-label">Серия</label>
-            <input v-model="form.passportSeries" type="text" class="field-input" placeholder="4510" maxlength="4" />
+            <input v-clear v-model="form.passportSeries" type="text" class="field-input" placeholder="4510" maxlength="4" />
           </div>
           <div class="form-field">
             <label class="field-label">Номер</label>
-            <input v-model="form.passportNumber" type="text" class="field-input" placeholder="123456" maxlength="6" />
+            <input v-clear v-model="form.passportNumber" type="text" class="field-input" placeholder="123456" maxlength="6" />
           </div>
         </div>
         <div class="form-field">
           <label class="field-label">Кем выдан</label>
-          <input v-model="form.passportIssuedBy" type="text" class="field-input" placeholder="ОВД г. Москвы" />
+          <input v-clear v-model="form.passportIssuedBy" type="text" class="field-input" placeholder="ОВД г. Москвы" />
         </div>
         <div class="form-field">
           <label class="field-label">Когда выдан</label>
@@ -321,11 +321,11 @@ async function save() {
         </div>
         <div class="form-field">
           <label class="field-label">Адрес прописки</label>
-          <input v-model="form.registrationAddress" type="text" class="field-input" placeholder="г. Москва, ул. Ленина 1, кв 5" />
+          <input v-clear v-model="form.registrationAddress" type="text" class="field-input" placeholder="г. Москва, ул. Ленина 1, кв 5" />
         </div>
         <div class="form-field">
           <label class="field-label">Адрес проживания</label>
-          <input v-model="form.residentialAddress" type="text" class="field-input" placeholder="г. Москва, ул. Тверская 10, кв 20" />
+          <input v-clear v-model="form.residentialAddress" type="text" class="field-input" placeholder="г. Москва, ул. Тверская 10, кв 20" />
         </div>
       </v-card-text>
       <v-divider />

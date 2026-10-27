@@ -123,13 +123,13 @@ async function remove(id: string) {
             <button v-if="adding !== g.type" type="button" class="cd-link" @click="adding = g.type; newName = ''">+ Добавить</button>
           </div>
           <div v-if="adding === g.type" class="cd-row cd-row--edit">
-            <input v-model="newName" class="cd-input" placeholder="Название статьи" @keydown.enter.prevent="add" />
+            <input v-clear v-model="newName" class="cd-input" placeholder="Название статьи" @keydown.enter.prevent="add" />
             <button type="button" class="cd-btn" :disabled="!newName.trim()" @click="add">Добавить</button>
             <button type="button" class="cd-icon" title="Отмена" @click="adding = null"><v-icon icon="mdi-close" size="16" /></button>
           </div>
           <div v-for="c in g.items" :key="c.id" class="cd-row">
             <template v-if="editingId === c.id">
-              <input v-model="editName" class="cd-input" @keydown.enter.prevent="saveEdit" />
+              <input v-clear v-model="editName" class="cd-input" @keydown.enter.prevent="saveEdit" />
               <button type="button" class="cd-btn" :disabled="!editName.trim()" @click="saveEdit">Сохранить</button>
               <button type="button" class="cd-icon" title="Отмена" @click="editingId = null"><v-icon icon="mdi-close" size="16" /></button>
             </template>

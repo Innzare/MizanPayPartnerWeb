@@ -171,8 +171,8 @@ function finishDone() {
           тоже снимется.
         </div>
         <div v-if="(preview?.supplierDebts ?? 0) > 0" class="dc-warn">
-          Долги поставщикам по этим сделкам ({{ preview?.supplierDebts }}) удалятся, а уже сделанные выплаты поставщикам
-          останутся — без привязки к долгу.
+          Долги поставщикам по этим сделкам ({{ preview?.supplierDebts }}) удалятся вместе с выплатами поставщикам
+          из этой кассы.
         </div>
 
         <div v-if="importRunning" class="dc-note">
@@ -189,7 +189,7 @@ function finishDone() {
 
         <div class="dc-field">
           <label class="dc-label">Введите слово <b>{{ WORD }}</b></label>
-          <input
+          <input v-clear
             v-model="confirmation"
             v-bind="noAutofill"
             :readonly="!typed"

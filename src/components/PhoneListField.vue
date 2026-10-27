@@ -150,7 +150,7 @@ function makePrimary(i: number) {
 
       <!-- Чей это номер — важнее самого номера: через полгода «ещё один
            телефон» без подписи не говорит ничего. -->
-      <input
+      <input v-clear
         :value="p.label"
         type="text"
         class="plf-input"

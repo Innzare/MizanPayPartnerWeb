@@ -91,7 +91,7 @@ defineExpose({ expandAll, collapseAll })
   <div class="hn">
     <div class="hn-search-wrap">
       <v-icon icon="mdi-magnify" size="17" class="hn-search-icon" />
-      <input
+      <input v-clear
         :value="search"
         class="hn-search"
         placeholder="Поиск по справке…"

@@ -14,6 +14,9 @@ export type CashFlowEntryType =
   | 'LOAN_REPAY_OUT'
   | 'LENT_OUT'
   | 'LENT_REPAY_IN'
+  // Товар в долг у поставщика: парная к закупке запись (не деньги) и выплата.
+  | 'SUPPLIER_CREDIT_IN'
+  | 'SUPPLIER_PAYOUT_OUT'
   | 'CAPITAL_IN'
   | 'CAPITAL_OUT'
   | 'PROFIT_ACCRUED'
@@ -32,6 +35,8 @@ export interface CashFlowEntry {
   paymentNumber: number | null
   coInvestorId: string | null
   coInvestorName: string | null
+  /** «Иной расход» — свой вид в журнале; по деньгам как ручной расход. */
+  otherExpense?: boolean
 }
 
 export interface JournalResponse {

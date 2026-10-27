@@ -10,6 +10,7 @@
  * Хранится в браузере: это личная привычка конкретного человека, а не
  * настройка компании.
  */
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { computed, ref, watch, type Ref } from 'vue'
 
 export interface TableColumn<G extends string = string> {
@@ -185,8 +186,8 @@ export function useTableColumns<G extends string>(options: UseTableColumnsOption
     presetName.value = ''
   }
 
-  function removePreset(p: SavedPreset) {
-    if (!confirm(`Удалить набор колонок «${p.name}»?`)) return
+  async function removePreset(p: SavedPreset) {
+    if (!(await useConfirmDelete().confirmDelete({ title: `Удалить набор колонок «${p.name}»?` }))) return
     savedPresets.value = savedPresets.value.filter((x) => x.id !== p.id)
     persistSaved()
   }

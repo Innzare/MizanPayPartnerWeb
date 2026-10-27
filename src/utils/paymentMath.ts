@@ -401,6 +401,8 @@ export interface MarkPaidPayload {
   accountId?: string
   /** Смешанная оплата: сумма долей обязана совпасть с суммой платежа. */
   allocations?: Array<{ accountId: string; amount: number }>
+  /** Оплата неразобранным поступлением: счёт и дата — из него. */
+  pendingOperationId?: string
 }
 
 /**

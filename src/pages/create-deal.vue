@@ -239,6 +239,14 @@ function removeContract(index: number) {
  * потому что закупка и первый взнос часто идут через разные счета.
  */
 const deployAccountId = ref<string | null>(null)
+/**
+ * Товар в долг: из кассы при покупке ничего не ушло — счёт закупки не нужен.
+ * «Частично» — это счёт, с которого заплатили поставщику при покупке.
+ */
+const deployAccountMode = computed<'paid' | 'partial' | 'none'>(() => {
+  if (!selectedSupplierId.value || supplierPayMode.value === 'paid') return 'paid'
+  return supplierPayMode.value === 'partial' && (supplierPrepaid.value || 0) > 0 ? 'partial' : 'none'
+})
 const downPaymentAccountId = ref<string | null>(null)
 const accountingStore = useAccountingStore()
 const usableAccounts = computed(() =>
@@ -2249,7 +2257,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
           <div class="form-field full-width">
             <label class="field-label">Название товара <span class="required">*</span></label>
             <div class="input-clearable">
-              <input
+              <input v-clear
                 v-model="productName"
                 type="text"
                 class="field-input"
@@ -2269,7 +2277,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
 
           <div class="form-field full-width">
             <label class="field-label">Описание</label>
-            <textarea
+            <textarea v-clear
               v-model="productDescription"
               class="field-input field-textarea"
               placeholder="Краткое описание товара..."
@@ -2325,7 +2333,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   <button type="button" class="markup-from-option" :class="{ active: supplierPayMode === 'debt' }" @click="supplierPayMode = 'debt'">В долг</button>
                 </div>
                 <div v-if="supplierPayMode === 'partial'" class="input-with-suffix">
-                  <input
+                  <input v-clear
                     :value="maskedMoney(supplierPrepaid)"
                     v-maska="CURRENCY_MASK"
                     type="text"
@@ -2344,6 +2352,9 @@ async function submitDeal(acknowledgedOverdraft = false) {
                     Оплачено {{ formatCurrency(supplierPrepaid || 0) }} из {{ formatCurrency(supplierCost) }}, долг поставщику: {{ formatCurrency(supplierDebtAmount) }}
                   </template>
                   <template v-else>Долг поставщику: {{ formatCurrency(supplierDebtAmount) }}</template>
+                </span>
+                <span v-if="supplierPayMode !== 'paid' && supplierDebtAmount > 0" class="sup-debt-note">
+                  Долг из кассы не списывается — деньги уйдут, когда заплатите поставщику.
                 </span>
               </div>
             </div>
@@ -2432,7 +2443,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
               <div class="form-field full-width">
                 <label class="field-label">Закупочная цена <span class="required">*</span></label>
                 <div class="input-with-suffix">
-                  <input :value="maskedMoney(purchasePrice)" v-maska="CURRENCY_MASK" @maska="(e: any) => purchasePrice = parseMasked(e)" type="text" inputmode="numeric" class="field-input" :class="{ 'field-input--error': capitalInsufficient }" placeholder="0" />
+                  <input v-clear :value="maskedMoney(purchasePrice)" v-maska="CURRENCY_MASK" @maska="(e: any) => purchasePrice = parseMasked(e)" type="text" inputmode="numeric" class="field-input" :class="{ 'field-input--error': capitalInsufficient }" placeholder="0" />
                   <button
                     v-if="purchasePrice"
                     type="button"
@@ -2474,7 +2485,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <div v-if="useWholesalePrice" class="wholesale-body">
                   <label class="field-label mt-3">Оптовая цена закупки</label>
                   <div class="input-with-suffix">
-                    <input
+                    <input v-clear
                       :value="maskedMoney(wholesalePrice)"
                       v-maska="CURRENCY_MASK"
                       @maska="(e: any) => wholesalePrice = parseMasked(e)"
@@ -2646,7 +2657,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   <!-- В рублях наценка — деньги, и читается так же, как все
                        остальные суммы в форме: «15 000», а не «15000».
                        В процентах маска не нужна — там две-три цифры. -->
-                  <input
+                  <input v-clear
                     v-if="markupType === 'fixed'"
                     :value="maskedMoney(markupValue)"
                     v-maska="CURRENCY_MASK"
@@ -2659,7 +2670,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   <!-- Текстовое поле с маской, а не `type=number`: браузер не
                        умеет показывать разряды в числовом поле, и «88815»
                        читалось как сплошная лента цифр. -->
-                  <input
+                  <input v-clear
                     v-else
                     :value="maskedPercent(markupValue)"
                     v-maska="PERCENT_MASK"
@@ -2699,7 +2710,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
               <div v-if="markupType === 'fixed' && !programLocked" class="form-field full-width">
                 <label class="field-label">Итоговая цена</label>
                 <div class="input-with-suffix">
-                  <input
+                  <input v-clear
                     :value="totalPriceInput"
                     v-maska="CURRENCY_MASK"
                     @maska="(e: any) => onTotalPriceInput(parseMasked(e))"
@@ -2728,7 +2739,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <!-- Fixed (₽) mode -->
                 <template v-if="downPaymentType === 'fixed'">
                   <div class="input-with-suffix" :class="{ 'input-with-suffix--error': downPaymentError }">
-                    <input
+                    <input v-clear
                       :value="maskedMoney(downPayment)"
                       v-maska="CURRENCY_MASK"
                       @maska="(e: any) => setDownPaymentFixed(parseMasked(e))"
@@ -2764,7 +2775,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                     >{{ opt }}%</button>
                   </div>
                   <div class="input-with-suffix mt-2" :class="{ 'input-with-suffix--error': downPaymentError }">
-                    <input
+                    <input v-clear
                       :value="maskedPercent(downPaymentPercent)"
                       v-maska="PERCENT_MASK"
                       type="text"
@@ -2786,7 +2797,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   </div>
                   <label class="field-label mt-3 d-block">Сумма взноса</label>
                   <div class="input-with-suffix">
-                    <input
+                    <input v-clear
                       :value="maskedMoney(downPaymentRublesModel)"
                       v-maska="CURRENCY_MASK"
                       @maska="(e: any) => downPaymentRublesModel = parseMasked(e)"
@@ -2827,7 +2838,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <!-- Свой срок — только при ручном оформлении: у тарифа сроки
                      перечислены заранее, и произвольный он всё равно не примет. -->
                 <div v-if="!selectedProgram" class="input-with-suffix mt-2">
-                  <input
+                  <input v-clear
                     v-model.number="termMonths"
                     type="number"
                     class="field-input"
@@ -2944,7 +2955,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                содержимое ради скругления, и выпадающий список счёта уходил
                под её границу. -->
           <v-card
-            v-if="usableAccounts.length > 0"
+            v-if="usableAccounts.length > 0 && (deployAccountMode !== 'none' || (downPaymentAmount || 0) > 0)"
             rounded="lg"
             elevation="0"
             border
@@ -2957,8 +2968,12 @@ async function submitDeal(acknowledgedOverdraft = false) {
             </div>
 
             <div class="deal-accounts">
-              <div class="deal-account-field">
-                <label class="deal-account-label">С какого счёта ушли деньги на закупку</label>
+              <div v-if="deployAccountMode !== 'none'" class="deal-account-field">
+                <label class="deal-account-label">
+                  {{ deployAccountMode === 'partial'
+                    ? `С какого счёта оплатили поставщику ${formatCurrency(supplierPrepaid || 0)}`
+                    : 'С какого счёта ушли деньги на закупку' }}
+                </label>
                 <AccountSelect
                   v-model="deployAccountId"
                   :items="usableAccounts"
@@ -3024,7 +3039,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
             >
               <div class="participants-search">
                 <v-icon icon="mdi-magnify" size="16" />
-                <input v-model="participantSearch" type="text" placeholder="Найти инвестора" />
+                <input v-clear v-model="participantSearch" type="text" placeholder="Найти инвестора" />
               </div>
               <button type="button" class="participants-tool-link" @click="setAllParticipants(true)">Выбрать всех</button>
               <button type="button" class="participants-tool-link" @click="setAllParticipants(false)">Снять всех</button>
@@ -3077,7 +3092,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 <!-- Поле справа по режиму: cost-fee → ставка; фикс → % override;
                      по вкладу → комиссия партнёра для этой сделки. -->
                 <div v-if="p.participates && p.costFeeMode" class="participant-override">
-                  <input
+                  <input v-clear
                     v-model.number="p.costFeeRate"
                     @input="markParticipantsDirty"
                     type="number"
@@ -3090,7 +3105,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                   <span class="participant-override-suffix">%</span>
                 </div>
                 <div v-else-if="p.participates && p.profitPercent != null && p.profitPercent > 0" class="participant-override">
-                  <input
+                  <input v-clear
                     v-model.number="p.override"
                     @input="markParticipantsDirty"
                     type="number"
@@ -3109,7 +3124,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
                 >
                   <span class="participant-override-cap">комиссия</span>
                   <div class="participant-override-field">
-                    <input
+                    <input v-clear
                       v-model.number="p.mgmtFeeOverride"
                       @input="markParticipantsDirty"
                       type="number"
@@ -3707,6 +3722,7 @@ async function submitDeal(acknowledgedOverdraft = false) {
 .sup-pay .markup-from-switch { margin-bottom: 0; }
 .sup-pay-error { font-size: 12px; color: #dc2626; }
 .sup-debt-hint { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700; color: #ef4444; }
+.sup-debt-note { display: block; font-size: 12px; margin-top: 2px; color: rgba(var(--v-theme-on-surface), 0.55); }
 
 /* Plan-limit gate (blocks the form when over active-deal limit) */
 .limit-gate {

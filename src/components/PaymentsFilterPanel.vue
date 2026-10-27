@@ -7,6 +7,7 @@
  * всё работает одинаково. Отличается только состав условий: здесь два
  * периода — по плановому сроку и по факту оплаты.
  */
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { computed, ref, watch } from 'vue'
 import SelectField from '@/components/SelectField.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -125,8 +126,8 @@ function savePreset() {
   presetName.value = ''
 }
 
-function removePreset(p: { id: string; name: string }) {
-  if (!confirm(`Удалить набор «${p.name}»?`)) return
+async function removePreset(p: { id: string; name: string }) {
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить набор «${p.name}»?` }))) return
   emit('remove-preset', p.id)
 }
 </script>
@@ -177,7 +178,7 @@ function removePreset(p: { id: string; name: string }) {
             </span>
           </div>
           <div v-if="activeCount" class="fp-row">
-            <input v-model="presetName" class="fp-input" placeholder="Название набора" @keyup.enter="savePreset" />
+            <input v-clear v-model="presetName" class="fp-input" placeholder="Название набора" @keyup.enter="savePreset" />
             <button class="fp-preset" :disabled="!presetName.trim()" @click="savePreset">Сохранить</button>
           </div>
         </section>
@@ -268,9 +269,9 @@ function removePreset(p: { id: string; name: string }) {
             </button>
           </div>
           <div class="fp-row">
-            <input :value="state.amountFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
+            <input v-clear :value="state.amountFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
               @maska="(e: any) => setNum('amountFrom', parseMasked(e))" />
-            <input :value="state.amountTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
+            <input v-clear :value="state.amountTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
               @maska="(e: any) => setNum('amountTo', parseMasked(e))" />
           </div>
         </section>
@@ -336,7 +337,7 @@ function removePreset(p: { id: string; name: string }) {
               Сбросить
             </button>
           </div>
-          <input v-model="state.product" class="fp-input" placeholder="Название товара" list="pf-product-list" />
+          <input v-clear v-model="state.product" class="fp-input" placeholder="Название товара" list="pf-product-list" />
           <datalist id="pf-product-list">
             <option v-for="p in productOptions" :key="p" :value="p" />
           </datalist>

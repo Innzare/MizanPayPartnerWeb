@@ -528,7 +528,7 @@ function getAvatarColor(name: string) {
               </div>
 
               <div class="col-menu-save">
-                <input
+                <input v-clear
                   v-model="cols.presetName.value"
                   type="text"
                   placeholder="Сохранить набор как…"
@@ -539,7 +539,7 @@ function getAvatarColor(name: string) {
 
               <div class="col-menu-search">
                 <v-icon icon="mdi-magnify" size="15" />
-                <input v-model="cols.colSearch.value" type="text" placeholder="Найти колонку" />
+                <input v-clear v-model="cols.colSearch.value" type="text" placeholder="Найти колонку" />
                 <button v-if="cols.colSearch.value" class="col-menu-search-clear" @click="cols.colSearch.value = ''">
                   <v-icon icon="mdi-close" size="13" />
                 </button>

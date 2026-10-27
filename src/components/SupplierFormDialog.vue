@@ -86,7 +86,7 @@ async function save() {
   >
     <div class="form-field">
       <label class="field-label">Наименование <span class="required">*</span></label>
-      <input v-model="form.name" type="text" class="field-input" placeholder="Магазин / поставщик" />
+      <input v-clear v-model="form.name" type="text" class="field-input" placeholder="Магазин / поставщик" />
     </div>
 
     <div class="form-field">
@@ -102,7 +102,7 @@ async function save() {
     <div class="form-row-2">
       <div class="form-field">
         <label class="field-label">Контактное лицо</label>
-        <input v-model="form.contactName" type="text" class="field-input" placeholder="Имя" />
+        <input v-clear v-model="form.contactName" type="text" class="field-input" placeholder="Имя" />
       </div>
       <div class="form-field">
         <label class="field-label">Телефон</label>
@@ -134,18 +134,18 @@ async function save() {
       </div>
       <div class="form-field">
         <label class="field-label">Email</label>
-        <input v-model="form.email" type="email" class="field-input" placeholder="mail@example.ru" />
+        <input v-clear v-model="form.email" type="email" class="field-input" placeholder="mail@example.ru" />
       </div>
     </div>
 
     <div class="form-field">
       <label class="field-label">Адрес (текстом)</label>
-      <input v-model="form.address" type="text" class="field-input" placeholder="Уточните вручную при необходимости" />
+      <input v-clear v-model="form.address" type="text" class="field-input" placeholder="Уточните вручную при необходимости" />
     </div>
 
     <div class="form-field">
       <label class="field-label">Заметки</label>
-      <textarea v-model="form.notes" class="field-input field-textarea" rows="2" placeholder="Комментарий…"></textarea>
+      <textarea v-clear v-model="form.notes" class="field-input field-textarea" rows="2" placeholder="Комментарий…"></textarea>
     </div>
 
     <div v-if="error" class="text-error text-body-2">{{ error }}</div>

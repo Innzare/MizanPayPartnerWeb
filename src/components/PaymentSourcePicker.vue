@@ -68,7 +68,7 @@ onMounted(async () => {
 const usable = computed(() => store.accounts)
 
 /** Куда система подставит счёт сама — отключённые для этого не годятся. */
-const autoUsable = computed(() => store.accounts.filter((a) => !a.disabledAt))
+const autoUsable = computed(() => store.accounts.filter((a) => !a.disabledAt && !a.bankBlockedAt))
 
 /**
  * Тот же порядок, что на сервере: счёт кассы → счёт по умолчанию для этого
@@ -94,9 +94,10 @@ const chosen = computed<AccountView | null>(
  * Выбран счёт, которым система сама не пользуется: отключён или лимит выбран.
  * Деньги на него записать можно — но сказать об этом надо.
  */
-const chosenUnavailable = computed<null | 'off' | 'full'>(() => {
+const chosenUnavailable = computed<null | 'off' | 'full' | 'blocked'>(() => {
   const a = chosen.value
   if (!a) return null
+  if (a.bankBlockedAt) return 'blocked'
   if (a.disabledAt) return 'off'
   return store.limits.find((l) => l.id === a.id)?.limits.full ? 'full' : null
 })
@@ -187,7 +188,11 @@ watch(
          вслух: потом по такой карте разбираться сложнее. -->
     <div v-if="!split && chosenUnavailable" class="psp-limit">
       <v-icon icon="mdi-alert-circle-outline" size="15" />
-      <span v-if="chosenUnavailable === 'off'">
+      <span v-if="chosenUnavailable === 'blocked'">
+        Карту заблокировал банк. Приход записать можно — если клиент перевёл
+        именно сюда; а вот снять или перевести с неё деньги система не даст.
+      </span>
+      <span v-else-if="chosenUnavailable === 'off'">
         Счёт отключён. Деньги всё равно запишутся на него — если клиент
         перевёл именно сюда, так и должно быть.
       </span>
@@ -207,7 +212,7 @@ watch(
       <div v-for="(p, i) in parts" :key="i" class="psp-part">
         <AccountSelect v-model="p.accountId" :items="usable" compact />
         <div class="psp-part-amount">
-          <input
+          <input v-clear
             :value="p.amount || ''"
             v-maska="CURRENCY_MASK"
             type="text"

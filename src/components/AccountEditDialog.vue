@@ -444,7 +444,7 @@ async function save() {
 
         <div class="mb-4">
           <label class="field-label">Название</label>
-          <input v-model="form.name" class="field-input" placeholder="Сейф в офисе, Карта Сбер, Магазин Ахмеда" />
+          <input v-clear v-model="form.name" class="field-input" placeholder="Сейф в офисе, Карта Сбер, Магазин Ахмеда" />
         </div>
 
         <div v-if="form.type === 'BANK_CARD'" class="mb-4">
@@ -515,7 +515,7 @@ async function save() {
 
         <div class="mb-4">
           <label class="field-label">Код счёта</label>
-          <input v-model="form.code" class="field-input ae-code" placeholder="С1" maxlength="8" />
+          <input v-clear v-model="form.code" class="field-input ae-code" placeholder="С1" maxlength="8" />
           <!-- Короткий код нужен для речи и переписки: «оплатил на Т2» вместо
                «на карту Тинькофф, которая на Магомеде». -->
           <div class="field-hint">Короткое обозначение для таблиц и переписки. Должно быть своим у каждого счёта</div>
@@ -527,7 +527,7 @@ async function save() {
             <!-- Ноль, а не пустое поле: так сразу видно, что сюда вводят
                  сумму. При вводе он выделяется целиком и заменяется первой же
                  цифрой — дописывать вручную ничего не нужно. -->
-            <input
+            <input v-clear
               :value="form.openingBalance ?? 0"
               v-maska="CURRENCY_MASK"
               type="text"
@@ -591,7 +591,7 @@ async function save() {
             <!-- Номер, по которому переводят, — тем же полем с маской, что и
                  везде: иначе один и тот же телефон хранился в трёх видах. -->
             <PhoneField v-model="form.transferPhone" plain placeholder="Телефон получателя" />
-            <input v-model="form.holderName" class="field-input" placeholder="Имя получателя" />
+            <input v-clear v-model="form.holderName" class="field-input" placeholder="Имя получателя" />
           </div>
           <!-- Номер карты не храним: переводят по телефону, а хранение
                номеров — лишний риск без пользы. -->
@@ -603,7 +603,7 @@ async function save() {
           <div class="mb-4">
             <label class="field-label">Контакты пункта</label>
             <div class="fp-row ae-row">
-              <input v-model="form.pickup.contactName" class="field-input" placeholder="Чей магазин" />
+              <input v-clear v-model="form.pickup.contactName" class="field-input" placeholder="Чей магазин" />
               <!-- Тот же ввод телефона, что в остальных формах: маска, выбор
                    страны и E.164 наружу — руками номер набирали кто как. -->
               <PhoneField v-model="form.pickup.contactPhone" plain placeholder="Телефон" />
@@ -621,7 +621,7 @@ async function save() {
               :address="form.pickup.address"
               @update:address="form.pickup.address = $event"
             />
-            <input
+            <input v-clear
               v-model="form.pickup.address"
               class="field-input mt-2"
               placeholder="Или впишите адрес вручную"
@@ -632,7 +632,7 @@ async function save() {
             <label class="field-label">Напоминать о заборе денег</label>
             <div class="fp-row ae-row">
               <div class="input-with-suffix">
-                <input
+                <input v-clear
                   :value="form.pickup.threshold || ''"
                   v-maska="CURRENCY_MASK"
                   type="text"
@@ -643,7 +643,7 @@ async function save() {
                 />
                 <span class="input-suffix">₽</span>
               </div>
-              <input
+              <input v-clear
                 v-model.number="form.pickup.maxDays"
                 type="number"
                 min="1"

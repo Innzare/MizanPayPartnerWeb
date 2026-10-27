@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
- * Правка и удаление дохода или расхода по бизнесу.
+ * Правка дохода или расхода по бизнесу. Удаление — отдельной кнопкой в строке
+ * таблицы со своим окном (правило владельца: не внутри окна правки).
  *
  * Раньше это делалось только в карточке кассы. Ручные операции теперь живут в
  * «Бухгалтерии → Пополнения и расходы», и править их нужно там же, где их видно.
@@ -13,7 +14,7 @@ import DateField from '@/components/DateField.vue'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import { useOperationDate } from '@/composables/useOperationDate'
-import { CURRENCY_MASK, parseMasked, formatCurrency } from '@/utils/formatters'
+import { CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 
 export interface ManualTx {
   id: string
@@ -27,13 +28,13 @@ export interface ManualTx {
   affectsInvestors?: boolean
   /** Расход «из капитала» / доход «в капитал» — меняет капитал партнёра в делении. */
   fromCapital?: boolean
+  /** Вид расхода: «по бизнесу» или «иной» (по деньгам одинаковы). Нет — старый сервер. */
+  expenseKind?: 'BUSINESS' | 'OTHER'
 }
 
 const props = defineProps<{
   modelValue: boolean
   tx: ManualTx | null
-  /** Можно ли удалить: право «Добавлять / удалять доходы и расходы». */
-  canDelete?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -55,10 +56,10 @@ const amount = ref<number | null>(null)
 const description = ref('')
 const affectsInvestors = ref(false)
 const fromCapital = ref(false)
+const expenseKind = ref<'BUSINESS' | 'OTHER'>('BUSINESS')
 const categoryId = ref<string | null>(null)
 const date = ref('')
 const saving = ref(false)
-const confirmDelete = ref(false)
 
 const isIncome = computed(() => props.tx?.type === 'INCOME')
 const categoryOptions = computed(() =>
@@ -75,9 +76,9 @@ watch(
     description.value = props.tx.description ?? ''
     affectsInvestors.value = !!props.tx.affectsInvestors
     fromCapital.value = !!props.tx.fromCapital
+    expenseKind.value = props.tx.expenseKind ?? 'BUSINESS'
     categoryId.value = props.tx.categoryId
     date.value = props.tx.date ? props.tx.date.slice(0, 10) : ''
-    confirmDelete.value = false
     try {
       categories.value = await api.get<Category[]>('/finance/categories')
     } catch {
@@ -100,6 +101,10 @@ async function save() {
       // Флаги шлём, только если окно их знает: иначе правка суммы сбросила бы их.
       ...(!isIncome.value && props.tx.affectsInvestors !== undefined ? { affectsInvestors: affectsInvestors.value } : {}),
       ...(props.tx.fromCapital !== undefined ? { fromCapital: fromCapital.value } : {}),
+      // Вид шлём, только если окно его знает и он изменился.
+      ...(!isIncome.value && props.tx.expenseKind && expenseKind.value !== props.tx.expenseKind
+        ? { expenseKind: expenseKind.value }
+        : {}),
     })
     toast.success('Операция обновлена')
     open.value = false
@@ -110,37 +115,22 @@ async function save() {
     saving.value = false
   }
 }
-
-async function remove() {
-  if (!props.tx) return
-  saving.value = true
-  try {
-    await api.delete(`/finance/transactions/${props.tx.id}`)
-    toast.success('Операция удалена')
-    open.value = false
-    emit('done')
-  } catch (e: any) {
-    toast.error(e, 'Не удалось удалить')
-  } finally {
-    saving.value = false
-  }
-}
 </script>
 
 <template>
   <v-dialog v-model="open" max-width="460" scrollable>
     <v-card rounded="lg" class="mt-card">
       <div class="mt-head">
-        <div class="mt-title">{{ isIncome ? 'Прочий доход' : 'Расход по бизнесу' }}</div>
+        <div class="mt-title">{{ isIncome ? 'Прочий доход' : expenseKind === 'OTHER' ? 'Иной расход' : 'Расход по бизнесу' }}</div>
         <div class="mt-sub">Изменения сразу отразятся в деньгах кассы</div>
       </div>
 
       <div class="mt-body">
-        <template v-if="!confirmDelete">
+        <template v-if="tx">
           <div class="mt-field">
             <label class="mt-label">Сумма</label>
             <div class="mt-suffix-wrap">
-              <input
+              <input v-clear
                 :value="amount || ''"
                 v-maska="CURRENCY_MASK"
                 type="text"
@@ -159,9 +149,21 @@ async function remove() {
             <label class="mt-label">Дата</label>
             <DateField v-model="date" :min="opDate.minDate.value" :max="opDate.maxDate.value" plain />
           </div>
+          <!-- Вид расхода — если при вводе ошиблись. По деньгам одинаковы. -->
+          <div v-if="!isIncome && tx?.expenseKind" class="mt-field">
+            <label class="mt-label">Вид расхода</label>
+            <div class="mt-seg">
+              <button type="button" class="mt-seg-btn" :class="{ 'mt-seg-btn--on': expenseKind === 'BUSINESS' }" @click="expenseKind = 'BUSINESS'">
+                По бизнесу
+              </button>
+              <button type="button" class="mt-seg-btn" :class="{ 'mt-seg-btn--on': expenseKind === 'OTHER' }" @click="expenseKind = 'OTHER'">
+                Иной
+              </button>
+            </div>
+          </div>
           <div class="mt-field">
             <label class="mt-label">Комментарий</label>
-            <input v-model="description" class="mt-input" placeholder="Например: аренда за август" />
+            <textarea v-clear v-model="description" class="mt-input mt-textarea" rows="2" placeholder="Например: аренда за август" />
           </div>
           <div v-if="tx?.fromCapital !== undefined" class="mt-field">
             <label class="mt-label">{{ isIncome ? 'Куда идёт доход' : 'Откуда расход' }}</label>
@@ -185,22 +187,11 @@ async function remove() {
             </span>
           </label>
         </template>
-        <div v-else class="mt-confirm">
-          Удалить {{ isIncome ? 'доход' : 'расход' }} на {{ formatCurrency(tx?.amount ?? 0) }}?
-          Деньги кассы пересчитаются, вернуть операцию будет нельзя.
-        </div>
       </div>
 
       <div class="mt-actions">
-        <template v-if="!confirmDelete">
-          <button v-if="canDelete" class="mt-del" :disabled="saving" @click="confirmDelete = true">Удалить</button>
-          <button class="mt-cancel" @click="open = false">Отмена</button>
-          <button class="mt-confirm-btn" :disabled="saving || !amount" @click="save">Сохранить</button>
-        </template>
-        <template v-else>
-          <button class="mt-cancel" @click="confirmDelete = false">Назад</button>
-          <button class="mt-danger" :disabled="saving" @click="remove">Удалить</button>
-        </template>
+        <button class="mt-cancel" @click="open = false">Отмена</button>
+        <button class="mt-confirm-btn" :disabled="saving || !amount" @click="save">Сохранить</button>
       </div>
     </v-card>
   </v-dialog>
@@ -233,6 +224,8 @@ async function remove() {
   background: rgba(var(--v-theme-on-surface), 0.02);
   font-size: 14px; outline: none; color: rgba(var(--v-theme-on-surface), 0.85);
 }
+/* Комментарий — многострочный, как везде в кабинете. */
+.mt-textarea { display: block; height: auto; min-height: 64px; padding: 10px 14px; line-height: 1.45; resize: vertical; font-family: inherit; }
 .mt-input:focus { border-color: #047857; }
 .mt-suffix-wrap { position: relative; }
 .mt-suffix-wrap .mt-input { padding-right: 34px; }
@@ -240,17 +233,14 @@ async function remove() {
   position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
   font-size: 14px; font-weight: 600; pointer-events: none; color: rgba(var(--v-theme-on-surface), 0.35);
 }
-.mt-confirm { margin-top: 16px; font-size: 14px; line-height: 1.5; }
 .mt-actions {
   display: flex; gap: 10px; padding: 14px 24px 18px;
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
-.mt-cancel, .mt-confirm-btn, .mt-danger, .mt-del {
+.mt-cancel, .mt-confirm-btn {
   padding: 11px 16px; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer;
 }
 .mt-cancel { flex: 1; background: rgba(var(--v-theme-on-surface), 0.05); color: rgba(var(--v-theme-on-surface), 0.7); font-weight: 500; }
 .mt-confirm-btn { flex: 1; background: #047857; color: #fff; }
-.mt-danger { flex: 1; background: #dc2626; color: #fff; }
-.mt-del { background: none; color: #dc2626; padding-left: 4px; padding-right: 4px; }
-.mt-confirm-btn:disabled, .mt-danger:disabled, .mt-del:disabled { opacity: 0.5; cursor: not-allowed; }
+.mt-confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

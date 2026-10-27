@@ -144,7 +144,7 @@ async function confirm() {
             {{ opt }}
           </button>
         </div>
-        <textarea
+        <textarea v-clear
           v-if="reason === 'Другая причина'"
           v-model="reason"
           placeholder="Опишите причину..."

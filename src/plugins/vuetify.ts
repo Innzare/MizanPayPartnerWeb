@@ -123,6 +123,11 @@ export default createVuetify({
   },
   // Русский язык для встроенных подписей Vuetify. Раньше локаль не
   // настраивали, и календарь показывал бы месяцы и дни недели по-английски.
+  // Крестик очистки во всех полях Vuetify — как v-clear у обычных полей.
+  defaults: {
+    VTextField: { clearable: true },
+    VTextarea: { clearable: true },
+  },
   locale: {
     locale: "ru",
     fallback: "en",

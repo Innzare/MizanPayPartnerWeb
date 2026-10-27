@@ -171,7 +171,7 @@ function accentOf(a: AccountView): string {
         <label class="tr-label">Сумма</label>
         <div class="tr-amount-row">
           <div class="tr-suffix-wrap">
-            <input
+            <input v-clear
               :value="amount || ''"
               v-maska="CURRENCY_MASK"
               type="text"
@@ -212,7 +212,7 @@ function accentOf(a: AccountView): string {
 
       <div class="tr-field">
         <label class="tr-label">Комментарий</label>
-        <input v-model="note" class="tr-input" placeholder="Инкассация за неделю" />
+        <textarea v-clear v-model="note" class="tr-input tr-textarea" rows="2" placeholder="Инкассация за неделю" />
       </div>
 
       <div class="tr-actions">
@@ -244,6 +244,8 @@ function accentOf(a: AccountView): string {
   font-size: 14px; outline: none;
   color: rgba(var(--v-theme-on-surface), 0.85);
 }
+/* Комментарий — многострочный, как везде в кабинете. */
+.tr-textarea { display: block; height: auto; min-height: 64px; padding: 10px 14px; line-height: 1.45; resize: vertical; font-family: inherit; }
 .tr-input:focus { border-color: #047857; }
 .tr-input--bad { border-color: #dc2626; }
 .tr-error {

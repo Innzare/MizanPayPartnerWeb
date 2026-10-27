@@ -177,7 +177,7 @@ function getCategoryIcon(catId: string) {
             <div class="form-grid">
               <div class="form-field">
                 <label class="field-label">Название товара <span class="required">*</span></label>
-                <input
+                <input v-clear
                   v-model="title"
                   type="text"
                   class="field-input"
@@ -187,7 +187,7 @@ function getCategoryIcon(catId: string) {
 
               <div class="form-field">
                 <label class="field-label">Описание</label>
-                <textarea
+                <textarea v-clear
                   v-model="description"
                   class="field-input field-textarea"
                   placeholder="Подробное описание товара для покупателей..."
@@ -302,7 +302,7 @@ function getCategoryIcon(catId: string) {
               <div class="form-field">
                 <label class="field-label">Цена товара <span class="required">*</span></label>
                 <div class="input-with-suffix">
-                  <input
+                  <input v-clear
                     :value="price || ''"
                     v-maska="CURRENCY_MASK"
                     @maska="(e: any) => price = parseMasked(e)"
@@ -329,7 +329,7 @@ function getCategoryIcon(catId: string) {
                   </button>
                 </div>
                 <div class="input-with-suffix mt-2">
-                  <input v-model.number="markupPercent" type="number" class="field-input" placeholder="15" min="1" />
+                  <input v-clear v-model.number="markupPercent" type="number" class="field-input" placeholder="15" min="1" />
                   <span class="input-suffix">%</span>
                 </div>
               </div>
@@ -348,7 +348,7 @@ function getCategoryIcon(catId: string) {
                   </button>
                 </div>
                 <div class="input-with-suffix mt-2">
-                  <input v-model.number="minDownPaymentPercent" type="number" class="field-input" placeholder="10" min="1" max="100" />
+                  <input v-clear v-model.number="minDownPaymentPercent" type="number" class="field-input" placeholder="10" min="1" max="100" />
                   <span class="input-suffix">%</span>
                 </div>
               </div>
@@ -370,7 +370,7 @@ function getCategoryIcon(catId: string) {
                       </button>
                     </div>
                     <div class="input-with-suffix mt-2">
-                      <input v-model.number="minTermMonths" type="number" class="field-input" placeholder="6" min="1" />
+                      <input v-clear v-model.number="minTermMonths" type="number" class="field-input" placeholder="6" min="1" />
                       <span class="input-suffix">мес</span>
                     </div>
                   </div>
@@ -389,7 +389,7 @@ function getCategoryIcon(catId: string) {
                       </button>
                     </div>
                     <div class="input-with-suffix mt-2">
-                      <input v-model.number="maxTermMonths" type="number" class="field-input" placeholder="24" min="1" />
+                      <input v-clear v-model.number="maxTermMonths" type="number" class="field-input" placeholder="24" min="1" />
                       <span class="input-suffix">мес</span>
                     </div>
                   </div>

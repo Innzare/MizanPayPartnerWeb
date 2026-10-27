@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
@@ -25,7 +26,7 @@ const editingId = ref<string | null>(null)
 function openEdit(s: RouteSheetRow) { editingId.value = s.id; editOpen.value = true }
 async function onEdited() { toast.success('Путевой лист обновлён'); reload() }
 async function removeSheet(s: RouteSheetRow) {
-  if (!confirm(`Удалить путевой лист №${s.number}?`)) return
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить путевой лист №${s.number}?` }))) return
   try {
     await store.remove(s.id)
     toast.success('Путевой лист удалён')
@@ -108,7 +109,7 @@ onMounted(reload)
           <div class="d-flex align-center ga-2 flex-wrap">
             <div class="sup-search">
               <v-icon icon="mdi-magnify" size="18" />
-              <input v-model="search" type="text" placeholder="Поиск по номеру, сотруднику, заметке…" />
+              <input v-clear v-model="search" type="text" placeholder="Поиск по номеру, сотруднику, заметке…" />
               <button v-if="search" type="button" class="sup-search-clear" title="Очистить" @click="search = ''">
                 <v-icon icon="mdi-close" size="14" />
               </button>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { inlineOrToast, loadFailed } from '@/api/showError'
 import { ref, computed, watch, nextTick } from 'vue'
 import ClientPhones from '@/components/ClientPhones.vue'
@@ -55,7 +56,7 @@ const timelineRef = ref<HTMLElement | null>(null)
 function openAddPromise() { editingPromise.value = null; promiseOpen.value = true }
 function openEditPromise(a: CollectionActivity) { editingPromise.value = a; promiseOpen.value = true }
 async function deletePromiseEntry(a: CollectionActivity) {
-  if (!confirm('Удалить это обещание?')) return
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить это обещание?' }))) return
   try {
     await store.deletePromise(a.id)
     activities.value = activities.value.filter((x) => x.id !== a.id)
@@ -141,7 +142,7 @@ async function onPromiseSaved() {
 }
 
 async function removeActivity(id: string) {
-  if (!confirm('Удалить эту запись из истории?')) return
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить эту запись из истории?' }))) return
   try {
     await store.deleteActivity(id)
     activities.value = activities.value.filter((a) => a.id !== id)
@@ -521,7 +522,7 @@ const promiseByPayment = computed(() => {
             </button>
           </div>
           <div class="dm-composer-row">
-            <textarea v-model="noteText" class="dm-composer-input" rows="2" placeholder="Что сказал клиент, договорённости…" @keydown.ctrl.enter="submitNote" />
+            <textarea v-clear v-model="noteText" class="dm-composer-input" rows="2" placeholder="Что сказал клиент, договорённости…" @keydown.ctrl.enter="submitNote" />
             <button class="dm-send" :disabled="!noteText.trim() || sending" @click="submitNote">
               <v-icon icon="mdi-send" size="18" />
             </button>

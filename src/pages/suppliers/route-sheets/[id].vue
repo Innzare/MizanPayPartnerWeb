@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { toUserMessage } from '@/api/errors'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -122,7 +123,7 @@ async function cancelSheet() {
   }
 }
 async function removeSheet() {
-  if (!confirm('Удалить путевой лист?')) return
+  if (!(await useConfirmDelete().confirmDelete({ title: 'Удалить путевой лист?' }))) return
   try {
     await store.remove(id.value)
     toast.success('Удалён')

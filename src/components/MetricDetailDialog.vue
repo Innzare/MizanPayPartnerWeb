@@ -134,7 +134,7 @@ function openDeal(id: string) {
           </div>
         </div>
         <div class="md-search-wrap">
-          <input v-model="search" class="md-search" placeholder="Найти товар или клиента…" >
+          <input v-clear v-model="search" class="md-search" placeholder="Найти товар или клиента…" >
           <button v-if="search" type="button" class="md-search-wrap-clear" title="Очистить" @click="search = ''">
             <v-icon icon="mdi-close" size="14" />
           </button>

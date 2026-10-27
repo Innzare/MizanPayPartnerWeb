@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
@@ -264,7 +265,7 @@ function confirmCancel() {
 
 async function removeRole() {
   if (!draft.value?.id) return
-  if (!confirm(`Удалить роль «${draft.value.name}»?`)) return
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить роль «${draft.value.name}»?` }))) return
   saving.value = true
   try {
     await api.delete(`/auth/investor/roles/${draft.value.id}`)
@@ -326,7 +327,7 @@ async function removeRole() {
         <div class="rm-head">
           <div class="rm-field">
             <label class="field-label">Название роли</label>
-            <input ref="nameInput" v-model="draft.name" class="field-input" placeholder="Например: Кассир" maxlength="60" />
+            <input v-clear ref="nameInput" v-model="draft.name" class="field-input" placeholder="Например: Кассир" maxlength="60" />
           </div>
           <div class="rm-head-actions">
             <!-- Удаление только у кастомных ролей (пресеты удалять нельзя) -->

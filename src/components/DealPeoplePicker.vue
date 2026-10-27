@@ -219,7 +219,7 @@ defineExpose({ prepend, reload: () => load() })
     <!-- Поиск и список: видно сразу, печатать необязательно. -->
     <div class="dp-search">
       <v-icon icon="mdi-magnify" size="17" class="dp-search-ico" />
-      <input
+      <input v-clear
         v-model="search"
         type="text"
         class="dp-search-input"

@@ -39,7 +39,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocPointer))
 
 <template>
   <div ref="root" class="cb">
-    <input
+    <input v-clear
       class="field-input cb-input"
       :value="modelValue"
       :placeholder="placeholder"

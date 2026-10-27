@@ -121,7 +121,7 @@ async function save() {
 
     <div class="form-field">
       <label class="field-label">Товар <span class="required">*</span></label>
-      <input v-model="productName" type="text" class="field-input" placeholder="Что предлагает продать" />
+      <input v-clear v-model="productName" type="text" class="field-input" placeholder="Что предлагает продать" />
     </div>
 
     <div class="form-row-2">
@@ -144,7 +144,7 @@ async function save() {
     <div class="form-field">
       <label class="field-label">Ожидаемая закупочная цена</label>
       <div class="input-suffix-wrap">
-        <input v-model="priceInput" v-maska="CURRENCY_MASK" inputmode="numeric" class="field-input" placeholder="0" />
+        <input v-clear v-model="priceInput" v-maska="CURRENCY_MASK" inputmode="numeric" class="field-input" placeholder="0" />
         <span class="input-suffix">₽</span>
       </div>
     </div>
@@ -164,7 +164,7 @@ async function save() {
 
     <div class="form-field">
       <label class="field-label">Комментарий</label>
-      <textarea v-model="comment" class="field-input field-textarea" rows="2" placeholder="Условия, детали…"></textarea>
+      <textarea v-clear v-model="comment" class="field-input field-textarea" rows="2" placeholder="Условия, детали…"></textarea>
     </div>
 
     <div v-if="error" class="text-error text-body-2">{{ error }}</div>

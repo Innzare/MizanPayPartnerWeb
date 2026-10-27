@@ -72,6 +72,9 @@ export interface SupplierDebt {
   productName: string
   dealDate: number
   dealStatus: string
+  /** Касса сделки: выплата идёт из неё, одна выплата — одна касса. */
+  cashBoxId: string | null
+  cashBoxName: string | null
   amount: number
   paidAmount: number
   remaining: number
@@ -106,6 +109,10 @@ export interface PayoutInput {
   note?: string
   allocations?: { debtId: string; amount: number }[]
   idemKey?: string
+  /** Касса, по долгам которой платим. */
+  cashBoxId?: string
+  /** Счёт, с которого отдали деньги. Пусто — подберёт сервер. */
+  accountId?: string
 }
 
 export type SupplierRequestStatus = 'NEW' | 'CONVERTED' | 'REJECTED' | 'CANCELLED'

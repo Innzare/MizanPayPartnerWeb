@@ -26,8 +26,10 @@ const props = withDefaults(
      * меню в стену. Редкие виды остаются в кнопке «Операции» наверху.
      */
     kinds?: OperationKind[]
+    /** Свои подписи групп — например, «Снятие» вместо «Расход» у временных. */
+    titles?: Partial<Record<'in' | 'out' | 'move', string>>
   }>(),
-  { compact: false, kinds: undefined },
+  { compact: false, kinds: undefined, titles: undefined },
 )
 
 const emit = defineEmits<{ (e: 'pick', kind: OperationKind): void }>()
@@ -54,9 +56,9 @@ const groups = computed(() => {
     allowed.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind))
   }
   return [
-    { title: 'Пополнение', items: allowed.filter((k) => k.direction === 'in') },
-    { title: 'Расход', items: allowed.filter((k) => k.direction === 'out') },
-    { title: 'Перевод', items: allowed.filter((k) => k.direction === 'move') },
+    { title: props.titles?.in ?? 'Пополнение', items: allowed.filter((k) => k.direction === 'in') },
+    { title: props.titles?.out ?? 'Расход', items: allowed.filter((k) => k.direction === 'out') },
+    { title: props.titles?.move ?? 'Перевод', items: allowed.filter((k) => k.direction === 'move') },
   ].filter((g) => g.items.length)
 })
 </script>

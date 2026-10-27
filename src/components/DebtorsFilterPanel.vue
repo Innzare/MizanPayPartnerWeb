@@ -6,6 +6,7 @@
  * `styles/filter-panel.css`). Состав условий свой: здесь отбирают по глубине
  * просрочки — на сколько дней и на какую сумму.
  */
+import { useConfirmDelete } from '@/composables/useConfirmDelete'
 import { computed, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useClientCities } from '@/composables/useClientCities'
@@ -98,8 +99,8 @@ function savePreset() {
   presetName.value = ''
 }
 
-function removePreset(p: { id: string; name: string }) {
-  if (!confirm(`Удалить набор «${p.name}»?`)) return
+async function removePreset(p: { id: string; name: string }) {
+  if (!(await useConfirmDelete().confirmDelete({ title: `Удалить набор «${p.name}»?` }))) return
   emit('remove-preset', p.id)
 }
 </script>
@@ -150,7 +151,7 @@ function removePreset(p: { id: string; name: string }) {
             </span>
           </div>
           <div v-if="activeCount" class="fp-row">
-            <input v-model="presetName" class="fp-input" placeholder="Название набора" @keyup.enter="savePreset" />
+            <input v-clear v-model="presetName" class="fp-input" placeholder="Название набора" @keyup.enter="savePreset" />
             <button class="fp-preset" :disabled="!presetName.trim()" @click="savePreset">Сохранить</button>
           </div>
         </section>
@@ -166,9 +167,9 @@ function removePreset(p: { id: string; name: string }) {
             </button>
           </div>
           <div class="fp-row">
-            <input :value="state.overdueFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
+            <input v-clear :value="state.overdueFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
               @maska="(e: any) => setNum('overdueFrom', parseMasked(e))" />
-            <input :value="state.overdueTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
+            <input v-clear :value="state.overdueTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
               @maska="(e: any) => setNum('overdueTo', parseMasked(e))" />
           </div>
         </section>
@@ -186,9 +187,9 @@ function removePreset(p: { id: string; name: string }) {
           <!-- Порог «с какого дня считать должником» задан в настройках раздела;
                здесь — точечный отбор внутри уже отобранных. -->
           <div class="fp-row">
-            <input :value="state.daysFrom ?? ''" type="number" min="0" class="fp-input" placeholder="от"
+            <input v-clear :value="state.daysFrom ?? ''" type="number" min="0" class="fp-input" placeholder="от"
               @input="(e: any) => setNum('daysFrom', e.target.value)" />
-            <input :value="state.daysTo ?? ''" type="number" min="0" class="fp-input" placeholder="до"
+            <input v-clear :value="state.daysTo ?? ''" type="number" min="0" class="fp-input" placeholder="до"
               @input="(e: any) => setNum('daysTo', e.target.value)" />
           </div>
         </section>
@@ -204,9 +205,9 @@ function removePreset(p: { id: string; name: string }) {
             </button>
           </div>
           <div class="fp-row">
-            <input :value="state.remainingFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
+            <input v-clear :value="state.remainingFrom ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="от"
               @maska="(e: any) => setNum('remainingFrom', parseMasked(e))" />
-            <input :value="state.remainingTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
+            <input v-clear :value="state.remainingTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
               @maska="(e: any) => setNum('remainingTo', parseMasked(e))" />
           </div>
         </section>
@@ -221,7 +222,7 @@ function removePreset(p: { id: string; name: string }) {
               Сбросить
             </button>
           </div>
-          <input v-model="state.product" class="fp-input" placeholder="Название товара" list="df-product-list" />
+          <input v-clear v-model="state.product" class="fp-input" placeholder="Название товара" list="df-product-list" />
           <datalist id="df-product-list">
             <option v-for="p in productOptions" :key="p" :value="p" />
           </datalist>

@@ -17,7 +17,7 @@
       <div class="pa-5">
         <div class="cicd-field mb-4">
           <label class="cicd-label">Имя <span style="color: #ef4444;">*</span></label>
-          <input
+          <input v-clear
             ref="nameInputRef"
             v-model="form.name"
             type="text"
@@ -34,7 +34,7 @@
         <div class="cicd-field mb-4">
           <label class="cicd-label">Капитал <span style="color: #ef4444;">*</span></label>
           <div class="cicd-input-wrap">
-            <input
+            <input v-clear
               :value="form.capital || ''"
               v-maska="CURRENCY_MASK"
               @maska="(e: any) => form.capital = parseMasked(e)"
@@ -83,7 +83,7 @@
               </button>
             </div>
             <div class="cicd-input-wrap">
-              <input
+              <input v-clear
                 v-model.number="form.profitPercent"
                 type="number"
                 class="cicd-input"
@@ -117,7 +117,7 @@
             </button>
           </div>
           <div class="cicd-input-wrap">
-            <input
+            <input v-clear
               v-model.number="form.managementFeePct"
               type="number"
               class="cicd-input"

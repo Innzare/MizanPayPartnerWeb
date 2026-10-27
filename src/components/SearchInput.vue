@@ -42,7 +42,7 @@ function clear() {
 <template>
   <div class="si">
     <v-icon :icon="icon" size="18" class="si-icon" />
-    <input
+    <input v-clear
       ref="inputRef"
       :value="modelValue"
       type="text"

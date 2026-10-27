@@ -243,7 +243,7 @@ async function run() {
 
         <div class="dc-field">
           <label class="dc-label">Введите слово <b>{{ word }}</b></label>
-          <input
+          <input v-clear
             v-model="confirmation"
             v-bind="noAutofill"
             :readonly="!typed"

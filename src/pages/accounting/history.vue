@@ -227,7 +227,7 @@ function goToDeal(e: AccountEntryView) {
     <div class="hs-filters">
       <div class="hs-search">
         <v-icon icon="mdi-magnify" size="18" class="hs-search-icon" />
-        <input v-model="q" class="hs-search-input" placeholder="Поиск по описанию" />
+        <input v-clear v-model="q" class="hs-search-input" placeholder="Поиск по описанию" />
         <button v-if="q" class="hs-search-clear" @click="q = ''">
           <v-icon icon="mdi-close" size="14" />
         </button>
