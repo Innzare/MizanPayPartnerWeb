@@ -10,6 +10,9 @@ import type {
   AnalyticsTimeliness,
   BreakdownMetric,
   TimelinessDetails,
+  AnalyticsDiscounts,
+  DiscountDetails,
+  DiscountGroupKey,
 } from '@/types/analytics'
 
 /**
@@ -98,6 +101,38 @@ export function useAnalyticsTimeliness(cashBoxId: () => string | null) {
   watch(params, load, { immediate: true })
 
   return { timeliness, loading, reload: load }
+}
+
+/**
+ * Скидки по договорам — срез «на сейчас», как своевременность.
+ * Перезапрашивается при смене кассы.
+ */
+export function useAnalyticsDiscounts(cashBoxId: () => string | null) {
+  const discounts = ref<AnalyticsDiscounts | null>(null)
+  const loading = ref(false)
+
+  const params = computed(() => query({ cashBoxId: cashBoxId() }))
+
+  async function load() {
+    const qs = params.value
+    loading.value = true
+    try {
+      const res = await api.get<AnalyticsDiscounts>(`/analytics/discounts?${qs}`)
+      // Касса могла смениться, пока ходили, — устаревший ответ не применяем.
+      if (qs !== params.value) return
+      discounts.value = res
+    } catch (e: any) {
+      if (qs !== params.value) return
+      // 403 — закрытый тарифом раздел, а не сбой: страница покажет заглушку.
+      if (e?.status !== 403) console.error('Failed to load analytics discounts:', e)
+    } finally {
+      if (qs === params.value) loading.value = false
+    }
+  }
+
+  watch(params, load, { immediate: true })
+
+  return { discounts, loading, reload: load }
 }
 
 /**
@@ -204,6 +239,22 @@ export async function fetchTimelinessDetails(opts: {
     offset: opts.offset ? String(opts.offset) : undefined,
   })
   return api.get<TimelinessDetails>(`/analytics/timeliness-details?${qs}`)
+}
+
+/** Сделки за цифрой блока «Скидки» — все или одна группа. Зовётся по клику. */
+export async function fetchDiscountDetails(opts: {
+  group?: DiscountGroupKey | null
+  cashBoxId?: string | null
+  limit?: number
+  offset?: number
+}): Promise<DiscountDetails> {
+  const qs = query({
+    group: opts.group,
+    cashBoxId: opts.cashBoxId,
+    limit: opts.limit != null ? String(opts.limit) : undefined,
+    offset: opts.offset ? String(opts.offset) : undefined,
+  })
+  return api.get<DiscountDetails>(`/analytics/discounts-details?${qs}`)
 }
 
 /**

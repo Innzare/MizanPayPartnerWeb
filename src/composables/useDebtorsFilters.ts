@@ -18,6 +18,8 @@ export interface DebtorsFilterState {
   cities: string[]
   product: string
   clientKey: string
+  /** Скидка по договору: есть / нет; пусто — без фильтра. */
+  discount: '' | 'yes' | 'no'
 }
 
 function emptyState(): DebtorsFilterState {
@@ -31,6 +33,7 @@ function emptyState(): DebtorsFilterState {
     cities: [],
     product: '',
     clientKey: '',
+    discount: '',
   }
 }
 
@@ -48,6 +51,7 @@ export function useDebtorsFilters(options?: { labels?: () => { client?: string }
     for (const k of NUMERIC_KEYS) if (s[k] != null) out[k] = s[k] as number
     for (const k of TEXT_KEYS) if (String(s[k]).trim()) out[k] = String(s[k]).trim()
     if (s.cities.length) out.cities = s.cities.join(',')
+    if (s.discount) out.discount = s.discount
     return out
   })
 
@@ -60,6 +64,7 @@ export function useDebtorsFilters(options?: { labels?: () => { client?: string }
     if (s.cities.length) n++
     if (s.product.trim()) n++
     if (s.clientKey) n++
+    if (s.discount) n++
     return n
   })
 
@@ -108,6 +113,13 @@ export function useDebtorsFilters(options?: { labels?: () => { client?: string }
     if (s.clientKey) {
       out.push({ key: 'client', label: `Клиент: ${l.client ?? '—'}`, clear: () => { s.clientKey = '' } })
     }
+    if (s.discount) {
+      out.push({
+        key: 'discount',
+        label: s.discount === 'yes' ? 'Есть скидка' : 'Без скидки',
+        clear: () => { s.discount = '' },
+      })
+    }
     return out
   })
 
@@ -129,6 +141,8 @@ export function useDebtorsFilters(options?: { labels?: () => { client?: string }
     for (const k of TEXT_KEYS) next[k] = str(q[k])
     const cities = str(q.cities)
     if (cities) next.cities = cities.split(',').filter(Boolean)
+    const discount = str(q.discount)
+    if (discount === 'yes' || discount === 'no') next.discount = discount
     state.value = next
   }
 

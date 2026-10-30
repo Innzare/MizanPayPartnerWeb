@@ -60,6 +60,7 @@ const counts = computed(() => {
     remaining: s.remainingFrom != null || s.remainingTo != null ? 1 : 0,
     product: (s.product.trim() ? 1 : 0) + (s.cities.length ? 1 : 0),
     client: s.clientKey ? 1 : 0,
+    discount: s.discount ? 1 : 0,
   }
 })
 
@@ -70,6 +71,12 @@ function clearSection(name: string) {
   if (name === 'remaining') { s.remainingFrom = null; s.remainingTo = null }
   if (name === 'product') { s.product = ''; s.cities = [] }
   if (name === 'client') s.clientKey = ''
+  if (name === 'discount') s.discount = ''
+}
+
+/** Скидка: один выбор, повторное нажатие снимает. */
+function pickDiscount(v: 'yes' | 'no') {
+  props.state.discount = props.state.discount === v ? '' : v
 }
 
 function toggle(list: string[], value: string) {
@@ -209,6 +216,26 @@ async function removePreset(p: { id: string; name: string }) {
               @maska="(e: any) => setNum('remainingFrom', parseMasked(e))" />
             <input v-clear :value="state.remainingTo ?? ''" v-maska="CURRENCY_MASK" class="fp-input" placeholder="до"
               @maska="(e: any) => setNum('remainingTo', parseMasked(e))" />
+          </div>
+        </section>
+
+        <!-- Скидка по договору -->
+        <section class="fp-section" :class="{ 'fp-section--on': counts.discount }">
+          <div class="fp-section-head">
+            <v-icon icon="mdi-sale-outline" size="15" class="fp-section-icon" />
+            <span class="fp-section-title">Скидка</span>
+            <span v-if="counts.discount" class="fp-section-count">1</span>
+            <button v-if="counts.discount" type="button" class="fp-section-clear" @click="clearSection('discount')">
+              Сбросить
+            </button>
+          </div>
+          <div class="fp-chips">
+            <button type="button" class="fp-chip" :class="{ 'fp-chip--on': state.discount === 'yes' }" @click="pickDiscount('yes')">
+              Есть скидка
+            </button>
+            <button type="button" class="fp-chip" :class="{ 'fp-chip--on': state.discount === 'no' }" @click="pickDiscount('no')">
+              Без скидки
+            </button>
           </div>
         </section>
 

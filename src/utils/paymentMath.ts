@@ -490,6 +490,16 @@ export function grossProfitBase(
 }
 
 /**
+ * Какая часть дохода по сделке прощена скидкой, в процентах. null — нечего
+ * показывать (скидки нет или доход неизвестен).
+ */
+export function discountShareOfIncome(discount: number | null | undefined, income: number | null | undefined): number | null {
+  const d = Math.max(Math.round(discount ?? 0), 0)
+  const base = Math.round(income ?? 0)
+  return d > 0 && base > 0 ? (d / base) * 100 : null
+}
+
+/**
  * Сколько будет прощено при досрочном погашении введённой суммой.
  *
  * Железное правило владельца: прощается только заработок партнёра, закупка

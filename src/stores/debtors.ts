@@ -59,6 +59,8 @@ export interface DebtorRow {
   purchasePrice: number | null
   markup: number | null
   discount: number
+  /** Доход по сделке без скидки; null — нет права видеть себестоимость. */
+  incomeBase: number | null
   comment: string | null
   createdByStaffId: string | null
   createdByStaffName: string | null

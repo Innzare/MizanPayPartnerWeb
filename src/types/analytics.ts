@@ -356,3 +356,42 @@ export interface CashBoxMonthsResponse {
   /** Прогноз: неоплаченные платежи со сроком после текущего месяца. */
   forecast: Omit<CashBoxForecastMonth, 'month'> & { months: CashBoxForecastMonth[] }
 }
+
+/** Группы блока «Скидки» — те же ключи, что у сервера (DISCOUNT_GROUPS). */
+export type DiscountGroupKey = 'active' | 'completed'
+
+/** Блок «Скидки» в аналитике — срез «на сейчас», без периода. */
+export interface AnalyticsDiscounts {
+  deals: number
+  amount: number
+  clients: number
+  avgAmount: number
+  maxAmount: number
+  /** Доход по этим сделкам без скидки; null — нет права видеть себестоимость. */
+  income: number | null
+  /** Из них — закрытые досрочно с прощением остатка. */
+  forgivenDeals: number
+  groups: Array<{ key: DiscountGroupKey; deals: number; amount: number; clients: number }>
+}
+
+export interface DiscountDetailRow {
+  dealId: string
+  dealNumber: number
+  productName: string
+  clientName: string
+  amount: number
+  totalPrice: number
+  remaining: number
+  status: string
+  income: number | null
+  forgiven: boolean
+}
+
+export interface DiscountDetails {
+  items: DiscountDetailRow[]
+  count: number
+  total: number
+  clients: number
+  limit: number
+  offset: number
+}

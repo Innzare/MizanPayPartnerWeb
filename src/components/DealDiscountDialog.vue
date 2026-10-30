@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useMonthLocks } from '@/composables/useMonthLocks'
 /**
- * Скидка на остаток договора — дать или убрать.
+ * Скидка на остаток договора — дать или изменить.
  *
- * Убрать скидку — обратная операция: клиент снова должен её сумму, месяцы,
- * закрытые ею, открываются, а сумма раскладывается по графику теми же
- * режимами. Отмена оплаты скидку не трогает — только это окно.
+ * «Изменить» задаёт итоговую сумму скидки: больше — прирост снимается с
+ * открытых месяцев, меньше — разница возвращается в график (месяцы, закрытые
+ * скидкой, могут открыться снова), 0 — скидка убрана целиком. Отмена оплаты
+ * скидку не трогает — только это окно.
  *
  * Отличие от прощения при досрочном погашении: там договор закрывается, а
  * здесь клиент продолжает платить по графику — просто должен меньше. Ситуация
@@ -19,7 +20,7 @@ import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import PaymentSchedulePreview from '@/components/PaymentSchedulePreview.vue'
-import { formatCurrency, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
+import { formatCurrency, CURRENCY_MASK, maskedMoney, parseMasked } from '@/utils/formatters'
 import { redistribute, type RedistributeMode } from '@/utils/redistribute'
 import * as money from '@/utils/paymentMath'
 import type { Deal, Payment } from '@/types'
@@ -30,8 +31,11 @@ const props = defineProps<{
   /** Весь график сделки — по нему считается остаток и превью. */
   schedule: Payment[]
   fullscreen?: boolean
-  /** `remove` — убрать скидку целиком. По умолчанию — дать скидку. */
-  action?: 'apply' | 'remove'
+  /**
+   * `apply` — дать скидку (её ещё нет); `edit` — изменить данную;
+   * `remove` — то же окно изменения, сразу с нулём.
+   */
+  action?: 'apply' | 'edit' | 'remove'
 }>()
 
 // Закрытые месяцы, в которые попадают оплаты сделки.
@@ -45,7 +49,7 @@ const closedMonths = computed(() => [...new Set(
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
-  /** Скидка применена или убрана — страница перечитывает сделку и график. */
+  /** Скидка применена, изменена или убрана — страница перечитывает сделку и график. */
   (e: 'applied'): void
 }>()
 
@@ -56,8 +60,18 @@ const open = computed({
   set: (v: boolean) => emit('update:modelValue', v),
 })
 
+/** Уже прощённое по договору. */
+const discountNow = computed(() => Math.max(Math.round(props.deal?.discount ?? 0), 0))
+
+const isEdit = computed(() => props.action === 'edit' || props.action === 'remove')
+
+/** «Дать»: сколько скинуть. */
 const amount = ref<number | null>(null)
+/** «Изменить»: какой станет скидка. Пусто — ещё не ввели. */
+const target = ref<number | null>(null)
 const mode = ref<RedistributeMode>('EQUAL')
+/** Партнёр сам выбрал режим — больше не подменяем его умолчанием. */
+const modeTouched = ref(false)
 const manualSchedule = ref<Record<string, number>>({})
 const saving = ref(false)
 
@@ -66,25 +80,47 @@ watch(
   (isOpen) => {
     if (!isOpen) return
     amount.value = null
-    mode.value = 'EQUAL'
+    target.value = props.action === 'remove' ? 0 : isEdit.value ? discountNow.value : null
+    mode.value = props.action === 'remove' ? 'LAST' : 'EQUAL'
+    modeTouched.value = false
     manualSchedule.value = {}
   },
 )
 
-const isRemove = computed(() => props.action === 'remove')
+/** Итоговая скидка после подтверждения; null — сумму ещё не ввели. */
+const nextDiscount = computed<number | null>(() => {
+  if (isEdit.value) return target.value == null ? null : Math.max(Math.round(target.value), 0)
+  const a = Math.max(Math.round(amount.value ?? 0), 0)
+  return a > 0 ? discountNow.value + a : null
+})
+
+/** Скидка растёт, уменьшается или не меняется. */
+const direction = computed<'up' | 'down' | 'none'>(() => {
+  const t = nextDiscount.value
+  if (t == null || t === discountNow.value) return 'none'
+  return t > discountNow.value ? 'up' : 'down'
+})
+/** На сколько меняется скидка. */
+const delta = computed(() => Math.abs((nextDiscount.value ?? discountNow.value) - discountNow.value))
+const isRemoveAll = computed(() => isEdit.value && nextDiscount.value === 0 && discountNow.value > 0)
 
 /** Пометка строк, закрытых скидкой, — та же, что пишет сервер. */
 const DISCOUNT_NOTE = 'Скидка по договору'
 
+const todayStart = () => {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
 /**
- * График, с которым работает окно. Когда скидку убирают, месяцы, закрытые
- * ею, снова открываются — показываем их открытыми с нулём, и превью видит,
- * сколько в них вернётся.
+ * График, с которым работает окно. Когда скидку уменьшают, месяцы, закрытые
+ * ею, могут открыться снова — показываем их открытыми с нулём, и превью
+ * видит, сколько в них вернётся. Так же их берёт сервер.
  */
 const sched = computed<Payment[]>(() => {
-  if (!isRemove.value) return props.schedule
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
+  if (direction.value !== 'down') return props.schedule
+  const today = todayStart()
   return props.schedule.map((p) =>
     p.status === 'CLOSED_EARLY' && p.note === DISCOUNT_NOTE && !money.isShortfallRow(p)
       ? { ...p, amount: 0, note: undefined, status: new Date(p.dueDate) < today ? 'OVERDUE' : 'PENDING' }
@@ -95,44 +131,40 @@ const sched = computed<Payment[]>(() => {
 /** Открытые строки — их и перестраиваем. */
 const openRows = computed(() => money.openRows(sched.value))
 
-/** Уже прощённое по договору. */
-const discountNow = computed(() => Math.max(Math.round(props.deal?.discount ?? 0), 0))
-
-/** Сколько клиент должен сейчас (с учётом прежних скидок). */
+/**
+ * Сколько клиент должен сейчас (с учётом прежних скидок). Внесённое
+ * округляем построчно, как сервер: у импортных сделок бывают копейки, и
+ * граница «больше долга» разошлась бы на рубль.
+ */
 const outstandingNow = computed(() => {
   if (!props.deal) return 0
-  return Math.max(
-    Math.round(money.contractBalance(props.deal) - discountNow.value - money.sumSettled(props.schedule)),
-    0,
-  )
+  const settled = props.schedule
+    .filter((p) => p.status === 'PAID' || p.status === 'CLOSED_EARLY')
+    .reduce((sum, p) => sum + Math.round(p.amount), 0)
+  return Math.max(Math.round(money.contractBalance(props.deal) - discountNow.value - settled), 0)
 })
 
-/** Потолок: заработок по сделке минус уже прощённое. */
-const maxDiscount = computed(() => {
-  if (!props.deal) return 0
-  return Math.max(money.grossProfitBase(props.deal) - discountNow.value, 0)
-})
+/** Весь заработок по сделке — больше этого скидка не бывает. */
+const incomeTotal = computed(() => (props.deal ? money.grossProfitBase(props.deal) : 0))
+/** «Дать»: сколько ещё можно скинуть. */
+const maxDiscount = computed(() => Math.max(incomeTotal.value - discountNow.value, 0))
 
-/** Убирают скидку всегда целиком — сумму не вводят. */
-const entered = computed(() =>
-  isRemove.value ? discountNow.value : Math.max(Math.round(amount.value ?? 0), 0),
-)
-const exceedsIncome = computed(() => !isRemove.value && entered.value > maxDiscount.value)
-/** Скидка больше долга — прощать нечего сверх остатка. */
-const exceedsDebt = computed(() => !isRemove.value && entered.value > outstandingNow.value)
+const exceedsIncome = computed(() => (nextDiscount.value ?? 0) > incomeTotal.value)
+/** Прирост больше долга — прощать нечего сверх остатка. */
+const exceedsDebt = computed(() => direction.value === 'up' && delta.value > outstandingNow.value)
 
 /**
  * Сумму, которую нельзя применить, не показываем в графике: партнёр решил бы,
  * что всё в порядке, а подтвердить окно не даст.
  */
-const valid = computed(() => entered.value > 0 && !exceedsIncome.value && !exceedsDebt.value)
+const valid = computed(() => direction.value !== 'none' && !exceedsIncome.value && !exceedsDebt.value)
 
-/** Каким станет остаток после скидки (или после её снятия). */
+/** Каким станет остаток после изменения скидки. */
 const outstandingAfter = computed(() => {
   if (!valid.value) return outstandingNow.value
-  return isRemove.value
-    ? outstandingNow.value + entered.value
-    : Math.max(outstandingNow.value - entered.value, 0)
+  return direction.value === 'down'
+    ? outstandingNow.value + delta.value
+    : Math.max(outstandingNow.value - delta.value, 0)
 })
 
 /**
@@ -152,21 +184,40 @@ const manualSum = computed(() =>
   openRows.value.reduce((s, r) => s + Math.round(manualSchedule.value[r.id] ?? 0), 0),
 )
 
+/**
+ * Прошлые месяцы, которые уменьшение скидки откроет снова, — они сразу станут
+ * просроченными и попадут в «Должники».
+ */
+const reopenedOverdue = computed(() => {
+  if (direction.value !== 'down' || !valid.value) return []
+  const today = todayStart()
+  const after = new Map(preview.value.rows.map((r) => [r.id, r.amount]))
+  return props.schedule
+    .filter((p) =>
+      p.status === 'CLOSED_EARLY' && p.note === DISCOUNT_NOTE && !money.isShortfallRow(p)
+      && new Date(p.dueDate) < today && (after.get(p.id) ?? 0) > 0)
+    .map((p) => p.number)
+})
+
 const APPLY_MODES: { key: RedistributeMode; label: string; hint: string }[] = [
   { key: 'EQUAL', label: 'Поровну', hint: 'Все оставшиеся платежи уменьшатся понемногу' },
   { key: 'NEXT', label: 'В ближайший', hint: 'Ближайший платёж станет меньше или закроется целиком' },
   { key: 'LAST', label: 'В последний', hint: 'Уменьшится последний платёж, срок может сократиться' },
   { key: 'MANUAL', label: 'Вручную', hint: 'Сами проставьте новые суммы — их сумма должна равняться остатку' },
 ]
-const REMOVE_MODES: { key: RedistributeMode; label: string; hint: string }[] = [
-  { key: 'EQUAL', label: 'Поровну', hint: 'Сумма скидки разойдётся по всем оставшимся платежам' },
-  { key: 'NEXT', label: 'В ближайший', hint: 'Ближайший платёж вырастет на всю сумму скидки' },
-  { key: 'LAST', label: 'В последний', hint: 'Последний платёж вырастет на всю сумму скидки' },
-  { key: 'MANUAL', label: 'Вручную', hint: 'Сами проставьте новые суммы — их сумма должна равняться остатку' },
-]
-const MODES = computed(() => (isRemove.value ? REMOVE_MODES : APPLY_MODES))
+const RETURN_MODES = computed<{ key: RedistributeMode; label: string; hint: string }[]>(() => {
+  const sum = formatCurrency(delta.value)
+  return [
+    { key: 'EQUAL', label: 'Поровну', hint: 'Все оставшиеся платежи, включая месяцы, закрытые скидкой, станут равными' },
+    { key: 'NEXT', label: 'В ближайший', hint: `Ближайший платёж вырастет на ${sum}` },
+    { key: 'LAST', label: 'В последний', hint: `Последний платёж вырастет на ${sum} — остальные месяцы не изменятся` },
+    { key: 'MANUAL', label: 'Вручную', hint: 'Сами проставьте новые суммы — их сумма должна равняться остатку' },
+  ]
+})
+const MODES = computed(() => (direction.value === 'down' ? RETURN_MODES.value : APPLY_MODES))
 
-function pickMode(m: RedistributeMode) {
+function pickMode(m: RedistributeMode, byUser = true) {
+  if (byUser) modeTouched.value = true
   mode.value = m
   if (m === 'MANUAL') {
     try {
@@ -180,22 +231,44 @@ function pickMode(m: RedistributeMode) {
   }
 }
 
+/**
+ * Сменилось направление — сменился и набор строк. Пока партнёр режим не
+ * выбирал, при уменьшении скидки ставим «В последний»: «Поровну» открыло бы
+ * все месяцы, закрытые скидкой, и прошлые сразу стали бы просроченными.
+ * Ручные суммы пересобираем.
+ */
+watch(direction, (dir) => {
+  if (!modeTouched.value) mode.value = dir === 'down' ? 'LAST' : 'EQUAL'
+  if (mode.value === 'MANUAL') pickMode('MANUAL', false)
+})
+
+/** Сумму некуда разнести: в графике нет открытых платежей. */
+const noRows = computed(() => valid.value && openRows.value.length === 0)
+
 const canSubmit = computed(
   () =>
     !saving.value &&
-    entered.value > 0 &&
-    !exceedsIncome.value &&
-    !exceedsDebt.value &&
+    valid.value &&
     openRows.value.length > 0 &&
     !(mode.value === 'MANUAL' && !!preview.value.error),
 )
 
+const submitLabel = computed(() => {
+  if (!isEdit.value) return 'Дать скидку'
+  return isRemoveAll.value ? 'Убрать скидку' : 'Сохранить'
+})
+
 async function submit() {
-  if (!props.deal || !canSubmit.value) return
+  if (!props.deal || !canSubmit.value || nextDiscount.value == null) return
+  const before = discountNow.value
+  const after = nextDiscount.value
   saving.value = true
   try {
-    await api.post(isRemove.value ? `/deals/${props.deal.id}/discount/remove` : `/deals/${props.deal.id}/discount`, {
-      ...(isRemove.value ? {} : { amount: entered.value }),
+    // Одна операция на любое изменение: сервер получает итоговую сумму и ту,
+    // что видел партнёр, — если скидку успели изменить, он откажет.
+    await api.post(`/deals/${props.deal.id}/discount/set`, {
+      target: after,
+      expectedCurrent: before,
       mode: mode.value,
       manual:
         mode.value === 'MANUAL'
@@ -206,14 +279,25 @@ async function submit() {
           : undefined,
     })
     toast.success(
-      isRemove.value
-        ? `Скидка ${formatCurrency(entered.value)} убрана`
-        : `Скидка ${formatCurrency(entered.value)} применена`,
+      after === 0
+        ? `Скидка ${formatCurrency(before)} убрана`
+        : before === 0
+          ? `Скидка ${formatCurrency(after)} применена`
+          : after > before
+            ? `Скидка увеличена до ${formatCurrency(after)}`
+            : `Скидка уменьшена до ${formatCurrency(after)}`,
     )
     open.value = false
     emit('applied')
   } catch (e: any) {
-    toast.error(e, isRemove.value ? 'Не удалось убрать скидку' : 'Не удалось применить скидку')
+    if (e?.code === 'DISCOUNT_STALE') {
+      // Скидку изменили в другом окне — показываем актуальную сделку.
+      toast.error(e, 'Скидку только что изменили')
+      open.value = false
+      emit('applied')
+    } else {
+      toast.error(e, isEdit.value ? 'Не удалось изменить скидку' : 'Не удалось применить скидку')
+    }
   } finally {
     saving.value = false
   }
@@ -228,10 +312,10 @@ async function submit() {
       </button>
 
       <div class="dd-head">
-        <div class="dd-title">{{ isRemove ? 'Убрать скидку' : 'Скидка по договору' }}</div>
+        <div class="dd-title">{{ isEdit ? 'Изменить скидку' : 'Скидка по договору' }}</div>
         <div class="dd-sub">
-          {{ isRemove
-            ? 'Клиент снова будет должен сумму скидки'
+          {{ isEdit
+            ? 'Новая сумма скидки — не больше дохода по договору'
             : 'Долг уменьшится, договор продолжит действовать' }}
         </div>
       </div>
@@ -242,17 +326,67 @@ async function submit() {
             <span>Клиент должен сейчас</span>
             <strong>{{ formatCurrency(outstandingNow) }}</strong>
           </div>
-          <div v-if="isRemove" class="dd-fact">
-            <span>Скидка по договору</span>
-            <strong>{{ formatCurrency(discountNow) }}</strong>
-          </div>
+          <template v-if="isEdit">
+            <div class="dd-fact">
+              <span>Скидка сейчас</span>
+              <strong>{{ formatCurrency(discountNow) }}</strong>
+            </div>
+            <div class="dd-fact">
+              <span>Скидка не может быть больше</span>
+              <strong>{{ formatCurrency(incomeTotal) }}</strong>
+            </div>
+          </template>
           <div v-else class="dd-fact">
             <span>Можно скинуть не более</span>
             <strong>{{ formatCurrency(maxDiscount) }}</strong>
           </div>
         </div>
 
-        <div v-if="!isRemove" class="mb-4">
+        <div v-if="isEdit" class="mb-4">
+          <label class="field-label">Новая сумма скидки</label>
+          <div class="input-with-suffix">
+            <!-- Ноль здесь значимый («убрать полностью») — показываем его, а
+                 не пустое поле, как у обычных денежных полей. -->
+            <input v-clear
+              :value="target == null ? '' : target === 0 ? '0' : maskedMoney(target)"
+              v-maska="CURRENCY_MASK"
+              type="text"
+              inputmode="numeric"
+              class="field-input"
+              @maska="(e: any) => target = e.detail?.unmasked === '' ? null : parseMasked(e)"
+            />
+            <span class="input-suffix">₽</span>
+          </div>
+          <button
+            v-if="target !== 0"
+            type="button"
+            class="dd-link"
+            @click="target = 0"
+          >
+            <v-icon icon="mdi-tag-off-outline" size="15" />
+            Убрать скидку полностью
+          </button>
+          <div v-if="exceedsIncome" class="dd-error">
+            Это больше дохода по договору ({{ formatCurrency(incomeTotal) }}).
+            Закупочную цену скидка не затрагивает.
+          </div>
+          <div v-else-if="exceedsDebt" class="dd-error">
+            Скидка вырастет на {{ formatCurrency(delta) }} — это больше остатка долга ({{ formatCurrency(outstandingNow) }}).
+          </div>
+          <div v-else-if="target == null" class="dd-hint">
+            Введите сумму или нажмите «Убрать скидку полностью»
+          </div>
+          <div v-else-if="direction === 'none'" class="dd-hint">Скидка не изменилась</div>
+          <div v-else-if="isRemoveAll" class="dd-hint">
+            Скидки не будет: клиент снова должен {{ formatCurrency(delta) }}
+          </div>
+          <div v-else-if="direction === 'down'" class="dd-hint">
+            Скидка уменьшится на {{ formatCurrency(delta) }} — клиент снова должен эту сумму
+          </div>
+          <div v-else class="dd-hint">Скидка вырастет на {{ formatCurrency(delta) }}</div>
+        </div>
+
+        <div v-else class="mb-4">
           <label class="field-label">Сумма скидки</label>
           <div class="input-with-suffix">
             <input v-clear
@@ -276,8 +410,13 @@ async function submit() {
           </div>
         </div>
 
+        <div v-if="noRows" class="dd-error mb-4">
+          {{ direction === 'down'
+            ? 'Скидку некуда вернуть: в графике нет открытых платежей'
+            : 'В графике нет открытых платежей — скидку не к чему применить' }}
+        </div>
         <div v-if="valid && openRows.length" class="dd-modes mb-4">
-          <div class="dd-modes-head">{{ isRemove ? 'Куда вернуть сумму скидки' : 'Как распределить скидку' }}</div>
+          <div class="dd-modes-head">{{ direction === 'down' ? 'Куда вернуть сумму' : 'Как распределить скидку' }}</div>
           <div class="dd-mode-row">
             <button
               v-for="m in MODES"
@@ -334,7 +473,15 @@ async function submit() {
           <span>{{ valid ? 'Останется к оплате' : 'Останется к оплате сейчас' }}</span>
           <strong>{{ formatCurrency(outstandingAfter) }}</strong>
         </div>
-        <div v-if="!isRemove && valid && outstandingAfter === 0" class="dd-note">
+        <div v-if="reopenedOverdue.length" class="dd-note dd-note--warn">
+          <v-icon icon="mdi-alert-outline" size="16" />
+          <span>
+            {{ reopenedOverdue.length === 1 ? 'Месяц' : 'Месяцы' }} №{{ reopenedOverdue.join(', №') }}
+            {{ reopenedOverdue.length === 1 ? 'снова откроется и сразу станет просроченным' : 'снова откроются и сразу станут просроченными' }}.
+            Чтобы этого избежать, выберите «В последний».
+          </span>
+        </div>
+        <div v-if="direction === 'up' && valid && outstandingAfter === 0" class="dd-note">
           <v-icon icon="mdi-flag-checkered" size="16" />
           <span>Скидка покрывает весь остаток — договор будет закрыт</span>
         </div>
@@ -347,7 +494,7 @@ async function submit() {
         </div>
         <div v-if="deal?.coInvestors?.length" class="dd-note dd-note--warn">
           <v-icon icon="mdi-account-multiple-outline" size="16" />
-          <span v-if="isRemove">В сделке есть инвесторы: доход вырастет на сумму скидки, их доля считается от него</span>
+          <span v-if="direction === 'down'">В сделке есть инвесторы: доход вырастет на {{ formatCurrency(delta) }}, их доля считается от него</span>
           <span v-else>В сделке есть инвесторы: доход уменьшится, их доля считается от уменьшенного</span>
         </div>
       </div>
@@ -356,7 +503,7 @@ async function submit() {
         <button class="btn-secondary flex-grow-1" @click="open = false">Отмена</button>
         <button class="btn-primary flex-grow-1" :disabled="!canSubmit" @click="submit">
           <v-progress-circular v-if="saving" indeterminate size="18" width="2" />
-          <span v-else>{{ isRemove ? 'Убрать скидку' : 'Дать скидку' }}</span>
+          <span v-else>{{ submitLabel }}</span>
         </button>
       </div>
     </v-card>
@@ -397,6 +544,13 @@ async function submit() {
 .dd-fact strong { color: rgba(var(--v-theme-on-surface), 0.9); }
 
 .dd-error { font-size: 12px; color: #dc2626; margin-top: 6px; }
+.dd-hint { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55); margin-top: 6px; }
+.dd-link {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 8px; padding: 0; border: none; background: none;
+  font-size: 12.5px; font-weight: 600; color: #c2413b; cursor: pointer;
+}
+.dd-link:hover { text-decoration: underline; }
 
 .dd-modes {
   border: 1px solid rgba(var(--v-theme-on-surface), 0.1);

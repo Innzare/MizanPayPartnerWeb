@@ -13,6 +13,7 @@ import DealInvestorsTab from '@/components/deals/DealInvestorsTab.vue'
 import { formatCurrency, formatCurrencyShort, formatDate, formatDateShort, formatDateShortYear, formatMonths, formatPercent, formatPhone, pluralizeRu, timeAgo, CURRENCY_MASK, parseMasked } from '@/utils/formatters'
 import { DEAL_STATUS_CONFIG, PAYMENT_STATUS_CONFIG } from '@/constants/statuses'
 import { userName, clientProfileName, type Deal, type ClientProfile, type Payment } from '@/types'
+import { grossProfitBase } from '@/utils/paymentMath'
 import { dealGuarantors } from '@/utils/dealGuarantors'
 import { useAuthStore } from '@/stores/auth'
 import ClientLink from '@/components/ClientLink.vue'
@@ -1018,15 +1019,45 @@ async function saveComment() {
 // Не путать с прощением при досрочном закрытии: здесь договор продолжает
 // действовать, клиент просто должен меньше.
 const discountDialog = ref(false)
-/** Дать скидку или убрать уже данную — одно окно на оба действия. */
-const discountAction = ref<'apply' | 'remove'>('apply')
+/**
+ * Дать скидку (её ещё нет) или изменить данную — одно окно. В «Изменить»
+ * скидку можно и увеличить, и уменьшить, и убрать совсем.
+ */
+const discountAction = ref<'apply' | 'edit'>('apply')
 /** Право то же, что и на прощение: это списание заработка партнёра. */
 const canDiscount = computed(() => authStore.can('payments.forgive'))
+/** Менять скидку можно только у действующего договора. */
+const canEditDiscount = computed(() => canDiscount.value && deal.value?.status === 'ACTIVE')
 
-function openDiscount(action: 'apply' | 'remove') {
+function openDiscount(action: 'apply' | 'edit') {
   discountAction.value = action
   discountDialog.value = true
 }
+
+/** Значок скидки в шапке: по нажатию — то же окно «Изменить скидку». */
+function onDiscountBadge() {
+  if (canEditDiscount.value) openDiscount('edit')
+}
+
+/**
+ * Какая часть дохода прощена. Только при праве видеть себестоимость: по
+ * сумме и проценту восстанавливается наценка.
+ */
+const discountIncomePct = computed<number | null>(() => {
+  if (!deal.value || !authStore.can('deals.cost')) return null
+  const base = grossProfitBase(deal.value)
+  return base > 0 && dealDiscount.value > 0 ? (dealDiscount.value / base) * 100 : null
+})
+
+const discountBadgeHint = computed(() => {
+  const pct = discountIncomePct.value
+  let text = `Применена скидка ${formatCurrency(dealDiscount.value)}`
+  if (pct != null) text += ` · ${formatPercent(pct)} дохода по сделке`
+  text += ' · клиент её не платит'
+  if (canEditDiscount.value) text += '. Нажмите, чтобы изменить'
+  else if (canDiscount.value && deal.value?.status !== 'ACTIVE') text += '. Изменить можно у действующего договора'
+  return text
+})
 
 /** После скидки перечитываем и сделку, и график: изменились обе стороны. */
 async function onDiscountApplied() {
@@ -1208,6 +1239,20 @@ async function confirmReopen() {
             :name="deal.client ? userName(deal.client) : deal.clientProfile ? clientProfileName(deal.clientProfile) : deal.externalClientName || '—'"
           />
         </div>
+        <!-- Скидка по договору — видна сразу, по нажатию её можно изменить. -->
+        <button
+          v-if="dealDiscount > 0"
+          type="button"
+          class="dhm-discount"
+          :class="{ 'dhm-discount--static': !canEditDiscount }"
+          :aria-label="discountBadgeHint"
+          @click="onDiscountBadge"
+        >
+          <span class="dhm-discount-icon"><v-icon icon="mdi-percent" size="16" /></span>
+          <span class="dhm-discount-text">Скидка <strong>− {{ formatCurrency(dealDiscount) }}</strong></span>
+          <span v-if="discountIncomePct != null" class="dhm-discount-pct">{{ formatPercent(discountIncomePct) }} дохода</span>
+          <v-icon v-if="canEditDiscount" icon="mdi-chevron-right" size="18" class="dhm-discount-chev" />
+        </button>
         <!-- Даты и касса — ячейками по 50%: подпись над значением, а не одной
              сплошной строкой через точки. -->
         <div class="dhm-facts">
@@ -1231,7 +1276,7 @@ async function confirmReopen() {
       </div>
 
       <!-- Hero -->
-      <div v-else class="detail-hero mb-6">
+      <div v-else class="detail-hero mb-6" :class="{ 'detail-hero--discount': dealDiscount > 0 }">
         <div class="detail-hero-actions">
           <button
             v-if="dealCashBox"
@@ -1292,6 +1337,24 @@ async function confirmReopen() {
             </template>
           </div>
         </div>
+        <!-- Скидка по договору — крупно в углу шапки: её должно быть видно
+             сразу. По нажатию — окно «Изменить скидку». -->
+        <button
+          v-if="dealDiscount > 0"
+          type="button"
+          class="detail-hero-discount"
+          :class="{ 'detail-hero-discount--static': !canEditDiscount }"
+          :aria-label="discountBadgeHint"
+          @click="onDiscountBadge"
+        >
+          <span class="detail-hero-discount-icon"><v-icon icon="mdi-percent" size="28" /></span>
+          <span class="detail-hero-discount-body">
+            <span class="detail-hero-discount-label">Скидка</span>
+            <span class="detail-hero-discount-sum">− {{ formatCurrency(dealDiscount) }}</span>
+            <span v-if="discountIncomePct != null" class="detail-hero-discount-pct">{{ formatPercent(discountIncomePct) }} дохода</span>
+          </span>
+          <v-tooltip activator="parent" location="top" max-width="300">{{ discountBadgeHint }}</v-tooltip>
+        </button>
       </div>
 
       <!-- Шапка: главные цифры договора, прогресс и действия. Раньше это были
@@ -1315,11 +1378,11 @@ async function confirmReopen() {
               </button>
             </template>
             <v-card rounded="lg" elevation="8" class="dpm-menu">
-              <button v-if="canDiscount && deal.status === 'ACTIVE'" class="dpm-menu-item" @click="openDiscount('apply')">
+              <button v-if="canEditDiscount && dealDiscount === 0" class="dpm-menu-item" @click="openDiscount('apply')">
                 <v-icon icon="mdi-sale-outline" size="18" />Дать скидку
               </button>
-              <button v-if="canDiscount && deal.status === 'ACTIVE' && dealDiscount > 0" class="dpm-menu-item" @click="openDiscount('remove')">
-                <v-icon icon="mdi-tag-off-outline" size="18" />Убрать скидку
+              <button v-if="canEditDiscount && dealDiscount > 0" class="dpm-menu-item" @click="openDiscount('edit')">
+                <v-icon icon="mdi-sale-outline" size="18" />Изменить скидку
               </button>
               <button v-if="statusAction" class="dpm-menu-item" :style="{ color: statusAction.color }" @click="openStatusDialog()">
                 <v-icon icon="mdi-flag-checkered" size="18" />{{ statusAction.label }}
@@ -1384,22 +1447,22 @@ async function confirmReopen() {
               Принять оплату
             </button>
             <button
-              v-if="canDiscount && deal.status === 'ACTIVE'"
+              v-if="canEditDiscount && dealDiscount === 0"
               class="status-action-btn status-action-btn--ghost"
               @click="openDiscount('apply')"
             >
               <v-icon icon="mdi-sale-outline" size="16" />
               Дать скидку
             </button>
-            <!-- Скидку снимает только эта кнопка: отмена оплаты её не
+            <!-- Скидку меняет и снимает только это окно: отмена оплаты её не
                  возвращает в платежи. -->
             <button
-              v-if="canDiscount && deal.status === 'ACTIVE' && dealDiscount > 0"
+              v-if="canEditDiscount && dealDiscount > 0"
               class="status-action-btn status-action-btn--ghost"
-              @click="openDiscount('remove')"
+              @click="openDiscount('edit')"
             >
-              <v-icon icon="mdi-tag-off-outline" size="16" />
-              Убрать скидку
+              <v-icon icon="mdi-sale-outline" size="16" />
+              Изменить скидку
             </button>
             <button
               v-if="statusAction"
@@ -2927,6 +2990,41 @@ async function confirmReopen() {
   transform: translateY(-1px);
 }
 
+/* Скидка по договору — значок в правом нижнем углу шапки. Верхний угол
+   занят кассой и «Редактировать». */
+.detail-hero--discount .detail-hero-content { padding-right: 220px; }
+.detail-hero-discount {
+  position: absolute; right: 24px; bottom: 22px; z-index: 3;
+  display: flex; align-items: center; gap: 12px;
+  padding: 7px 18px 7px 7px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  backdrop-filter: blur(8px);
+  color: #fff; text-align: left;
+  cursor: pointer; transition: all 0.15s ease;
+}
+.detail-hero-discount:hover { background: rgba(255, 255, 255, 0.26); transform: translateY(-1px); }
+.detail-hero-discount--static { cursor: default; }
+.detail-hero-discount--static:hover { background: rgba(255, 255, 255, 0.16); transform: none; }
+.detail-hero-discount-icon {
+  width: 52px; height: 52px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: #fff; color: #047857;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.detail-hero-discount-body { display: flex; flex-direction: column; line-height: 1.15; }
+.detail-hero-discount-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  opacity: 0.8;
+}
+.detail-hero-discount-sum {
+  font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.detail-hero-discount-pct { font-size: 12px; opacity: 0.8; margin-top: 1px; white-space: nowrap; }
+@media (max-width: 960px) {
+  .detail-hero--discount .detail-hero-content { padding-right: 190px; }
+}
+
 /* Move-cashbox dialog */
 .move-cb-card { background: rgb(var(--v-theme-surface)); }
 .move-cb-header {
@@ -4201,6 +4299,27 @@ async function confirmReopen() {
     display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
     margin: 16px 8px 0;
   }
+  .dhm-discount {
+    display: flex; align-items: center; gap: 10px;
+    width: calc(100% - 16px); margin: 14px 8px 0;
+    padding: 7px 12px 7px 7px; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.16);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #fff; text-align: left; cursor: pointer;
+  }
+  .dhm-discount--static { cursor: default; }
+  .dhm-discount-icon {
+    width: 32px; height: 32px; border-radius: 50%; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    background: #fff; color: #047857;
+  }
+  .dhm-discount-text { font-size: 14px; white-space: nowrap; }
+  .dhm-discount-text strong { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .dhm-discount-pct {
+    font-size: 12px; opacity: 0.75; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .dhm-discount-chev { margin-left: auto; opacity: 0.8; flex: none; }
   .dhm-fact {
     display: flex; flex-direction: column; gap: 2px; min-width: 0;
     padding: 9px 12px; border-radius: 12px;

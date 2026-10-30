@@ -13,7 +13,7 @@ import MetricDetailDialog from '@/components/MetricDetailDialog.vue'
 import { useCashBoxesStore } from '@/stores/cashboxes'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
-import { useAnalyticsSummary, useAnalyticsMonthly, useAnalyticsMonthlySales, useAnalyticsTimeliness, fetchDealsBreakdown, fetchMonthDeals, fetchTimelinessDetails } from '@/composables/useAnalyticsOverview'
+import { useAnalyticsSummary, useAnalyticsMonthly, useAnalyticsMonthlySales, useAnalyticsTimeliness, useAnalyticsDiscounts, fetchDealsBreakdown, fetchDiscountDetails, fetchMonthDeals, fetchTimelinessDetails } from '@/composables/useAnalyticsOverview'
 import { pluralDays } from '@/utils/paymentAttribution'
 import ServerPager from '@/components/ServerPager.vue'
 import { PER_PAGE_OPTIONS, usePageSize } from '@/composables/useListPrefs'
@@ -24,6 +24,8 @@ import type {
   TimelinessBucketKey,
   TimelinessDetailRow,
   TimelinessSide,
+  DiscountDetailRow,
+  DiscountGroupKey,
 } from '@/types/analytics'
 import type { CapitalSummary } from '@/types'
 import { Bar, Line, Doughnut } from 'vue-chartjs'
@@ -284,6 +286,34 @@ function barWidth(b: TimelinessBucket, buckets: TimelinessBucket[]): string {
   if (!b.count) return '0%'
   const max = Math.max(1, ...buckets.map((x) => x.amount))
   return `${Math.max(2, Math.round((b.amount / max) * 100))}%`
+}
+
+// ── Скидки по договорам ──────────────────────────────────────────────────
+// Срез «на сейчас», как своевременность: сколько договоров со скидкой и
+// какую часть дохода по ним простили. Скидка — это и данная окном скидки, и
+// прощённый остаток при досрочном закрытии: оба лежат в одном поле сделки.
+const { discounts } = useAnalyticsDiscounts(() => selectedCashBoxId.value)
+
+const DISCOUNT_COLOR = '#3b82f6'
+const DISCOUNT_GROUP_LABELS: Record<DiscountGroupKey, string> = {
+  active: 'Действующие договоры',
+  completed: 'Завершённые',
+}
+
+/** Какая часть дохода по этим сделкам прощена. null — дохода не видно (права) или нет. */
+const discountIncomePct = computed<string | null>(() => {
+  const d = discounts.value
+  if (!d || d.income == null || d.income <= 0 || d.amount <= 0) return null
+  const pct = (d.amount / d.income) * 100
+  if (pct < 0.1) return '<0,1%'
+  return pct >= 10 ? `${Math.round(pct)}%` : `${pct.toFixed(1).replace('.', ',')}%`
+})
+
+function discountBarWidth(amount: number): string {
+  const groups = discounts.value?.groups ?? []
+  if (!amount) return '0%'
+  const max = Math.max(1, ...groups.map((g) => g.amount))
+  return `${Math.max(2, Math.round((amount / max) * 100))}%`
 }
 
 /** Средний ожидаемый платёж — сумма ожидаемого, делённая на число строк. */
@@ -1042,6 +1072,18 @@ async function loadMoreBreakdown() {
   if (metricLoading.value) return
   metricLoading.value = true
   try {
+    const dq = discountsQuery.value
+    if (metricSource.value === 'discounts' && dq) {
+      const res = await fetchDiscountDetails({
+        group: dq.group,
+        cashBoxId: selectedCashBoxId.value,
+        limit: BREAKDOWN_PAGE,
+        offset: metricItems.value.length,
+      })
+      metricItems.value = [...metricItems.value, ...res.items.map(discountDetailRow)]
+      return
+    }
+
     const q = timelinessQuery.value
     if (metricSource.value === 'timeliness' && q) {
       const res = await fetchTimelinessDetails({
@@ -1081,7 +1123,7 @@ const metricHasMore = computed(() => metricItems.value.length < metricCount.valu
 // Отличается только источником строк, поэтому источник запоминаем: от него
 // зависит догрузка. Список и там, и там — сделки: у своевременности это
 // сделки с платежами, попавшими в полосу возраста.
-const metricSource = ref<'deals' | 'timeliness'>('deals')
+const metricSource = ref<'deals' | 'timeliness' | 'discounts'>('deals')
 const timelinessQuery = ref<{ side: 'overdue' | 'early'; bucket: TimelinessBucketKey | null } | null>(null)
 const metricUnit = computed<'deals' | 'payments'>(() => 'deals')
 
@@ -1146,6 +1188,59 @@ async function openTimeliness(side: string, bucket: string | null) {
       limit: BREAKDOWN_PAGE,
     })
     metricItems.value = res.items.map((p) => timelinessDetailRow(s, p))
+    metricCount.value = res.count
+    // Итог считает сервер по всей выборке — в списке может быть лишь часть.
+    metricTotal.value = res.total
+  } catch (e: any) {
+    toast.error(e, 'Не удалось загрузить расшифровку')
+  } finally {
+    metricLoading.value = false
+  }
+}
+
+// ── Расшифровка скидок ───────────────────────────────────────────────────
+const discountsQuery = ref<{ group: DiscountGroupKey | null } | null>(null)
+
+/**
+ * Строка списка — сделка со скидкой. Подписи частей уникальны: модалка
+ * ключует части строки по подписи.
+ */
+function discountDetailRow(d: DiscountDetailRow) {
+  const parts = [{ label: 'договор', value: bdMoney(d.totalPrice) }]
+  if (d.income != null && d.income > 0) {
+    const pct = (d.amount / d.income) * 100
+    parts.push({ label: 'от дохода', value: pct >= 10 ? `${Math.round(pct)}%` : `${pct.toFixed(1).replace('.', ',')}%` })
+  }
+  parts.push({ label: 'статус', value: d.status === 'COMPLETED' ? 'завершён' : 'действует' })
+  if (d.forgiven) parts.push({ label: 'закрыт', value: 'с прощением остатка' })
+  return {
+    id: d.dealId,
+    title: d.productName || 'Сделка',
+    subtitle: d.clientName || '—',
+    value: d.amount,
+    parts,
+  }
+}
+
+/** Открыть расшифровку: все сделки со скидкой или одну группу. */
+async function openDiscounts(group: DiscountGroupKey | null) {
+  metricSource.value = 'discounts'
+  discountsQuery.value = { group }
+  metricTitle.value = group ? `Скидки · ${DISCOUNT_GROUP_LABELS[group]}` : 'Скидки'
+  metricHint.value = 'Сделки, где клиенту простили часть дохода — скидкой по договору или прощением остатка при досрочном закрытии. Нажмите на строку — откроется сделка.'
+  metricColor.value = DISCOUNT_COLOR
+  metricItems.value = []
+  metricTotal.value = 0
+  metricCount.value = 0
+  metricOpen.value = true
+  metricLoading.value = true
+  try {
+    const res = await fetchDiscountDetails({
+      group,
+      cashBoxId: selectedCashBoxId.value,
+      limit: BREAKDOWN_PAGE,
+    })
+    metricItems.value = res.items.map(discountDetailRow)
     metricCount.value = res.count
     // Итог считает сервер по всей выборке — в списке может быть лишь часть.
     metricTotal.value = res.total
@@ -1791,6 +1886,90 @@ async function openTimeliness(side: string, bucket: string | null) {
                 </div>
               </div>
               <div v-else class="tl-empty">{{ side.emptyText }}</div>
+            </v-card>
+          </v-col>
+        </v-row>
+      </div>
+
+      <!-- Скидки по договорам: сколько простили и по каким сделкам. Срез «на
+           сейчас», как своевременность, и под тем же замком тарифа. -->
+      <div class="an-timeliness-section">
+        <div class="an-section-title">Скидки</div>
+        <v-row class="mb-6">
+          <v-col cols="12">
+            <v-card rounded="lg" elevation="0" border class="pa-5">
+              <div class="chart-title mb-1">Скидки по договорам</div>
+              <div class="chart-subtitle mb-4">
+                Сделки, где клиенту простили часть дохода — скидкой или прощением остатка при досрочном закрытии
+              </div>
+
+              <div v-if="discounts?.deals" class="ds-grid">
+                <!-- Любая плитка открывает весь список: за всеми числами одна
+                     и та же выборка сделок. -->
+                <div class="tl-stats ds-stats">
+                  <div class="tl-stat tl-stat--click" @click="openDiscounts(null)">
+                    <div class="tl-stat-value" :style="{ color: DISCOUNT_COLOR }">{{ discounts.deals }}</div>
+                    <div class="tl-stat-label">Сделок со скидкой</div>
+                  </div>
+                  <div class="tl-stat tl-stat--click" @click="openDiscounts(null)">
+                    <ExactValue :value="discounts.amount" :hint="false">
+                      <div class="tl-stat-value" :style="{ color: DISCOUNT_COLOR }">
+                        {{ formatCurrencyShort(discounts.amount) }}<span
+                          v-if="discountIncomePct"
+                          class="tl-stat-pct"
+                        >&nbsp;/&nbsp;{{ discountIncomePct }}</span>
+                      </div>
+                    </ExactValue>
+                    <div class="tl-stat-label">
+                      Сумма скидок<template v-if="discountIncomePct"> и доля дохода</template>
+                      <v-tooltip v-if="discountIncomePct" text="Какую часть дохода по этим сделкам простили: сумма скидок ÷ доход × 100" location="top" max-width="320">
+                        <template #activator="{ props }">
+                          <v-icon v-bind="props" icon="mdi-information-outline" size="12" class="tl-info" @click.stop />
+                        </template>
+                      </v-tooltip>
+                    </div>
+                  </div>
+                  <div class="tl-stat tl-stat--click" @click="openDiscounts(null)">
+                    <div class="tl-stat-value">{{ discounts.clients }}</div>
+                    <div class="tl-stat-label">Клиентов</div>
+                  </div>
+                  <div class="tl-stat tl-stat--click" @click="openDiscounts(null)">
+                    <ExactValue :value="discounts.avgAmount" :hint="false">
+                      <div class="tl-stat-value">{{ formatCurrencyShort(discounts.avgAmount) }}</div>
+                    </ExactValue>
+                    <div class="tl-stat-label">Средняя скидка · макс. {{ formatCurrencyShort(discounts.maxAmount) }}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <div class="tl-age-head">
+                    <span class="tl-age-title">По договорам</span>
+                    <span v-if="discounts.forgivenDeals" class="tl-age-avg">
+                      из них закрыты с прощением остатка: {{ discounts.forgivenDeals }}
+                    </span>
+                  </div>
+                  <div class="tl-ages">
+                    <div
+                      v-for="g in discounts.groups"
+                      :key="g.key"
+                      class="tl-age"
+                      :class="{ 'tl-age--click': g.deals > 0 }"
+                      :title="g.deals ? 'Показать сделки' : ''"
+                      @click="g.deals && openDiscounts(g.key)"
+                    >
+                      <div class="tl-age-lbl ds-lbl">{{ DISCOUNT_GROUP_LABELS[g.key] }}</div>
+                      <div class="tl-age-bar-wrap">
+                        <div class="tl-age-bar" :style="{ width: discountBarWidth(g.amount), background: DISCOUNT_COLOR }" />
+                      </div>
+                      <div class="tl-age-val ds-val">
+                        {{ formatCurrencyShort(g.amount) }}
+                        <span class="tl-age-count">· {{ g.deals }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="tl-empty">Скидок по договорам нет</div>
             </v-card>
           </v-col>
         </v-row>
@@ -3705,6 +3884,15 @@ async function openTimeliness(side: string, bucket: string | null) {
 .tl-empty {
   padding: 18px 0; text-align: center; font-size: 13px;
   color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+/* Скидки: плитки слева, группы справа — на широком экране в одну строку. */
+.ds-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
+.ds-stats { margin-bottom: 0; }
+.ds-lbl { flex-basis: 160px; }
+.ds-val { min-width: 110px; }
+@media (min-width: 1280px) {
+  .ds-grid { grid-template-columns: 3fr 2fr; gap: 32px; align-items: center; }
 }
 
 @media (max-width: 600px) {

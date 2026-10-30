@@ -610,7 +610,7 @@ const ALL_COLUMNS: DealColumn[] = [
   { key: 'monthly', label: 'Ежемесячно', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
   { key: 'paidTotal', label: 'Оплачено всего', align: 'end', sortable: false, group: 'money', extra: 'paidTotal', tdClass: 'text-end text-no-wrap' },
   { key: 'overdueAmount', label: 'Сумма просрочки', align: 'end', sortable: false, group: 'money', extra: 'overdue', tdClass: 'text-end text-no-wrap' },
-  { key: 'discount', label: 'Скидка', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'discount', label: 'Скидка', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
 
   // ── Платежи ──
   { key: 'progress', label: 'Прогресс', align: 'center', sortable: true, group: 'payments', tdClass: 'text-center', tdStyle: 'min-width: 140px;' },
@@ -1113,9 +1113,19 @@ const SORT_ACCESSOR: Record<string, (d: Deal) => number | string> = {
   createdAt: (d) => new Date(d.createdAt).getTime(),
   dealDate: (d) => new Date(d.dealDate ?? d.createdAt).getTime(),
   lastPayment: (d) => dealLastPaymentTs(d) ?? 0,
+  discount: (d) => d.discount ?? 0,
 }
 
 const isTrashTab = computed(() => tab.value === 3)
+
+/**
+ * Какая часть дохода прощена скидкой — только при праве видеть
+ * себестоимость: по сумме и проценту восстанавливается наценка.
+ */
+const canSeeCost = computed(() => authStore.can('deals.cost'))
+function discountPct(d: Deal): number | null {
+  return canSeeCost.value ? money.discountShareOfIncome(d.discount, money.grossProfitBase(d)) : null
+}
 
 /**
  * Колонки корзины → поля сделки, по которым умеет сортировать база. Ключей
@@ -2508,7 +2518,10 @@ async function refreshSelectedDeal(dealId: string) {
                   <span v-else class="text-medium-emphasis">—</span>
                 </template>
                 <template v-else-if="c.key === 'discount'">
-                  <span v-if="deal.discount">{{ formatCurrency(deal.discount) }}</span>
+                  <template v-if="deal.discount">
+                    <div class="td-discount">{{ formatCurrency(deal.discount) }}</div>
+                    <div v-if="discountPct(deal) != null" class="td-discount-pct">{{ formatPercent(discountPct(deal)!) }} дохода</div>
+                  </template>
                   <span v-else class="text-medium-emphasis">—</span>
                 </template>
 
@@ -3253,6 +3266,8 @@ async function refreshSelectedDeal(dealId: string) {
 /* Цвет наценки — раньше стоял прямо на ячейке, теперь ячейка общая на все колонки. */
 .td-markup { color: #047857; }
 .td-overdue { color: #dc2626; font-weight: 600; }
+.td-discount { color: #047857; font-weight: 600; }
+.td-discount-pct { font-size: 11.5px; line-height: 1.2; color: rgba(var(--v-theme-on-surface), 0.5); }
 /* Комментарий бывает длинным: показываем одну строку, целиком — в подсказке. */
 .td-comment {
   display: block; max-width: 260px;

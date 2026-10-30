@@ -9,7 +9,8 @@ import DateField from '@/components/DateField.vue'
 import { useSections } from '@/composables/useSections'
 import { useIsDark } from '@/composables/useIsDark'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { formatCurrency, formatDateShort, formatDateShortYear, pluralizeRu, timeAgo } from '@/utils/formatters'
+import { formatCurrency, formatDateShort, formatDateShortYear, formatPercent, formatPhone, pluralizeRu, timeAgo } from '@/utils/formatters'
+import { discountShareOfIncome } from '@/utils/paymentMath'
 import ServerPager from '@/components/ServerPager.vue'
 import { useAutoLoad } from '@/composables/useAutoLoad'
 import { PER_PAGE_OPTIONS, useListSort, usePageSize } from '@/composables/useListPrefs'
@@ -176,7 +177,7 @@ const ALL_COLUMNS: Col[] = [
   { key: 'downPayment', label: 'Первонач. взнос', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
   { key: 'monthly', label: 'Ежемесячно', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
   { key: 'paidTotal', label: 'Оплачено всего', align: 'end', sortable: false, group: 'money', extra: 'paidTotal', tdClass: 'text-end text-no-wrap' },
-  { key: 'discount', label: 'Скидка', align: 'end', sortable: false, group: 'money', tdClass: 'text-end text-no-wrap' },
+  { key: 'discount', label: 'Скидка', align: 'end', sortable: true, group: 'money', tdClass: 'text-end text-no-wrap' },
 
   // ── Клиент ──
   { key: 'clientBirthDate', label: 'Дата рождения', align: 'end', sortable: false, group: 'client', extra: 'clientDetails', tdClass: 'text-end text-no-wrap' },
@@ -1525,7 +1526,14 @@ onUnmounted(() => {
                 <template v-else-if="c.key === 'monthly'">{{ formatCurrency(monthlyOf(row)) }}</template>
                 <template v-else-if="c.key === 'paidTotal'">{{ row.paidTotal != null ? formatCurrency(row.paidTotal) : '—' }}</template>
                 <template v-else-if="c.key === 'discount'">
-                  <span v-if="row.discount">{{ formatCurrency(row.discount) }}</span>
+                  <template v-if="row.discount">
+                    <div class="td-discount">{{ formatCurrency(row.discount) }}</div>
+                    <!-- Процент — только при праве видеть себестоимость: сервер
+                         без него не отдаёт доход. -->
+                    <div v-if="discountShareOfIncome(row.discount, row.incomeBase) != null" class="td-discount-pct">
+                      {{ formatPercent(discountShareOfIncome(row.discount, row.incomeBase)!) }} дохода
+                    </div>
+                  </template>
                   <span v-else class="text-medium-emphasis">—</span>
                 </template>
                 <template v-else-if="c.key === 'clientBirthDate'">{{ row.clientBirthDate ? formatDateShortYear(row.clientBirthDate) : '—' }}</template>
@@ -1888,6 +1896,9 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* Скидка по договору: сумма и, при праве видеть себестоимость, часть дохода. */
+.td-discount { color: #047857; font-weight: 600; }
+.td-discount-pct { font-size: 11.5px; line-height: 1.2; color: rgba(var(--v-theme-on-surface), 0.5); }
 
 /* Распорки виртуализации: держат место неотрисованных строк и сами строкой
    выглядеть не должны. */
