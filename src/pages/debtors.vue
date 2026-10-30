@@ -5,6 +5,8 @@ import { useRouter } from 'vue-router'
 import { useDebtorsStore, type DebtorRow, type PromiseStatus, type DebtorAnalytics } from '@/stores/debtors'
 import { useAuthStore } from '@/stores/auth'
 import ClientLink from '@/components/ClientLink.vue'
+import PhoneLines from '@/components/PhoneLines.vue'
+import { phoneItems, extraPhoneItems, guarantorPhoneItems, guarantorExtraPhoneItems } from '@/utils/phoneColumns'
 import DateField from '@/components/DateField.vue'
 import { useSections } from '@/composables/useSections'
 import { useIsDark } from '@/composables/useIsDark'
@@ -116,7 +118,7 @@ interface Col {
   /** Раздел в меню выбора: плоский список из двух десятков колонок неудобен. */
   group: ColGroup
   /** Данные считаются отдельно и только когда колонка включена (как в сделках). */
-  extra?: 'clientDetails' | 'guarantors' | 'supplier' | 'paidTotal'
+  extra?: 'clientDetails' | 'guarantors' | 'supplier' | 'paidTotal' | 'extraPhones'
 }
 
 type ColGroup = 'debtor' | 'overdue' | 'payments' | 'deal' | 'money' | 'client' | 'guarantors' | 'work'
@@ -139,7 +141,7 @@ const ALL_COLUMNS: Col[] = [
   // ── Должник ──
   { key: 'dealNumber', label: '№', align: 'start', sortable: true, group: 'debtor', tdClass: 'text-start text-no-wrap' },
   { key: 'client', label: 'Клиент', align: 'start', sortable: true, group: 'debtor', tdStyle: 'min-width: 220px;' },
-  { key: 'clientPhone', label: 'Телефон', align: 'start', sortable: false, group: 'debtor', tdClass: 'text-no-wrap' },
+  { key: 'clientPhone', label: 'Телефон клиента', align: 'start', sortable: false, group: 'debtor', tdClass: 'text-no-wrap' },
   { key: 'product', label: 'Товар', align: 'start', sortable: true, group: 'debtor' },
   { key: 'status', label: 'Статус договора', align: 'start', sortable: true, group: 'debtor', tdClass: 'text-start text-no-wrap' },
   { key: 'total', label: 'Сумма договора', align: 'end', sortable: true, group: 'debtor', tdClass: 'text-end text-no-wrap' },
@@ -183,10 +185,13 @@ const ALL_COLUMNS: Col[] = [
   { key: 'clientBirthDate', label: 'Дата рождения', align: 'end', sortable: false, group: 'client', extra: 'clientDetails', tdClass: 'text-end text-no-wrap' },
   { key: 'clientAddress', label: 'Адрес проживания', align: 'start', sortable: false, group: 'client', extra: 'clientDetails', tdStyle: 'min-width: 220px;' },
   { key: 'clientRegAddress', label: 'Адрес регистрации', align: 'start', sortable: false, group: 'client', extra: 'clientDetails', tdStyle: 'min-width: 220px;' },
+  { key: 'clientExtraPhones', label: 'Доп. номера клиента', align: 'start', sortable: false, group: 'client', extra: 'extraPhones', tdClass: 'text-no-wrap' },
 
   // ── Поручители ──
   { key: 'guarantors', label: 'Поручители', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdStyle: 'min-width: 220px;' },
   { key: 'guarantorAddresses', label: 'Адреса поручителей', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdStyle: 'min-width: 220px;' },
+  { key: 'guarantorPhones', label: 'Телефоны поручителей', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdClass: 'text-no-wrap' },
+  { key: 'guarantorExtraPhones', label: 'Доп. номера поручителей', align: 'start', sortable: false, group: 'guarantors', extra: 'extraPhones', tdClass: 'text-no-wrap' },
 
   // ── Работа с должником ──
   { key: 'assignedStaff', label: 'Ответственный', align: 'start', sortable: true, group: 'work', tdClass: 'text-start text-no-wrap' },
@@ -1408,8 +1413,16 @@ onUnmounted(() => {
                 </template>
 
                 <template v-else-if="c.key === 'clientPhone'">
-                  <span v-if="row.clientPhone">{{ row.clientPhone }}</span>
-                  <span v-else class="text-medium-emphasis">—</span>
+                  <PhoneLines :items="phoneItems(row.clientPhone)" />
+                </template>
+                <template v-else-if="c.key === 'clientExtraPhones'">
+                  <PhoneLines :items="extraPhoneItems(row.clientExtraPhones)" />
+                </template>
+                <template v-else-if="c.key === 'guarantorPhones'">
+                  <PhoneLines :items="guarantorPhoneItems(row.guarantorsList)" />
+                </template>
+                <template v-else-if="c.key === 'guarantorExtraPhones'">
+                  <PhoneLines :items="guarantorExtraPhoneItems(row.guarantorExtraPhones)" />
                 </template>
 
                 <template v-else-if="c.key === 'product'">
@@ -1548,8 +1561,10 @@ onUnmounted(() => {
                 <template v-else-if="c.key === 'guarantors'">
                   <div v-if="row.guarantorsList?.length">
                     <div v-for="(g, gi) in row.guarantorsList" :key="gi" class="dbt-guarantor">
-                      <div class="text-no-wrap">{{ g.name }}</div>
-                      <div v-if="g.phone" class="dbt-phone text-no-wrap">{{ g.phone }}</div>
+                      <div class="text-no-wrap">
+                        <ClientLink :profile-id="g.profileId" :name="g.name" :disabled="selectMode" />
+                      </div>
+                      <div v-if="g.phone" class="dbt-phone text-no-wrap">{{ formatPhone(g.phone) }}</div>
                     </div>
                   </div>
                   <span v-else class="text-medium-emphasis">—</span>

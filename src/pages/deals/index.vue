@@ -17,6 +17,8 @@ import { useCashBoxesStore } from '@/stores/cashboxes'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import ClientLink from '@/components/ClientLink.vue'
+import PhoneLines from '@/components/PhoneLines.vue'
+import { phoneItems, extraPhoneItems, guarantorPhoneItems, guarantorExtraPhoneItems } from '@/utils/phoneColumns'
 import { useSections } from '@/composables/useSections'
 import { api } from '@/api/client'
 import ServerPager from '@/components/ServerPager.vue'
@@ -567,7 +569,7 @@ interface DealColumn {
    * Дополнительные данные, без которых колонку не заполнить. Сервер считает
    * их только для включённых колонок — иначе список тормозил бы у всех.
    */
-  extra?: 'clientDetails' | 'guarantors' | 'supplier' | 'overdue' | 'paidTotal'
+  extra?: 'clientDetails' | 'guarantors' | 'supplier' | 'overdue' | 'paidTotal' | 'extraPhones'
 }
 
 type ColumnGroup = 'deal' | 'client' | 'money' | 'payments' | 'guarantors'
@@ -597,6 +599,8 @@ const ALL_COLUMNS: DealColumn[] = [
 
   // ── Клиент ──
   { key: 'client', label: 'Клиент', align: 'start', sortable: true, group: 'client', tdStyle: 'min-width: 300px;' },
+  { key: 'clientPhone', label: 'Телефон клиента', align: 'start', sortable: false, group: 'client', tdClass: 'text-no-wrap' },
+  { key: 'clientExtraPhones', label: 'Доп. номера клиента', align: 'start', sortable: false, group: 'client', extra: 'extraPhones', tdClass: 'text-no-wrap' },
   { key: 'clientBirthDate', label: 'Дата рождения', align: 'end', sortable: false, group: 'client', extra: 'clientDetails', tdClass: 'text-end text-no-wrap' },
   { key: 'clientAddress', label: 'Адрес проживания', align: 'start', sortable: false, group: 'client', extra: 'clientDetails', tdStyle: 'min-width: 220px;' },
   { key: 'clientRegAddress', label: 'Адрес регистрации', align: 'start', sortable: false, group: 'client', extra: 'clientDetails', tdStyle: 'min-width: 220px;' },
@@ -623,6 +627,8 @@ const ALL_COLUMNS: DealColumn[] = [
   // ── Поручители ──
   { key: 'guarantors', label: 'Поручители', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdStyle: 'min-width: 240px;' },
   { key: 'guarantorAddresses', label: 'Адреса поручителей', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdStyle: 'min-width: 220px;' },
+  { key: 'guarantorPhones', label: 'Телефоны поручителей', align: 'start', sortable: false, group: 'guarantors', extra: 'guarantors', tdClass: 'text-no-wrap' },
+  { key: 'guarantorExtraPhones', label: 'Доп. номера поручителей', align: 'start', sortable: false, group: 'guarantors', extra: 'extraPhones', tdClass: 'text-no-wrap' },
 ]
 
 const DEFAULT_VISIBLE = ['dealNumber', 'product', 'client', 'total', 'markup', 'remaining', 'progress', 'status', 'createdAt']
@@ -2544,9 +2550,11 @@ async function refreshSelectedDeal(dealId: string) {
                   <!-- Как у клиента: имя, под ним телефон и переход в чат. -->
                   <div v-if="deal.guarantorsList?.length">
                     <div v-for="(g, gi) in deal.guarantorsList" :key="gi" class="td-guarantor">
-                      <div class="text-no-wrap">{{ g.name }}</div>
+                      <div class="text-no-wrap">
+                        <ClientLink :profile-id="g.profileId" :name="g.name" :disabled="selectMode" />
+                      </div>
                       <div v-if="g.phone" class="client-phone-row text-no-wrap">
-                        {{ g.phone }}
+                        {{ formatPhone(g.phone) }}
                         <button
                           v-if="sections.visible('whatsapp')"
                           class="td-phone-wa"
@@ -2565,6 +2573,20 @@ async function refreshSelectedDeal(dealId: string) {
                     {{ deal.guarantorsList.map((g) => g.address).filter(Boolean).join(', ') }}
                   </span>
                   <span v-else class="text-medium-emphasis">—</span>
+                </template>
+                <!-- Номера отдельными колонками: основной клиента, основные
+                     поручителей и дополнительные у тех и других. -->
+                <template v-else-if="c.key === 'clientPhone'">
+                  <PhoneLines :items="phoneItems(deal.clientProfile?.phone || deal.client?.phone || deal.externalClientPhone)" />
+                </template>
+                <template v-else-if="c.key === 'clientExtraPhones'">
+                  <PhoneLines :items="extraPhoneItems(deal.clientExtraPhones)" />
+                </template>
+                <template v-else-if="c.key === 'guarantorPhones'">
+                  <PhoneLines :items="guarantorPhoneItems(deal.guarantorsList)" />
+                </template>
+                <template v-else-if="c.key === 'guarantorExtraPhones'">
+                  <PhoneLines :items="guarantorExtraPhoneItems(deal.guarantorExtraPhones)" />
                 </template>
               </td>
 

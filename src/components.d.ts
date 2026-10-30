@@ -100,6 +100,7 @@ declare module 'vue' {
     PendingEditDialog: typeof import('./components/PendingEditDialog.vue')['default']
     PendingResolveDialog: typeof import('./components/PendingResolveDialog.vue')['default']
     PhoneField: typeof import('./components/PhoneField.vue')['default']
+    PhoneLines: typeof import('./components/PhoneLines.vue')['default']
     PhoneListField: typeof import('./components/PhoneListField.vue')['default']
     ProfitFormula: typeof import('./components/ProfitFormula.vue')['default']
     ProgramCalculator: typeof import('./components/ProgramCalculator.vue')['default']

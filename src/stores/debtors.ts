@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
+import type { ExtraPhone, GuarantorExtraPhones, GuarantorListItem } from '@/types'
 
 export type PromiseStatus = 'PENDING' | 'KEPT' | 'BROKEN' | 'SUPERSEDED'
 export type CollectionActivityType = 'NOTE' | 'CALL' | 'WHATSAPP' | 'CONTACTED' | 'PROMISE' | 'SYSTEM'
@@ -68,7 +69,9 @@ export interface DebtorRow {
   clientBirthDate?: string | null
   clientAddress?: string | null
   clientRegAddress?: string | null
-  guarantorsList?: Array<{ name: string; phone: string | null; address: string | null }>
+  guarantorsList?: GuarantorListItem[]
+  clientExtraPhones?: ExtraPhone[]
+  guarantorExtraPhones?: GuarantorExtraPhones[]
   supplierName?: string | null
   paidTotal?: number
 }

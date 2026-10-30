@@ -280,7 +280,11 @@ export interface Deal {
   clientAddress?: string | null
   clientRegAddress?: string | null
   /** Поручители сделки: имя, телефон и адрес каждого. */
-  guarantorsList?: Array<{ name: string; phone: string | null; address: string | null }>
+  guarantorsList?: GuarantorListItem[]
+  /** Дополнительные номера клиента (колонка «Доп. номера клиента»). */
+  clientExtraPhones?: ExtraPhone[]
+  /** Дополнительные номера поручителей — по каждому, у кого они есть. */
+  guarantorExtraPhones?: GuarantorExtraPhones[]
   overdueAmount?: number
   overdueCount?: number
   paidTotal?: number
@@ -1055,3 +1059,24 @@ export function userName(u?: Partial<User> | null): string {
  *  AFTER_DOWN_PAYMENT — от остатка после первоначального взноса.
  */
 export type MarkupFrom = 'PURCHASE' | 'AFTER_DOWN_PAYMENT'
+
+/** Поручитель в строке таблицы: профиль — для ссылки, как у клиента. */
+export interface GuarantorListItem {
+  profileId?: string
+  name: string
+  phone: string | null
+  address: string | null
+}
+
+/** Дополнительный номер клиента: чей он и есть ли WhatsApp. */
+export interface ExtraPhone {
+  phone: string
+  label: string | null
+  hasWhatsapp: boolean
+}
+
+export interface GuarantorExtraPhones {
+  profileId: string
+  name: string
+  phones: ExtraPhone[]
+}
