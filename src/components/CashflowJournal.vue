@@ -206,7 +206,13 @@ const { entries, total, loading, fetchJournal } = useCashflow()
 
 // Optional scope — when passed, all journal queries are limited to a single
 // cashbox. Used by the cashbox detail page; unset means partner-wide ledger.
-const props = defineProps<{ cashBoxId?: string }>()
+const props = defineProps<{
+  cashBoxId?: string
+  /** Начальный период — например, месяц, выбранный на ленте кассы. */
+  period?: PeriodRange
+  /** Начальный фильтр по видам — например, только расходы месяца. */
+  types?: CashFlowEntryType[]
+}>()
 // Испущен после отмены капитальной операции — родитель обновляет сводку капитала.
 const emit = defineEmits<{ changed: [] }>()
 
@@ -302,10 +308,13 @@ const typeGroups = computed(() =>
 )
 
 // ─── Filters state ─────────────────────────────────────────────────────
-const activeTypes = ref<CashFlowEntryType[]>([])
+const activeTypes = ref<CashFlowEntryType[]>([...(props.types ?? [])])
 const searchInput = ref('')
 /** По умолчанию — всё время: журнал кассы открывают, чтобы найти операцию. */
-const period = ref<PeriodRange>(rangeForPreset('all'))
+const period = ref<PeriodRange>(props.period ?? rangeForPreset('all'))
+// Выбрали на ленте другой месяц — журнал переходит на него (пикер периода
+// остаётся: период можно расширить).
+watch(() => props.period, (p) => { period.value = p ?? rangeForPreset('all') })
 
 /**
  * Границы для сервера. Он сравнивает «≤ to» по метке времени, поэтому конец

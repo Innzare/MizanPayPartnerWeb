@@ -420,7 +420,7 @@
 
 <script setup lang="ts">
 import { toUserMessage } from '@/api/errors'
-import { computed, reactive, ref, watch, nextTick, onMounted } from 'vue'
+import { computed, reactive, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { todayIso } from '@/utils/dateInput'
@@ -467,7 +467,10 @@ watch(() => props.modelValue, (open) => {
     expandedId.value = null
     // Make sure co-investor / folder lists are up to date — the partner
     // could have added a new one since the dialog last opened.
-    ensureOptionsLoaded()
+    // Цифры кассы — свежие при каждом открытии: с прошлого раза касса могла
+    // измениться. При первом открытии их подтянет выбор кассы по умолчанию.
+    if (optionsLoaded.value) void fetchSaleCashBoxCapital(selectedCashBoxId.value)
+    else void ensureOptionsLoaded()
     if (mode.value === 'payment') nextTick(() => searchInputRef.value?.focus())
   }
 })
@@ -515,12 +518,16 @@ const saleCashBoxCapital = ref<{ availableCapital: number } | null>(null)
 async function fetchSaleCashBoxCapital(id: string | null) {
   if (!id) { saleCashBoxCapital.value = null; return }
   try {
-    saleCashBoxCapital.value = await api.get(`/cashboxes/${id}/capital`)
+    const res = await api.get<{ availableCapital: number }>(`/cashboxes/${id}/capital`)
+    // Пока шёл ответ, выбрали другую кассу — её цифры придут своим запросом.
+    if (selectedCashBoxId.value === id) saleCashBoxCapital.value = res
   } catch {
-    saleCashBoxCapital.value = null
+    if (selectedCashBoxId.value === id) saleCashBoxCapital.value = null
   }
 }
-watch(selectedCashBoxId, (id) => { void fetchSaleCashBoxCapital(id) })
+// Сводка кассы — тяжёлый запрос: только пока окно открыто. Окно живёт в
+// шапке каждой страницы, и раньше оно считало её при любой загрузке.
+watch(selectedCashBoxId, (id) => { if (props.modelValue) void fetchSaleCashBoxCapital(id) })
 
 const insufficientCapitalDialog = ref(false)
 const pendingKeepOpen = ref(false)
@@ -533,14 +540,15 @@ async function ensureOptionsLoaded() {
   try {
     await Promise.all([fetchFolders(), cashBoxesStore.fetchAll()])
     // Default to the partner's «Основная» cashbox so simple sales just work.
+    // Выбор кассы сам подтягивает её цифры (watch выше).
     if (!selectedCashBoxId.value) {
       selectedCashBoxId.value = cashBoxesStore.getDefault()?.id ?? allCashBoxes.value[0]?.id ?? null
+    } else {
+      await fetchSaleCashBoxCapital(selectedCashBoxId.value)
     }
-    if (selectedCashBoxId.value) await fetchSaleCashBoxCapital(selectedCashBoxId.value)
     optionsLoaded.value = true
   } catch { /* non-blocking */ }
 }
-onMounted(ensureOptionsLoaded)
 
 function resetSale() {
   sale.clientProfileId = null

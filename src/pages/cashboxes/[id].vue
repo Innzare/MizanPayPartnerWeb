@@ -11,12 +11,18 @@ import { useAuthStore } from '@/stores/auth'
 import { isAccountNegative, useAccountingStore, type AvailableMoney, type AvailableStep } from '@/stores/accounting'
 import { FLOW_ORDER, stepText } from '@/utils/availableSteps'
 import BankLogo from '@/components/BankLogo.vue'
-import type { AnalyticsSummary, AnalyticsMonthlyRow } from '@/types/analytics'
+import type { CashBoxMonthRow, CashBoxMonthsResponse } from '@/types/analytics'
+import type { PeriodRange } from '@/types/reports'
+import { rangeForPreset } from '@/composables/useReports'
+import CashBoxMonthChart from '@/components/CashBoxMonthChart.vue'
+import MonthPaymentsList from '@/components/MonthPaymentsList.vue'
+import OperationDialog from '@/components/OperationDialog.vue'
+import AccountOperationItems from '@/components/AccountOperationItems.vue'
+import { OPERATION_KINDS, type OperationKind } from '@/constants/operationKinds'
 import { useToast } from '@/composables/useToast'
 import { usePageHeaderStore } from '@/stores/pageHeader'
 import { useIsDark } from '@/composables/useIsDark'
 import { formatCurrency, formatCurrencyShort, formatDate, formatPhone, CURRENCY_MASK, parseMasked, formatDateShort } from '@/utils/formatters'
-import type { CapitalSummary } from '@/types'
 import CashflowJournal from '@/components/CashflowJournal.vue'
 import AllocateUnallocatedDialog from '@/components/AllocateUnallocatedDialog.vue'
 import CashBoxEditDialog from '@/components/CashBoxEditDialog.vue'
@@ -160,11 +166,7 @@ interface CapitalDetails {
     activeRecovered: number
   }
   // Co-investors of this cashbox with per-deal accrual breakdown (reserve panel).
-  coInvestors?: Array<{
-    id: string
-    name: string
-    realizedProfit: number
-    totalPayout: number
+  coInvestors?: Array<CashBoxCoInvestor & {
     balanceOwed?: number
     /** Хвост за пределами показанного списка сделок (0 — список полный). */
     dealsRest?: { count: number; amount: number }
@@ -219,7 +221,7 @@ const boxAccounts = computed(() =>
  * отдельной плашкой под первым: он читался как довесок, а по смыслу это
  * равноправная половина.
  */
-const topTab = ref<'capital' | 'where' | 'plan'>('capital')
+const topTab = ref<'capital' | 'where'>('capital')
 
 /** Сколько денег кассы ещё не разложено по её счетам. */
 const unallocated = ref(0)
@@ -284,150 +286,76 @@ const allocatedPct = computed(() => {
   return Math.max(0, Math.min(100, Math.round((onAccounts.value / total) * 100)))
 })
 
-/**
- * Вкладка «Аналитика»: что происходит с вложенными деньгами.
- *
- * Начальный капитал сам по себе ничего не говорит: партнёр завёл миллион — и
- * дальше цифра просто стоит. Здесь она становится точкой отсчёта: сколько из
- * вложенного сейчас в товаре, сколько уже отбито прибылью, когда по текущему
- * графику платежей вложенное вернётся полностью и что придёт сверху.
- *
- * Считает всё сервер — теми же формулами, что «Аналитика» и «Отчёты»
- * (`/analytics/summary`, `/analytics/monthly` с фильтром по кассе). Своей
- * арифметики здесь нет намеренно: разойдись она с отчётами хоть на рубль,
- * доверия не будет ни к одной из цифр.
- */
-/** Роль без права на аналитику вкладку не увидит — там нечего показывать. */
+/** Лента месяцев — за тем же правом, что «Аналитика». */
 const canSeePlan = computed(() => auth.can('analytics.view'))
-
-const planSummary = ref<AnalyticsSummary | null>(null)
-const planMonths = ref<AnalyticsMonthlyRow[]>([])
-const planLoading = ref(false)
-/** 403 — тариф без аналитики или роль без права. Это не ошибка, а закрытый раздел. */
-const planDenied = ref(false)
-
 const PLAN_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow'
-/** Горизонт прогноза: три года — дальше графики платежей обычно не уходят. */
-const PLAN_HORIZON_MONTHS = 36
 
-function planDay(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-async function loadPlan() {
-  if (planLoading.value || planSummary.value) return
-  planLoading.value = true
-  try {
-    const now = new Date()
-    const from = planDay(new Date(now.getFullYear(), now.getMonth(), 1))
-    // Последний день месяца через «нулевое» число следующего.
-    const to = planDay(new Date(now.getFullYear(), now.getMonth() + PLAN_HORIZON_MONTHS + 1, 0))
-    const base = { tz: PLAN_TZ, cashBoxId: id.value }
-    const [sum, months] = await Promise.all([
-      api.get<AnalyticsSummary>(`/analytics/summary?${new URLSearchParams(base)}`),
-      api.get<AnalyticsMonthlyRow[]>(`/analytics/monthly?${new URLSearchParams({ ...base, from, to })}`),
-    ])
-    planSummary.value = sum
-    planMonths.value = months
-  } catch (e: any) {
-    if (e?.status === 403) planDenied.value = true
-    else console.error('Не удалось загрузить аналитику кассы:', e)
-  } finally {
-    planLoading.value = false
-  }
-}
-
-watch(topTab, (t) => { if (t === 'plan') void loadPlan() })
-
-/** Чистый доход партнёра, ожидаемый в месяце: валовый минус доля со-инвесторов. */
-function planMonthProfit(r: AnalyticsMonthlyRow): number {
-  return Math.max(0, Math.round((r.expectedGross || 0) - (r.ciExpected || 0)))
-}
-
-/** Заработано чистыми за всё время по сделкам этой кассы. */
-const planEarned = computed(() => Math.round(planSummary.value?.deals.earnedNet ?? 0))
-/** Сколько ещё принесут текущие сделки — тоже чистыми партнёру. */
-const planProfitLeft = computed(() => Math.round(planSummary.value?.deals.profitLeft ?? 0))
-const planInvested = computed(() => Math.round(investedCapital.value))
-
-/** Какую часть вложенного уже вернула прибыль. */
-const planPaybackPct = computed(() => {
-  const inv = planInvested.value
-  if (inv <= 0) return 0
-  return Math.max(0, Math.min(100, Math.round((planEarned.value / inv) * 100)))
-})
-
+// ─── Лента «Касса по месяцам» ───
+// Под плитками: плитки — «сейчас», лента — «как шло по месяцам». Тот же
+// доступ, что у аналитики (право и тариф); без него — ленты нет вовсе.
+const months = ref<CashBoxMonthRow[]>([])
+const forecast = ref<CashBoxMonthsResponse['forecast'] | null>(null)
+const monthsCanSeeCost = ref(false)
+const monthsLoading = ref(false)
+const monthsDenied = ref(false)
 /**
- * Месяц, в котором накопленная прибыль перекроет вложенное.
- *
- * Идём от уже заработанного и прибавляем ожидаемый доход месяц за месяцем —
- * ровно так это и происходит в жизни. `null` значит «на горизонте прогноза
- * не окупится»: текущих сделок для этого не хватает.
+ * Выбранный месяц ленты: плитки и детали показывают его. '' — «За всё время»,
+ * null — лента ещё не загружена (тогда открывается текущий месяц).
  */
-const planPaybackMonth = computed<string | null>(() => {
-  const inv = planInvested.value
-  if (inv <= 0 || planEarned.value >= inv) return null
-  let acc = planEarned.value
-  for (const r of planMonths.value) {
-    acc += planMonthProfit(r)
-    if (acc >= inv) return r.month
-  }
-  return null
-})
-
-const planPaidBack = computed(() => planInvested.value > 0 && planEarned.value >= planInvested.value)
-
-/** Ближайший год — то, что показываем столбиками. */
-const planChart = computed(() => {
-  const rows = planMonths.value.slice(0, 12)
-  return rows.map((r) => {
-    const total = Math.round(r.pendingAmount || 0)
-    const profit = Math.min(planMonthProfit(r), total)
-    return { month: r.month, total, profit, principal: Math.max(0, total - profit) }
-  })
-})
-const planChartMax = computed(() => Math.max(1, ...planChart.value.map((m) => m.total)))
-
-/** Всё, что ждём по текущим сделкам, и наш доход в этих деньгах. */
-const planExpectedTotal = computed(() =>
-  planMonths.value.reduce((s, r) => s + Math.round(r.pendingAmount || 0), 0),
-)
-/** Месяц последнего планового платежа — когда текущие сделки закончатся. */
-const planLastMonth = computed<string | null>(() => {
-  for (let i = planMonths.value.length - 1; i >= 0; i--) {
-    if ((planMonths.value[i]!.pendingAmount || 0) > 0) return planMonths.value[i]!.month
-  }
-  return null
-})
-
-const planOverdue = computed(() => ({
-  sum: Math.round(planSummary.value?.payments.overdueSum ?? 0),
-  count: planSummary.value?.payments.overdueCount ?? 0,
-}))
-
-/** Доля вложенного, которая сейчас в товаре, — остальное лежит свободным. */
-const planInWorkPct = computed(() => {
-  const base = capitalDetails.value?.inProgress ?? 0
-  const total = base + Math.max(availableCap.value, 0)
-  if (total <= 0) return 0
-  return Math.max(0, Math.min(100, Math.round((base / total) * 100)))
-})
-
-/** «2027-03» → «март 2027» — месяц называют словом, а не номером. */
-const PLAN_MONTH_NAMES = [
-  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
-  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
-]
-function planMonthName(m: string): string {
-  const [y, mo] = m.split('-')
-  return `${PLAN_MONTH_NAMES[Number(mo) - 1] ?? m} ${y}`
+const selectedMonth = ref<string | null>(null)
+/**
+ * С чего открыть кассу: если лента будет, сразу текущий месяц (в том же
+ * поясе, что считает сервер), — журнал не грузится сперва за всё время, а
+ * потом ещё раз за месяц. Лента потом подтверждает месяц своим ответом.
+ */
+function initialMonth(): string | null {
+  if (!canSeePlan.value || !canSeeCapital.value) return null
+  const p = new Intl.DateTimeFormat('en-CA', { timeZone: PLAN_TZ, year: 'numeric', month: '2-digit' }).formatToParts(new Date())
+  return `${p.find((x) => x.type === 'year')!.value}-${p.find((x) => x.type === 'month')!.value}`
 }
-/** Короткая подпись столбика: «мар», а январь подписываем годом. */
-function planMonthShort(m: string): string {
-  const [y, mo] = m.split('-')
-  const short = (PLAN_MONTH_NAMES[Number(mo) - 1] ?? '').slice(0, 3)
-  return mo === '01' ? `${short} ${y!.slice(2)}` : short
+let monthsSeq = 0
+async function loadMonths() {
+  // Лента стоит в блоке капитала: без права на капитал её некуда показать.
+  if (!canSeePlan.value || !canSeeCapital.value || monthsDenied.value) return
+  const seq = ++monthsSeq
+  monthsLoading.value = true
+  try {
+    const q = new URLSearchParams({ cashBoxId: id.value, tz: PLAN_TZ })
+    const r = await api.get<CashBoxMonthsResponse>(`/analytics/cashbox-months?${q}`)
+    if (seq !== monthsSeq) return
+    months.value = r.months
+    forecast.value = r.forecast
+    monthsCanSeeCost.value = r.canSeeCost
+    if (selectedMonth.value === null || (selectedMonth.value && !r.months.some((m) => m.month === selectedMonth.value))) {
+      selectedMonth.value = r.currentMonth
+    }
+  } catch (e: any) {
+    if (seq !== monthsSeq) return
+    // 403 — закрытый раздел, не ошибка; прочий сбой — тихо, лента просто не видна.
+    if (e?.status === 403) monthsDenied.value = true
+    else console.error('Не удалось загрузить ленту месяцев кассы:', e)
+    // Ленты нет — показываем «За всё время», как без неё и было.
+    if (!months.value.length) selectedMonth.value = null
+  } finally {
+    if (seq === monthsSeq) monthsLoading.value = false
+  }
 }
+const monthRow = computed(() => (selectedMonth.value ? months.value.find((m) => m.month === selectedMonth.value) ?? null : null))
+/** Журнал под месяцем — сразу на этом месяце. */
+const monthPeriod = computed<PeriodRange | undefined>(() => {
+  if (!selectedMonth.value) return undefined
+  const [y, m] = selectedMonth.value.split('-').map(Number) as [number, number]
+  return rangeForPreset('month', new Date(y, m - 1, 1))
+})
+/** Выбрали месяц (или «За всё время») — выбранная плитка остаётся, меняется её период. */
+function selectMonth(m: string) {
+  selectedMonth.value = m
+  if (!m && wfExpanded.value === 'remaining') wfExpanded.value = 'received'
+}
+/** Остатки (в отличие от потоков) у будущего месяца неизвестны. */
+const STOCK_KEYS = new Set(['available', 'deployed', 'capital', 'pendingCI'])
+/** Заголовок меню — выбранный период. */
+const navTitle = computed(() => (monthRow.value ? monthPeriod.value?.label ?? monthRow.value.month : 'За всё время'))
 
 const accountsCountLabel = computed(() => {
   const n = boxAccounts.value.length
@@ -449,12 +377,16 @@ type FlowRow = { key: string; label: string; value: number; hint: string; base?:
  */
 const canSeeAvailable = computed(() => canSeeCapital.value && auth.can('finance.view') && auth.can('accounting.balanceView'))
 const avail = ref<AvailableMoney | null>(null)
+// Ответ прежней кассы, пришедший после переключения, не должен лечь на новую.
+let availSeq = 0
 async function loadAvailable() {
   if (!canSeeAvailable.value) return
+  const seq = ++availSeq
   try {
-    avail.value = await api.get<AvailableMoney>(`/finance/available?cashBoxId=${encodeURIComponent(id.value)}`)
+    const r = await api.get<AvailableMoney>(`/finance/available?cashBoxId=${encodeURIComponent(id.value)}`)
+    if (seq === availSeq) avail.value = r
   } catch {
-    avail.value = null // покажем прежний расклад
+    if (seq === availSeq) avail.value = null // покажем прежний расклад
   }
 }
 /** Реинвест и товар в долг — «не живые деньги»: строки приглушены. */
@@ -559,12 +491,23 @@ const availableRows = computed<FlowRow[]>(() => {
   return rows.filter(r => r.always || Math.abs(r.value) > 0)
 })
 
-// Сводка собственного капитала кассы (investedCapital / withdrawableProfit /
-// availableCapital). Нужна модалке «Капитал» — пополнить/снять.
-const capitalSummary = ref<CapitalSummary | null>(null)
-// Phase 2: co-investors living in this cashbox. Loaded from /co-investors and
-// filtered client-side by cashBoxId. Drives the "Со-инвесторы кассы" panel.
-const cashBoxCoInvestors = ref<CashBoxCoInvestor[]>([])
+// Инвесторы кассы — из того же ответа details (те же поля и тот же отбор, что
+// у /co-investors с фильтром по кассе). Раньше страница отдельно тянула всех
+// инвесторов кабинета со статистикой — самый долгий запрос при открытии.
+const cashBoxCoInvestors = computed<CashBoxCoInvestor[]>(() =>
+  (capitalDetails.value?.coInvestors ?? []).map((ci) => ({
+    id: ci.id,
+    name: ci.name,
+    capital: ci.capital,
+    currentCapital: ci.currentCapital,
+    realizedProfit: ci.realizedProfit,
+    totalPayout: ci.totalPayout,
+    profitPercent: ci.profitPercent,
+    managementFeePct: ci.managementFeePct,
+    costFeeMode: ci.costFeeMode,
+    costFeeDefaultRatePct: ci.costFeeDefaultRatePct,
+  })),
+)
 const loading = ref(true)
 
 const showEdit = ref(false)
@@ -589,6 +532,9 @@ const WF_SECTIONS: Record<string, { label: string; hint: string; icon: string; c
   available: { label: 'Деньги в кассе', hint: 'Из чего сложились деньги в кассе', icon: 'mdi-safe-square-outline', color: '#047857' },
   pendingCI: { label: 'Резерв для инвесторов', hint: 'Начислено инвесторам, но ещё не выплачено', icon: 'mdi-account-cash-outline', color: '#f59e0b' },
   journal: { label: 'Журнал кассы', hint: 'Все движения денег кассы', icon: 'mdi-book-open-page-variant-outline', color: '#475569' },
+  received: { label: 'Пришло от клиентов', hint: 'Первые взносы и оплаты по графику', icon: 'mdi-cash-plus', color: '#10b981' },
+  remaining: { label: 'Осталось получить', hint: 'Неоплаченные платежи месяца', icon: 'mdi-calendar-clock-outline', color: '#4f46e5' },
+  forecast: { label: 'Прогноз', hint: 'Платежи по графикам в следующих месяцах', icon: 'mdi-chart-timeline-variant', color: '#4f46e5' },
 }
 const wfSection = computed(() => (wfExpanded.value ? WF_SECTIONS[wfExpanded.value] : null))
 
@@ -598,21 +544,124 @@ const wfSection = computed(() => (wfExpanded.value ? WF_SECTIONS[wfExpanded.valu
  * строками внутри раздела и не отделялись от списка под ними.
  */
 interface HeroMetric { label: string; value: string }
+type Hero = { title: string; hint: string; icon: string; amount: string | null; metrics: HeroMetric[]; note: string | null }
+
+/** Hero выбранной плитки за месяц: потоки — за месяц, остатки — на его конец. */
+function monthHero(key: string, m: CashBoxMonthRow, hero: Hero, money: (n: number) => string, signed: (n: number) => string): Hero {
+  const name = monthPeriod.value?.label ?? m.month
+  const stock = STOCK_KEYS.has(key)
+  hero.hint = `${name} · ${stock ? (m.current ? 'на сегодня' : 'на конец месяца') : 'за месяц'}`
+  const est = (n: number) => `≈ ${money(n)}`
+  const push = (label: string, value: string) => hero.metrics.push({ label, value })
+  const f = m.flows
+  const b = m.balances
+  if (m.future && stock) {
+    hero.amount = '—'
+    hero.note = 'Месяц ещё не наступил — остатки станут известны, когда он пройдёт.'
+    return hero
+  }
+  if (key === 'remaining') {
+    hero.hint = `${name} · по графикам платежей`
+    hero.amount = money(m.unpaid)
+    push('Платежей', m.unpaidCount.toLocaleString('ru-RU'))
+    push('Из них прибыль ≈', money(m.unpaidGross))
+    if (!m.current && !m.future && m.unpaid > 0) hero.note = 'Срок этих платежей прошёл — это просрочка, она же в «Должниках».'
+    return hero
+  }
+  if (key === 'received') {
+    if (m.future) {
+      hero.amount = est(m.pending)
+      push('Платежей по графику', m.pendingCount.toLocaleString('ru-RU'))
+      push('Прибыль ≈', money(m.expectedGross))
+      hero.note = 'Месяц ещё не наступил — показано ожидаемое по графикам платежей.'
+    } else {
+      hero.amount = money(m.received)
+      push('Оплат', m.paidCount.toLocaleString('ru-RU'))
+      push('Из них прибыль', money(m.gross))
+      if (m.sales.count) push(`Продаж · ${m.sales.count}`, money(m.sales.total))
+      if (m.current && m.pending > 0) push('Ещё ожидается', money(m.pending))
+    }
+  } else if (key === 'profit') {
+    if (m.future) {
+      hero.amount = est(m.expectedGross - m.expectedInvestors)
+      push('Прибыль кассы ≈', money(m.expectedGross))
+      if (m.expectedInvestors) push('Инвесторам ≈', money(m.expectedInvestors))
+    } else {
+      hero.amount = signed(m.partner)
+      push('Прибыль кассы', money(m.gross))
+      if (m.investors) push('Инвесторам', money(m.investors))
+      if (m.current && m.expectedGross > 0) push('Ещё ожидается ≈', money(m.expectedGross))
+    }
+  } else if (key === 'manual') {
+    hero.amount = signed(f.manualBalance)
+    if (f.expenses) push(`Расходы · ${f.expenseCount}`, money(f.expenses))
+    if (f.otherExpenses) push(`Иные расходы · ${f.otherExpenseCount}`, money(f.otherExpenses))
+    if (f.otherIncome) push('Прочие доходы', `+${money(f.otherIncome)}`)
+    if (f.cashboxTransfers) push('Переводы между кассами', signed(f.cashboxTransfers))
+  } else if (key === 'available' && b) {
+    hero.amount = money(b.cashEnd)
+    push('На начало месяца', money(b.cashStart))
+    push('Пришло за месяц', `+${money(f.in)}`)
+    push('Ушло за месяц', `−${money(f.out)}`)
+    if (m.current && f.futureDated) push('Записи будущей датой', signed(f.futureDated))
+  } else if (key === 'deployed' && b) {
+    hero.amount = money(b.inWorkEnd)
+    push('Активных сделок', b.activeDealsEnd.toLocaleString('ru-RU'))
+    if (f.deployed) push('В закупки за месяц', money(-f.deployed))
+    if (m.received - m.gross > 0) push('Вернулось закупки', money(m.received - m.gross))
+  } else if (key === 'capital' && b) {
+    hero.amount = money(b.totalCapitalEnd)
+    push('Ваш капитал', money(b.investedEnd))
+    if (b.ciCapitalEnd) push('Капитал инвесторов', money(b.ciCapitalEnd))
+    if (f.seed + f.topup) push('Вы вложили за месяц', `+${money(f.seed + f.topup)}`)
+    if (f.partnerOut) push('Вы забрали за месяц', money(f.partnerOut))
+    if (f.ciIn) push('Инвесторы внесли', `+${money(f.ciIn)}`)
+    if (f.ciOut) push('Инвесторы вывели', money(f.ciOut))
+  } else if (key === 'pendingCI' && b) {
+    hero.amount = money(b.owedEnd)
+    if (m.investors) push('Начислено за месяц', money(m.investors))
+    if (f.investorsPaid) push('Выплачено за месяц', money(f.investorsPaid))
+    if (f.investorsReinvested) push('В капитал (реинвест)', money(f.investorsReinvested))
+  }
+  return hero
+}
+
 const wfHero = computed(() => {
   const d = capitalDetails.value
   const sec = wfSection.value
   const key = wfExpanded.value
   if (!d || !sec || !key) return null
-  const hero = {
+  const hero: Hero = {
     title: sec.label,
     hint: sec.hint,
     icon: sec.icon,
-    amount: null as string | null,
-    metrics: [] as HeroMetric[],
-    note: null as string | null,
+    amount: null,
+    metrics: [],
+    note: null,
   }
   const money = (n: number) => formatCurrency(Math.round(n))
   const signed = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${formatCurrency(Math.abs(Math.round(n)))}`
+  const m = monthRow.value
+  if (key === 'forecast') {
+    const f = forecast.value
+    hero.hint = 'Неоплаченные платежи по графикам после текущего месяца'
+    hero.amount = money(f?.amount ?? 0)
+    if (f) {
+      hero.metrics.push({ label: 'Платежей', value: f.count.toLocaleString('ru-RU') })
+      hero.metrics.push({ label: 'Месяцев', value: f.months.length.toLocaleString('ru-RU') })
+      hero.metrics.push({ label: 'Из них прибыль ≈', value: money(f.gross) })
+      if (f.investors) {
+        hero.metrics.push({ label: 'Инвесторам ≈', value: money(f.investors) })
+        hero.metrics.push({ label: 'Вам ≈', value: money(f.gross - f.investors) })
+      }
+    }
+    return hero
+  }
+  if (m) return monthHero(key, m, hero, money, signed)
+  if (key === 'received') {
+    hero.amount = money(d.availableBreakdown?.received ?? 0)
+    hero.note = 'Все деньги, полученные от клиентов: первые взносы и оплаты по графику.'
+  }
   if (key === 'capital') {
     const own = d.investedCapital ?? d.initialCapital
     hero.amount = money(d.totalCapital)
@@ -691,8 +740,6 @@ async function loadAll() {
       // Счета нужны для вкладки «где лежат деньги»; сбой не должен ронять кассу.
       canSeeCapital.value ? accounting.fetchAccounts().catch(() => {}) : Promise.resolve(),
       canSeeCapital.value ? refreshUnallocated() : Promise.resolve(),
-      canSeeCapital.value ? loadCashBoxCoInvestors() : Promise.resolve(),
-      canSeeCapital.value ? loadCapitalSummary() : Promise.resolve(),
     ])
     box.value = b
   } catch (e: any) {
@@ -708,42 +755,11 @@ async function loadDetails() {
     // slim=1 — только агрегаты: списки сделок и лента приезжают постранично.
     // Без этого признака сервер отдаёт прежний тяжёлый ответ (нужен мобильному
     // приложению, пока оно не переведено на новые эндпоинты).
-    capitalDetails.value = await api.get<CapitalDetails>(`/cashboxes/${id.value}/capital/details?slim=1`)
+    // ciDeals=0 — без сделок инвесторов: это самый долгий кусок, а нужен он
+    // только панели «Резерв» — она грузит его сама (loadCiDeals).
+    capitalDetails.value = await api.get<CapitalDetails>(`/cashboxes/${id.value}/capital/details?slim=1&ciDeals=0`)
   } catch (e: any) {
     toast.error(e, 'Не удалось загрузить детали кассы')
-  }
-}
-
-async function loadCapitalSummary() {
-  try {
-    capitalSummary.value = await store.fetchCapital(id.value)
-  } catch {
-    // silent — модалка капитала просто не покажет новые поля
-  }
-}
-
-// Phase 2: fetch all CIs of this investor and keep only those living in
-// the current cashbox. Reused on every mutation that can affect membership
-// (move CI, archive, etc.) — currently called only on initial load.
-async function loadCashBoxCoInvestors() {
-  try {
-    const all = await api.get<any[]>('/co-investors')
-    cashBoxCoInvestors.value = all
-      .filter((ci) => ci.cashBoxId === id.value)
-      .map((ci) => ({
-        id: ci.id,
-        name: ci.name,
-        capital: ci.capital,
-        currentCapital: ci.currentCapital,
-        realizedProfit: ci.realizedProfit,
-        totalPayout: ci.totalPayout,
-        profitPercent: ci.profitPercent,
-        managementFeePct: ci.managementFeePct,
-        costFeeMode: ci.costFeeMode,
-        costFeeDefaultRatePct: ci.costFeeDefaultRatePct,
-      }))
-  } catch {
-    // silent — CI section just won't render
   }
 }
 
@@ -753,13 +769,14 @@ async function loadCashBoxCoInvestors() {
 async function refreshAfterMutation() {
   await Promise.all([
     loadDetails(),
-    loadCapitalSummary(),
     store.fetchAll(),
     // Списки тоже устаревают: раньше их привозил тот же запрос, что и суммы.
     // Без этого удалённая операция оставалась на экране, а счётчик и итоги
     // уже показывали новое значение — экран спорил сам с собой.
     manualOperations.value.length || wfExpanded.value === 'manual' ? loadManualOperations() : Promise.resolve(),
     avail.value || wfExpanded.value === 'available' ? loadAvailable() : Promise.resolve(),
+    ciDeals.value || wfExpanded.value === 'pendingCI' ? loadCiDeals() : Promise.resolve(),
+    months.value.length ? loadMonths() : Promise.resolve(),
   ])
   // Re-sync local `box` with the refreshed store data so the header values
   // (balance, dealsCount, activeDealsCount) stay in sync without remounting.
@@ -775,13 +792,34 @@ watch(() => id.value, () => {
   activeDeals.value = emptySection()
   dealPayments.value = {}
   avail.value = null
-  loadAll()
+  availSeq++
+  ciDeals.value = null
+  ciDealsSeq++
+  months.value = []
+  forecast.value = null
+  // Пунктов «Осталось получить» и «Прогноз» у другой кассы может не быть.
+  if (wfExpanded.value === 'remaining' || wfExpanded.value === 'forecast') wfExpanded.value = 'journal'
+  // Ответ прежней кассы, если ещё в пути, не должен лечь на новую.
+  monthsSeq++
+  selectedMonth.value = initialMonth()
+  void loadMonths()
+  void loadAvailable()
+  void loadAll()
 })
 // В шапку — имя кассы. Чистим при уходе, иначе оно утечёт на соседний экран.
 watch(box, (b) => { if (b) pageHeader.set(b.name) }, { immediate: true })
 onUnmounted(() => pageHeader.clear())
 
-onMounted(loadAll)
+// Лента месяцев — после основных цифр: первая отрисовка кассы её не ждёт.
+// Лента и разбор «доступно» — независимые запросы: идут вместе с основными
+// цифрами, а не после них. Первую отрисовку кассы они не держат.
+onMounted(() => {
+  selectedMonth.value = initialMonth()
+  void loadMonths()
+  // Из разбора «доступно» — долги по временным операциям.
+  void loadAvailable()
+  void loadAll()
+})
 
 // ─── Helpers (mirror finance.vue) ─────────────────────────────────────────
 const PAYMENT_STATUS_LABEL: Record<CapitalDealPayment['status'], string> = {
@@ -860,10 +898,164 @@ function toggleProgressDeal(id: string) {
 }
 
 // ─── Derived ─────────────────────────────────────────────────────────────
-const capitalUtilization = computed(() => {
-  if (!capitalDetails.value || capitalDetails.value.totalCapital <= 0) return 0
-  return Math.min(Math.round((capitalDetails.value.inProgress / capitalDetails.value.totalCapital) * 100), 100)
+/**
+ * Плитки кассы — сначала потоки (пришло, прибыль, расходы), потом остатки
+ * (деньги, в работе, капитал, резерв, долг поставщикам). За всё время — итоги
+ * и остатки на сегодня; за месяц — движение месяца и остатки на его конец.
+ */
+/** Группы навигации: что за период, что впереди, что есть и что должны. */
+type WfGroup = 'top' | 'flow' | 'expect' | 'stock' | 'debt'
+interface WfTile {
+  key: string
+  group: WfGroup
+  value: string
+  label: string
+  reserve?: boolean
+  danger?: boolean
+  muted?: boolean
+  info?: string
+  /** Сколько штук за пунктом (платежей, сделок, операций) — своим цветом рядом с названием. */
+  count?: number
+  /** Цвет суммы: пришло — зелёный, ушло — красный, ожидается — синий, как в «Аналитике». */
+  tone?: 'in' | 'out' | 'expect'
+}
+/** Группы — по смыслу; цвет у сумм движения, ожидаемого и долгов. */
+const WF_GROUPS: Array<{ key: WfGroup; title: string }> = [
+  { key: 'flow', title: 'Движение' },
+  { key: 'expect', title: 'Ожидается' },
+  { key: 'stock', title: 'Остатки' },
+  { key: 'debt', title: 'Долги' },
+]
+const tiles = computed<WfTile[]>(() => {
+  const d = capitalDetails.value
+  if (!d || !box.value) return []
+  const fmt = (n: number) => formatCurrency(Math.round(n))
+  const signedFmt = (n: number) => `${n > 0 ? '+' : ''}${fmt(n)}`
+  const m = monthRow.value
+  const b = m?.balances ?? null
+  const none = '—'
+  const out: WfTile[] = []
+  const reserveDanger = d.availableCapital < d.pendingCIPayout
+  // Цифры «на сегодня» в прошлом месяце — приглушены: помесячно они не ведутся.
+  const todayOnly = !!m && !m.current
+
+  // Общий капитал — главная цифра кассы, сразу под журналом.
+  out.push({
+    key: 'capital', group: 'top', label: 'Общий капитал',
+    value: m ? (b ? fmt(b.totalCapitalEnd) : none) : fmt(d.totalCapital),
+  })
+
+  // Движение за период. У будущего месяца это ожидаемое — синим.
+  const sign = (n: number): WfTile['tone'] => (n > 0 ? 'in' : n < 0 ? 'out' : undefined)
+  const flowTone = (n: number): WfTile['tone'] => (m?.future ? 'expect' : sign(n))
+  out.push({
+    key: 'received', group: 'flow', label: 'Пришло от клиентов',
+    value: !m ? fmt(d.availableBreakdown?.received ?? 0) : m.future ? `≈ ${fmt(m.pending)}` : fmt(m.received),
+    tone: flowTone(1),
+  })
+  out.push({
+    key: 'profit', group: 'flow', label: 'Чистая прибыль',
+    value: !m
+      ? signedFmt(d.partnerNetProfit ?? d.netProfit)
+      : m.future ? `≈ ${fmt(m.expectedGross - m.expectedInvestors)}` : signedFmt(m.partner),
+    tone: flowTone(!m ? d.partnerNetProfit ?? d.netProfit : m.future ? 1 : m.partner),
+  })
+  if (!m) {
+    if (d.manualBalance !== 0 || (d.manualCount ?? 0) > 0 || manualOperations.value.length > 0) {
+      out.push({
+        key: 'manual', group: 'flow', value: signedFmt(d.manualBalance), tone: sign(d.manualBalance),
+        label: 'Расходы', count: d.manualBreakdown?.expenseCount ?? d.manualCount ?? 0,
+      })
+    }
+  } else {
+    out.push({
+      key: 'manual', group: 'flow',
+      value: m.future && !m.flows.manualBalance ? none : signedFmt(m.flows.manualBalance),
+      tone: sign(m.flows.manualBalance),
+      label: 'Расходы', count: m.flows.expenseCount + m.flows.otherExpenseCount,
+    })
+  }
+
+  // Ожидается: остаток выбранного месяца и всё, что после текущего.
+  if (m) {
+    const overdue = !m.current && !m.future && m.unpaid > 0
+    out.push({
+      key: 'remaining', group: 'expect', label: 'Осталось получить', count: m.unpaidCount,
+      value: fmt(m.unpaid), tone: 'expect',
+      info: overdue ? 'Срок прошёл — это просрочка' : 'Неоплаченные платежи этого месяца',
+    })
+  }
+  if (forecast.value?.count) {
+    out.push({
+      key: 'forecast', group: 'expect', label: 'Прогноз', count: forecast.value.count,
+      value: fmt(forecast.value.amount), tone: 'expect',
+      info: 'Платежи по графикам после текущего месяца',
+    })
+  }
+
+  // Остатки: на конец месяца (у текущего — на сегодня).
+  out.push({
+    key: 'available', group: 'stock', label: 'Деньги в кассе',
+    value: m ? (b ? fmt(b.cashEnd) : none) : fmt(d.availableCapital),
+    info: 'Реальные деньги кассы',
+  })
+  out.push({
+    key: 'deployed', group: 'stock',
+    label: 'В работе', count: m ? b?.activeDealsEnd : d.dealsStats?.activeCount ?? 0,
+    value: m ? (b ? `-${fmt(b.inWorkEnd)}` : none) : `-${fmt(d.inProgress)}`,
+  })
+
+  // Долги: что мы должны и что должны нам.
+  if (!m ? d.pendingCIPayout > 0 : (b?.owedEnd ?? 0) > 0 || d.pendingCIPayout > 0) {
+    out.push({
+      key: 'pendingCI', group: 'debt', reserve: true,
+      label: 'Резерв для инвесторов', count: m ? undefined : pendingCiList.value.length,
+      value: !m ? fmt(d.pendingCIPayout) : b ? fmt(b.owedEnd) : none,
+    })
+  }
+  if ((d.supplierDebt ?? 0) > 0) {
+    out.push({
+      key: 'supplier', group: 'debt', value: fmt(d.supplierDebt ?? 0), label: 'Долг поставщикам',
+      reserve: true, muted: todayOnly,
+      info: 'Не вычитается из денег кассы — это напоминание, сколько вы ещё должны за товар',
+    })
+  }
+  const borrowed = avail.value?.notes.borrowed ?? 0
+  if (borrowed > 0) {
+    out.push({
+      key: 'borrowed', group: 'debt', value: fmt(borrowed), label: 'Взяли в долг',
+      reserve: true, muted: todayOnly, info: 'Временные операции: взято и ещё не возвращено',
+    })
+  }
+  const lent = avail.value?.notes.lentOut ?? 0
+  if (lent > 0) {
+    out.push({
+      key: 'lent', group: 'debt', value: fmt(lent), label: 'Дали в долг',
+      muted: todayOnly, info: 'Временные операции: должны нам — дали и ещё не вернули',
+    })
+  }
+  return out
 })
+const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
+function monthTitle(ym: string) {
+  const [y, m] = ym.split('-').map(Number) as [number, number]
+  return `${MONTH_NAMES[m - 1]} ${y}`
+}
+/** Строка прогноза → этот месяц на ленте и его неоплаченные платежи. */
+function openForecastMonth(m: string) {
+  selectMonth(m)
+  wfExpanded.value = 'remaining'
+}
+const capitalTile = computed(() => tiles.value.find((t) => t.group === 'top') ?? null)
+const navGroups = computed(() =>
+  WF_GROUPS.map((g) => ({ ...g, items: tiles.value.filter((t) => t.group === g.key) })).filter((g) => g.items.length),
+)
+function openTile(key: string) {
+  if (key === 'supplier') router.push({ path: '/suppliers', query: { debt: '1' } })
+  else if (key === 'borrowed' || key === 'lent') {
+    router.push({ path: '/accounting/temporary-ops', query: { cashBoxId: id.value, tab: key === 'borrowed' ? 'in' : 'out' } })
+  } else wfExpanded.value = key
+}
 
 // Суммы по активным сделкам считает сервер: в браузере лежит одна страница
 // списка, и складывать её строки было бы неверно.
@@ -954,6 +1146,7 @@ watch(wfExpanded, (v) => {
   if (v === 'deployed' && !activeDeals.value.items.length) loadDealsSection('active')
   if (v === 'manual' && !manualOperations.value.length) loadManualOperations()
   if (v === 'available' && !avail.value) loadAvailable()
+  if (v === 'pendingCI' && !ciDeals.value) loadCiDeals()
 }, { immediate: true })
 watch(() => profitDeals.value.page, () => loadDealsSection('profit'))
 watch(() => activeDeals.value.page, () => loadDealsSection('active'))
@@ -1030,6 +1223,25 @@ const ciShareLabels = computed(() => {
 // Phase 2: CIs in this cashbox with a pending dividend balance (realized
 // profit not yet paid out). Drives the "Резерв для инвесторов" breakdown
 // panel — clicking the reserve row opens this per-CI list with amounts owed.
+/** Сделки инвесторов для панели «Резерв» — грузятся при её открытии. */
+type CiDealsRow = { id: string; deals: NonNullable<NonNullable<CapitalDetails['coInvestors']>[number]['deals']>; dealsRest: { count: number; amount: number } }
+const ciDeals = ref<Map<string, CiDealsRow> | null>(null)
+const ciDealsLoading = ref(false)
+let ciDealsSeq = 0
+async function loadCiDeals() {
+  if (!canSeeCapital.value) return
+  const seq = ++ciDealsSeq
+  ciDealsLoading.value = true
+  try {
+    const rows = await api.get<CiDealsRow[]>(`/cashboxes/${id.value}/capital/ci-deals`)
+    if (seq === ciDealsSeq) ciDeals.value = new Map(rows.map((r) => [r.id, r]))
+  } catch (e: any) {
+    if (seq === ciDealsSeq) toast.error(e, 'Не удалось загрузить сделки инвесторов')
+  } finally {
+    if (seq === ciDealsSeq) ciDealsLoading.value = false
+  }
+}
+
 const pendingCiList = computed(() =>
   // From capitalDetails.coInvestors (carries per-deal accrual breakdown), not the
   // separate /co-investors list — so the reserve shows WHICH deals it came from.
@@ -1040,7 +1252,8 @@ const pendingCiList = computed(() =>
       // Обогащаем каждую сделку разбором доли этого инвестора (как в «Чистой прибыли»).
       // Поля сделки приходят вместе с суммой: общего списка сделок на клиенте
       // больше нет (он весил мегабайты).
-      deals: (ci.deals ?? []).map((dl) => {
+      dealsRest: ciDeals.value?.get(ci.id)?.dealsRest ?? ci.dealsRest,
+      deals: (ciDeals.value?.get(ci.id)?.deals ?? ci.deals ?? []).map((dl) => {
         const gross = dl.gross ?? 0
         return {
           id: dl.id,
@@ -1065,17 +1278,31 @@ const pendingCiList = computed(() =>
 // ─── Капитал кассы: вложенное, доход к снятию, доступно ──────────────────
 // Вложение и снятие капитала теперь вносятся в «Бухгалтерии → Приход и
 // расход» (кнопка в шапке ведёт туда), здесь — только цифры для карточки.
-const investedCapital = computed(() =>
-  capitalSummary.value?.investedCapital ?? capitalDetails.value?.initialCapital ?? 0,
-)
-const withdrawableProfit = computed(() =>
-  capitalSummary.value?.withdrawableProfit ?? Math.max(0, capitalDetails.value?.partnerNetProfit ?? capitalDetails.value?.netProfit ?? 0),
-)
-const availableCap = computed(() =>
-  capitalSummary.value?.availableCapital ?? capitalDetails.value?.availableCapital ?? 0,
-)
 // Обязательство перед со-инвесторами (cash-basis: деньги ещё в кассе).
 const pendingCIPayout = computed(() => capitalDetails.value?.pendingCIPayout ?? 0)
+
+// ─── «Пополнить / снять» прямо со страницы кассы ───────────────────────────────
+// Те же формы, что в Бухгалтерии; касса подставлена и не меняется. Сначала
+// главное — капитал и прибыль, затем расходы, внизу временные операции.
+const CASHBOX_OPS: Array<{ title: string; kinds: OperationKind[] }> = [
+  { title: 'Основные', kinds: ['DEPOSIT', 'WITHDRAW_PROFIT', 'WITHDRAW_OWNER'] },
+  { title: 'Расходы', kinds: ['EXPENSE', 'OTHER_EXPENSE'] },
+  { title: 'Временные', kinds: ['BORROW', 'LEND', 'PENDING_OUT', 'PENDING_IN'] },
+]
+const canAnyOp = computed(() =>
+  CASHBOX_OPS.some((sec) => sec.kinds.some((k) => {
+    const info = OPERATION_KINDS.find((x) => x.kind === k)
+    return !!info && auth.can(info.permission)
+  })),
+)
+const opMenu = ref(false)
+const opDialog = ref(false)
+const opKind = ref<OperationKind>('DEPOSIT')
+function pickOp(k: OperationKind) {
+  opMenu.value = false
+  opKind.value = k
+  opDialog.value = true
+}
 
 // ─── Пополнения и расходы — в Бухгалтерии ─────────────────────────────────────
 // Ручные движения денег (капитал, доходы и расходы) ведутся в одном разделе;
@@ -1083,11 +1310,6 @@ const pendingCIPayout = computed(() => capitalDetails.value?.pendingCIPayout ?? 
 const canOpenFlows = computed(() => auth.canAccess('/accounting/temporary'))
 function openFlows() {
   void router.push({ path: '/accounting/temporary', query: { cashBoxId: id.value } })
-}
-/** Журнал кассы — в панели вкладки «Капитал кассы». */
-function openJournal() {
-  topTab.value = 'capital'
-  wfExpanded.value = 'journal'
 }
 
 /**
@@ -1169,10 +1391,35 @@ const showDelete = ref(false)
           </div>
         </div>
         <div class="cb-header-actions">
-          <!-- Вложение и снятие капитала, доходы и расходы — в «Бухгалтерии →
-               Пополнения и расходы»: там все ручные движения денег в одном месте. -->
+          <!-- Пополнить / снять: операции кассы прямо отсюда, в тех же формах,
+               что в Бухгалтерии. На телефоне — шторкой снизу. -->
+          <template v-if="canAnyOp">
+            <v-menu v-if="!isMobile" v-model="opMenu" location="bottom end" offset="6">
+              <template #activator="{ props: menuProps }">
+                <button class="cb-action-btn cb-action-btn--capital" v-bind="menuProps">
+                  <v-icon icon="mdi-swap-vertical-circle-outline" size="17" />
+                  Пополнить / снять
+                  <v-icon icon="mdi-chevron-down" size="16" />
+                </button>
+              </template>
+              <v-card rounded="lg" elevation="6" class="cb-opmenu">
+                <AccountOperationItems :sections="CASHBOX_OPS" @pick="pickOp" />
+                <template v-if="canOpenFlows">
+                  <div class="cb-opmenu-divider" />
+                  <button type="button" class="cb-opmenu-all" @click="opMenu = false; openFlows()">
+                    Все операции в Бухгалтерии
+                    <v-icon icon="mdi-arrow-right" size="15" />
+                  </button>
+                </template>
+              </v-card>
+            </v-menu>
+            <button v-else class="cb-action-btn cb-action-btn--capital" @click="opMenu = true">
+              <v-icon icon="mdi-swap-vertical-circle-outline" size="17" />
+              Пополнить / снять
+            </button>
+          </template>
           <button
-            v-if="canOpenFlows"
+            v-else-if="canOpenFlows"
             class="cb-action-btn cb-action-btn--capital"
             title="Вложить или снять капитал, внести доход или расход"
             @click="openFlows"
@@ -1216,25 +1463,7 @@ const showDelete = ref(false)
               Где лежат деньги
               <span v-if="unallocated > 0" class="cb-tab-dot" title="Есть неразнесённые деньги" />
             </button>
-            <button
-              v-if="canSeePlan"
-              class="fn-tab"
-              :class="{ 'fn-tab--active': topTab === 'plan' }"
-              @click="topTab = 'plan'"
-            >
-              Аналитика
-            </button>
           </div>
-          <!-- Журнал кассы — отдельно от табов и плиток: это книга всех движений,
-               из которой сложены их цифры. Открывается в панели «Капитала кассы». -->
-          <button
-            class="cb-journal-btn"
-            :class="{ 'cb-journal-btn--on': topTab === 'capital' && wfExpanded === 'journal' }"
-            @click="openJournal"
-          >
-            <v-icon icon="mdi-book-open-page-variant-outline" size="17" />
-            Журнал кассы
-          </button>
         </div>
 
         <template v-if="topTab === 'where'">
@@ -1359,307 +1588,80 @@ const showDelete = ref(false)
           </div>
         </template>
 
-        <!-- ─────────── Аналитика вложенного ─────────── -->
-        <template v-else-if="topTab === 'plan'">
-          <div v-if="planDenied" class="cb-where-empty">
-            <v-icon icon="mdi-lock-outline" size="26" />
-            <div class="cb-where-empty-title">Аналитика недоступна</div>
-            <div class="cb-where-empty-text">
-              Раздел закрыт тарифом или правами роли — цифры о судьбе вложенных денег
-              берутся оттуда же, откуда «Аналитика» и «Отчёты».
-            </div>
-          </div>
-
-          <div v-else-if="planLoading && !planSummary" class="cb-plan-loading">
-            <v-progress-circular indeterminate size="26" width="3" color="#047857" />
-          </div>
-
-          <template v-else-if="planSummary">
-            <!-- Точка отсчёта: сколько своих денег партнёр держит в этой кассе. -->
-            <div class="cb-plan-top">
-              <div>
-                <div class="cb-plan-top-label">Вложено в эту кассу</div>
-                <div class="cb-plan-top-value">{{ formatCurrency(planInvested) }}</div>
-                <div class="cb-plan-top-note">начальный капитал плюс пополнения, минус снятое из вложенного</div>
-              </div>
-              <button class="cb-where-btn" @click="router.push('/analytics')">
-                <v-icon icon="mdi-chart-line" size="16" />
-                Полная аналитика
-              </button>
-            </div>
-
-            <!-- Где эти деньги прямо сейчас. -->
-            <div class="cb-plan-cards">
-              <div class="cb-plan-card">
-                <div class="cb-plan-card-label">В товаре</div>
-                <div class="cb-plan-card-value">{{ formatCurrency(capitalDetails.inProgress) }}</div>
-                <div class="cb-plan-card-note">закуплено клиентам, вернётся платежами</div>
-              </div>
-              <div class="cb-plan-card">
-                <div class="cb-plan-card-label">Свободно в кассе</div>
-                <div class="cb-plan-card-value">{{ formatCurrency(availableCap) }}</div>
-                <div class="cb-plan-card-note">можно пустить в новые сделки</div>
-              </div>
-              <div class="cb-plan-card cb-plan-card--profit">
-                <div class="cb-plan-card-label">Заработано</div>
-                <div class="cb-plan-card-value">{{ formatCurrency(planEarned) }}</div>
-                <div class="cb-plan-card-note">
-                  <template v-if="(capitalDetails.coInvestorProfit ?? 0) > 0">чистыми, за вычетом доли со-инвесторов</template>
-                  <template v-else>чистая прибыль по сделкам этой кассы</template>
-                </div>
-              </div>
-            </div>
-
-            <div class="cb-plan-workbar">
-              <div class="cb-plan-workbar-fill" :style="{ width: planInWorkPct + '%' }" />
-            </div>
-            <div class="cb-plan-worklegend">
-              <span><span class="cb-plan-dot cb-plan-dot--work" /> В товаре {{ planInWorkPct }}%</span>
-              <span><span class="cb-plan-dot cb-plan-dot--free" /> Свободно {{ 100 - planInWorkPct }}%</span>
-            </div>
-
-            <!-- Главный вопрос: когда вложенное вернётся прибылью. -->
-            <div class="cb-plan-block">
-              <div class="cb-plan-block-head">
-                <span class="cb-plan-block-title">Окупаемость вложенного</span>
-                <span class="cb-plan-block-pct">{{ planPaybackPct }}%</span>
-              </div>
-              <div class="cb-plan-pay">
-                <div class="cb-plan-pay-fill" :style="{ width: planPaybackPct + '%' }" />
-              </div>
-              <div class="cb-plan-pay-row">
-                <span>Заработано {{ formatCurrency(planEarned) }}</span>
-                <span>Вложено {{ formatCurrency(planInvested) }}</span>
-              </div>
-
-              <div v-if="planInvested <= 0" class="cb-plan-verdict">
-                <v-icon icon="mdi-information-outline" size="17" />
-                <span>Капитал кассы не указан — сравнивать не с чем. Укажите его в настройках кассы или внесите деньги операцией «Капитал».</span>
-              </div>
-              <div v-else-if="planPaidBack" class="cb-plan-verdict cb-plan-verdict--ok">
-                <v-icon icon="mdi-check-decagram-outline" size="17" />
-                <span>
-                  Вложенное окупилось: прибыль превысила вложенные деньги
-                  на {{ formatCurrency(planEarned - planInvested) }}. Всё, что придёт дальше, — доход сверх вложенного.
-                </span>
-              </div>
-              <div v-else-if="planPaybackMonth" class="cb-plan-verdict cb-plan-verdict--wait">
-                <v-icon icon="mdi-calendar-clock" size="17" />
-                <span>
-                  Осталось заработать {{ formatCurrency(planInvested - planEarned) }}.
-                  Если платежи придут по графику, вложенное окупится к <b>{{ planMonthName(planPaybackMonth) }}</b>,
-                  и дальше пойдёт чистый доход.
-                </span>
-              </div>
-              <div v-else class="cb-plan-verdict cb-plan-verdict--warn">
-                <v-icon icon="mdi-alert-circle-outline" size="17" />
-                <span>
-                  Текущих сделок не хватает, чтобы окупить вложенное: до конца всех графиков
-                  ожидается {{ formatCurrency(planProfitLeft) }} дохода, а не хватает
-                  {{ formatCurrency(planInvested - planEarned) }}. Окупаемость придёт с новыми сделками.
-                </span>
-              </div>
-            </div>
-
-            <!-- Что придёт дальше: помесячно, с делением на возврат и доход. -->
-            <div class="cb-plan-block">
-              <div class="cb-plan-block-head">
-                <span class="cb-plan-block-title">Что придёт дальше</span>
-                <span class="cb-plan-block-sub">ближайший год, по графику платежей</span>
-              </div>
-
-              <div v-if="planChart.some((m) => m.total > 0)" class="cb-plan-chart">
-                <div v-for="m in planChart" :key="m.month" class="cb-plan-col">
-                  <div class="cb-plan-bar" :title="`${planMonthName(m.month)}: ${formatCurrency(m.total)}`">
-                    <div
-                      class="cb-plan-bar-profit"
-                      :style="{ height: (m.profit / planChartMax) * 100 + '%' }"
-                    />
-                    <div
-                      class="cb-plan-bar-principal"
-                      :style="{ height: (m.principal / planChartMax) * 100 + '%' }"
-                    />
-                  </div>
-                  <div class="cb-plan-col-label">{{ planMonthShort(m.month) }}</div>
-                </div>
-              </div>
-              <div v-else class="cb-plan-nochart">По текущим сделкам платежей в ближайший год не запланировано</div>
-
-              <div class="cb-plan-legend">
-                <span><span class="cb-plan-dot cb-plan-dot--principal" /> Возврат вложенного</span>
-                <span><span class="cb-plan-dot cb-plan-dot--profit" /> Ваш доход</span>
-              </div>
-
-              <div class="cb-plan-facts">
-                <div class="cb-plan-fact">
-                  <div class="cb-plan-fact-value">{{ formatCurrency(planExpectedTotal) }}</div>
-                  <div class="cb-plan-fact-label">придёт до конца текущих сделок</div>
-                </div>
-                <div class="cb-plan-fact">
-                  <div class="cb-plan-fact-value cb-plan-fact-value--profit">{{ formatCurrency(planProfitLeft) }}</div>
-                  <div class="cb-plan-fact-label">из них ваш доход</div>
-                </div>
-                <div class="cb-plan-fact">
-                  <div class="cb-plan-fact-value">
-                    {{ planLastMonth ? planMonthName(planLastMonth) : '—' }}
-                  </div>
-                  <div class="cb-plan-fact-label">последний платёж текущих сделок</div>
-                </div>
-              </div>
-
-              <!-- Просроченное в прогноз не двигаем: это деньги, которых ждут,
-                   но срок уже прошёл — иначе окупаемость выглядела бы ближе. -->
-              <div v-if="planOverdue.sum > 0" class="cb-plan-overdue">
-                <v-icon icon="mdi-clock-alert-outline" size="17" />
-                <span>
-                  Просрочено {{ formatCurrency(planOverdue.sum) }} по {{ planOverdue.count }}
-                  {{ planOverdue.count === 1 ? 'платежу' : 'платежам' }} — в прогноз выше эти деньги не включены.
-                </span>
-                <button class="cb-plan-overdue-btn" @click="router.push('/debtors')">Должники</button>
-              </div>
-            </div>
-          </template>
-        </template>
-
         <template v-else>
 
-        <div class="wf-split">
-          <!-- Плитки — горизонтальным рядом; детали выбранной — ниже. -->
-          <div class="wf-left">
-            <button
-              class="wf-item"
-              :class="{ 'wf-item--active': wfExpanded === 'capital' }"
-              @click="wfExpanded = 'capital'"
-            >
-              <div class="wf-item-value">{{ formatCurrency(capitalDetails.totalCapital) }}</div>
-              <div class="wf-item-label">Общий капитал</div>
-                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
-            </button>
-            <button
-              class="wf-item"
-              :class="{ 'wf-item--active': wfExpanded === 'profit' }"
-              @click="wfExpanded = 'profit'"
-            >
-              <div class="wf-item-value" style="color: #10b981;">+{{ formatCurrency(capitalDetails.partnerNetProfit ?? capitalDetails.netProfit) }}</div>
-              <div class="wf-item-label">Чистая прибыль</div>
-                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
-            </button>
-            <button
-              class="wf-item"
-              :class="{ 'wf-item--active': wfExpanded === 'deployed' }"
-              @click="wfExpanded = 'deployed'"
-            >
-              <div class="wf-item-value" style="color: #f59e0b;">-{{ formatCurrency(capitalDetails.inProgress) }}</div>
-              <div class="wf-item-label">В работе · {{ capitalDetails.dealsStats?.activeCount ?? 0 }}</div>
-                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
-            </button>
-            <button
-              v-if="capitalDetails.manualBalance !== 0 || (capitalDetails.manualCount ?? 0) > 0 || manualOperations.length > 0"
-              class="wf-item"
-              :class="{ 'wf-item--active': wfExpanded === 'manual' }"
-              @click="wfExpanded = 'manual'"
-            >
-              <div class="wf-item-value" :style="{ color: capitalDetails.manualBalance > 0 ? '#3b82f6' : '#ef4444' }">
-                {{ capitalDetails.manualBalance > 0 ? '+' : '' }}{{ formatCurrency(capitalDetails.manualBalance) }}
-              </div>
-              <div class="wf-item-label">
-                Расходы · {{ capitalDetails.manualBreakdown?.expenseCount ?? capitalDetails.manualCount ?? 0 }}
-              </div>
-              <!-- Сальдо почти всегда — одни расходы. Если были прочие доходы или
-                   старые переводы между кассами, показываем их, иначе цифра
-                   плитки не совпала бы с подписью. -->
-              <div
-                v-if="capitalDetails.manualBreakdown && (capitalDetails.manualBreakdown.income || capitalDetails.manualBreakdown.transfers)"
-                class="wf-item-sub"
+        <!-- Слева — навигация: журнал и показатели кассы за выбранный период;
+             справа — лента месяцев и содержимое выбранного пункта. -->
+        <div class="cb-layout">
+          <aside class="cb-nav">
+            <div v-if="months.length" class="cb-nav-period">{{ navTitle }}</div>
+            <nav class="cb-nav-list" aria-label="Разделы кассы">
+              <button
+                type="button"
+                class="cb-nav-item cb-nav-item--journal"
+                :class="{ 'cb-nav-item--on': wfExpanded === 'journal' }"
+                @click="wfExpanded = 'journal'"
               >
-                расходы −{{ formatCurrencyShort(capitalDetails.manualBreakdown.expense) }}
-                <template v-if="capitalDetails.manualBreakdown.income">
-                  · прочие доходы +{{ formatCurrencyShort(capitalDetails.manualBreakdown.income) }}
-                </template>
-                <template v-if="capitalDetails.manualBreakdown.transfers">
-                  · переводы {{ capitalDetails.manualBreakdown.transfers > 0 ? '+' : '−' }}{{ formatCurrencyShort(Math.abs(capitalDetails.manualBreakdown.transfers)) }}
-                </template>
-              </div>
-                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
-            </button>
-
-            <button
-              class="wf-item wf-item--result"
-              :class="{ 'wf-item--active': wfExpanded === 'available' }"
-              @click="wfExpanded = 'available'"
-            >
-              <div class="wf-item-value wf-item-value--big" :style="{ color: box.color }">
-                {{ formatCurrency(capitalDetails.availableCapital) }}
-              </div>
-              <div class="wf-item-label">
-                Деньги в кассе
-                <v-icon icon="mdi-information-outline" size="11" class="ml-1" />
-              </div>
-                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
-            </button>
-
-            <!-- Долг поставщикам — напоминание: деньги в кассе, партнёр
-                 распоряжается ими сам. Клик — в раздел «Партнёры», сразу только те,
-                 кому должны. -->
-            <button
-              v-if="(capitalDetails.supplierDebt ?? 0) > 0"
-              class="wf-item wf-item--reserve"
-              @click="router.push({ path: '/suppliers', query: { debt: '1' } })"
-            >
-              <div class="wf-item-value" style="color: #f59e0b;">
-                {{ formatCurrency(capitalDetails.supplierDebt ?? 0) }}
-              </div>
-              <div class="wf-item-label">
-                Долг поставщикам
-                <v-icon icon="mdi-information-outline" size="11" class="ml-1" title="Не вычитается из денег кассы — это напоминание, сколько вы ещё должны за товар" />
-              </div>
-              <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
-            </button>
-
-            <!-- Phase 2 cash-basis: obligation owed to CIs. Reported as a
-                 separate liability, NOT subtracted from availableCapital.
-                 Clickable — opens a per-CI breakdown on the right.
-                 Red warning chip appears if balance < pendingCIPayout
-                 (partner has spent CI money and must replenish before payout). -->
-            <button
-              v-if="capitalDetails.pendingCIPayout > 0"
-              class="wf-item wf-item--reserve"
-              :class="{
-                'wf-item--active': wfExpanded === 'pendingCI',
-                'wf-item--reserve-danger': capitalDetails.availableCapital < capitalDetails.pendingCIPayout,
-              }"
-              @click="wfExpanded = 'pendingCI'"
-            >
-              <div class="wf-item-value" style="color: #f59e0b;">
-                {{ formatCurrency(capitalDetails.pendingCIPayout) }}
-              </div>
-              <div class="wf-item-label">
-                Резерв для инвесторов · {{ pendingCiList.length }}
-                <span
-                  v-if="capitalDetails.availableCapital < capitalDetails.pendingCIPayout"
-                  class="wf-reserve-warning"
+                <v-icon icon="mdi-book-open-page-variant-outline" size="17" class="cb-nav-ico" />
+                <span class="cb-nav-label">Журнал кассы</span>
+              </button>
+              <button
+                v-if="capitalTile"
+                type="button"
+                class="cb-nav-item cb-nav-item--capital"
+                :class="{ 'cb-nav-item--on': wfExpanded === 'capital' }"
+                @click="openTile('capital')"
+              >
+                <v-icon :icon="WF_SECTIONS.capital!.icon" size="17" class="cb-nav-ico" />
+                <span class="cb-nav-label">{{ capitalTile.label }}</span>
+                <span class="cb-nav-value">{{ capitalTile.value }}</span>
+              </button>
+              <template v-for="grp in navGroups" :key="grp.key">
+                <div class="cb-nav-group">{{ grp.title }}</div>
+                <button
+                  v-for="t in grp.items"
+                  :key="t.key"
+                  type="button"
+                  class="cb-nav-item"
+                  :class="{
+                    'cb-nav-item--on': wfExpanded === t.key,
+                    'cb-nav-item--danger': t.danger,
+                    'cb-nav-item--muted': t.muted,
+                  }"
+                  :title="t.danger ? 'Денег в кассе меньше, чем вы должны инвесторам — выплатите дивиденды' : t.info"
+                  @click="openTile(t.key)"
                 >
-                  <v-icon icon="mdi-alert-circle" size="11" />
-                  Выплатите дивиденды
-                </span>
-              </div>
-                          <v-icon class="wf-item-chevron" icon="mdi-chevron-right" size="18" />
-            </button>
-          </div>
+                  <span class="cb-nav-label">
+                    {{ t.label }}
+                    <span v-if="t.count != null" class="cb-nav-count">{{ t.count.toLocaleString('ru-RU') }}</span>
+                    <v-icon v-if="t.danger" icon="mdi-alert-circle" size="13" class="cb-nav-alert" />
+                  </span>
+                  <span class="cb-nav-value" :class="[grp.key === 'debt' ? 'cb-nav-value--debt' : t.tone ? `cb-nav-value--${t.tone}` : '']">{{ t.value }}</span>
+                  <v-icon
+                    v-if="['supplier', 'borrowed', 'lent'].includes(t.key)"
+                    icon="mdi-arrow-top-right"
+                    size="13"
+                    class="cb-nav-out"
+                  />
+                </button>
+              </template>
+            </nav>
+          </aside>
 
-        <!-- Utilization bar -->
-        <div class="wf-utilization">
-          <div class="wf-utilization-header">
-            <span class="wf-utilization-label">Капитал в работе</span>
-            <span class="wf-utilization-percent">{{ capitalUtilization }}%</span>
-          </div>
-          <div class="wf-utilization-bar">
-            <div class="wf-utilization-fill" :style="{ width: capitalUtilization + '%', background: box.color }" />
-          </div>
-        </div>
+          <section class="cb-main">
+          <CashBoxMonthChart
+            v-if="canSeePlan && !monthsDenied && (months.length || monthsLoading)"
+            class="cb-months"
+            :months="months"
+            :selected="selectedMonth ?? ''"
+            :loading="monthsLoading"
+            :can-see-cost="monthsCanSeeCost"
+            :metric="wfExpanded"
+            @select="selectMonth"
+          />
 
-          <!-- Детали выбранной плитки — под рядом плиток, во всю ширину. -->
-          <div class="wf-right">
+          <!-- Содержимое выбранного пункта навигации. -->
+          <div class="wf-right cb-detail">
             <!-- Hero выбранной плитки: название, главная сумма и из чего она
                  сложилась — фирменным зелёным блоком, как на «Балансе». -->
             <div v-if="wfHero" class="wf-hero">
@@ -1694,13 +1696,73 @@ const showDelete = ref(false)
               </div>
             </div>
 
+            <!-- Инвесторы за выбранный месяц — расчёт месяца на их странице. -->
+            <div v-if="monthRow && !monthRow.future && ['profit', 'capital', 'pendingCI'].includes(wfExpanded ?? '')" class="cb-month-links">
+              <button type="button" class="cb-month-link" @click="router.push({ path: '/co-investors', query: { box: id, month: monthRow.month } })">
+                <v-icon icon="mdi-account-group-outline" size="15" />
+                Инвесторы за этот месяц
+                <v-icon icon="mdi-chevron-right" size="15" />
+              </button>
+            </div>
+
             <!-- Журнал — с общей шапкой панели; его фильтры и пагинация — свои. -->
             <template v-if="wfExpanded === 'journal'">
-              <CashflowJournal class="wf-journal" :cash-box-id="id" @changed="refreshAfterMutation" />
+              <CashflowJournal class="wf-journal" :cash-box-id="id" :period="monthPeriod" @changed="refreshAfterMutation" />
+            </template>
+
+            <!-- Оплаты от клиентов — в журнале кассы, за выбранный месяц. -->
+            <template v-else-if="wfExpanded === 'received'">
+              <CashflowJournal
+                :key="'received-' + (selectedMonth ?? '')"
+                class="wf-journal"
+                :cash-box-id="id"
+                :period="monthPeriod"
+                :types="['PAYMENT_IN']"
+                @changed="refreshAfterMutation"
+              />
+            </template>
+
+            <!-- Осталось получить: неоплаченные платежи месяца поштучно. -->
+            <template v-else-if="wfExpanded === 'remaining'">
+              <MonthPaymentsList
+                v-if="monthRow"
+                :cash-box-id="id"
+                :month="monthRow.month"
+                only="pending"
+                accent="gross"
+              />
+            </template>
+
+            <!-- Прогноз по месяцам: клик — платежи этого месяца. -->
+            <template v-else-if="wfExpanded === 'forecast'">
+              <div class="wf-expand-subtitle">По месяцам</div>
+              <div v-if="forecast?.months.length" class="cb-fc">
+                <div class="cb-fc-row cb-fc-row--head">
+                  <span>Месяц</span>
+                  <span class="cb-fc-num">Платежей</span>
+                  <span class="cb-fc-num">Сумма</span>
+                  <span class="cb-fc-num">Прибыль ≈</span>
+                </div>
+                <component
+                  :is="months.some((x) => x.month === f.month) ? 'button' : 'div'"
+                  v-for="f in forecast.months"
+                  :key="f.month"
+                  type="button"
+                  class="cb-fc-row"
+                  :class="{ 'cb-fc-row--link': months.some((x) => x.month === f.month) }"
+                  @click="months.some((x) => x.month === f.month) && openForecastMonth(f.month)"
+                >
+                  <span class="cb-fc-month">{{ monthTitle(f.month) }}</span>
+                  <span class="cb-fc-num">{{ f.count.toLocaleString('ru-RU') }}</span>
+                  <span class="cb-fc-num cb-fc-sum">{{ formatCurrency(f.amount) }}</span>
+                  <span class="cb-fc-num cb-fc-gross">{{ formatCurrency(f.gross) }}</span>
+                </component>
+              </div>
+              <div v-else class="wf-expand-empty">Ожидаемых платежей после текущего месяца нет</div>
             </template>
 
             <template v-else-if="wfExpanded === 'available'">
-              <div class="wf-expand-subtitle">Из чего сложились деньги кассы</div>
+              <div class="wf-expand-subtitle">Из чего сложились деньги кассы{{ monthRow && !monthRow.current ? ' · на сегодня' : '' }}</div>
               <div v-if="availableRows.length" class="wf-flow">
                 <div
                   v-for="r in availableRows"
@@ -1771,6 +1833,7 @@ const showDelete = ref(false)
             </template>
 
             <template v-else-if="wfExpanded === 'profit'">
+              <div v-if="monthRow" class="wf-expand-subtitle">Сделки с прибылью · за всё время</div>
               <div v-if="profitDeals.loading && !profitDeals.items.length" class="d-flex justify-center pa-6">
                 <v-progress-circular indeterminate color="primary" size="28" />
               </div>
@@ -1866,7 +1929,7 @@ const showDelete = ref(false)
             </template>
 
             <template v-else-if="wfExpanded === 'deployed'">
-              <div class="wf-expand-subtitle">По сделкам</div>
+              <div class="wf-expand-subtitle">Активные сделки{{ monthRow && !monthRow.current ? ' · на сегодня' : '' }}</div>
               <div v-if="activeDeals.loading && !activeDeals.items.length" class="d-flex justify-center pa-6">
                 <v-progress-circular indeterminate color="primary" size="28" />
               </div>
@@ -1963,7 +2026,7 @@ const showDelete = ref(false)
             </template>
 
             <template v-else-if="wfExpanded === 'pendingCI'">
-              <div class="wf-expand-subtitle">По инвесторам</div>
+              <div class="wf-expand-subtitle">По инвесторам{{ monthRow && !monthRow.current ? ' · на сегодня' : '' }}</div>
               <div class="wf-ci-list wf-scroll">
                 <div v-for="ci in pageOf(pendingCiList, reservePage)" :key="ci.id" class="wf-acc">
                   <button class="wf-acc-head" @click="toggleReserveCi(ci.id)">
@@ -1976,6 +2039,9 @@ const showDelete = ref(false)
                   </button>
                   <div v-if="expandedReserveCi.has(ci.id)" class="wf-acc-body">
                     <!-- Разбор доли инвестора по каждой сделке -->
+                    <div v-if="!ciDeals" class="wf-pay-row">
+                      <span class="wf-pay-name text-medium-emphasis">{{ ciDealsLoading ? 'Загружаем сделки…' : 'Сделки не загрузились' }}</span>
+                    </div>
                     <div v-for="dl in ci.deals" :key="dl.id" class="ps-deal">
                       <template v-if="dl.isCostFee">
                         <div class="ps-deal-head">
@@ -2009,20 +2075,20 @@ const showDelete = ref(false)
                           <span class="ps-val ps-val--ci">{{ formatCurrency(dl.amount) }}</span>
                         </div>
                       </template>
-                      <!-- Хвост за пределами показанных сделок: без него сумма
-                           строк не сходится с «Начислено» выше. -->
-                      <div v-if="(ci.dealsRest?.count ?? 0) > 0" class="ps-deal ps-deal--rest">
-                        <div class="ps-row">
-                          <span class="ps-dot ps-dot--ci" />
-                          <span class="ps-label">
-                            <span class="ps-name">
-                              и ещё {{ ci.dealsRest!.count }}
-                              {{ ci.dealsRest!.count === 1 ? 'сделка' : ci.dealsRest!.count < 5 ? 'сделки' : 'сделок' }}
-                            </span>
-                            <span class="ps-sub">показаны крупнейшие по начислению</span>
+                    </div>
+                    <!-- Хвост за пределами показанных сделок: без него сумма
+                         строк не сходится с «Начислено» выше. -->
+                    <div v-if="(ci.dealsRest?.count ?? 0) > 0" class="ps-deal ps-deal--rest">
+                      <div class="ps-row">
+                        <span class="ps-dot ps-dot--ci" />
+                        <span class="ps-label">
+                          <span class="ps-name">
+                            и ещё {{ ci.dealsRest!.count }}
+                            {{ ci.dealsRest!.count === 1 ? 'сделка' : ci.dealsRest!.count < 5 ? 'сделки' : 'сделок' }}
                           </span>
-                          <span class="ps-val ps-val--ci">{{ formatCurrency(ci.dealsRest!.amount) }}</span>
-                        </div>
+                          <span class="ps-sub">показаны крупнейшие по начислению</span>
+                        </span>
+                        <span class="ps-val ps-val--ci">{{ formatCurrency(ci.dealsRest!.amount) }}</span>
                       </div>
                     </div>
                     <!-- Итог: начислено − выплачено = к выплате -->
@@ -2048,10 +2114,11 @@ const showDelete = ref(false)
             <template v-else>
               <div class="wf-panel-empty">
                 <v-icon icon="mdi-cursor-default-click-outline" size="28" color="grey-lighten-2" />
-                <div>Нажмите на строку слева для просмотра деталей</div>
+                <div>Выберите пункт слева</div>
               </div>
             </template>
           </div>
+          </section>
         </div>
 
         </template>
@@ -2069,6 +2136,26 @@ const showDelete = ref(false)
       @done="() => { void accounting.fetchAccounts(); void refreshUnallocated(); void loadDetails() }"
     />
 
+    <v-bottom-sheet v-if="isMobile" v-model="opMenu">
+      <v-card class="cb-opmenu cb-opmenu--sheet" rounded="t-xl">
+        <div class="cb-opmenu-head">Пополнить / снять</div>
+        <AccountOperationItems :sections="CASHBOX_OPS" @pick="pickOp" />
+        <template v-if="canOpenFlows">
+          <div class="cb-opmenu-divider" />
+          <button type="button" class="cb-opmenu-all" @click="opMenu = false; openFlows()">
+            Все операции в Бухгалтерии
+            <v-icon icon="mdi-arrow-right" size="15" />
+          </button>
+        </template>
+      </v-card>
+    </v-bottom-sheet>
+    <OperationDialog
+      v-model="opDialog"
+      :kind="opKind"
+      :cash-box-id="id"
+      lock-cash-box
+      @done="refreshAfterMutation"
+    />
     <CashBoxEditDialog v-model="showEdit" :cashbox="box" @saved="(b) => { box = b; loadDetails() }" @reset="showReset = true" @delete="showDelete = true" />
     <CashBoxResetDialog v-if="box" v-model="showReset" :cash-box-id="box.id" :name="box.name" @done="afterReset" />
     <CashBoxDeleteDialog v-if="box" v-model="showDelete" :cashbox="box" @deleted="router.push('/cashboxes')" />
@@ -2083,7 +2170,6 @@ const showDelete = ref(false)
 .cb-journal-card { overflow: visible; }
 .cb-header-deals { display: inline-flex; align-items: center; gap: 4px; text-decoration: none; }
 .cb-header-deals:hover { color: #047857; text-decoration: underline; }
-
 
 /* Read-only (locked) banner */
 .cb-locked-banner {
@@ -2205,95 +2291,135 @@ const showDelete = ref(false)
   gap: 10px; flex-wrap: wrap;
   margin-bottom: 16px;
 }
-.cb-journal-btn {
-  display: inline-flex; align-items: center; gap: 7px;
-  height: 40px; padding: 0 16px; border-radius: 10px; cursor: pointer;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
-  background: rgb(var(--v-theme-surface));
-  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.75);
-  transition: all 0.15s;
-}
-.cb-journal-btn:hover { border-color: rgba(4, 120, 87, 0.4); color: #047857; }
-.cb-journal-btn--on, .cb-journal-btn--on:hover {
-  background: rgba(4, 120, 87, 0.08); border-color: #047857; color: #047857;
-}
 .wf-title {
   font-size: 14px; font-weight: 700;
   color: rgba(var(--v-theme-on-surface), 0.55);
   text-transform: uppercase; letter-spacing: 0.5px;
 }
 
-.wf-split {
-  display: flex; flex-direction: column;
-  gap: 16px;
+/* ── Касса: навигация слева, содержимое справа ──
+   Слева — что выбрать (журнал и показатели за период), справа — лента месяцев
+   и то, что выбрано. На узком экране навигация — лентой карточек сверху. */
+.cb-layout {
+  display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 20px; align-items: start;
+}
+/* Навигация — строгий список на еле заметном сером с рамкой: название
+   слева, сумма справа, заголовки групп — полосой потемнее. Цвет — только у
+   выбранного пункта (фирменный зелёный, как в меню сайта) и у сумм долгов. */
+.cb-nav {
+  position: sticky; top: 84px; overflow: hidden;
+  border-radius: 8px; background: color-mix(in srgb, rgb(var(--v-theme-on-surface)) 1.5%, rgb(var(--v-theme-surface)));
+  border: 1px solid rgb(var(--v-theme-border));
+}
+.cb-nav-period {
+  padding: 14px 14px 12px; font-size: 20px; font-weight: 700; line-height: 1.2; letter-spacing: -0.2px;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+}
+.cb-nav-list { display: flex; flex-direction: column; }
+.cb-nav-group {
+  padding: 7px 14px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.5); background: color-mix(in srgb, rgb(var(--v-theme-on-surface)) 6%, rgb(var(--v-theme-surface)));
+  border-top: 1px solid rgb(var(--v-theme-border));
+  border-bottom: 1px solid rgb(var(--v-theme-border));
+}
+.cb-nav-item {
+  position: relative; display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 14px; text-align: left; cursor: pointer; color: inherit; background: transparent;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  transition: background 0.12s;
+}
+.cb-nav-period + .cb-nav-list > .cb-nav-item:first-child { border-top: 1px solid rgb(var(--v-theme-border)); }
+.cb-nav-group + .cb-nav-item { border-top: none; }
+.cb-nav-item:hover { background: rgba(var(--v-theme-on-surface), 0.035); }
+.cb-nav-item--on, .cb-nav-item--on:hover { background: color-mix(in srgb, #047857 8%, transparent); }
+.cb-nav-ico { flex: none; color: rgba(var(--v-theme-on-surface), 0.38); }
+.cb-nav-label {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px;
+  font-size: 14px; font-weight: 500; color: rgba(var(--v-theme-on-surface), 0.82);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cb-nav-alert { flex: none; color: #dc2626; }
+/* Количество — серым, отдельно от названия и от суммы. */
+.cb-nav-count {
+  flex: none; margin-left: 2px; font-size: 12.5px; font-weight: 500;
+  color: rgba(var(--v-theme-on-surface), 0.42); font-variant-numeric: tabular-nums;
+}
+.cb-nav-item--on .cb-nav-count { color: color-mix(in srgb, #047857 60%, transparent); }
+.cb-nav-value {
+  flex: none; font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.78);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.cb-nav-value--debt, .cb-nav-value--out { color: #c2413b; }
+.cb-nav-value--in { color: #059669; }
+.cb-nav-value--expect { color: #3b82f6; }
+.cb-nav-item--on .cb-nav-ico, .cb-nav-item--on .cb-nav-label, .cb-nav-item--on .cb-nav-value:not([class*='cb-nav-value--']) { color: #047857; }
+.cb-nav-item--on .cb-nav-label { font-weight: 600; }
+.cb-nav-out { flex: none; margin-left: -4px; color: rgba(var(--v-theme-on-surface), 0.35); }
+/* Общий капитал — главная цифра кассы: сумма чуть крупнее. */
+.cb-nav-item--capital .cb-nav-value { font-size: 14px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.88); }
+.cb-nav-item--danger .cb-nav-value { color: #dc2626 !important; }
+.cb-nav-item--muted .cb-nav-label, .cb-nav-item--muted .cb-nav-value { opacity: 0.65; }
+.cb-page.dark .cb-nav-item--on .cb-nav-ico,
+.cb-page.dark .cb-nav-item--on .cb-nav-label,
+.cb-page.dark .cb-nav-item--on .cb-nav-value:not([class*='cb-nav-value--']) { color: #059669; }
+.cb-page.dark .cb-nav-item--on, .cb-page.dark .cb-nav-item--on:hover { background: color-mix(in srgb, #047857 15%, transparent); }
+.cb-page.dark .cb-nav-value--debt { color: #ef8a80; }
+
+/* Прогноз по месяцам — таблица; строка внутри ленты ведёт к платежам месяца. */
+.cb-fc { border: 1px solid rgba(var(--v-theme-on-surface), 0.08); border-radius: 8px; overflow: hidden; }
+.cb-fc-row {
+  display: grid; grid-template-columns: minmax(0, 1.4fr) 0.8fr 1fr 1fr; gap: 12px; align-items: center;
+  width: 100%; padding: 10px 14px; text-align: left; color: inherit; background: transparent;
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.06); font-size: 13.5px;
+}
+.cb-fc-row:first-child { border-top: none; }
+.cb-fc-row--head {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), 0.45); background: rgba(var(--v-theme-on-surface), 0.025);
+}
+.cb-fc-row--link { cursor: pointer; transition: background 0.12s; }
+.cb-fc-row--link:hover { background: rgba(79, 70, 229, 0.05); }
+.cb-fc-month { font-weight: 600; }
+.cb-fc-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cb-fc-sum { font-weight: 700; color: #4f46e5; }
+.cb-fc-gross { color: #059669; }
+.cb-main { min-width: 0; }
+.cb-main .cb-months {
+  margin-top: 0;
+  /* Лента кассы — в своём бирюзовом тоне, отличном от «Инвесторов». */
+  background: linear-gradient(180deg, rgba(15, 118, 110, 0.06) 0%, rgba(15, 118, 110, 0) 70%), rgb(var(--v-theme-surface));
+  border-color: rgba(15, 118, 110, 0.16);
+}
+/* Детали — в правой колонке, без полосы-разделителя на всю карточку. */
+.wf-right.cb-detail { margin: 16px 0 0; padding: 0; border-top: none; min-height: 0; }
+@media (max-width: 960px) {
+  .cb-layout { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .cb-nav { position: static; }
+  .cb-nav-list { flex-direction: row; overflow-x: auto; scrollbar-width: none; }
+  .cb-nav-list::-webkit-scrollbar { display: none; }
+  .cb-nav-group { display: none; }
+  .cb-nav-item {
+    flex: 0 0 auto; flex-direction: column; align-items: flex-start; gap: 2px; width: auto; min-width: 128px;
+    border-top: none; border-left: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  }
+  .cb-nav-item:first-child { border-left: none; }
+  .cb-nav-item--on, .cb-nav-item--on:hover { box-shadow: inset 0 -2px 0 #047857; }
+  .cb-nav-ico, .cb-nav-out { display: none; }
+  .cb-nav-item--capital { border-top: none; }
+  .cb-fc-row { grid-template-columns: minmax(0, 1fr) auto auto; padding: 10px 12px; }
+  .cb-fc-row > :nth-child(4) { display: none; }
+  .cb-nav-label { font-size: 13px; }
 }
 
 /* Ряд плиток: сколько влезает в ширину, остальные переносятся. На телефоне —
    одна строка с прокруткой вбок, чтобы выбранная деталь была сразу под ней. */
-.wf-left {
-  display: grid; gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-}
-@media (max-width: 700px) {
-  .wf-left {
-    display: flex; overflow-x: auto; scrollbar-width: none;
-    margin: 0 -24px; padding: 0 24px 2px;
-  }
-  .wf-left::-webkit-scrollbar { display: none; }
-  .wf-left .wf-item { flex: 0 0 168px; }
-}
+
 /* Шеврон «вправо» был подсказкой для вертикального списка с панелью справа. */
-.wf-left .wf-item-chevron { display: none; }
+
 /* Плитка читается сверху вниз: заголовок — главное, сумма под ним. Кнопка
    по умолчанию центрирует содержимое по вертикали — прижимаем к верху. */
-.wf-left .wf-item {
-  display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch;
-  padding: 14px 16px;
-}
-.wf-left .wf-item-label {
-  order: -1; margin: 0 0 8px;
-  font-size: 13.5px; font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85);
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
-}
-.wf-left .wf-item-value { font-size: 19px; }
-.wf-left .wf-item-value--big { font-size: 22px; }
+
 /* Выбранная плитка — с полосой снизу: её содержимое открыто под рядом. */
-.wf-item--active { box-shadow: inset 0 -3px 0 #047857; }
-.wf-item--journal .wf-item-value--journal {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 15px; color: rgba(var(--v-theme-on-surface), 0.85);
-}
-.wf-item {
-  display: block; width: 100%;
-  /* Шеврон-подсказка стоит абсолютом справа — отсюда relative и запас справа. */
-  position: relative;
-  text-align: left; padding: 12px 30px 12px 14px;
-  border-radius: 10px; border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  background: rgba(var(--v-theme-on-surface), 0.02);
-  cursor: pointer; transition: all 0.15s;
-}
-.wf-item:hover {
-  border-color: rgba(var(--v-theme-on-surface), 0.18);
-  background: rgba(var(--v-theme-on-surface), 0.04);
-}
-.wf-item--active {
-  border-color: #047857; background: rgba(4, 120, 87, 0.06);
-}
-.wf-item--result {
-  background: rgba(4, 120, 87, 0.08);
-  border-color: rgba(4, 120, 87, 0.2);
-  cursor: default;
-}
-.wf-item-value { font-size: 17px; font-weight: 800; line-height: 1.2; }
-.wf-item-value--big { font-size: 22px; }
-.wf-item-label {
-  font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.55);
-  margin-top: 3px; font-weight: 500;
-}
-.wf-item-sub {
-  font-size: 10px; color: rgba(var(--v-theme-on-surface), 0.4);
-  margin-top: 2px; font-weight: 500;
-}
 
 /* Детали плитки — на белом фоне карточки. От ряда плиток отделены полосой
    во всю ширину карточки (фон страницы) и hero-блоком: сверху — что выбрать,
@@ -2378,6 +2504,15 @@ const showDelete = ref(false)
 .wf-deal-open:hover { background: rgba(4, 120, 87, 0.08); }
 /* У журнала своя маленькая шапка не нужна — её заменяет шапка панели. */
 .wf-journal :deep(.cfj-title) { display: none; }
+.cb-months { margin-top: 0; }
+.cb-month-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.cb-month-link {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 10px;
+  font-size: 13px; font-weight: 600; color: rgba(var(--v-theme-on-surface), 0.8);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12); background: rgb(var(--v-theme-surface));
+  transition: border-color 0.15s, background 0.15s;
+}
+.cb-month-link:hover { border-color: rgba(var(--v-theme-primary), 0.4); background: rgba(var(--v-theme-primary), 0.04); }
 /* Пагинация журнала — во всю ширину карточки и вплотную к её низу: у неё
    отрицательные поля под padding, а у панели своего padding больше нет. */
 .wf-right :deep(.sp-pager:not(.sp-pager--compact)) {
@@ -2387,17 +2522,6 @@ const showDelete = ref(false)
 .wf-exp-row { align-items: center; gap: 12px; }
 .wf-exp-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .wf-exp-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.wf-item-chevron {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  opacity: 0.25;
-  transition: opacity 0.15s, color 0.15s;
-}
-.wf-item:hover .wf-item-chevron { opacity: 0.6; }
-.wf-item--active .wf-item-chevron { opacity: 1; color: #047857; }
-
 
 .wf-panel-title {
   font-size: 13px; font-weight: 700;
@@ -2456,7 +2580,6 @@ const showDelete = ref(false)
   font-size: 11px; color: rgba(var(--v-theme-on-surface), 0.4);
   margin-top: 2px; line-height: 1.4; max-width: 92%;
 }
-.wf-item--result { cursor: pointer; }
 
 /* Ручные операции переехали в «Бухгалтерию → Пополнения и расходы» */
 .wf-moved {
@@ -2686,18 +2809,16 @@ const showDelete = ref(false)
 }
 .wf-table-total td { font-weight: 800; border-bottom: none; padding-top: 12px; }
 
-.wf-utilization { margin-top: 0; }
-.wf-utilization-header {
-  display: flex; justify-content: space-between; align-items: center;
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.6);
-  margin-bottom: 6px;
+.cb-opmenu { padding: 6px; min-width: 310px; max-width: 360px; }
+.cb-opmenu--sheet { max-width: none; padding: 8px 8px 16px; }
+.cb-opmenu-head { padding: 8px 10px 4px; font-size: 15px; font-weight: 800; }
+.cb-opmenu-divider { height: 1px; margin: 5px 0; background: rgba(var(--v-theme-on-surface), 0.08); }
+.cb-opmenu-all {
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  padding: 9px 10px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  color: rgb(var(--v-theme-primary));
 }
-.wf-utilization-percent { font-weight: 700; }
-.wf-utilization-bar {
-  height: 6px; border-radius: 3px;
-  background: rgba(var(--v-theme-on-surface), 0.06); overflow: hidden;
-}
-.wf-utilization-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+.cb-opmenu-all:hover { background: rgba(var(--v-theme-primary), 0.06); }
 
 /* ── Вкладка «Где лежат деньги» ── */
 .cb-tab-dot {
@@ -2934,7 +3055,6 @@ const showDelete = ref(false)
 
 /* Deals tab */
 
-
 /* ─── Waterfall "Ручные операции" panel ──────────────────────────── */
 .wf-panel-title {
   display: flex; align-items: center; justify-content: space-between;
@@ -3003,8 +3123,6 @@ const showDelete = ref(false)
 
 /* ─── Operations tab toolbar (filters) ───────────────────────────── */
 /* Mirrors the Касса tab (CashflowJournal.vue) for visual consistency. */
-
-
 
 /* "Add" button uses the same compact pill style as filter-btn, but filled */
 
@@ -3263,27 +3381,6 @@ const showDelete = ref(false)
 }
 
 /* ── Phase 2: waterfall CI section ── */
-.wf-item--reserve {
-  background: rgba(245, 158, 11, 0.06);
-  border: 1px solid rgba(245, 158, 11, 0.2);
-  cursor: default;
-  padding: 10px 14px;
-  border-radius: 10px;
-}
-.wf-item--reserve-danger {
-  background: rgba(239, 68, 68, 0.08);
-  border-color: rgba(239, 68, 68, 0.3);
-}
-.wf-item--reserve-danger .wf-item-value {
-  color: #ef4444 !important;
-}
-.wf-reserve-warning {
-  display: inline-flex; align-items: center; gap: 3px;
-  margin-left: 6px;
-  font-size: 10px; font-weight: 700;
-  color: #ef4444;
-  text-transform: uppercase; letter-spacing: 0.3px;
-}
 
 .wf-panel-link {
   display: inline-flex; align-items: center; gap: 3px;
@@ -3407,190 +3504,9 @@ const showDelete = ref(false)
 
   /* Waterfall — отступы и шрифты помельче. */
   .wf-title { font-size: 16px; }
-  .wf-item { padding: 10px 28px 10px 12px; }
-  .wf-item-value { font-size: 15px; }
-  .wf-item-label { font-size: 11px; }
-}
-
-/* ── Вкладка «Аналитика»: судьба вложенных денег ── */
-.cb-plan-loading { display: flex; justify-content: center; padding: 48px 0; }
-
-.cb-plan-top {
-  display: flex; align-items: flex-end; justify-content: space-between;
-  gap: 16px; flex-wrap: wrap; padding: 16px 0 18px;
-}
-.cb-plan-top-label {
-  font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
-  color: rgba(var(--v-theme-on-surface), 0.42);
-}
-.cb-plan-top-value {
-  font-size: 28px; font-weight: 700; letter-spacing: -0.6px; margin-top: 4px;
-  font-variant-numeric: tabular-nums;
-}
-.cb-plan-top-note { font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.48); margin-top: 3px; }
-
-.cb-plan-cards {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
-}
-.cb-plan-card {
-  padding: 13px 15px; border-radius: 12px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
-  background: rgba(var(--v-theme-on-surface), 0.02);
-}
-.cb-plan-card--profit {
-  background: linear-gradient(180deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.03));
-  border-color: rgba(16, 185, 129, 0.22);
-}
-.cb-plan-card-label {
-  font-size: 11.5px; font-weight: 600;
-  color: rgba(var(--v-theme-on-surface), 0.5);
-}
-.cb-plan-card-value {
-  font-size: 19px; font-weight: 700; margin-top: 3px;
-  font-variant-numeric: tabular-nums;
-}
-.cb-plan-card--profit .cb-plan-card-value { color: #047857; }
-.cb-plan-card-note {
-  font-size: 11.5px; line-height: 1.4; margin-top: 3px;
-  color: rgba(var(--v-theme-on-surface), 0.42);
-}
-
-/* Сколько вложенного сейчас работает, а сколько ждёт своей сделки. */
-.cb-plan-workbar {
-  height: 8px; border-radius: 5px; overflow: hidden; margin-top: 14px;
-  background: rgba(37, 99, 235, 0.18);
-}
-.cb-plan-workbar-fill {
-  height: 100%; border-radius: 5px 0 0 5px;
-  background: linear-gradient(90deg, #34d399, #059669);
-  transition: width 0.4s;
-}
-.cb-plan-worklegend {
-  display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px;
-  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.6);
-}
-.cb-plan-worklegend span { display: inline-flex; align-items: center; gap: 7px; }
-.cb-plan-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.cb-plan-dot--work { background: #059669; }
-.cb-plan-dot--free { background: rgba(37, 99, 235, 0.5); }
-.cb-plan-dot--principal { background: rgba(37, 99, 235, 0.45); }
-.cb-plan-dot--profit { background: #059669; }
-
-.cb-plan-block {
-  margin-top: 18px; padding: 16px 18px; border-radius: 14px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.09);
-  background: rgba(var(--v-theme-on-surface), 0.015);
-}
-.cb-plan-block-head {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
-  margin-bottom: 12px;
-}
-.cb-plan-block-title { font-size: 14.5px; font-weight: 700; }
-.cb-plan-block-sub { font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.42); }
-.cb-plan-block-pct {
-  font-size: 14px; font-weight: 700; color: #047857;
-  font-variant-numeric: tabular-nums;
-}
-
-.cb-plan-pay {
-  height: 10px; border-radius: 6px; overflow: hidden;
-  background: rgba(var(--v-theme-on-surface), 0.08);
-}
-.cb-plan-pay-fill {
-  height: 100%; border-radius: 6px 0 0 6px;
-  background: linear-gradient(90deg, #10b981, #047857);
-  transition: width 0.4s;
-}
-.cb-plan-pay-row {
-  display: flex; justify-content: space-between; gap: 12px; margin-top: 7px;
-  font-size: 12.5px; color: rgba(var(--v-theme-on-surface), 0.55);
-  font-variant-numeric: tabular-nums;
-}
-
-.cb-plan-verdict {
-  display: flex; align-items: flex-start; gap: 9px;
-  margin-top: 12px; padding: 11px 13px; border-radius: 10px;
-  font-size: 13px; line-height: 1.5;
-  background: rgba(var(--v-theme-on-surface), 0.04);
-  color: rgba(var(--v-theme-on-surface), 0.65);
-}
-.cb-plan-verdict b { font-weight: 700; color: rgba(var(--v-theme-on-surface), 0.85); }
-.cb-plan-verdict--ok {
-  background: rgba(16, 185, 129, 0.09); color: #047857;
-  border: 1px solid rgba(16, 185, 129, 0.22);
-}
-.cb-plan-verdict--ok b { color: #047857; }
-.cb-plan-verdict--wait {
-  background: rgba(37, 99, 235, 0.07); color: rgba(var(--v-theme-on-surface), 0.7);
-  border: 1px solid rgba(37, 99, 235, 0.18);
-}
-.cb-plan-verdict--warn {
-  background: rgba(245, 158, 11, 0.09); color: #b45309;
-  border: 1px solid rgba(245, 158, 11, 0.25);
-}
-
-/* Столбики ожидаемых поступлений: снизу возврат вложенного, сверху доход. */
-.cb-plan-chart {
-  display: flex; align-items: flex-end; gap: 6px;
-  height: 150px; padding-top: 6px;
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.09);
-}
-.cb-plan-col { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; height: 100%; }
-.cb-plan-bar {
-  flex: 1; width: 100%; max-width: 34px;
-  display: flex; flex-direction: column; justify-content: flex-end;
-  border-radius: 6px 6px 0 0; overflow: hidden;
-}
-.cb-plan-bar-profit { background: linear-gradient(180deg, #34d399, #059669); }
-.cb-plan-bar-principal { background: rgba(37, 99, 235, 0.4); }
-.cb-plan-col-label {
-  margin-top: 6px; font-size: 10.5px; white-space: nowrap;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.cb-plan-nochart {
-  padding: 26px 0; text-align: center; font-size: 13px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.cb-plan-legend {
-  display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px;
-  font-size: 12px; color: rgba(var(--v-theme-on-surface), 0.55);
-}
-.cb-plan-legend span { display: inline-flex; align-items: center; gap: 7px; }
-
-.cb-plan-facts {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
-  margin-top: 14px; padding-top: 14px;
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.07);
-}
-.cb-plan-fact-value {
-  font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
-}
-.cb-plan-fact-value--profit { color: #047857; }
-.cb-plan-fact-label {
-  font-size: 11.5px; line-height: 1.4; margin-top: 2px;
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-
-.cb-plan-overdue {
-  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
-  margin-top: 12px; padding: 10px 13px; border-radius: 10px;
-  font-size: 12.5px; line-height: 1.45;
-  background: rgba(220, 38, 38, 0.06);
-  border: 1px solid rgba(220, 38, 38, 0.18);
-  color: #b91c1c;
-}
-.cb-plan-overdue span { flex: 1; min-width: 220px; }
-.cb-plan-overdue-btn {
-  height: 30px; padding: 0 12px; border-radius: 8px;
-  border: 1px solid rgba(220, 38, 38, 0.3);
-  font-size: 12.5px; font-weight: 600; color: #b91c1c; cursor: pointer;
-}
-.cb-plan-overdue-btn:hover { background: rgba(220, 38, 38, 0.08); }
-
-@media (max-width: 700px) {
-  .cb-plan-cards, .cb-plan-facts { grid-template-columns: minmax(0, 1fr); }
-  .cb-plan-chart { height: 120px; }
-  .cb-plan-col-label { font-size: 9.5px; }
+  
+  
+  
 }
 
 /* ── Список счетов: строки во всю ширину карточки ── */

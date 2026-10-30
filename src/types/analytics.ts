@@ -255,3 +255,104 @@ export interface AnalyticsMonthlySalesRow {
   /** Наценка. null — нет права видеть закупочную цену и наценку. */
   markup: number | null
 }
+
+/** Месяц ленты кассы (GET /analytics/cashbox-months). */
+export interface CashBoxMonthRow {
+  month: string
+  future: boolean
+  current: boolean
+  /** Пришло от клиентов — взносы и оплаченные платежи по дате оплаты. */
+  received: number
+  paidCount: number
+  /** Прибыль кассы, доля инвесторов, ваша — как в «Аналитике» и «Инвесторах». */
+  gross: number
+  investors: number
+  partner: number
+  /** Прогноз по графику — только у текущего и будущих месяцев. */
+  pending: number
+  pendingCount: number
+  expectedGross: number
+  expectedInvestors: number
+  /** Осталось получить: неоплаченные платежи со сроком в месяце (у прошлых — просрочка). */
+  unpaid: number
+  unpaidCount: number
+  unpaidGross: number
+  /** Продажи по дате сделки; закупка и наценка — null без права. */
+  sales: {
+    count: number
+    clients: number
+    total: number
+    downPayment: number
+    cost: number | null
+    markup: number | null
+  }
+  /** Месяц закрыт (расчёт с инвесторами проведён). */
+  closed: boolean
+  /** Движение денег кассы за месяц — строки журнала (как «Деньги в кассе»). */
+  flows: CashBoxMonthFlows
+  /** Остатки на конец месяца; у текущего — на сегодня, у будущих — null. */
+  balances: CashBoxMonthBalances | null
+}
+
+export interface CashBoxMonthFlows {
+  ciIn: number
+  ciOut: number
+  ciReinvest: number
+  ciPendingOut: number
+  seed: number
+  topup: number
+  partnerOut: number
+  partnerOutProfit: number
+  partnerOutCapital: number
+  downPayments: number
+  payments: number
+  deployed: number
+  supplierCredit: number
+  supplierPayouts: number
+  dividendsPaid: number
+  expenses: number
+  otherExpenses: number
+  otherIncome: number
+  cashboxTransfers: number
+  loanIn: number
+  loanRepay: number
+  lentOut: number
+  lentRepay: number
+  other: number
+  expenseCount: number
+  otherExpenseCount: number
+  in: number
+  out: number
+  manualBalance: number
+  /** У текущего месяца — записи будущей датой (в остатке «на сегодня» они есть). */
+  futureDated: number
+  investorsPaid: number
+  investorsReinvested: number
+}
+
+export interface CashBoxMonthBalances {
+  cashStart: number
+  cashEnd: number
+  investedEnd: number
+  ciCapitalEnd: number
+  totalCapitalEnd: number
+  inWorkEnd: number
+  activeDealsEnd: number
+  owedEnd: number
+}
+
+export interface CashBoxForecastMonth {
+  month: string
+  amount: number
+  count: number
+  gross: number
+  investors: number
+}
+
+export interface CashBoxMonthsResponse {
+  currentMonth: string
+  canSeeCost: boolean
+  months: CashBoxMonthRow[]
+  /** Прогноз: неоплаченные платежи со сроком после текущего месяца. */
+  forecast: Omit<CashBoxForecastMonth, 'month'> & { months: CashBoxForecastMonth[] }
+}

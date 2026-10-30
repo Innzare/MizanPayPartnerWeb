@@ -35,6 +35,12 @@ const props = defineProps<{
   accountId?: string | null
   /** Касса, из которой открыли форму (раздел «Пополнения и расходы» по кассе). */
   cashBoxId?: string | null
+  /**
+   * Касса задана и не меняется — форму открыли со страницы кассы. Выбор кассы
+   * скрыт, счета — только этой кассы (деньги одной кассы через счёт другой не
+   * проводим).
+   */
+  lockCashBox?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -297,6 +303,8 @@ const cashBoxOptions = computed(() =>
     .map((b) => ({ value: b.id, label: b.name, hint: b.isDefault ? 'основная' : undefined, color: b.color })),
 )
 
+const lockedBoxName = computed(() => cashboxes.items.find((b) => b.id === cashBoxId.value)?.name ?? '')
+
 const forCashBox = computed(() =>
   needsTarget.value || !cashBoxId.value
     ? usable.value
@@ -542,9 +550,13 @@ async function save() {
 
           <!-- Касса стоит выше счёта: она отвечает, чьи это деньги, и от неё
                зависит, из каких счетов вообще можно выбирать. -->
-          <div v-if="!needsTarget && cashBoxOptions.length > 1" class="op-field">
+          <div v-if="!needsTarget && cashBoxOptions.length > 1 && !lockCashBox" class="op-field">
             <label class="op-label">{{ isCapital ? 'Касса' : 'Чьи деньги' }}</label>
             <SelectField v-model="cashBoxId" :options="cashBoxOptions" />
+          </div>
+          <div v-else-if="lockCashBox && !needsTarget && lockedBoxName" class="op-locked-box">
+            <v-icon icon="mdi-wallet-outline" size="15" />
+            Касса «{{ lockedBoxName }}»
           </div>
 
           <div class="op-field">
@@ -853,4 +865,8 @@ async function save() {
 .op-confirm { background: #047857; color: #fff; }
 .op-confirm--warn { background: #d97706; }
 .op-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
+.op-locked-box {
+  display: flex; align-items: center; gap: 6px; margin: 10px 0 12px; font-size: 13px; font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
 </style>

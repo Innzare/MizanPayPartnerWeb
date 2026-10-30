@@ -28,8 +28,14 @@ const props = withDefaults(
     kinds?: OperationKind[]
     /** Свои подписи групп — например, «Снятие» вместо «Расход» у временных. */
     titles?: Partial<Record<'in' | 'out' | 'move', string>>
+    /**
+     * Свои секции по смыслу вместо групп по направлению — например, на
+     * странице кассы: основные операции, расходы, временные. Порядок пунктов —
+     * как в секции.
+     */
+    sections?: Array<{ title: string; kinds: OperationKind[] }>
   }>(),
-  { compact: false, kinds: undefined, titles: undefined },
+  { compact: false, kinds: undefined, titles: undefined, sections: undefined },
 )
 
 const emit = defineEmits<{ (e: 'pick', kind: OperationKind): void }>()
@@ -46,6 +52,16 @@ const auth = useAuthStore()
  * больше, ни меньше.
  */
 const groups = computed(() => {
+  if (props.sections) {
+    return props.sections
+      .map((sec) => ({
+        title: sec.title,
+        items: sec.kinds
+          .map((kind) => OPERATION_KINDS.find((k) => k.kind === kind))
+          .filter((k): k is (typeof OPERATION_KINDS)[number] => !!k && auth.can(k.permission)),
+      }))
+      .filter((g) => g.items.length)
+  }
   const allowed = OPERATION_KINDS.filter(
     (k) => auth.can(k.permission) && (!props.kinds || props.kinds.includes(k.kind)),
   )
